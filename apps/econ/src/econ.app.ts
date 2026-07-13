@@ -59,6 +59,12 @@ import {
 import { getEquipment, grantEquipment, setEquipmentFavorited } from './equipment-db'
 import { getInventory, grantItem, toAvatarItemV4 } from './inventory-db'
 import {
+	clearObjectiveGroup,
+	getObjectiveGroups,
+	getObjectives,
+	updateObjective,
+} from './objectives-db'
+import {
 	AUTHED,
 	AvatarItemV4Dto,
 	AvatarV2Dto,
@@ -88,6 +94,7 @@ import {
 	jsonBody,
 	JsonObject,
 	MakerAiFreeTrialEligibilityResponse,
+	ObjectiveGroupDto,
 	OpaqueJsonBody,
 	OPTIONAL_AUTHED,
 	ReferralProgressResponse,
@@ -95,24 +102,35 @@ import {
 	RRPlusSignUpBonus,
 	SaveOutfitRequest,
 	SaveOutfitV4Response,
+	SelectGameRewardRequest,
 	SubscriptionResponse,
 	UNAUTHORIZED_RESPONSE,
 	UpdateObjectiveRequest,
 	UpdateObjectiveResponse,
 } from './openapi'
 import { claimReward } from './reward-db'
+import {
+	consumeRewardSelection,
+	createRewardSelection,
+	getRewardSelection,
+	rollRewardDrops,
+	tokenRewardDrop,
+} from './rewards-db'
 
 import type { Context } from 'hono'
 import type { GiftContent, Outfit, Progression, StoredGift, XpGrant } from '@repo/domain'
 import type {
 	BalanceResponsePayload,
+	GiftPackagePayload,
 	PurchaseBalanceModificationPayload,
+	RewardSelectionPayload,
 } from '../../notify/src/notification-payloads'
 import type { Avatar } from './avatar-db'
 import type { ConsumeResult } from './consumables-db'
 import type { App } from './context'
 import type { Equipment } from './equipment-db'
 import type { AvatarItem } from './inventory-db'
+import type { GameRewardDrop } from './rewards-db'
 
 /**
  * Economy Worker. Hosts the avatar/economy endpoints the game client calls on
@@ -146,6 +164,32 @@ async function authedRoles(c: Context<App>): Promise<string[] | null> {
 /** Results.Unauthorized() equivalent — 401 with empty body. */
 function unauthorized(c: Context<App>) {
 	return c.body(null, 401)
+}
+
+/**
+ * Push a notification to a player over the websocket hub. Rewards are *delivered*
+ * this way — the HTTP response carries none of it — but a hub that's down shouldn't
+ * fail the request that already committed, so a delivery failure is logged, not thrown.
+ */
+async function pushToPlayer(
+	c: Context<App>,
+	playerId: number,
+	notificationType: NotificationType,
+	data: Record<string, unknown>
+): Promise<void> {
+	try {
+		await c.env.RECFLARE_NOTIFICATIONS_HUB.getByName(HUB_INSTANCE).notifyPlayer(
+			playerId,
+			notificationType,
+			data
+		)
+	} catch (err) {
+		logger.error('failed to push notification', {
+			playerId,
+			notificationType,
+			error: err instanceof Error ? err.message : String(err),
+		})
+	}
 }
 
 /**
@@ -1190,24 +1234,25 @@ const GIFT_CONTEXT_GAME_REWARDS = 50
 const DEFAULT_GAME_REWARD_MESSAGE = 'Reward earned!'
 
 /**
- * The gift-drop a claimed game reward hands over: XP in a box, no item. Every item field is
- * empty on purpose — this is not a purchase and not a roll, so `grantGiftDrop` grants
- * nothing into the inventory and only creates the box. The XP is banked in `progression`;
- * the copy here is what the box and its notification display.
+ * The gift box a CHOSEN reward selection hands over. The selection's drop is Rec Room's
+ * `GiftDrop` wire shape (what the client was offered); this is the subset `grantGiftDrop`
+ * needs to wrap it. Every drop is a token drop for now, so there is nothing to grant into
+ * the inventory — the tokens are credited by the caller and the box is what the player
+ * opens. `Xp` is the reward's, so the box carries the same amount banked in `progression`.
  */
-function toGameRewardDrop(): StoreGiftDrop {
+function toSelectedRewardDrop(drop: GameRewardDrop): StoreGiftDrop {
 	return {
-		FriendlyName: '',
-		Tooltip: '',
-		ConsumableItemDesc: '',
-		AvatarItemDesc: '',
-		AvatarItemType: null,
-		EquipmentPrefabName: '',
-		EquipmentModificationGuid: '',
-		Rarity: 0,
-		Context: GIFT_CONTEXT_GAME_REWARDS,
-		Currency: 0,
-		CurrencyType: 0,
+		FriendlyName: drop.FriendlyName,
+		Tooltip: drop.Tooltip,
+		ConsumableItemDesc: drop.ConsumableItemDesc,
+		AvatarItemDesc: drop.AvatarItemDesc,
+		AvatarItemType: drop.AvatarItemType,
+		EquipmentPrefabName: drop.EquipmentPrefabName,
+		EquipmentModificationGuid: drop.EquipmentModificationGuid,
+		Rarity: drop.Rarity,
+		Context: drop.Context,
+		Currency: drop.Currency,
+		CurrencyType: drop.CurrencyType,
 		Xp: GAME_REWARD_XP,
 	}
 }
@@ -1606,63 +1651,121 @@ const app = new Hono<App>({ strict: false })
 		}
 	)
 
-	// The player's objectives progress. Serves a static JSON file verbatim with
-	// no auth — same default for everyone until there's a DB binding to track
-	// per-player progress.
+	// The player's objectives progress. Their own recorded objectives once they've made
+	// any (the client reports them through `updateobjective`); the bundled default set
+	// otherwise, including for a signed-out caller — the client needs a well-formed
+	// checklist to render either way.
 	.get(
 		'/api/objectives/v1/myprogress',
 		describeRoute({
 			tags: ['Econ'],
 			summary: 'Objectives progress',
-			description:
-				'Serves the bundled static progress verbatim (no per-player store yet). No auth.',
-			responses: { 200: json(JsonObject, 'The bundled objectives-progress default') },
+			description: [
+				'The player’s own recorded objectives, or the bundled default set when they have',
+				'reported none yet. A signed-out caller gets the default rather than a 401 — the',
+				'client needs a well-formed checklist either way.',
+			].join(' '),
+			security: OPTIONAL_AUTHED,
+			responses: { 200: json(JsonObject, 'The player’s objectives, or the bundled default') },
 		}),
-		(c) => c.json(myProgress)
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return c.json(myProgress)
+
+			const [objectives, groups] = await Promise.all([
+				getObjectives(c.env.DB, id),
+				getObjectiveGroups(c.env.DB, id),
+			])
+			if (objectives.length === 0 && groups.length === 0) return c.json(myProgress)
+			return c.json({
+				Objectives: objectives,
+				// Fall back to the default groups until the player has cleared one of their own.
+				ObjectiveGroups: groups.length === 0 ? myProgress.ObjectiveGroups : groups,
+			})
+		}
 	)
 
-	// Clears a group of objectives. No per-player progress to clear yet, so this
-	// is a no-op that returns an empty array (a 404 here breaks the client). Accepts
-	// GET or POST since the client may use either.
+	// The client clearing an objective group — it's done with that set (its dailies
+	// rolled over, say). Auth-gated. Marks the group completed, stamps the clear time,
+	// and returns the group as the client reads it. Accepts GET or POST since the client
+	// may use either, so `Group` is taken from the JSON body or the query string.
 	.on(
 		['GET', 'POST'],
 		'/api/objectives/v1/cleargroup',
 		describeRoute({
 			tags: ['Econ'],
-			summary: 'Clear an objectives group (no-op)',
-			description: 'No per-player progress to clear yet → []. Accepts GET or POST.',
-			responses: { 200: json(JsonArray, 'Always empty for now') },
+			summary: 'Clear an objectives group',
+			description:
+				'Marks the group completed and stamps `ClearedAt`. Accepts GET or POST; `Group` comes from the JSON body or the query string.',
+			security: AUTHED,
+			responses: {
+				200: json(ObjectiveGroupDto, 'The cleared group'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
 		}),
-		(c) => c.json([])
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>
+			const group = Number(body.Group ?? c.req.query('Group')) || 0
+
+			return c.json(await clearObjectiveGroup(c.env.DB, id, group))
+		}
 	)
 
-	// Report one objective's progress. The client posts the whole objective as it now
-	// sees it (Index/Group identify it within `myprogress`) and reads back the state of
-	// the GROUP that objective belongs to — camelCase here, unlike the PascalCase body it
-	// posted. Stubbed: with no objectives store yet we persist nothing, echo the group
-	// back and never complete it, so the reward-claim flow isn't triggered. `clearedAt`
-	// is the clear time, which for a group we didn't clear is just now.
+	// The client reporting progress on an objective as it plays. Auth-gated; the body is
+	// the whole objective as the client now sees it (Index/Group identify it within the
+	// player's set), and it reads back the state of the GROUP that objective belongs to —
+	// camelCase here, unlike the PascalCase body it posted.
+	//
+	// The completion flag the client posts is `HasClaimedReward` — the same spelling
+	// `myprogress` serves. `IsRewarded` is accepted as well because the DTO carries that
+	// name internally, but the client never sends it.
 	.post(
 		'/api/objectives/v1/updateobjective',
 		describeRoute({
 			tags: ['Econ'],
 			summary: 'Report objective progress',
 			description: [
-				'Stubbed: with no objectives store we persist nothing and never complete a group.',
-				'Echoes `Group` back as camelCase `group` with `isCompleted: false` so the client',
-				'gets a well-formed body.',
+				'Upserts the objective on (account, group, index) and answers the state of its group.',
+				'`has_claimed_reward` latches on first completion so a reward can’t be paid twice.',
 			].join(' '),
+			security: AUTHED,
 			requestBody: jsonBody(UpdateObjectiveRequest, 'The objective as the client now sees it'),
-			responses: { 200: json(UpdateObjectiveResponse, 'The echoed group, never completed') },
+			responses: {
+				200: json(UpdateObjectiveResponse, 'The state of the group the objective belongs to'),
+				400: { description: 'Body was not JSON' },
+				401: UNAUTHORIZED_RESPONSE,
+			},
 		}),
 		async (c) => {
-			const body = await c.req
-				.json<{ Group?: string | number }>()
-				.catch(() => ({}) as Record<string, never>)
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+			if (body === null) return c.body(null, 400)
+
+			const num = (v: unknown): number => (typeof v === 'number' ? v : 0)
+			const bool = (v: unknown): boolean => v === true
+
+			const group = num(body.Group)
+			await updateObjective(c.env.DB, id, {
+				Group: group,
+				Index: num(body.Index),
+				Progress: num(body.Progress),
+				VisualProgress: num(body.VisualProgress),
+				IsCompleted: bool(body.IsCompleted),
+				IsRewarded: bool(body.HasClaimedReward ?? body.IsRewarded),
+			})
+
+			// Read the group back rather than echoing the request: the client re-renders the
+			// checklist from this, so a group the player already cleared must come back cleared.
+			const stored = (await getObjectiveGroups(c.env.DB, id)).find((g) => g.Group === group)
 			return c.json({
-				group: Number(body.Group) || 0,
-				isCompleted: false,
-				clearedAt: new Date().toISOString(),
+				group,
+				isCompleted: stored?.IsCompleted ?? false,
+				clearedAt: stored?.ClearedAt ?? new Date().toISOString(),
 			})
 		}
 	)
@@ -2978,15 +3081,18 @@ const app = new Hono<App>({ strict: false })
 	// completed!&giftContext=Soccer`) — so whether a reward is actually OWED is decided
 	// here, from `reward_status`: one claim per type per activity per hour, atomically.
 	//
-	// A claim pays GAME_REWARD_XP into `progression` and hands over a gift box carrying that
-	// XP, announced with the same GiftPackageReceivedImmediate frame the weekly gift uses —
-	// the client posted the message to show, so the box wears it. An on-cooldown ask changes
-	// nothing and pays nothing.
+	// What a claim hands over is a CHOICE, not a payout. The reference offers three drops and
+	// lets the player pick one, so an owed reward mints a `reward_selection` and pushes the
+	// three options as `RewardSelectionReceived`; nothing is paid until the player picks with
+	// `v1/select`. The HTTP response therefore carries none of it — it is the `{ error,
+	// success, value }` envelope the reference answers this flow with. An on-cooldown ask
+	// mints nothing, pushes nothing, and pays nothing.
 	//
-	// The response stays `[]` either way. It is what the client already accepts, and the box
-	// is how a reward is delivered, so there is no captured shape to put the payout in — the
-	// reference answers its own (different, selection-based) flow with a success envelope,
-	// not a list of rewards.
+	// The cooldown key is the type and the activity AS THE CLIENT SPELLS THEM (strings), which
+	// is what `reward_status` stores. The frame's `RewardType`/`GiftContext` are numeric in the
+	// client's decoder and there is no captured mapping from those names to their ids, so they
+	// carry the numeric form when the client sends one and fall back to `GameRewards` (50)
+	// otherwise — the same context the gift boxes on this worker already use.
 	//
 	// `giftContext` (the activity, e.g. `Soccer`) is part of the cooldown key: the first
 	// activity of the day is per ACTIVITY, so a player who moves from Soccer to Paintball is
@@ -2999,15 +3105,16 @@ const app = new Hono<App>({ strict: false })
 			summary: 'Request a game reward',
 			description: [
 				'Claims one reward of `rewardType` in `giftContext` per hour per player, recorded in',
-				'`reward_status`. The cooldown is per (type, activity), so a different activity is',
-				'owed another reward while the same one is not; an ask with no `giftContext` keys on',
-				'the empty context. The reward rides in a gift box, so a claim and a rejected',
-				'(on-cooldown) ask both answer `[]`.',
+				'`reward_status`. An owed claim mints a three-drop `reward_selection` and pushes it as',
+				'`RewardSelectionReceived`; the player picks one with `/api/gamerewards/v1/select`.',
+				'The cooldown is per (type, activity), so a different activity is owed another reward',
+				'while the same one is not; an ask with no `giftContext` keys on the empty context.',
+				'The choices ride on the hub, so a claim and an on-cooldown ask answer the same envelope.',
 			].join(' '),
 			security: AUTHED,
 			requestBody: form(GameRewardRequest, 'The reward type and its display message'),
 			responses: {
-				200: json(JsonArray, 'The rewards granted — always [] while the payload is stubbed'),
+				200: json(ConsumeEnvelope, 'Success envelope — the choices are pushed, not returned'),
 				401: UNAUTHORIZED_RESPONSE,
 			},
 		}),
@@ -3017,37 +3124,181 @@ const app = new Hono<App>({ strict: false })
 			const body = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>)
 			const rewardType = typeof body.rewardType === 'string' ? body.rewardType : ''
 			// No type, nothing to gate: don't write a row keyed on an empty string.
-			if (rewardType === '') return c.json([])
+			if (rewardType === '') return c.json({ error: '', success: true, value: null })
 			const giftContext = typeof body.giftContext === 'string' ? body.giftContext : ''
 			const claimed = await claimReward(c.env.DB, id, rewardType, giftContext)
-			// On cooldown: nothing was claimed, so nothing is paid and nothing is announced.
-			if (claimed === null) return c.json([])
+			// On cooldown: nothing was claimed, so no selection is minted and nothing is announced.
+			if (claimed === null) return c.json({ error: '', success: true, value: null })
 			const message =
 				typeof body.Message === 'string' && body.Message !== ''
 					? body.Message
 					: DEFAULT_GAME_REWARD_MESSAGE
-			// Bank the XP first: it is the reward, and the box is the wrapper the client shows.
-			// A failure here must not leave a box promising XP that was never credited.
-			const { progression, levelsGained } = await addXp(c.env.DB, id, GAME_REWARD_XP)
-			const granted = await grantGiftDrop(c, id, toGameRewardDrop(), message)
-			await pushGiftReceived(c, id, granted, message, COACH_ACCOUNT_ID)
-			// Every grant moves the bar, whether or not it crossed a level.
-			await pushProgressionUpdate(c, id, progression)
-			// …and every level crossed is worth a box of its own tier.
-			await grantLevelUpGifts(c, id, { progression, levelsGained })
-			logger.info('game reward claimed', {
+
+			// The numeric forms the hub frame carries (see the note above).
+			const contextId = Number.parseInt(giftContext, 10) || GIFT_CONTEXT_GAME_REWARDS
+			const rewardTypeId = Number.parseInt(rewardType, 10) || 0
+
+			const drops = rollRewardDrops(contextId)
+			const selection = await createRewardSelection(c.env.DB, id, {
+				message,
+				giftContext: contextId,
+				rewardType: rewardTypeId,
+				dropIds: drops.map((d) => d.GiftDropId),
+			})
+
+			// `satisfies` rather than an annotation: the hub takes a Record<string, unknown> and an
+			// interface has no implicit index signature, but every key is still checked against the
+			// shape the client's decoder parses.
+			const payload = {
+				RewardSelectionId: selection.RewardSelectionId,
+				RewardType: rewardTypeId,
+				Message: message,
+				GiftContext: contextId,
+				GiftDrop1: drops[0],
+				GiftDrop2: drops[1],
+				GiftDrop3: drops[2],
+				// The reference sends the third drop twice — once plain, once under the
+				// subscriber key. With no subscriber-only drop pool the two are the same drop.
+				Subscriber_GiftDrop3: drops[2],
+				CreatedAt: selection.CreatedAt,
+			} satisfies RewardSelectionPayload
+			await pushToPlayer(c, id, NotificationType.RewardSelectionReceived, payload)
+
+			logger.info('game reward selection offered', {
 				accountId: id,
 				rewardType,
 				giftContext,
 				grantCount: claimed,
 				message,
+				rewardSelectionId: selection.RewardSelectionId,
+				dropIds: selection.GiftDropIds,
+			})
+			return c.json({ error: '', success: true, value: null })
+		}
+	)
+
+	// Claim one of the three rewards a selection offered. [Authorize]. The selection must be
+	// the caller's, unconsumed, and must actually contain the claimed drop — otherwise 403, so
+	// a player can't mint a reward they were never offered or redeem one twice.
+	//
+	// This is where a game reward is finally PAID: the chosen drop's tokens are credited, the
+	// reward's XP goes into `progression`, and the drop is wrapped in a gift box so the client
+	// has something to open. The box is announced with GiftPackageRewardSelectionReceived (32)
+	// — the gift-package frame for a box that came from a selection, as opposed to the
+	// Immediate (31) one a weekly gift or a direct grant uses.
+	//
+	// Every drop is a token drop for now, and a token drop's id is the NEGATIVE of its amount,
+	// which is how the claim rebuilds it without a catalog lookup.
+	.post(
+		'/api/gamerewards/v1/select',
+		describeRoute({
+			tags: ['Econ'],
+			summary: 'Claim one of an offered reward selection',
+			description: [
+				'Consumes the `reward_selection` minted by `/api/gamerewards/v1/request` and pays the',
+				'chosen drop: its tokens are credited, `GAME_REWARD_XP` is banked, and a gift box is',
+				'created and announced as `GiftPackageRewardSelectionReceived`. 403 when the selection',
+				'isn’t the caller’s, is already consumed, or never offered the claimed drop — the',
+				'consume is conditional, so two racing claims mean the second one loses.',
+			].join(' '),
+			security: AUTHED,
+			requestBody: form(SelectGameRewardRequest, 'The selection and the drop being claimed'),
+			responses: {
+				200: json(JsonObject, 'The claimed gift-drop'),
+				400: { description: '`giftDropId` was missing' },
+				401: UNAUTHORIZED_RESPONSE,
+				403: { description: 'Not the caller’s selection, already consumed, or not offered' },
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const body = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>)
+			const int = (name: string): number => {
+				const key = Object.keys(body).find((k) => k.toLowerCase() === name.toLowerCase())
+				const v = key === undefined ? undefined : body[key]
+				return typeof v === 'string' ? Number.parseInt(v, 10) || 0 : 0
+			}
+			const rewardSelectionId = int('rewardSelectionId')
+			const giftDropId = int('giftDropId')
+			if (giftDropId === 0) return c.json({ error: 'giftDropId is required' }, 400)
+
+			const selection =
+				rewardSelectionId <= 0 ? null : await getRewardSelection(c.env.DB, rewardSelectionId)
+			if (
+				selection === null ||
+				selection.AccountId !== id ||
+				selection.Consumed ||
+				!selection.GiftDropIds.includes(giftDropId)
+			) {
+				return c.body(null, 403)
+			}
+			// Consume conditionally: two racing claims mean the second one loses.
+			if (!(await consumeRewardSelection(c.env.DB, selection.RewardSelectionId))) {
+				return c.body(null, 403)
+			}
+
+			const drop = tokenRewardDrop(-giftDropId, selection.GiftContext)
+			const startingTokens = intVar(c.env.STARTING_TOKENS, DEFAULT_STARTING_TOKENS)
+
+			// Credit BEFORE the box: the box is only the "you got something" panel, and opening one
+			// grants nothing (see /api/avatar/v2/gifts/consume). A box promising tokens that were
+			// never credited would read as a reward that silently paid nothing.
+			await ensureStartingBalances(c.env.DB, id, startingTokens)
+			const balance = await creditCurrency(
+				c.env.DB,
+				id,
+				CurrencyType.RecCenterTokens,
+				drop.Currency,
+				startingTokens
+			)
+			// The frame carries the RESULTING total, never the payout — see the balance-bucket
+			// note in CLAUDE.md.
+			await pushBalanceUpdate(c, id, CurrencyType.RecCenterTokens, balance)
+
+			// The reward's XP is the same GAME_REWARD_XP the flow was always worth; the tokens are
+			// what the player CHOSE on top of it.
+			const { progression, levelsGained } = await addXp(c.env.DB, id, GAME_REWARD_XP)
+			const granted = await grantGiftDrop(c, id, toSelectedRewardDrop(drop), selection.Message)
+
+			const payload = {
+				Id: granted.id,
+				FromPlayerId: COACH_ACCOUNT_ID,
+				ConsumableItemDesc: drop.ConsumableItemDesc,
+				AvatarItemType: drop.AvatarItemType,
+				AvatarItemDesc: drop.AvatarItemDesc,
+				EquipmentPrefabName: drop.EquipmentPrefabName,
+				EquipmentModificationGuid: drop.EquipmentModificationGuid,
+				CurrencyType: drop.CurrencyType,
+				Currency: drop.Currency,
+				Xp: GAME_REWARD_XP,
+				GiftContext: selection.GiftContext,
+				GiftRarity: drop.Rarity,
+				Message: selection.Message,
+				Platform: -1,
+				PlatformsToSpawnOn: -1,
+				BalanceType: ALL_PLATFORMS,
+			} satisfies GiftPackagePayload
+			await pushToPlayer(c, id, NotificationType.GiftPackageRewardSelectionReceived, payload)
+
+			// Every grant moves the bar, whether or not it crossed a level.
+			await pushProgressionUpdate(c, id, progression)
+			// …and every level crossed is worth a box of its own tier.
+			await grantLevelUpGifts(c, id, { progression, levelsGained })
+
+			logger.info('game reward selected', {
+				accountId: id,
+				rewardSelectionId: selection.RewardSelectionId,
+				giftDropId,
+				tokens: drop.Currency,
+				balance,
 				xp: GAME_REWARD_XP,
 				level: progression.Level,
 				levelsGained,
-				levelXp: progression.XP,
 				giftId: granted.id,
 			})
-			return c.json([])
+			return c.json(drop)
 		}
 	)
 

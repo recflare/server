@@ -281,9 +281,21 @@ export const ChallengeProgressResponse = z.object({
  * `ObjectiveGroups` entries `myprogress` serves — three spellings of the same group.
  */
 export const UpdateObjectiveResponse = z.object({
-	group: z.int().describe('Echoed back from the request'),
-	isCompleted: z.boolean().describe('Always false — no objectives store yet'),
-	clearedAt: z.string().describe('When the group was cleared — now, since nothing persists'),
+	group: z.int().describe('The group the reported objective belongs to'),
+	isCompleted: z.boolean().describe('Whether that group has been cleared'),
+	clearedAt: z.string().describe('When the group was cleared'),
+})
+
+/**
+ * An objective GROUP as the client reads it back — the PascalCase shape served inside
+ * `myprogress` and returned by `cleargroup`. Note `updateobjective` answers the same
+ * three facts in camelCase (`UpdateObjectiveResponse`); the client parses both, so the
+ * two spellings are deliberate rather than an inconsistency to clean up.
+ */
+export const ObjectiveGroupDto = z.object({
+	Group: z.int().describe('The client’s own group identifier'),
+	IsCompleted: z.boolean(),
+	ClearedAt: z.string().nullable().describe('ISO-8601; null before the group is cleared'),
 })
 
 /**
@@ -501,6 +513,18 @@ export const GameRewardRequest = z.object({
 		.string()
 		.optional()
 		.describe('The activity it came from, e.g. `Soccer` — part of the cooldown key'),
+})
+
+/**
+ * `POST /api/gamerewards/v1/select` form body — which of the three offered drops the
+ * player picked. Both ids are read case-insensitively: the client's casing for these is
+ * not pinned down, and a mis-cased field would silently read as 0 and 403 the claim.
+ */
+export const SelectGameRewardRequest = z.object({
+	rewardSelectionId: z.string().describe('The `reward_selection` being claimed against'),
+	giftDropId: z
+		.string()
+		.describe('The chosen drop; must be one of the three the selection offered'),
 })
 
 /**

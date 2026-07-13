@@ -34,7 +34,9 @@ import { CHALLENGE_GIFT_SCHEMA_DDL, CHALLENGE_STATUS_SCHEMA_DDL } from '../../ch
 import { CONSUMABLE_SCHEMA_DDL, grantConsumable } from '../../consumables-db'
 import { EQUIPMENT_SCHEMA_DDL, grantEquipment } from '../../equipment-db'
 import { INVENTORY_SCHEMA_DDL } from '../../inventory-db'
+import { SCHEMA_DDL as OBJECTIVES_SCHEMA_DDL } from '../../objectives-db'
 import { REWARD_STATUS_SCHEMA_DDL } from '../../reward-db'
+import { SCHEMA_DDL as REWARDS_SCHEMA_DDL } from '../../rewards-db'
 
 import type { Env } from '../../context'
 
@@ -65,6 +67,10 @@ beforeAll(async () => {
 	for (const stmt of RECEIVED_GIFT_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of INVENTORY_INVENTION_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of INVENTION_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	// Reward selections (owned by this worker) — game rewards record what was offered.
+	for (const stmt of REWARDS_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	// Objectives (owned by this worker) — per-player challenge progress.
+	for (const stmt of OBJECTIVES_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	await env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
 		.bind(JSON.stringify({ accountId: 42, username: 'Tester', displayName: 'Tester' }))
 		.run()
@@ -381,43 +387,143 @@ describe('econ endpoints', () => {
 		expect(Array.isArray(body.ObjectiveGroups)).toBe(true)
 	})
 
-	test('objectives/v1/cleargroup returns [] for GET and POST (no auth)', async () => {
-		for (const method of ['GET', 'POST'] as const) {
-			const res = await exports.default.fetch(`${ORIGIN}/api/objectives/v1/cleargroup`, { method })
-			expect(res.status).toBe(200)
-			expect(await res.json()).toEqual([])
+	test('POST /api/objectives/v1/updateobjective records progress; myprogress reads it back', async () => {
+		type Progress = {
+			Objectives: Array<{
+				Group: number
+				Index: number
+				Progress: number
+				VisualProgress: number
+				IsCompleted: boolean
+				HasClaimedReward: boolean
+			}>
+			ObjectiveGroups: unknown[]
 		}
-	})
+		const update = async (body: unknown, sub = '4242'): Promise<Response> =>
+			exports.default.fetch(`${ORIGIN}/api/objectives/v1/updateobjective`, {
+				method: 'POST',
+				headers: { ...(await bearer(sub)), 'Content-Type': 'application/json' },
+				body: JSON.stringify(body),
+			})
+		const progress = async (sub = '4242'): Promise<Progress> => {
+			const res = await exports.default.fetch(`${ORIGIN}/api/objectives/v1/myprogress`, {
+				headers: await bearer(sub),
+			})
+			expect(res.status).toBe(200)
+			return (await res.json()) as Progress
+		}
 
-	test('POST /api/objectives/v1/updateobjective echoes the group, never completed', async () => {
-		const res = await exports.default.fetch(`${ORIGIN}/api/objectives/v1/updateobjective`, {
-			method: 'POST',
-			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify({
-				Index: 2,
-				Group: 3,
-				Progress: 1,
-				VisualProgress: 0,
-				IsCompleted: true,
-				HasClaimedReward: false,
-			}),
+		// Partial progress on one objective.
+		const res = await update({
+			Group: 0,
+			Index: 2,
+			Progress: 0.5,
+			VisualProgress: 0.5,
+			IsCompleted: false,
+			IsRewarded: false,
 		})
 		expect(res.status).toBe(200)
-		const body = (await res.json()) as { group: number; isCompleted: boolean; clearedAt: string }
-		expect(body.group).toBe(3)
-		expect(body.isCompleted).toBe(false)
-		expect(Number.isNaN(Date.parse(body.clearedAt))).toBe(false)
+
+		const mid = await progress()
+		expect(mid.Objectives).toEqual([
+			{
+				Group: 0,
+				Index: 2,
+				Progress: 0.5,
+				VisualProgress: 0.5,
+				IsCompleted: false,
+				HasClaimedReward: false,
+			},
+		])
+		// The default groups still ride along.
+		expect(mid.ObjectiveGroups.length).toBeGreaterThan(0)
+
+		// Completing it latches HasClaimedReward — the reward can only be paid once.
+		await update({
+			Group: 0,
+			Index: 2,
+			Progress: 1,
+			VisualProgress: 1,
+			IsCompleted: true,
+			IsRewarded: false,
+		})
+		const done = await progress()
+		expect(done.Objectives[0]).toMatchObject({ IsCompleted: true, HasClaimedReward: true })
+
+		// A second objective is tracked separately, keyed by (group, index).
+		await update({
+			Group: 1,
+			Index: 0,
+			Progress: 0.25,
+			VisualProgress: 0.25,
+			IsCompleted: false,
+			IsRewarded: false,
+		})
+		expect((await progress()).Objectives.map((o) => [o.Group, o.Index])).toEqual([
+			[0, 2],
+			[1, 0],
+		])
+
+		// Another player's progress is their own; a signed-out reader gets the default set.
+		expect((await progress('4243')).Objectives.length).toBeGreaterThanOrEqual(0)
+		const anon = await exports.default.fetch(`${ORIGIN}/api/objectives/v1/myprogress`)
+		expect(anon.status).toBe(200)
+
+		// Auth-gated.
+		const noToken = await exports.default.fetch(`${ORIGIN}/api/objectives/v1/updateobjective`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ Group: 0, Index: 0 }),
+		})
+		expect(noToken.status).toBe(401)
 	})
 
-	test('POST /api/objectives/v1/updateobjective tolerates a non-JSON body', async () => {
-		const res = await exports.default.fetch(`${ORIGIN}/api/objectives/v1/updateobjective`, {
+	test('POST /api/objectives/v1/cleargroup clears the group; myprogress reports it', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/objectives/v1/cleargroup`, {
+			method: 'POST',
+			headers: { ...(await bearer('4444')), 'Content-Type': 'application/json' },
+			body: JSON.stringify({ Group: 1 }),
+		})
+		expect(res.status).toBe(200)
+		const cleared = (await res.json()) as {
+			Group: number
+			IsCompleted: boolean
+			ClearedAt: string
+		}
+		expect(cleared).toMatchObject({ Group: 1, IsCompleted: true })
+		expect(typeof cleared.ClearedAt).toBe('string')
+
+		// The cleared group comes back on the player's progress.
+		const progress = await exports.default.fetch(`${ORIGIN}/api/objectives/v1/myprogress`, {
+			headers: await bearer('4444'),
+		})
+		const body = (await progress.json()) as { ObjectiveGroups: Array<{ Group: number }> }
+		expect(body.ObjectiveGroups.map((g) => g.Group)).toEqual([1])
+
+		// Auth-gated.
+		const anon = await exports.default.fetch(`${ORIGIN}/api/objectives/v1/cleargroup`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ Group: 1 }),
+		})
+		expect(anon.status).toBe(401)
+	})
+
+	test('POST /api/objectives/v1/updateobjective is auth-gated and 400s on a non-JSON body', async () => {
+		// No token: the objective belongs to a player, so there is nobody to record it against.
+		const anon = await exports.default.fetch(`${ORIGIN}/api/objectives/v1/updateobjective`, {
 			method: 'POST',
 			body: 'not json',
 		})
-		expect(res.status).toBe(200)
-		const body = (await res.json()) as { group: number; isCompleted: boolean }
-		expect(body.group).toBe(0)
-		expect(body.isCompleted).toBe(false)
+		expect(anon.status).toBe(401)
+
+		// Authenticated but unparseable: nothing to upsert, so this is the client's error.
+		const res = await exports.default.fetch(`${ORIGIN}/api/objectives/v1/updateobjective`, {
+			method: 'POST',
+			headers: await bearer('4646'),
+			body: 'not json',
+		})
+		expect(res.status).toBe(400)
 	})
 
 	test('GET /api/checklist/v1|v2/current 401s without a token, serves the NUX list with one', async () => {
@@ -2211,12 +2317,12 @@ describe('econ endpoints', () => {
 				.bind(rewardType, giftContext)
 				.first<{ granted_at: string; grant_count: number }>()
 
-		// A claim answers the empty list the client accepts — the reward rides in a gift box.
+		// A claim answers the envelope — the three choices ride out on the hub, not in the body.
 		const first = await request(
 			'rewardType=FirstActivityOfDay&Message=First%20Game%20of%20the%20Day'
 		)
 		expect(first.status).toBe(200)
-		expect(await first.json()).toEqual([])
+		expect(await first.json()).toEqual({ error: '', success: true, value: null })
 		const claimed = await statusOf('FirstActivityOfDay')
 		expect(claimed?.grant_count).toBe(1)
 
@@ -2265,7 +2371,7 @@ describe('econ endpoints', () => {
 		expect((await statusOf('FirstActivityOfDay'))?.grant_count).toBe(2)
 	})
 
-	test('a claimed game reward pays XP into a gift box, and announces it', async () => {
+	test('a game reward offers three choices, and picking one pays it', async () => {
 		const request = async (body: string) =>
 			exports.default.fetch(`${ORIGIN}/api/gamerewards/v1/request`, {
 				method: 'POST',
@@ -2275,6 +2381,24 @@ describe('econ endpoints', () => {
 				},
 				body,
 			})
+		const select = async (fields: Record<string, string>, sub = '82'): Promise<Response> =>
+			exports.default.fetch(`${ORIGIN}/api/gamerewards/v1/select`, {
+				method: 'POST',
+				headers: { ...(await bearer(sub)), 'Content-Type': 'application/x-www-form-urlencoded' },
+				body: new URLSearchParams(fields).toString(),
+			})
+		/** The selection most recently offered to 82, and the three drops it holds. */
+		const latestSelection = async () =>
+			env.DB.prepare(
+				`SELECT reward_selection_id, gift_drop_1_id, gift_drop_2_id, gift_drop_3_id
+				 FROM reward_selection WHERE account_id = 82
+				 ORDER BY reward_selection_id DESC LIMIT 1`
+			).first<{
+				reward_selection_id: number
+				gift_drop_1_id: number
+				gift_drop_2_id: number
+				gift_drop_3_id: number
+			}>()
 		/** Age the cooldown so the next ask is eligible again. */
 		const passAnHour = () =>
 			env.DB.prepare(
@@ -2285,45 +2409,110 @@ describe('econ endpoints', () => {
 
 		await drainFrames()
 		expect((await getProgression(env.DB, 82)).XP).toBe(0)
+
+		// Asking mints a selection and announces the three choices. Nothing is paid yet: no
+		// XP, no box, no tokens — the player hasn't picked.
 		const res = await request('rewardType=FirstActivityOfDay&Message=First%20Game%20of%20the%20Day')
 		expect(res.status).toBe(200)
-		expect(await res.json()).toEqual([])
+		expect(await res.json()).toEqual({ error: '', success: true, value: null })
+		expect(await getProgression(env.DB, 82)).toEqual({ PlayerId: 82, Level: 1, XP: 0 })
+		expect(await giftBoxes('82')).toHaveLength(0)
 
-		// 5 XP is deliberately less than the 10 the first level costs, so one action moves the
+		const offerFrames = await drainFrames()
+		expect(offerFrames.map((f) => f.notificationType)).toEqual([
+			NotificationType.RewardSelectionReceived,
+		])
+		const offer = offerFrames[0]!
+		expect(offer.accountId).toBe(82)
+		expect(offer.payload).toMatchObject({
+			Message: 'First Game of the Day',
+			// No numeric giftContext was sent, so the frame falls back to GiftContext.GameRewards.
+			GiftContext: 50,
+		})
+		// Three distinct token choices, plus the subscriber duplicate of the third.
+		const drops = [
+			offer.payload.GiftDrop1,
+			offer.payload.GiftDrop2,
+			offer.payload.GiftDrop3,
+		] as Array<{ GiftDropId: number; Currency: number }>
+		expect(new Set(drops.map((d) => d.GiftDropId)).size).toBe(3)
+		expect(offer.payload.Subscriber_GiftDrop3).toEqual(offer.payload.GiftDrop3)
+
+		// An on-cooldown ask offers nothing at all — no second selection, no frame.
+		const before = await latestSelection()
+		expect((await request('rewardType=FirstActivityOfDay&Message=again')).status).toBe(200)
+		expect((await latestSelection())?.reward_selection_id).toBe(before?.reward_selection_id)
+		expect(await drainFrames()).toEqual([])
+
+		// Picking one pays it: the tokens are credited, the XP banked, and a box created.
+		const chosen = before!.gift_drop_2_id
+		const tokensBefore = await getBalance(
+			env.DB,
+			82,
+			CurrencyType.RecCenterTokens,
+			DEFAULT_STARTING_TOKENS
+		)
+		const claim = await select({
+			rewardSelectionId: String(before!.reward_selection_id),
+			giftDropId: String(chosen),
+		})
+		expect(claim.status).toBe(200)
+		expect(await claim.json()).toMatchObject({
+			GiftDropId: chosen,
+			CurrencyType: CurrencyType.RecCenterTokens,
+			Currency: -chosen,
+			FriendlyName: `${-chosen} Tokens!`,
+		})
+
+		// A token drop's id is the negative of its amount, so that is what lands on the balance.
+		expect(
+			await getBalance(env.DB, 82, CurrencyType.RecCenterTokens, DEFAULT_STARTING_TOKENS)
+		).toBe(tokensBefore + -chosen)
+		// 5 XP is deliberately less than the 10 the first level costs, so one reward moves the
 		// bar without levelling anyone up.
 		expect(await getProgression(env.DB, 82)).toEqual({ PlayerId: 82, Level: 1, XP: 5 })
 
-		// One box: the XP reward itself, carrying the message the client asked to show and no
-		// item — a game reward is not an item.
-		const first = await giftBoxes('82')
-		expect(first).toHaveLength(1)
-		expect(first[0]).toMatchObject({
-			Xp: 5,
+		// One box, carrying the message the client asked to show and no item — a game reward
+		// is tokens and XP, not an item.
+		const boxes = await giftBoxes('82')
+		expect(boxes).toHaveLength(1)
+		expect(boxes[0]).toMatchObject({
 			Message: 'First Game of the Day',
 			AvatarItemDesc: '',
 			EquipmentModificationGuid: '',
 			ConsumableItemDesc: '',
 		})
 
-		// The box, then the bar — no level-up box, since no level was crossed.
-		const frames = await drainFrames()
-		expect(frames.map((f) => f.notificationType)).toEqual([
-			NotificationType.GiftPackageReceivedImmediate,
+		// The balance, the box, then the bar — no level-up box, since no level was crossed.
+		const paid = await drainFrames()
+		expect(paid.map((f) => f.notificationType)).toEqual([
+			NotificationType.StorefrontBalanceUpdate,
+			NotificationType.GiftPackageRewardSelectionReceived,
 			NotificationType.PlayerProgressionLevelUpdate,
 		])
-		expect(frames[0]?.accountId).toBe(82)
-		expect(frames[0]?.payload).toMatchObject({
-			Id: first[0]?.Id,
+		// The balance frame carries the RESULTING total, never the payout.
+		expect(paid[0]?.payload).toMatchObject({
+			Balance: tokensBefore + -chosen,
+			CurrencyType: CurrencyType.RecCenterTokens,
+		})
+		expect(paid[1]?.payload).toMatchObject({
+			Id: boxes[0]?.Id,
 			FromPlayerId: 1,
 			Xp: 5,
-			// GiftContext.GameRewards — the box came from gameplay, not a purchase.
-			GiftContext: 50,
+			Currency: -chosen,
 			Message: 'First Game of the Day',
 		})
-		expect(frames[1]?.payload).toEqual({ PlayerId: 82, Level: 1, XP: 5 })
+		expect(paid[2]?.payload).toEqual({ PlayerId: 82, Level: 1, XP: 5 })
 
-		// An on-cooldown ask pays nothing: no more boxes, no frames, no more XP.
-		expect((await request('rewardType=FirstActivityOfDay&Message=again')).status).toBe(200)
+		// The selection is single-use: the same claim again is refused, and pays nothing more.
+		expect(
+			(
+				await select({
+					rewardSelectionId: String(before!.reward_selection_id),
+					giftDropId: String(chosen),
+				})
+			).status
+		).toBe(403)
 		expect(await getProgression(env.DB, 82)).toEqual({ PlayerId: 82, Level: 1, XP: 5 })
 		expect(await giftBoxes('82')).toHaveLength(1)
 		expect(await drainFrames()).toEqual([])
@@ -2332,6 +2521,17 @@ describe('econ endpoints', () => {
 		// is the pacing the smaller grant buys.
 		await passAnHour()
 		expect((await request('rewardType=FirstActivityOfDay&Message=Second')).status).toBe(200)
+		const second = await latestSelection()
+		expect(second?.reward_selection_id).not.toBe(before?.reward_selection_id)
+		await drainFrames()
+		expect(
+			(
+				await select({
+					rewardSelectionId: String(second!.reward_selection_id),
+					giftDropId: String(second!.gift_drop_1_id),
+				})
+			).status
+		).toBe(200)
 		expect(await getProgression(env.DB, 82)).toEqual({ PlayerId: 82, Level: 2, XP: 0 })
 
 		// …and level 2 pays 2-Star Clothing per the published table: an AVATAR ITEM, never an
@@ -2351,32 +2551,13 @@ describe('econ endpoints', () => {
 		// v4 serves the camelCase DTO, unlike the PascalCase records on the gift box.
 		const owned = (await items.json()) as Array<{ avatarItemDesc: string }>
 		expect(owned.map((i) => i.avatarItemDesc)).toContain(clothingBox?.AvatarItemDesc)
+		// The level-up box rides the Immediate channel, after the selection's own payout frames.
 		expect((await drainFrames()).map((f) => f.notificationType)).toEqual([
-			NotificationType.GiftPackageReceivedImmediate,
+			NotificationType.StorefrontBalanceUpdate,
+			NotificationType.GiftPackageRewardSelectionReceived,
 			NotificationType.PlayerProgressionLevelUpdate,
 			NotificationType.GiftPackageReceivedImmediate,
 		])
-
-		// Two more rewards reach level 3, which the table pays as a CONSUMABLE rather than
-		// clothing — rolled without a rarity, since the table names none for them.
-		for (const message of ['Third', 'Fourth']) {
-			await passAnHour()
-			expect((await request(`rewardType=FirstActivityOfDay&Message=${message}`)).status).toBe(200)
-		}
-		expect(await getProgression(env.DB, 82)).toEqual({ PlayerId: 82, Level: 3, XP: 0 })
-
-		const afterLevel3 = await giftBoxes('82')
-		const consumableBox = afterLevel3[afterLevel3.length - 1]
-		expect(consumableBox?.Message).toBe('Level 3!')
-		expect(consumableBox?.ConsumableItemDesc).not.toBe('')
-		expect(consumableBox?.AvatarItemDesc).toBe('')
-		expect(consumableBox?.EquipmentModificationGuid).toBe('')
-
-		const consumables = await exports.default.fetch(`${ORIGIN}/api/consumables/v2/getUnlocked`, {
-			headers: await bearer('82'),
-		})
-		const held = (await consumables.json()) as Array<{ ConsumableItemDesc: string }>
-		expect(held.map((cons) => cons.ConsumableItemDesc)).toContain(consumableBox?.ConsumableItemDesc)
 	})
 
 	test('POST /api/gamerewards/v1/request is 401 without a token, and ignores a typeless ask', async () => {
@@ -2397,11 +2578,122 @@ describe('econ endpoints', () => {
 			body: 'Message=First%20Game%20of%20the%20Day',
 		})
 		expect(typeless.status).toBe(200)
-		expect(await typeless.json()).toEqual([])
+		expect(await typeless.json()).toEqual({ error: '', success: true, value: null })
 		const rows = await env.DB.prepare(
 			'SELECT COUNT(*) AS count FROM reward_status WHERE account_id = 81'
 		).first<{ count: number }>()
 		expect(rows?.count).toBe(0)
+		// …and nothing was offered either: no cooldown row means no selection to pick from.
+		const offered = await env.DB.prepare(
+			'SELECT COUNT(*) AS count FROM reward_selection WHERE account_id = 81'
+		).first<{ count: number }>()
+		expect(offered?.count).toBe(0)
+	})
+
+	test('POST /api/gamerewards/v1/request mints a three-choice selection', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/gamerewards/v1/request`, {
+			method: 'POST',
+			headers: { ...(await bearer('42')), 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({
+				rewardType: 'PostGameActivity',
+				Message: 'nice work',
+				giftContext: '4',
+			}).toString(),
+		})
+		expect(res.status).toBe(200)
+		// The HTTP body carries nothing — the choices go out over the websocket hub.
+		expect(await res.json()).toEqual({ error: '', success: true, value: null })
+
+		// The selection is recorded, with three distinct token choices for this player.
+		const row = await env.DB.prepare(
+			`SELECT account_id, message, gift_context, consumed,
+			        gift_drop_1_id, gift_drop_2_id, gift_drop_3_id
+			 FROM reward_selection ORDER BY reward_selection_id DESC LIMIT 1`
+		).first<{
+			account_id: number
+			message: string
+			gift_context: number
+			consumed: number
+			gift_drop_1_id: number
+			gift_drop_2_id: number
+			gift_drop_3_id: number
+		}>()
+		expect(row).toMatchObject({
+			account_id: 42,
+			message: 'nice work',
+			gift_context: 4,
+			consumed: 0,
+		})
+		const ids = [row!.gift_drop_1_id, row!.gift_drop_2_id, row!.gift_drop_3_id]
+		// Token drops carry the negative of their amount as their id.
+		expect(new Set(ids).size).toBe(3)
+		expect(ids.every((id) => id < 0)).toBe(true)
+
+		expect(
+			(await exports.default.fetch(`${ORIGIN}/api/gamerewards/v1/request`, { method: 'POST' }))
+				.status
+		).toBe(401)
+	})
+
+	test('POST /api/gamerewards/v1/select claims a drop once, and only if offered', async () => {
+		await exports.default.fetch(`${ORIGIN}/api/gamerewards/v1/request`, {
+			method: 'POST',
+			headers: { ...(await bearer('77')), 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({
+				rewardType: 'LevelUp',
+				Message: 'level up',
+				giftContext: '7',
+			}).toString(),
+		})
+		const sel = await env.DB.prepare(
+			`SELECT reward_selection_id, gift_drop_1_id FROM reward_selection
+			 WHERE account_id = 77 ORDER BY reward_selection_id DESC LIMIT 1`
+		).first<{ reward_selection_id: number; gift_drop_1_id: number }>()
+		const selectionId = sel!.reward_selection_id
+		const offeredId = sel!.gift_drop_1_id
+
+		const select = async (fields: Record<string, string>, sub = '77'): Promise<Response> =>
+			exports.default.fetch(`${ORIGIN}/api/gamerewards/v1/select`, {
+				method: 'POST',
+				headers: { ...(await bearer(sub)), 'Content-Type': 'application/x-www-form-urlencoded' },
+				body: new URLSearchParams(fields).toString(),
+			})
+
+		// A drop that wasn't offered is refused, as is another player's selection.
+		expect(
+			(await select({ rewardSelectionId: String(selectionId), giftDropId: '-999' })).status
+		).toBe(403)
+		expect(
+			(
+				await select(
+					{ rewardSelectionId: String(selectionId), giftDropId: String(offeredId) },
+					'42'
+				)
+			).status
+		).toBe(403)
+
+		// Claiming an offered drop returns it — a token drop worth its id's magnitude.
+		const res = await select({
+			rewardSelectionId: String(selectionId),
+			giftDropId: String(offeredId),
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toMatchObject({
+			GiftDropId: offeredId,
+			CurrencyType: 2,
+			Currency: -offeredId,
+			Context: 7,
+			FriendlyName: `${-offeredId} Tokens!`,
+		})
+
+		// The selection is single-use: claiming again is refused.
+		expect(
+			(await select({ rewardSelectionId: String(selectionId), giftDropId: String(offeredId) }))
+				.status
+		).toBe(403)
+
+		// A missing drop id is the client's error, not a refusal.
+		expect((await select({ rewardSelectionId: String(selectionId) })).status).toBe(400)
 	})
 
 	test('GET /api/roomkeys/v1/mine returns []', async () => {
@@ -2646,6 +2938,7 @@ describe('econ endpoints', () => {
 			'POST /api/checklist/v2/complete',
 			'POST /api/consumables/v1/consume',
 			'POST /api/gamerewards/v1/request',
+			'POST /api/gamerewards/v1/select',
 			'POST /api/items/bulkpurchase',
 			'POST /api/objectives/v1/cleargroup',
 			'POST /api/objectives/v1/updateobjective',
