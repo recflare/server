@@ -873,6 +873,54 @@ h2 {
 	overflow-wrap: anywhere;
 }
 
+/*
+ * Replacing a subroom's scene data. Boxed off from the download links above it: those
+ * only read the room, this one overwrites what players load, and the two shouldn't read
+ * as one row of blob controls.
+ */
+.blob-upload {
+	margin-top: 12px;
+	padding: 12px 14px;
+	border: 1px solid var(--line);
+	border-radius: 10px;
+}
+
+.blob-upload label {
+	margin-bottom: 10px;
+	font-size: 0.8rem;
+}
+
+/* The file picker draws its own button, so the shared input chrome would frame it a
+   second time. Padding stays, so the row lines up with the text field under it. */
+.blob-upload input[type='file'] {
+	border: none;
+	background: none;
+	padding: 8px 0 0;
+	font-size: 0.8rem;
+}
+
+/* A checkbox is not a text field: the shared `input` rule would stretch it to the card's
+   full width and break it onto its own line, away from the words it labels. */
+.check {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.check input[type='checkbox'] {
+	display: inline-block;
+	width: auto;
+	margin: 0;
+	accent-color: var(--accent);
+}
+
+/* Smaller than the account forms' submit — this one sits inside a subroom row, not at
+   the foot of its own card. */
+.blob-upload button[type='submit'] {
+	padding: 8px 14px;
+	font-size: 0.85rem;
+}
+
 /* ---- Forms -------------------------------------------------------------- */
 
 label {
