@@ -160,6 +160,23 @@ it('POST /upload 400s when there is neither a file nor a name', async () => {
 	expect(res.status).toBe(400)
 })
 
+it('answers the CORS preflight the website’s upload needs', async () => {
+	// The room management page uploads a subroom's scene blob straight from the browser.
+	// The bearer token makes that a preflighted request, so a missing OPTIONS handler
+	// stops the upload before any of the tests above are even reached.
+	const res = await SELF.fetch(`${ORIGIN}/upload`, {
+		method: 'OPTIONS',
+		headers: {
+			Origin: 'https://www.example.com',
+			'Access-Control-Request-Method': 'POST',
+			'Access-Control-Request-Headers': 'authorization',
+		},
+	})
+	expect(res.status).toBe(204)
+	expect(res.headers.get('access-control-allow-origin')).toBe('*')
+	expect(res.headers.get('access-control-allow-headers')?.toLowerCase()).toContain('authorization')
+})
+
 it('GET /openapi.json documents every route', async () => {
 	const res = await SELF.fetch(`${ORIGIN}/openapi.json`)
 	expect(res.status).toBe(200)

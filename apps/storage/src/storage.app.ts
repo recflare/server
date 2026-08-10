@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { describeRoute, openAPIRouteHandler } from 'hono-openapi'
 import { useWorkersLogger } from 'workers-tagged-logger'
 
-import { withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
+import { withCleanSpec, withDefaultCors, withNotFound, withOnError } from '@repo/hono-helpers'
 import { validateAndGetAccountId } from '@repo/jwt'
 
 import {
@@ -79,6 +79,11 @@ const app = new Hono<App>()
 				release: c.env.SENTRY_RELEASE,
 			})(c, next)
 	)
+	// The game posts here with no Origin at all, but the website does too — it uploads a
+	// subroom's scene blob straight from the browser, the same way it calls `rooms` and
+	// `accounts` directly. An `Authorization` header makes that a preflighted request, so
+	// without this the OPTIONS gets a 404 and the upload never leaves the page.
+	.use('*', withDefaultCors())
 
 	.onError(withOnError())
 	.notFound(withNotFound())

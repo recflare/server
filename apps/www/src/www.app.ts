@@ -18,6 +18,7 @@ import {
 	postAuthForm,
 	readAuthError,
 	roomsBase,
+	storageBase,
 } from './upstream'
 
 import type { App } from './context'
@@ -71,6 +72,7 @@ const app = new Hono<App>()
 				notify: notifyBase(c.env),
 				rooms: roomsBase(c.env),
 				cdn: cdnBase(c.env),
+				storage: storageBase(c.env),
 			},
 		})
 	})
