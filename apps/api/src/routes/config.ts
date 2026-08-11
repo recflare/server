@@ -106,7 +106,7 @@ export const configRoutes = new Hono<App>({ strict: false })
 		}),
 		(c) =>
 			c.json({
-				VersionStatus: c.req.query('v') === GAME_VERSION ? 0 : 1,
+				VersionStatus: 0,
 				UpdateNotificationStage: 0,
 				IsVersionIslanded: false,
 				IsCrossPlayDisabled: false,

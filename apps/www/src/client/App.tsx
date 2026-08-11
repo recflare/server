@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 
-import { DISCORD_INVITE, DOWNLOAD_URL, LICENSE_URL, SOURCE_REPO } from '../links'
+import { DISCORD_INVITE, DOWNLOAD_URL, LICENSE_URL } from '../links'
 
 import type { ReactNode } from 'react'
 
@@ -104,7 +104,9 @@ export function App() {
 			<NavBar account={account} path={path} navigate={navigate} onLogout={logout} />
 			{path === '/login' ? (
 				<LoginPage account={account} navigate={navigate} onAuthed={setAccount} />
-			) : path === '/account' ? (
+			) : path === '/signup' ? (
+                                <SignupPage navigate={navigate} onAuthed={setAccount} />
+                        ) : path === '/account' ? (
 				<AccountPage account={account} navigate={navigate} onChange={setAccount} />
 			) : (
 				<HomePage />
@@ -131,9 +133,6 @@ function SiteFooter() {
 				<a href={DISCORD_INVITE} target="_blank" rel="noreferrer">
 					Discord
 				</a>
-				<a href={SOURCE_REPO} target="_blank" rel="noreferrer">
-					GitHub
-				</a>
 			</nav>
 		</footer>
 	)
@@ -154,7 +153,7 @@ function NavBar({
 	return (
 		<header className="nav">
 			<Link to="/" navigate={navigate} className="brand">
-				RecFlare
+				Rug Room
 			</Link>
 			<nav className="nav-links">
 				<a href={DISCORD_INVITE} target="_blank" rel="noreferrer">
@@ -249,7 +248,7 @@ function Stage({ slides }: { slides: Slide[] | null }) {
 				    trademark stays out of the headline and appears lower down, in
 				    plain nominative use next to the disclaimer. */}
 				<h1 className="stage-title">
-					Play like it&apos;s <em>2023</em>.
+					Play like it&apos;s <em>2024</em>.
 				</h1>
 				<div className="stage-actions">
 					<a className="cta" href={DOWNLOAD_URL} target="_blank" rel="noreferrer">
@@ -285,7 +284,7 @@ function Stage({ slides }: { slides: Slide[] | null }) {
 	)
 }
 
-/** What RecFlare is, under the fold, for whoever wants it. */
+/** What Rug Room is, under the fold, for whoever wants it. */
 function About({ slides, error }: { slides: Slide[] | null; error: string }) {
 	// The feed answering is proof the server replied, so the indicator can't claim
 	// the server is up when it isn't.
@@ -294,24 +293,22 @@ function About({ slides, error }: { slides: Slide[] | null; error: string }) {
 	return (
 		<section className="about">
 			<div>
-				<h2 className="about-title">An open source rebuild of the 2023 servers</h2>
+				<h2 className="about-title">An Community Made Rec Room Revival, Made For the Community.</h2>
 				<p className="about-lede">
-					A free fan project, made by players who missed it. Aiming to be{' '}
-					<strong>feature-complete</strong> and infinitely scalable — no gatekeeping, no basement
-					server.
+					Rug Room is a 2024 build of Rec Room. It is completely free, and will always be free. No microtransactions ever.
 				</p>
 			</div>
 			<div className="about-side">
 				<div className="about-links">
-					<a className="cta ghost" href={SOURCE_REPO} target="_blank" rel="noreferrer">
+					<a className="cta ghost" href="#" target="_blank" rel="noreferrer">
 						View the source
 					</a>
 				</div>
 				<div className="status-block">
 					<p className={`status ${state}`}>
 						<span className="dot" />
-						{state === 'online'
-							? 'Servers are up'
+						{state === 'offline'
+							? 'Servers are down'
 							: state === 'down'
 								? "Can't reach the servers"
 								: 'Checking…'}
@@ -640,6 +637,59 @@ function EmailForm({
 			</form>
 		</section>
 	)
+}
+
+
+function SignupPage({
+        navigate,
+        onAuthed,
+}: {
+        navigate: Navigate
+        onAuthed: (a: SelfAccount) => void
+}) {
+        const [password, setPassword] = useState('')
+        const { pending, error, run } = useAction()
+
+        return (
+                <main className="card">
+                        <h1>Create account</h1>
+
+                        <form
+                                onSubmit={(e) => {
+                                        e.preventDefault()
+
+                                        void run(async () => {
+                                                await api('/api/signup', {
+                                                        password,
+                                                })
+
+                                                const me = await api<SelfAccount>('/api/me')
+                                                onAuthed(me)
+                                                navigate('/account')
+
+                                                return ''
+                                        })
+                                }}
+                        >
+                                <label>
+                                        Password
+                                        <input
+                                                type="password"
+                                                value={password}
+                                                autoComplete="new-password"
+                                                onChange={(e) => setPassword(e.target.value)}
+                                                required
+                                        />
+                                </label>
+
+                                {error && <p className="error">{error}</p>}
+
+                                <button type="submit" disabled={pending}>
+                                        {pending ? 'Creating…' : 'Create account'}
+                                </button>
+                        </form>
+                </main>
+        )
 }
 
 function PasswordForm() {

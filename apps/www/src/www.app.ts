@@ -131,7 +131,21 @@ const app = new Hono<App>()
 	// removed) so a direct POST is refused too, not just hidden in the UI. To reopen,
 	// forward a platform-less `grant_type=create_account` to auth and start a session
 	// (see git history), and restore the SignupForm in the client.
-	.post('/api/signup', (c) => c.json({ error: 'Account creation is currently disabled.' }, 403))
+	.post('/api/signup', async (c) => {
+        const body = await c.req.json()
+        const password = typeof body.password === 'string' ? body.password : ''
+
+        if (!password) {
+                return c.json({ error: 'Password is required.' }, 400)
+        }
+
+        const res = await postForm(`${authBase(c.env)}/connect/token`, {
+                grant_type: 'create_account',
+                password,
+        }, undefined, c.req.header('cf-connecting-ip') ?? '', c.env.INTERNAL_SECRET)
+
+        return establishSession(c, res)
+})
 
 	// Log in with a username + password, then start a session. The auth password grant
 	// resolves the account by `username` (case-insensitive) — web players sign in with

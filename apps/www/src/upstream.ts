@@ -22,12 +22,16 @@ export const imgBase = (env: Env): string => `https://img.${env.DOMAIN}`
 export async function postForm(
 	url: string,
 	fields: Record<string, string>,
-	bearer?: string
+	bearer?: string,
+	clientIp?: string,
+	internalSecret?: string
 ): Promise<Response> {
 	const headers: Record<string, string> = {
 		'content-type': 'application/x-www-form-urlencoded',
 	}
 	if (bearer) headers.authorization = `Bearer ${bearer}`
+	if (clientIp) headers['x-forwarded-client-ip'] = clientIp
+	if (internalSecret) headers['x-internal-secret'] = internalSecret
 	return fetch(url, {
 		method: 'POST',
 		headers,

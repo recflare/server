@@ -24,6 +24,7 @@
 	// Horizon Store re-fetches the privacy policy URL to confirm it's live, and dropping
 	// it from this list would serve that fetch the SPA shell instead of the policy.
 	"assets": {
+  "directory": "./dist/client",
 		"binding": "ASSETS",
 		"not_found_handling": "single-page-application",
 		"run_worker_first": ["/api/*", "/docs", "/docs/openapi/*", "/privacy"]
@@ -42,6 +43,6 @@
 		// accounts.<DOMAIN>). Overridden at deploy time with the real RECFLARE_DOMAIN
 		// (see run-wrangler-deploy). For local dev, point this at a deployed domain so
 		// the BFF proxy can reach the auth/accounts workers.
-		"DOMAIN": "rec.example.com"
+		"DOMAIN": "rugnetarchival.xyz"
 	}
 }

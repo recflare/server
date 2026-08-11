@@ -1,4 +1,4 @@
-import { DISCORD_INVITE, ISSUES_URL, PRIVACY_EMAIL, SOURCE_REPO } from './links'
+import { DISCORD_INVITE, ISSUES_URL, PRIVACY_EMAIL } from './links'
 
 /**
  * The privacy policy, served on www at `/privacy`.
@@ -135,13 +135,10 @@ footer a { color: var(--muted); }
  * PRIVACY_EMAIL) can't be listed in one place and forgotten in the other.
  */
 function contactList(): string {
-	const email = PRIVACY_EMAIL
-		? `<li><strong>Email</strong> — <a href="mailto:${PRIVACY_EMAIL}">${PRIVACY_EMAIL}</a>.</li>`
-		: ''
 	return `<ul>
 	${email}
-	<li><strong>Discord</strong> — ask a moderator in <a href="${DISCORD_INVITE}" target="_blank" rel="noreferrer">our Discord server</a>.</li>
-	<li><strong>GitHub</strong> — <a href="${ISSUES_URL}" target="_blank" rel="noreferrer">open an issue</a> on the project repo. Don't post personal details in a public issue; your username is enough for us to find you.</li>
+	<li><strong>Discord</strong> — ask a moderator in <a href="https://discord.gg/m569yWvGEG" target="_blank" rel="noreferrer">our Discord server</a>.</li>
+	 Don't post personal details in a public issue; your username is enough for us to find you.</li>
 </ul>`
 }
 
@@ -152,8 +149,8 @@ export function privacyPage(): string {
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Privacy Policy — RecFlare</title>
-<meta name="description" content="What RecFlare collects, why, and how to have your data deleted." />
+<title>Privacy Policy — Rug Room</title>
+<meta name="description" content="What Rug Room collects, why, and how to have your data deleted." />
 <meta name="theme-color" content="#14100c" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -162,7 +159,7 @@ export function privacyPage(): string {
 </head>
 <body>
 <header class="nav">
-	<a class="brand" href="/">RecFlare</a>
+	<a class="brand" href="/">Rug Room</a>
 	<a class="back" href="/">Back to the site</a>
 </header>
 <main>
@@ -170,7 +167,7 @@ export function privacyPage(): string {
 	<p class="updated">Last updated ${EFFECTIVE_DATE}</p>
 
 	<p class="lede">
-		RecFlare is a free, open source, fan-run game server. It is not a business, it sells
+		Rug Room is a free, always updated, fan-run game. It is not a business, it sells
 		nothing, and it has no interest in your data beyond making the game work. This page
 		explains exactly what we store, why we store it, and how to make us delete it.
 	</p>
@@ -187,17 +184,11 @@ export function privacyPage(): string {
 
 	<h2>Who runs this</h2>
 	<p>
-		RecFlare is maintained by a volunteer community, and its source code is public at
-		<a href="${SOURCE_REPO}" target="_blank" rel="noreferrer">github.com/djdevin/recflare</a>.
-		This policy covers the RecFlare game servers and this website. It is a fan project, not
+		Rug Room is maintained by a volunteer community, and its volunteers do not own, or redistribute any of your data.
+		This policy covers the Rug Room game servers and this website. It is a fan project, not
 		affiliated with, endorsed by, or connected to Rec Room Inc.
 	</p>
 	<p>
-		Because the server code is open source, anyone can read exactly how the data described
-		below is handled, and anyone can run their own separate copy of RecFlare. This policy
-		applies only to the servers we operate. If you play on someone else's instance, their
-		operator is responsible for your data, not us.
-	</p>
 
 	<h2>What we collect</h2>
 	<p>
@@ -218,7 +209,7 @@ export function privacyPage(): string {
 	</p>
 	<ul>
 		<li><strong>Steam.</strong> Your SteamID64, so the account can be matched to the right player. Steam signs the login ticket the game sends us, and we check that signature on our own servers — nothing about you is sent to Steam to do it.</li>
-		<li><strong>Meta.</strong> The user ID Meta issues for you <em>for this app</em>, and the display name attached to it. This is an app-scoped ID: it identifies you within RecFlare and is not your Meta account identity anywhere else. To confirm a sign-in is genuine, and that the account is entitled to the app, we send the token your headset gives us to Meta for verification — so Meta learns that a sign-in to RecFlare happened. We don't receive your Meta email address, friends list or profile beyond the ID and display name, and we don't ask Meta for them.</li>
+		<li><strong>Meta.</strong> The user ID Meta issues for you <em>for this app</em>, and the display name attached to it. This is an app-scoped ID: it identifies you within Rug Room and is not your Meta account identity anywhere else. To confirm a sign-in is genuine, and that the account is entitled to the app, we send the token your headset gives us to Meta for verification — so Meta learns that a sign-in to Rug Room happened. We don't receive your Meta email address, friends list or profile beyond the ID and display name, and we don't ask Meta for them.</li>
 		<li><strong>A password on this website.</strong> Stored only as a salted PBKDF2 hash. We never store the password itself and cannot read it.</li>
 	</ul>
 	<p>
@@ -264,7 +255,7 @@ export function privacyPage(): string {
 	<ul>
 		<li><strong>Other players.</strong> Some of what you create is public by design: your username, display name, profile picture, bio, the rooms you publish, photos you make public, and messages you send to the people you send them to.</li>
 		<li><strong>Our hosting provider.</strong> The servers, databases, file storage and logs run on Cloudflare, which processes this data on our behalf in order to host the service.</li>
-		<li><strong>Meta, when you sign in with a Meta account.</strong> We send Meta the sign-in token from your headset so it can be verified, which tells Meta that a RecFlare sign-in took place. That exchange is governed by Meta's own privacy policy. Signing in with Steam involves no such call.</li>
+		<li><strong>Meta, when you sign in with a Meta account.</strong> We send Meta the sign-in token from your headset so it can be verified, which tells Meta that a Rug Room sign-in took place. That exchange is governed by Meta's own privacy policy. Signing in with Steam involves no such call.</li>
 		<li><strong>Nobody else</strong> — except where we're required by law to disclose something, or where it's necessary to investigate a serious safety issue or abuse of the service.</li>
 	</ul>
 	<p>
@@ -297,7 +288,7 @@ export function privacyPage(): string {
 	</p>
 	${contactList()}
 	<p>
-		Tell us your RecFlare username, and be ready to prove the account is yours — normally
+		Tell us your Rug Room username, and be ready to prove the account is yours — normally
 		by signing in to it, or by sending the request from the email address on the account.
 		We ask because otherwise anyone could delete anyone else's account. We'll confirm when
 		it's done, and we aim to complete every request within 30 days.
@@ -329,13 +320,13 @@ export function privacyPage(): string {
 		transit. Passwords are stored only as salted hashes and refresh tokens only as one-way
 		hashes, so a copy of our database would not reveal either. Access to the production
 		data is limited to the maintainers who operate the service. No system is perfectly
-		secure, and we won't pretend otherwise — but this is a hobby server, so please don't
+		secure, and we won't pretend otherwise — but this is just a game, so please don't
 		reuse a password here that you use anywhere important.
 	</p>
 
 	<h2>Children</h2>
 	<p>
-		RecFlare is not directed at children under 13, and we don't knowingly collect data from
+		Rug Room is not directed at children under 13, and we don't knowingly collect data from
 		them. If you believe a child under 13 has created an account, contact us using any of
 		the routes above and we will delete the account and its data.
 	</p>
@@ -352,7 +343,7 @@ export function privacyPage(): string {
 	${contactList()}
 </main>
 <footer>
-	<a href="/">RecFlare</a> — a fan project, not affiliated with Rec Room Inc.
+	<a href="/">Rug Room</a> — a fan project, not affiliated with Rec Room Inc.
 </footer>
 </body>
 </html>`

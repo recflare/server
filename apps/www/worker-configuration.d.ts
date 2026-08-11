@@ -12803,7 +12803,7 @@ type PagesPluginFunction<Env = unknown, Params extends string = any, Data extend
 declare module "assets:*" {
     export const onRequest: PagesFunction;
 }
-// Copyright (c) 2022-2023 Cloudflare, Inc.
+// Copyright (c) 2022-2024 Cloudflare, Inc.
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 declare module "cloudflare:pipelines" {
@@ -14136,7 +14136,7 @@ declare namespace TailStream {
     };
     type TailEventHandlerType = TailEventHandler | TailEventHandlerObject;
 }
-// Copyright (c) 2022-2023 Cloudflare, Inc.
+// Copyright (c) 2022-2024 Cloudflare, Inc.
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 /**

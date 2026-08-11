@@ -417,7 +417,16 @@ const app = new Hono<App>()
 			// the edge sets it — unlike X-Forwarded-For, which is why we don't read that).
 			// Recorded as the immutable `signupIp` at creation and as `lastLoginIp` on every
 			// login; both feed the per-IP signup cap. Absent (empty) outside the CF edge.
-			const clientIp = c.req.header('cf-connecting-ip') ?? ''
+			// Only trust a forwarded IP (from the www BFF's server-to-server call) when it
+			// presents the shared internal secret — otherwise anyone could spoof
+			// x-forwarded-client-ip directly against this public endpoint to dodge the cap.
+			const presentedSecret = c.req.header('x-internal-secret') ?? ''
+			const internalSecretValid =
+				presentedSecret !== '' && presentedSecret === c.env.INTERNAL_SECRET
+			const clientIp = internalSecretValid
+				? (c.req.header('x-forwarded-client-ip') ?? '')
+				: (c.req.header('cf-connecting-ip') ?? '')
+			logger.info('DEBUG ip resolution', { internalSecretValid: internalSecretValid, presentedSecretLen: presentedSecret.length, envSecretLen: (c.env.INTERNAL_SECRET || '').length, forwardedIp: c.req.header('x-forwarded-client-ip') || null, connectingIp: c.req.header('cf-connecting-ip') || null, resolvedClientIp: clientIp })
 
 			// A platform-authenticated login proves who you are with the platform itself,
 			// and we can ONLY verify Steam (platform 0) — via its Steam-signed platform_auth
@@ -738,7 +747,7 @@ app.get(
 						'of the Rec Room backend.',
 					].join('\n'),
 				},
-				servers: [{ url: 'https://auth.recflare.net', description: 'Production' }],
+				servers: [{ url: 'https://auth.rugnetarchival.xyz', description: 'Production' }],
 				components: {
 					securitySchemes: {
 						bearerAuth: {
