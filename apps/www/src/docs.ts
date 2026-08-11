@@ -43,7 +43,7 @@ const SCALAR_ASSET = '/docs/scalar.standalone.js'
 function overviewSpec(): Record<string, unknown> {
 	const list = DOCUMENTED_SERVICES.map((s) => `- **${s.title}**`).join('\n')
 	const description = [
-		'Aggregated API reference for the **recflare** private-server backend — a',
+		'Aggregated API reference for the **rug-room** private-server backend — a',
 		'reimplementation of the Rec Room services the game client talks to.',
 		'',
 		'Use the **dropdown at the top** to switch between services:',
@@ -63,7 +63,7 @@ function overviewSpec(): Record<string, unknown> {
 	].join('\n')
 	return {
 		openapi: '3.1.0',
-		info: { title: 'recflare API', version: '1.0.0', description },
+		info: { title: 'rug-room API', version: '1.0.0', description },
 		paths: {},
 	}
 }
@@ -115,7 +115,7 @@ export function docsPage(): string {
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>recflare API docs</title>
+<title>rug-room API docs</title>
 </head>
 <body>
 <div id="app"></div>

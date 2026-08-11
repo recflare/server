@@ -21,14 +21,14 @@ export const cdnBase = (env: Env): string => `https://cdn.${env.DOMAIN}`
 /**
  * POST a form body to the `auth` worker, carrying the browser's real IP across.
  *
- * The browser could post `/connect/token` itself — it does exactly that to sign in — but
+ * The browser could post `/connect/token` itself -- it does exactly that to sign in -- but
  * not to SIGN UP: that grant is gated by Turnstile, whose secret key can't ship to a
  * page. So signup goes through www, and www has to solve a problem the browser doesn't
  * have: `auth` reads the caller's address from `CF-Connecting-IP` and records it as the
  * account's immutable `signupIp`, and a Worker subrequest to https://auth.<DOMAIN>
  * re-enters the Cloudflare edge, which REPLACES that header with Cloudflare's own
- * address. Every web signup therefore recorded one shared IP, and auth's per-IP cap —
- * 3 accounts, never decaying — refused the fourth web account ever created, for everybody.
+ * address. Every web signup therefore recorded one shared IP, and auth's per-IP cap --
+ * 3 accounts, never decaying -- refused the fourth web account ever created, for everybody.
  *
  * Going through the service binding skips the edge, so the header set here is the one
  * auth reads. That is safe precisely because the edge does overwrite it on the public
@@ -36,10 +36,10 @@ export const cdnBase = (env: Env): string => `https://cdn.${env.DOMAIN}`
  * cannot spoof its own IP, so no shared secret is needed to tell the callers apart.
  *
  * `clientIp` is the caller's own edge-set `cf-connecting-ip`, and must never be anything
- * a browser supplied. Absent, no header is sent at all — auth's `clientIp` then reads
+ * a browser supplied. Absent, no header is sent at all -- auth's `clientIp` then reads
  * empty, which SKIPS the cap rather than counting every such signup together.
  *
- * Falls back to the public hostname when the binding is absent (local `vite dev` — see
+ * Falls back to the public hostname when the binding is absent (local `vite dev` -- see
  * `Env.AUTH`); the edge then overwrites the header again, which is the old behaviour.
  */
 export async function postAuthForm(
@@ -65,7 +65,7 @@ export async function postAuthForm(
 /**
  * Read a failed `auth` response into something worth showing. The translation itself is
  * shared with the browser (see `auth-messages.ts`); this only unpacks the body. A
- * non-JSON one — from something in front of auth, like an edge error page — falls
+ * non-JSON one -- from something in front of auth, like an edge error page -- falls
  * through to the generic line for the action.
  */
 export async function readAuthError(res: Response, action: AuthAction): Promise<AuthFailure> {

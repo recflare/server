@@ -34,13 +34,7 @@
 			"binding": "JWT_SECRET",
 			"store_id": "local",
 			"secret_name": "JWT_SECRET"
-		},
-		{
-			"binding": "META_APP_SECRET",
-			"store_id": "local",
-			"secret_name": "META_APP_SECRET"
-		}
-	],
+		}],
 	"upload_source_maps": true,
 	"observability": {
 		"logs": {

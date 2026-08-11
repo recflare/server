@@ -30,7 +30,7 @@ export const PRESENCE_TTL_SECONDS = 900
  * empty value breaks the client's presence/version handling. Matches our target
  * 2023 client build.
  */
-export const GAME_VERSION = '20230414'
+export const GAME_VERSION = '20230302'
 
 /** Schema DDL (mirror of migrations/0006_presence.sql). */
 export const PRESENCE_SCHEMA_DDL: string[] = [
