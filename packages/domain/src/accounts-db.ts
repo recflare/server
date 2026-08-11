@@ -11,18 +11,20 @@
  * it from `@repo/domain` (each uses the subset it needs).
  */
 
-/** Schema DDL (mirror of migrations 0001_accounts + 0002_avatar, sans seed INSERTs). */
+/**
+ * Schema DDL — the head schema, i.e. what the table looks like after every migration
+ * (0001_accounts + 0002_avatar, sans seed INSERTs; 0004 added a `platform_id` generated
+ * column and 0008 dropped it again, so it appears here in neither form).
+ */
 export const SCHEMA_DDL: string[] = [
 	`CREATE TABLE IF NOT EXISTS account (
 		data TEXT NOT NULL,
 		avatar TEXT,
 		account_id INTEGER GENERATED ALWAYS AS (json_extract(data, '$.accountId')) VIRTUAL,
-		username_lower TEXT GENERATED ALWAYS AS (lower(json_extract(data, '$.username'))) VIRTUAL,
-		platform_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.platformId')) VIRTUAL
+		username_lower TEXT GENERATED ALWAYS AS (lower(json_extract(data, '$.username'))) VIRTUAL
 	)`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_account_id ON account (account_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_accounts_username_lower ON account (username_lower)`,
-	`CREATE INDEX IF NOT EXISTS idx_accounts_platform_id ON account (platform_id)`,
 ]
 
 /** Client-facing account shape (camelCase, exactly as the client's AccountDTO). */
@@ -39,12 +41,14 @@ export interface Account {
 	identityFlags: number
 	createdAt: string
 	/**
-	 * The platform-native identity linked to this account (e.g. a SteamID64 for
-	 * platform 0). Stored as a STRING on purpose — a SteamID64 exceeds 2^53 and
-	 * would lose precision as a JS number. Set at account creation from the login's
-	 * `platform_id`. A cached login is authorized ONLY to the account whose stored
-	 * `platformId` matches the (platform_auth-ticket-proven) platform id presented,
-	 * so no one but that platform user can log into the account.
+	 * The account's PRIMARY platform identity — the first one linked (e.g. a SteamID64
+	 * for platform 0). Stored as a STRING on purpose: a SteamID64 exceeds 2^53 and
+	 * would lose precision as a JS number.
+	 *
+	 * An account can be reachable from SEVERAL platform identities (a PC and a headset),
+	 * and those live in the `auth` worker's `platform_account` table — NOT here. Logins
+	 * are authorized against that table alone; this pair is what the account DTO and a
+	 * refreshed token's claims report, and it never gains a second value.
 	 */
 	platformId?: string
 	/** PlatformType int (0 = Steam) that `platformId` belongs to. */
@@ -219,31 +223,15 @@ export async function searchAccounts(
 }
 
 /**
- * Accounts linked to a platform-native id (e.g. a SteamID64), for the cached-login
- * account picker. Backed by the indexed `platform_id` generated column. Empty id
- * yields no matches (avoids matching every account whose `platformId` is null).
- */
-export async function getAccountsByPlatformId(
-	db: D1Database,
-	platformId: string
-): Promise<Account[]> {
-	if (platformId === '') return []
-	const { results } = await db
-		.prepare('SELECT data FROM account WHERE platform_id = ?1')
-		.bind(platformId)
-		.all<AccountRow>()
-	return parseAll(results)
-}
-
-/**
  * Accounts last seen on a given device (the client-supplied `device_id` auth records
  * at login). An empty id yields no matches (avoids matching every account with no
  * device recorded).
  *
  * Reads `deviceId` straight out of the JSON blob, so this is a table scan — no
  * generated column, no migration. Fine at our account count and for the occasional
- * linkup lookup this exists for; if it ever gets hot, promote `deviceId` to an
- * indexed generated column the way `platformId` is (see the 0004 migration).
+ * linkup lookup this exists for; if it ever gets hot, promote `deviceId` to an indexed
+ * generated column (migration 0004 did that for `platformId`, and 0008 undid it once
+ * nothing queried it — that pair is the recipe both ways).
  *
  * The device id is unverified client input, so treat a match as a *hint* (these
  * accounts share a device) and never as proof of identity.
@@ -260,7 +248,9 @@ export async function getAccountsByDeviceId(db: D1Database, deviceId: string): P
 /** Record the account's most recent successful login time (ISO-8601). */
 export async function setLastLoginTime(db: D1Database, id: number, time: string): Promise<void> {
 	await db
-		.prepare("UPDATE account SET data = json_set(data, '$.lastLoginTime', ?2) WHERE account_id = ?1")
+		.prepare(
+			"UPDATE account SET data = json_set(data, '$.lastLoginTime', ?2) WHERE account_id = ?1"
+		)
 		.bind(id, time)
 		.run()
 }
@@ -311,9 +301,7 @@ export async function setLoginContext(
 	}
 	if (sets.length === 0) return
 	await db
-		.prepare(
-			`UPDATE account SET data = json_set(data, ${sets.join(', ')}) WHERE account_id = ?1`
-		)
+		.prepare(`UPDATE account SET data = json_set(data, ${sets.join(', ')}) WHERE account_id = ?1`)
 		.bind(id, ...binds)
 		.run()
 }
@@ -336,21 +324,6 @@ export async function countAccountsBySignupIp(db: D1Database, ip: string): Promi
 	const row = await db
 		.prepare("SELECT COUNT(*) AS n FROM account WHERE json_extract(data, '$.signupIp') = ?1")
 		.bind(ip)
-		.first<{ n: number }>()
-	return row?.n ?? 0
-}
-
-/**
- * How many accounts are linked to a platform-native id (e.g. one SteamID64) — the
- * count a per-platform signup cap is enforced against. Backed by the indexed
- * `platform_id` generated column. An empty id counts 0 (accounts with no platform
- * identity aren't attributable to a platform user).
- */
-export async function countAccountsByPlatformId(db: D1Database, platformId: string): Promise<number> {
-	if (platformId === '') return 0
-	const row = await db
-		.prepare('SELECT COUNT(*) AS n FROM account WHERE platform_id = ?1')
-		.bind(platformId)
 		.first<{ n: number }>()
 	return row?.n ?? 0
 }
@@ -427,9 +400,7 @@ export async function getPasswordHash(db: D1Database, id: number): Promise<strin
 /** Persist the account's password hash. Returns false when no such account exists. */
 export async function setPasswordHash(db: D1Database, id: number, hash: string): Promise<boolean> {
 	const { meta } = await db
-		.prepare(
-			"UPDATE account SET data = json_set(data, '$.passwordHash', ?2) WHERE account_id = ?1"
-		)
+		.prepare("UPDATE account SET data = json_set(data, '$.passwordHash', ?2) WHERE account_id = ?1")
 		.bind(id, hash)
 		.run()
 	return meta.changes > 0

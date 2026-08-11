@@ -12,7 +12,8 @@
  * the client DTO (`toDto`).
  */
 
-import { countPlayersInInstance } from './presence-db'
+import { RoomInstanceType } from './enums'
+import { countPlayersInInstance, getPlayerIdsByRoomInstance } from './presence-db'
 
 /** Schema DDL (mirror of migrations/0004_room_instance.sql). */
 export const ROOM_INSTANCE_SCHEMA_DDL: string[] = [
@@ -67,6 +68,22 @@ export interface RoomInstanceDto {
 	EncryptVoiceChat: boolean
 	matchmakingPolicy: number
 	createdAt: string
+}
+
+/**
+ * The owner's view of one live instance of their room (`match`:
+ * `GET /room/:roomId/instances`). Deliberately NOT the client `RoomInstanceDto`:
+ * it's a management listing, so it carries who is in there (`playerIds`, from live
+ * presence) and drops the connection details (photon ids, data blob, room code) an
+ * owner has no business reading for a session they aren't in.
+ */
+export interface RoomInstanceSummary {
+	roomInstanceId: number
+	roomId: number
+	subRoomId: number
+	isFull: boolean
+	createdAt: string
+	playerIds: number[]
 }
 
 /** The full stored instance — the DTO plus the JsonIgnore fields (in the blob). */
@@ -207,6 +224,35 @@ export async function setRoomInstanceInProgress(
 }
 
 /**
+ * Flip an instance's `isPrivate` flag, rewriting the JSON blob (the generated
+ * `is_private` column follows it). Returns the updated DTO, or null when the
+ * instance doesn't exist.
+ *
+ * Marking an instance private is what closes it to strangers: {@link
+ * getJoinableInstance} only ever reuses instances with `is_private = 0`, so a public
+ * matchmake stops landing new players here the moment this is set. Everyone already
+ * inside stays — this shuts the door, it doesn't clear the room.
+ */
+export async function setRoomInstancePrivate(
+	db: D1Database,
+	id: number,
+	isPrivate: boolean
+): Promise<RoomInstanceDto | null> {
+	const row = await db
+		.prepare('SELECT data FROM room_instance WHERE id = ?1')
+		.bind(id)
+		.first<{ data: string }>()
+	if (!row) return null
+	const stored = parse(row.data)
+	stored.isPrivate = isPrivate
+	await db
+		.prepare('UPDATE room_instance SET data = ?1 WHERE id = ?2')
+		.bind(JSON.stringify(stored), id)
+		.run()
+	return toDto(stored)
+}
+
+/**
  * Recompute an instance's `isFull` flag from live match presence: full once the
  * number of players currently present in the instance reaches its `maxCapacity`
  * (capacity 0 — unset — is never full). Rewrites the JSON blob (the generated
@@ -235,6 +281,56 @@ export async function refreshInstanceFullness(
 			.run()
 	}
 	return isFull
+}
+
+/**
+ * How long (s) a room instance is left alone after it's created, even with nobody in
+ * it. Every path that creates an instance writes the creator's presence in the same
+ * request, so an empty instance is normally already abandoned — but the two writes
+ * aren't atomic, and a cron firing in between would delete the instance the player is
+ * being handed. One cron interval of slack closes that window.
+ */
+export const EMPTY_INSTANCE_GRACE_SECONDS = 300
+
+/**
+ * Delete room instances with no presence rows pointing at them — the sessions left
+ * behind when every player quit or timed out. Nothing reuses them (matchmaking would
+ * happily hand a joiner an instance whose Photon room has long since emptied), so
+ * they're pure accumulation: one row per room visit, forever.
+ *
+ * Emptiness is a plain "are there any rows" test — expiry is not consulted, because
+ * {@link deleteExpiredPresence} is what retires a lapsed row and must have run first.
+ * Run out of that order and a crashed player's stale row keeps their instance alive
+ * until the following sweep.
+ *
+ * Instances younger than `graceSeconds` are skipped (see
+ * {@link EMPTY_INSTANCE_GRACE_SECONDS}), as are dorms: a dorm is backed by one
+ * persistent instance so its Photon room id survives re-entry, and it sits empty
+ * whenever the owner is elsewhere.
+ *
+ * Returns the ids deleted.
+ */
+export async function deleteEmptyRoomInstances(
+	db: D1Database,
+	graceSeconds = EMPTY_INSTANCE_GRACE_SECONDS,
+	now = Date.now()
+): Promise<number[]> {
+	// `createdAt` is an ISO-8601 UTC timestamp, which sorts lexicographically in the
+	// same order it sorts chronologically — so a string compare is a time compare.
+	const createdBefore = new Date(now - graceSeconds * 1000).toISOString()
+	const { results } = await db
+		.prepare(
+			`DELETE FROM room_instance
+			 WHERE created_at < ?1
+			   AND room_instance_type != ?2
+			   AND NOT EXISTS (
+			     SELECT 1 FROM presence WHERE presence.room_instance_id = room_instance.id
+			   )
+			 RETURNING json_extract(data, '$.roomInstanceId') AS id`
+		)
+		.bind(createdBefore, RoomInstanceType.Dormroom)
+		.all<{ id: number }>()
+	return results.map((r) => r.id)
 }
 
 /**
@@ -291,4 +387,35 @@ export async function getRoomInstancesByRoom(
 		.bind(roomId)
 		.all<{ data: string }>()
 	return results.map((r) => toDto(parse(r.data)))
+}
+
+/**
+ * A room's instances as the owner's management listing sees them — the
+ * {@link RoomInstanceSummary} projection, each with the players currently standing
+ * in it. Presence is read once for the whole room (one grouped query), so this stays
+ * two reads regardless of how many instances are live; an instance nobody is in
+ * (everyone timed out, or it was just created) gets an empty `playerIds`.
+ */
+export async function getRoomInstanceSummariesByRoom(
+	db: D1Database,
+	roomId: number
+): Promise<RoomInstanceSummary[]> {
+	const [{ results }, playersByInstance] = await Promise.all([
+		db
+			.prepare('SELECT data FROM room_instance WHERE room_id = ?1 ORDER BY id')
+			.bind(roomId)
+			.all<{ data: string }>(),
+		getPlayerIdsByRoomInstance(db, roomId),
+	])
+	return results.map((r) => {
+		const s = parse(r.data)
+		return {
+			roomInstanceId: s.roomInstanceId,
+			roomId: s.roomId,
+			subRoomId: s.subRoomId,
+			isFull: s.isFull,
+			createdAt: s.createdAt,
+			playerIds: playersByInstance.get(s.roomInstanceId) ?? [],
+		}
+	})
 }

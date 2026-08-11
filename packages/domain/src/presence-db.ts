@@ -153,6 +153,72 @@ export async function countPlayersInInstance(
 }
 
 /**
+ * How many players are online right now, anywhere — one row per account, so this is
+ * the player count a status page means. Counts unexpired presence only: rows outlive
+ * the player by up to the TTL until the sweep purges them, and reads elsewhere ignore
+ * them the same way. Lobby (null-instance) presence IS counted — those players are
+ * signed in and playing, they're just not in a room.
+ */
+export async function countOnlinePlayers(db: D1Database, now = nowSeconds()): Promise<number> {
+	const row = await db
+		.prepare('SELECT COUNT(*) AS n FROM presence WHERE expires_at > ?1')
+		.bind(now)
+		.first<{ n: number }>()
+	return row?.n ?? 0
+}
+
+/**
+ * Live head-count per ROOM, keyed by room id — the players standing in any of a
+ * room's instances right now. One grouped query rather than a count per room, so
+ * feeds that rank by "who's playing" (the hot feed) stay a single read. Counts
+ * only unexpired presence; rooms nobody is in are simply absent from the map, and
+ * lobby (null-instance) presence is excluded.
+ */
+export async function countPlayersByRoom(
+	db: D1Database,
+	now = nowSeconds()
+): Promise<Map<number, number>> {
+	const { results } = await db
+		.prepare(
+			`SELECT room_id AS roomId, COUNT(*) AS n FROM presence
+			 WHERE expires_at > ?1 AND room_instance_id IS NOT NULL AND room_id IS NOT NULL
+			 GROUP BY room_id`
+		)
+		.bind(now)
+		.all<{ roomId: number; n: number }>()
+	return new Map(results.map((r) => [r.roomId, r.n]))
+}
+
+/**
+ * Who is standing in each of a room's instances right now, keyed by instance id —
+ * one grouped query rather than a lookup per instance, so the owner's instance list
+ * stays a single read. Reads only unexpired presence; instances nobody is in are
+ * simply absent from the map (callers default to an empty list), and lobby
+ * (null-instance) presence is excluded.
+ */
+export async function getPlayerIdsByRoomInstance(
+	db: D1Database,
+	roomId: number,
+	now = nowSeconds()
+): Promise<Map<number, number[]>> {
+	const { results } = await db
+		.prepare(
+			`SELECT room_instance_id AS instanceId, account_id AS accountId FROM presence
+			 WHERE room_id = ?1 AND expires_at > ?2 AND room_instance_id IS NOT NULL
+			 ORDER BY account_id`
+		)
+		.bind(roomId, now)
+		.all<{ instanceId: number; accountId: number }>()
+	const out = new Map<number, number[]>()
+	for (const r of results) {
+		const players = out.get(r.instanceId)
+		if (players) players.push(r.accountId)
+		else out.set(r.instanceId, [r.accountId])
+	}
+	return out
+}
+
+/**
  * The room instances that expired presence rows still point at — the instances a
  * player was in when they stopped heartbeating (a crash or a hard quit, where no
  * matchmake ever moved them out). Their head-count has really dropped, so callers

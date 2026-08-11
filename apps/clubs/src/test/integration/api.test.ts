@@ -241,9 +241,16 @@ describe('clubs endpoints', () => {
 		expect(emoji.status).toBe(400)
 		expect(await emoji.json()).toMatchObject({ success: false, value: null })
 
-		// Names cap at 16 characters.
-		expect((await create({ name: 'a'.repeat(17) })).status).toBe(400)
-		expect((await create({ name: 'a'.repeat(16) })).status).toBe(200)
+		// Names cap at 40 characters.
+		expect((await create({ name: 'a'.repeat(41) })).status).toBe(400)
+		expect((await create({ name: 'a'.repeat(40) })).status).toBe(200)
+
+		// Descriptions cap at 512. Counted in code points, so an emoji-heavy one isn't
+		// refused at half the length a player can see (the description has no charset rule
+		// — only the name does).
+		expect((await create({ name: 'DescTooLong', description: 'd'.repeat(513) })).status).toBe(400)
+		expect((await create({ name: 'DescAtLimit', description: 'd'.repeat(512) })).status).toBe(200)
+		expect((await create({ name: 'DescEmoji', description: '🎉'.repeat(512) })).status).toBe(200)
 
 		// Basic punctuation is allowed.
 		expect((await create({ name: "Bob's Club (2)" })).status).toBe(200)

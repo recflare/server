@@ -65,7 +65,7 @@ export const EmptyObject = z.object({})
  */
 export const ClubDto = z.object({
 	ClubId: z.int(),
-	Name: z.string().describe('At most 16 characters; letters, digits and basic punctuation'),
+	Name: z.string().describe('At most 40 characters; letters, digits and basic punctuation'),
 	Description: z.string(),
 	Category: z.string().describe('One of the /club/categoryTags values; defaults to Social'),
 	Visibility: z.int().describe('ClubVisibility: 0 = Private, 1 = Public'),
@@ -277,8 +277,8 @@ export const ChatDisabledResponse = z.boolean()
 export const CreateClubRequest = z.object({
 	name: z
 		.string()
-		.describe('Required; at most 16 characters, letters/digits/basic punctuation only'),
-	description: z.string().optional(),
+		.describe('Required; at most 40 characters, letters/digits/basic punctuation only'),
+	description: z.string().optional().describe('At most 512 characters'),
 	category: z.string().optional().describe('Defaults to Social when unset'),
 	visibility: z.string().optional().describe('By name (`Public`/`Private`) or number'),
 	joinability: z
@@ -292,8 +292,11 @@ export const CreateClubRequest = z.object({
 
 /** `PUT /club/:clubId/modifydetails` (and `/modify`) form body. */
 export const ModifyClubRequest = z.object({
-	name: z.string().optional().describe('Empty means unchanged, not "clear it"'),
-	description: z.string().optional().describe('Empty means unchanged'),
+	name: z
+		.string()
+		.optional()
+		.describe('At most 40 characters. Empty means unchanged, not "clear it"'),
+	description: z.string().optional().describe('At most 512 characters. Empty means unchanged'),
 	category: z.string().optional(),
 	visibility: z.string().optional().describe('By name (`Public`/`Private`) or number'),
 	joinability: z

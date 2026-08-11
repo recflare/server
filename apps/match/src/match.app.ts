@@ -6,6 +6,7 @@ import {
 	areFriends,
 	canManageRoom,
 	createRoomInstance,
+	deleteEmptyRoomInstances,
 	deleteExpiredPresence,
 	deletePresence,
 	GAME_VERSION,
@@ -21,17 +22,26 @@ import {
 	getRoomByName,
 	getRoomInstance,
 	getRoomInstancesByRoom,
+	getRoomInstanceSummariesByRoom,
 	isClubMember,
+	isPlayerBannedFromRoom,
+	MatchmakingErrorCode,
 	MessageType,
+	recordRoomVisit,
 	refreshInstanceFullness,
 	RoomInstanceType,
 	setPresence,
 	setRoomInstanceInProgress,
+	setRoomInstancePrivate,
 	subRoomDataBlob,
 } from '@repo/domain'
 import { logger, withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
 import { validateAndGetAccountId } from '@repo/jwt'
 
+// The account-wide ban lives on a `report` row, whose table the api worker owns; its
+// db module is plain D1 queries with no runtime deps, so it imports cleanly here (the
+// same way econ reads api's inventions-db).
+import { banEvasionMatch, resolveBan } from '../../api/src/bans-db'
 // Value import of the notify worker's NotificationType enum (its bundle has no runtime
 // deps), so /invite sends a typed MessageReceived frame instead of a magic number.
 import { NotificationType } from '../../notify/src/notification-types'
@@ -50,6 +60,7 @@ import {
 	NotifyDisconnectRequest,
 	PlayerDto,
 	RoomInstanceDto,
+	RoomInstanceSummaryDto,
 	StatusVisibilityRequest,
 	UNAUTHORIZED_RESPONSE,
 } from './openapi'
@@ -229,7 +240,8 @@ async function notifyFriendsPresence(c: Context<App>, playerId: number): Promise
 }
 
 /**
- * Store the room instance the player just matchmade into, preserving status.
+ * Store the room instance the player just matchmade into, preserving status, and count
+ * the visit against the room.
  *
  * With no live presence to carry forward (the player's first matchmake after login,
  * or one after their presence lapsed) the device fields would otherwise default —
@@ -254,6 +266,22 @@ async function enterRoom(c: Context<App>, id: number, roomInstance: RoomInstance
 		// and the heartbeat can keep verifying against it.
 		loginLock: prev?.loginLock,
 	})
+
+	// Count the visit. Every matchmake route funnels through here with the instance the
+	// player landed in, and a matchmake is the only way into a room, so this is the one
+	// place a visit can be recorded once — whether they got here by room id, by subroom,
+	// by following a friend, from a club's clubhouse, or into their own dorm. Bumps the
+	// room's `visits` column, which is served as `Stats.VisitCount`. Best-effort: a
+	// counter is not worth failing the matchmake over.
+	try {
+		await recordRoomVisit(c.env.DB, roomInstance.roomId)
+	} catch (err) {
+		logger.error('failed to record room visit', {
+			roomId: roomInstance.roomId,
+			error: err instanceof Error ? err.message : String(err),
+		})
+	}
+
 	// Keep the destination instance's is_full flag in sync with live presence (the
 	// player's own presence, just written, is counted). Then re-evaluate the
 	// instance they left — its head-count dropped — so a full room frees up when
@@ -270,8 +298,16 @@ async function enterRoom(c: Context<App>, id: number, roomInstance: RoomInstance
 	await notifyFriendsPresence(c, id)
 }
 
-/** MatchmakingErrorCode.NoSuchRoom — returned when a room isn't in the DB. */
-const NO_SUCH_ROOM = 20
+/** Returned when a room isn't in the DB — and for every other opaque refusal. */
+const NO_SUCH_ROOM = MatchmakingErrorCode.NoSuchRoom
+
+/**
+ * "You are banned from this room". Unlike the opaque NoSuchRoom every other refusal
+ * answers, a banned player is told why: they already know the room exists, so there's
+ * nothing to hide, and the client can say so instead of showing a room that
+ * mysteriously fails to load.
+ */
+const BANNED_FROM_ROOM = MatchmakingErrorCode.BannedFromRoom
 
 /** The notifications hub is a single global DO instance (see the `notify` worker). */
 const HUB_INSTANCE = 'global'
@@ -477,24 +513,111 @@ async function inviteParty(
 }
 
 /**
+ * The outcome of resolving a room to join: the instance, or the `errorCode` to answer
+ * with. Kept as a pair rather than a bare null so callers can tell a room that isn't
+ * there (NoSuchRoom) from one the caller is banned from — those answer different codes.
+ */
+type ResolvedInstance =
+	| { instance: RoomInstance; errorCode: MatchmakingErrorCode.Success }
+	| { instance: null; errorCode: MatchmakingErrorCode }
+
+/**
+ * The operator's room substitutions, parsed from the `ROOM_REDIRECTS` var: a map of
+ * the room id the client asks for to the room it actually enters (id or room name).
+ * The var is comma-separated `<fromRoomId>=<to>` pairs, e.g. `2=MyHub,3=100`.
+ *
+ * Keyed on the source's numeric id rather than the path segment because the client can
+ * matchmake by either id or name (`/matchmake/room/2` and `/matchmake/room/RecCenter`
+ * are the same room), so the substitution is matched against the room D1 resolved —
+ * one entry then covers both spellings. Unparseable pairs are skipped rather than
+ * failing the matchmake: a typo in the knob must not take room entry down.
+ */
+function roomRedirects(env: Env): Map<number, string> {
+	const map = new Map<number, string>()
+	if (typeof env.ROOM_REDIRECTS !== 'string') return map
+	for (const pair of env.ROOM_REDIRECTS.split(',')) {
+		const eq = pair.indexOf('=')
+		if (eq === -1) continue
+		const from = Number(pair.slice(0, eq).trim())
+		const to = pair.slice(eq + 1).trim()
+		if (!Number.isInteger(from) || to === '') continue
+		map.set(from, to)
+	}
+	return map
+}
+
+/**
+ * Apply the operator's `ROOM_REDIRECTS` substitution to a room the client asked for.
+ * Answers the room to actually enter, plus the subroom to enter it by.
+ *
+ * A substituted room drops the requested subroom: the id the client sent addresses a
+ * subroom of the room it *asked* for, and the same number in the target room is a
+ * different place entirely (or nothing at all), so entry falls back to the target's
+ * default subroom. Substitution is a single hop — `2=3,3=2` swaps the two rooms rather
+ * than looping — and an unresolvable target leaves the original room in place, so a
+ * typo'd knob degrades to "no substitution" instead of a dead hub.
+ */
+async function substituteRoom(
+	c: Context<App>,
+	room: Room,
+	subRoomId?: number
+): Promise<{ room: Room; subRoomId?: number }> {
+	const fromId = typeof room.RoomId === 'number' ? room.RoomId : NaN
+	const to = roomRedirects(c.env).get(fromId)
+	if (to === undefined) return { room, subRoomId }
+
+	const toId = Number.parseInt(to, 10)
+	const target = Number.isNaN(toId)
+		? await getRoomByName(c.env.DB, to)
+		: await getRoomById(c.env.DB, toId)
+	if (!target) {
+		logger.warn('room redirect target not found; entering the requested room', {
+			roomId: fromId,
+			target: to,
+		})
+		return { room, subRoomId }
+	}
+
+	logger.info('room redirected', { roomId: fromId, target: to })
+	return { room: target, subRoomId: undefined }
+}
+
+/**
  * Resolve a room by `:room` path segment (numeric id or name) from D1, then find a
  * joinable instance of it (public matchmakes reuse one via the `room_instance`
- * table) or create a new one. Returns null when the room isn't found.
+ * table) or create a new one. A null instance carries the error code to answer:
+ * NoSuchRoom when the room isn't in the DB, BannedFromRoom when the caller is banned.
+ *
+ * Every matchmake that names a room lands here, so this is also where the operator's
+ * room substitutions apply (`ROOM_REDIRECTS`) — everything downstream, from the ban
+ * check to presence and the visit count, sees only the room actually entered.
  */
 async function resolveRoomInstance(
 	c: Context<App>,
 	roomKey: string,
 	isPrivate: boolean,
 	ownerId: number,
-	subRoomId?: number
-): Promise<RoomInstance | null> {
+	requestedSubRoomId?: number
+): Promise<ResolvedInstance> {
 	const id = Number.parseInt(roomKey, 10)
-	const room = Number.isNaN(id)
+	const requested = Number.isNaN(id)
 		? await getRoomByName(c.env.DB, roomKey)
 		: await getRoomById(c.env.DB, id)
-	if (!room) return null
+	if (!requested) return { instance: null, errorCode: NO_SUCH_ROOM }
+
+	const { room, subRoomId } = await substituteRoom(c, requested, requestedSubRoomId)
 
 	const f = instanceFieldsFromRoom(room, subRoomId)
+
+	// A banned player never gets an instance. This is the whole enforcement of a room
+	// ban: the Photon room id only ever reaches a player through a matchmake, so
+	// refusing here means they have no coordinates to join or interact with. Handled
+	// before any instance is created or reused so a ban can't spawn one.
+	if (await isPlayerBannedFromRoom(c.env.DB, f.roomId, ownerId)) {
+		logger.info('matchmake refused: player banned from room', { roomId: f.roomId, ownerId })
+		return { instance: null, errorCode: BANNED_FROM_ROOM }
+	}
+
 	// Never place the player back into the instance they're already in: the client
 	// keys the room transition off a changing `roomInstanceId`, so re-matchmaking into
 	// your current instance (e.g. the only public instance of a room you're already in)
@@ -525,13 +648,16 @@ async function resolveRoomInstance(
 			roomInstanceType: f.roomInstanceType,
 		})
 	}
-	return roomInstanceFromRoom(
-		room,
-		isPrivate,
-		instance.roomInstanceId,
-		instance.photonRoomId,
-		f.subRoomId
-	)
+	return {
+		instance: roomInstanceFromRoom(
+			room,
+			isPrivate,
+			instance.roomInstanceId,
+			instance.photonRoomId,
+			f.subRoomId
+		),
+		errorCode: MatchmakingErrorCode.Success,
+	}
 }
 
 /**
@@ -573,6 +699,45 @@ const app = new Hono<App>()
 				release: c.env.SENTRY_RELEASE,
 			})(c, next)
 	)
+
+	// A banned player goes nowhere. Room bans are per-room and checked per route (they
+	// depend on which room you're entering); a BAN isn't about a room at all, so it's
+	// enforced once here, across every matchmake — by room, by subroom, by instance, into
+	// a club's clubhouse, following a friend, and into their own dorm. A gate rather than
+	// six copies of the same check: a route added later inherits it, and there is no
+	// matchmake left that hands a banned player Photon coordinates.
+	//
+	// `resolveBan` matches the caller's own account AND the accounts they share a proven
+	// platform identity or an IP with, so a ban survives the evader making a new account
+	// (see bans-db.ts; the operator narrows the linked arms with BAN_EVASION_MATCH). The
+	// arm that matched is logged, because "banned" and "shares a network with somebody
+	// banned" are very different things to be looking at in a log.
+	//
+	// It answers the same BannedFromRoom the room bans do. The code is per-room in name
+	// only — it's the one refusal the client renders as "you are banned" instead of a room
+	// that mysteriously fails to load, and it's what the enum offers.
+	//
+	// Unauthenticated requests fall through untouched: the route's own `authedId` answers
+	// 401, which mustn't turn into "banned" just because the token was missing.
+	.use('/matchmake/*', async (c, next) => {
+		const id = await authedId(c)
+		if (id !== null) {
+			const match = await resolveBan(c.env.DB, id, {
+				identity: { ip: c.req.header('cf-connecting-ip') },
+				arms: banEvasionMatch(c.env.BAN_EVASION_MATCH),
+			})
+			if (match) {
+				logger.info('matchmake refused: player banned', {
+					accountId: id,
+					via: match.via,
+					bannedAccountId: match.bannedAccountId,
+					path: c.req.path,
+				})
+				return c.json({ errorCode: BANNED_FROM_ROOM, roomInstance: null })
+			}
+		}
+		await next()
+	})
 
 	.onError(withOnError())
 	.notFound(withNotFound())
@@ -859,7 +1024,8 @@ const app = new Hono<App>()
 			description: [
 				'Looks the club up, checks the caller is a member of it, and places them into an',
 				'instance of its clubhouse room. Returns errorCode 20 with a null instance when the',
-				'club is unknown, has no clubhouse set, or the caller isn’t a member.',
+				'club is unknown, has no clubhouse set, or the caller isn’t a member — and errorCode',
+				'55 when they are banned from the clubhouse room.',
 			].join(' '),
 			security: AUTHED,
 			requestBody: form(JoinModeRequest, 'Optional JoinMode'),
@@ -875,7 +1041,7 @@ const app = new Hono<App>()
 			responses: {
 				200: json(
 					MatchmakeResponse,
-					'The clubhouse instance (or errorCode 20 with null when it can’t be entered)'
+					'The clubhouse instance (or a null instance with errorCode 20 / 55 when it can’t be entered)'
 				),
 				401: UNAUTHORIZED_RESPONSE,
 			},
@@ -895,13 +1061,13 @@ const app = new Hono<App>()
 			}
 
 			const joinMode = await readJoinMode(c)
-			const instance = await resolveRoomInstance(
+			const { instance, errorCode } = await resolveRoomInstance(
 				c,
 				String(club.clubhouseRoomId),
 				joinMode === 2,
 				id
 			)
-			if (!instance) return c.json({ errorCode: NO_SUCH_ROOM, roomInstance: null })
+			if (!instance) return c.json({ errorCode, roomInstance: null })
 			await enterRoom(c, id, instance)
 			return c.json({ errorCode: 0, roomInstance: instance })
 		}
@@ -925,7 +1091,9 @@ const app = new Hono<App>()
 				'from the target’s stored presence. FRIENDS ONLY: the caller must be a mutual friend',
 				'of the target (otherwise anyone could read a player’s presence and warp to them).',
 				'Returns errorCode 20 with a null instance when the target isn’t a friend, is the',
-				'caller themselves, or isn’t currently in a room.',
+				'caller themselves, or isn’t currently in a room, and errorCode 55 when the caller is',
+				'banned from the room the friend is in — this path hands out join coordinates without',
+				'going through the room resolver, so it carries its own ban check.',
 			].join(' '),
 			security: AUTHED,
 			parameters: [
@@ -940,7 +1108,7 @@ const app = new Hono<App>()
 			responses: {
 				200: json(
 					MatchmakeResponse,
-					'The friend’s instance (or errorCode 20 with null when it can’t be joined)'
+					'The friend’s instance (or a null instance with errorCode 20 / 55 when it can’t be joined)'
 				),
 				401: UNAUTHORIZED_RESPONSE,
 			},
@@ -961,8 +1129,103 @@ const app = new Hono<App>()
 			const instance = targetPresence?.roomInstance ?? null
 			if (!instance) return c.json({ errorCode: NO_SUCH_ROOM, roomInstance: null })
 
+			// This path hands out a Photon room id without going through
+			// resolveRoomInstance, so the room's bans have to be checked here too —
+			// otherwise following a friend in is a way around a ban.
+			if (await isPlayerBannedFromRoom(c.env.DB, instance.roomId, id)) {
+				logger.info('follow refused: player banned from room', { roomId: instance.roomId, id })
+				return c.json({ errorCode: BANNED_FROM_ROOM, roomInstance: null })
+			}
+
 			// Join that same instance (same id + Photon room) and store it as the caller's
 			// presence, so the heartbeat replays it and their own friend fan-out fires.
+			await enterRoom(c, id, instance)
+			return c.json({ errorCode: 0, roomInstance: instance })
+		}
+	)
+
+	// Join one SPECIFIC live instance by id (`/matchmake/instance/{roomInstanceId}`) —
+	// the action behind the owner's instance listing (`GET /room/{roomId}/instances`),
+	// where they pick a session of their room and drop into it. Unlike every other
+	// matchmake this targets a fixed instance: nothing is reused, nothing is created,
+	// and a full or in-progress instance is still entered (moderating a full instance
+	// is the point). OWNER-ONLY, gated with the same creator-or-co-owner check as the
+	// listing — the Photon room id is the join coordinate, so an open version of this
+	// would let anyone warp into any private session by guessing an id. Registered
+	// before the `/matchmake/room/…` routes so `instance` isn't read as a room name.
+	.post(
+		'/matchmake/instance/:instanceId{[0-9]+}',
+		describeRoute({
+			tags: ['Navigation'],
+			summary: 'Join a specific instance (owner only)',
+			description: [
+				'Places the caller into one specific live instance of their own room, picked by id',
+				'from the owner’s instance listing. Gated to the room’s creator or a co-owner.',
+				'Unlike the other matchmakes this never reuses or creates an instance, and enters',
+				'even a full or in-progress one. Returns errorCode 20 with a null instance when the',
+				'instance or its room is gone, or the caller doesn’t manage that room; errorCode 55',
+				'when banned.',
+			].join(' '),
+			security: AUTHED,
+			parameters: [
+				{
+					name: 'instanceId',
+					in: 'path',
+					required: true,
+					description: 'Room instance id (digits only)',
+					schema: { type: 'string', pattern: '^[0-9]+$' },
+				},
+			],
+			responses: {
+				200: json(
+					MatchmakeResponse,
+					'The instance (or a null instance with errorCode 20 / 55 when it can’t be joined)'
+				),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const instanceId = Number.parseInt(c.req.param('instanceId'), 10)
+			const stored = await getRoomInstance(c.env.DB, instanceId)
+			// One opaque refusal for "no such instance", "no such room" and "not yours":
+			// a distinct code for the last would confirm which instance ids are live.
+			if (!stored) return c.json({ errorCode: NO_SUCH_ROOM, roomInstance: null })
+			const room = await getRoomById(c.env.DB, stored.roomId)
+			if (!room) return c.json({ errorCode: NO_SUCH_ROOM, roomInstance: null })
+			if (!canManageRoom(room, id)) {
+				logger.info('instance matchmake refused: not the room’s owner', {
+					roomInstanceId: instanceId,
+					roomId: stored.roomId,
+					accountId: id,
+				})
+				return c.json({ errorCode: NO_SUCH_ROOM, roomInstance: null })
+			}
+
+			// Like the follow-a-friend path, this hands out a Photon room id without going
+			// through resolveRoomInstance, so the room's bans are checked here too. An owner
+			// can't ban themselves out of their own room in practice, but a co-owner can be
+			// banned, and a ban must beat every route that yields join coordinates.
+			if (await isPlayerBannedFromRoom(c.env.DB, stored.roomId, id)) {
+				logger.info('instance matchmake refused: player banned from room', {
+					roomId: stored.roomId,
+					id,
+				})
+				return c.json({ errorCode: BANNED_FROM_ROOM, roomInstance: null })
+			}
+
+			// Rebuild the wire instance from the room (fresh scene + published save) keyed to
+			// this instance's own id and Photon room, so the owner lands in exactly the
+			// session they picked rather than a new one alongside it.
+			const instance = roomInstanceFromRoom(
+				room,
+				stored.isPrivate,
+				stored.roomInstanceId,
+				stored.photonRoomId,
+				stored.subRoomId
+			)
 			await enterRoom(c, id, instance)
 			return c.json({ errorCode: 0, roomInstance: instance })
 		}
@@ -994,7 +1257,10 @@ const app = new Hono<App>()
 				},
 			],
 			responses: {
-				200: json(MatchmakeResponse, 'The instance (or errorCode 20 with null on unknown room)'),
+				200: json(
+					MatchmakeResponse,
+					'The instance (or a null instance with errorCode 20 on an unknown room, 55 when banned)'
+				),
 				401: UNAUTHORIZED_RESPONSE,
 			},
 		}),
@@ -1003,14 +1269,14 @@ const app = new Hono<App>()
 			if (id === null) return unauthorized(c)
 			const { joinMode, additionalPlayerIds } = await readMatchmakeBody(c)
 			const subRoomId = Number.parseInt(c.req.param('subRoomId'), 10)
-			const instance = await resolveRoomInstance(
+			const { instance, errorCode } = await resolveRoomInstance(
 				c,
 				c.req.param('roomId'),
 				joinMode === 2,
 				id,
 				subRoomId
 			)
-			if (!instance) return c.json({ errorCode: NO_SUCH_ROOM, roomInstance: null })
+			if (!instance) return c.json({ errorCode, roomInstance: null })
 			await enterRoom(c, id, instance)
 			// Pull the caller's party (AdditionalPlayerIds) into the instance they landed in.
 			await inviteParty(c, id, additionalPlayerIds, instance)
@@ -1033,7 +1299,10 @@ const app = new Hono<App>()
 			requestBody: form(MatchmakeRoomRequest, 'Optional JoinMode and AdditionalPlayerIds'),
 			parameters: [{ name: 'roomId', in: 'path', required: true, schema: { type: 'string' } }],
 			responses: {
-				200: json(MatchmakeResponse, 'The instance (or errorCode 20 with null on unknown room)'),
+				200: json(
+					MatchmakeResponse,
+					'The instance (or a null instance with errorCode 20 on an unknown room, 55 when banned)'
+				),
 				401: UNAUTHORIZED_RESPONSE,
 			},
 		}),
@@ -1041,8 +1310,13 @@ const app = new Hono<App>()
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
 			const { joinMode, additionalPlayerIds } = await readMatchmakeBody(c)
-			const instance = await resolveRoomInstance(c, c.req.param('roomId'), joinMode === 2, id)
-			if (!instance) return c.json({ errorCode: NO_SUCH_ROOM, roomInstance: null })
+			const { instance, errorCode } = await resolveRoomInstance(
+				c,
+				c.req.param('roomId'),
+				joinMode === 2,
+				id
+			)
+			if (!instance) return c.json({ errorCode, roomInstance: null })
 			await enterRoom(c, id, instance)
 			// Pull the caller's party (AdditionalPlayerIds) into the instance they landed in.
 			await inviteParty(c, id, additionalPlayerIds, instance)
@@ -1057,11 +1331,12 @@ const app = new Hono<App>()
 			description: [
 				'Single-segment matchmake into the caller’s personal dorm, stored as presence. The',
 				'client only ever calls this with the `dorm` keyword — real rooms go through',
-				'`/matchmake/room/:roomId`.',
+				'`/matchmake/room/:roomId`. Returns errorCode 55 with a null instance when the',
+				'account is banned: a ban keeps a player out of their own dorm too.',
 			].join(' '),
 			security: AUTHED,
 			responses: {
-				200: json(MatchmakeResponse, 'The player’s personal dorm instance'),
+				200: json(MatchmakeResponse, 'The dorm instance (or a null instance with errorCode 55)'),
 				401: UNAUTHORIZED_RESPONSE,
 			},
 		}),
@@ -1165,16 +1440,20 @@ const app = new Hono<App>()
 		(c) => c.body(null, 200)
 	)
 
-	// The room owner flips the instance's in-progress flag once the session starts
-	// (e.g. a game round begins). Body is a form post: `inProgress=True|False`.
+	// The instance's in-progress flag, flipped when a session starts (e.g. a game round
+	// begins). Deliberately NOT owner-gated, unlike the other room-instance mutations:
+	// this is set by whoever in the room starts the game, not by the room's owner — a
+	// gate here would break game starts for everyone else. Body is a form post:
+	// `inProgress=True|False`.
 	.put(
 		'/roominstance/:id/inprogress',
 		describeRoute({
 			tags: ['Room instance'],
 			summary: 'Set instance in-progress flag',
 			description: [
-				'The room owner flips the instance’s in-progress flag when a session starts (e.g. a',
-				'round begins). Body is `inProgress=True|False`.',
+				'Flips the instance’s in-progress flag when a session starts (e.g. a round begins).',
+				'Set by whoever in the room starts the game — any authenticated player, not just the',
+				'room’s owner. Body is `inProgress=True|False`.',
 			].join(' '),
 			security: AUTHED,
 			requestBody: form(InProgressRequest, 'The inProgress flag'),
@@ -1202,18 +1481,72 @@ const app = new Hono<App>()
 		}
 	)
 
+	// Close a live instance to strangers (`/roominstance/{id}/markprivate`) — the owner
+	// makes the session they're running private, so public matchmaking stops feeding new
+	// players into it (getJoinableInstance only reuses non-private instances). Everyone
+	// already inside stays put; this shuts the door rather than clearing the room.
+	// OWNER-ONLY (same creator-or-co-owner gate as the instance listing): whether a
+	// session is open is the room owner's call, not a passer-by's. Generic empty ack.
+	.post(
+		'/roominstance/:id/markprivate',
+		describeRoute({
+			tags: ['Room instance'],
+			summary: 'Mark an instance private (owner only)',
+			description: [
+				'Marks a live instance private, so public matchmaking stops placing new players',
+				'into it. Players already inside are unaffected. Auth-gated and gated to the',
+				'instance’s room’s creator or a co-owner (403 otherwise). Empty ack.',
+			].join(' '),
+			security: AUTHED,
+			parameters: [
+				{
+					name: 'id',
+					in: 'path',
+					required: true,
+					description: 'Room instance id',
+					schema: { type: 'string' },
+				},
+			],
+			responses: {
+				200: EMPTY_OK,
+				401: UNAUTHORIZED_RESPONSE,
+				403: { description: 'Not the room’s creator or a co-owner (empty body)' },
+				404: { description: 'Non-numeric id or no such instance (empty body)' },
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const instanceId = Number.parseInt(c.req.param('id'), 10)
+			if (Number.isNaN(instanceId)) return c.body(null, 404)
+
+			const stored = await getRoomInstance(c.env.DB, instanceId)
+			if (!stored) return c.body(null, 404)
+			const room = await getRoomById(c.env.DB, stored.roomId)
+			if (!room || !canManageRoom(room, id)) return c.body(null, 403)
+
+			await setRoomInstancePrivate(c.env.DB, instanceId, true)
+			return c.body(null, 200)
+		}
+	)
+
 	// The room's live instances — the owner's view of active sessions of their room.
 	// Auth-gated (401) and owner/co-owner-only (403): the caller must be the room's
-	// creator or hold a Creator/CoOwner role on it. Unknown room → 404. Returns the
-	// bare RoomInstance DTO array (empty when the room has no live instances).
+	// creator or hold a Creator/CoOwner role on it. Unknown room → 404. Returns a
+	// summary per instance (empty when the room has no live instances) — id, subroom,
+	// fullness, creation time and who's currently in it — not the client's
+	// RoomInstance DTO: this is a management listing, so it answers "who's in there"
+	// and withholds the connection details of a session the owner isn't joining.
 	.get(
 		'/room/:roomId{[0-9]+}/instances',
 		describeRoute({
 			tags: ['Room instance'],
 			summary: 'A room’s live instances',
 			description: [
-				'The owner’s view of active sessions of their room. Auth-gated and gated to the',
-				'room’s creator or a co-owner (403 otherwise). Unknown room → 404.',
+				'The owner’s view of active sessions of their room — each instance with the',
+				'players currently in it. Auth-gated and gated to the room’s creator or a',
+				'co-owner (403 otherwise). Unknown room → 404.',
 			].join(' '),
 			security: AUTHED,
 			parameters: [
@@ -1226,7 +1559,7 @@ const app = new Hono<App>()
 				},
 			],
 			responses: {
-				200: json(RoomInstanceDto.array(), 'Live instances (empty when none)'),
+				200: json(RoomInstanceSummaryDto.array(), 'Live instances (empty when none)'),
 				401: UNAUTHORIZED_RESPONSE,
 				403: { description: 'Not the room’s creator or a co-owner (empty body)' },
 				404: { description: 'No such room (empty body)' },
@@ -1243,7 +1576,7 @@ const app = new Hono<App>()
 			// same owner-or-co-owner gate the rooms worker uses for room-admin actions.
 			if (!canManageRoom(room, id)) return c.body(null, 403)
 
-			return c.json(await getRoomInstancesByRoom(c.env.DB, roomId))
+			return c.json(await getRoomInstanceSummariesByRoom(c.env.DB, roomId))
 		}
 	)
 
@@ -1273,24 +1606,33 @@ const app = new Hono<App>()
 	)
 
 /**
- * Cron: sweep presence that has aged past its TTL. Reads already ignore expired rows,
- * so this isn't about correctness of `/player` — it's that a player who crashed or
- * hard-quit never matchmakes out of their instance, so nothing recomputes that
- * instance's fullness and it can stay flagged full (and unjoinable) with nobody in it.
- * Recompute the instances the expiring rows point at, *then* delete: the sweep is the
- * only thing that notices those departures. Fullness is recomputed after the delete so
- * the head-count no longer sees them.
+ * Cron: sweep presence that has aged past its TTL, then the instances left empty.
+ *
+ * The presence purge isn't about correctness of `/player` — reads already ignore
+ * expired rows. It's that a player who crashed or hard-quit never matchmakes out of
+ * their instance, so nothing recomputes that instance's fullness and it can stay
+ * flagged full (and unjoinable) with nobody in it. Note the instances the expiring
+ * rows point at *before* deleting: the sweep is the only thing that notices those
+ * departures.
+ *
+ * Emptying an instance is what makes it garbage — nothing ever reuses it, and a
+ * joiner handed one would land alone in a Photon room everyone left — so the empty
+ * sweep runs next. It reads presence without consulting expiry, so it depends on
+ * running after the purge above: this order is what makes a lapsed row count as a
+ * departure. Fullness is recomputed last, so it works from the final head-count and
+ * skips (returns null for) the instances just deleted.
  */
 async function sweepExpiredPresence(env: Env): Promise<void> {
 	const staleInstanceIds = await getExpiredPresenceInstanceIds(env.DB)
 	const removed = await deleteExpiredPresence(env.DB)
+	const emptyInstanceIds = await deleteEmptyRoomInstances(env.DB)
 	for (const instanceId of staleInstanceIds) {
 		await refreshInstanceFullness(env.DB, instanceId)
 	}
 	// The tagged logger is request-scoped (its middleware never runs for a cron), so
 	// log plainly here — Workers observability picks it up either way.
 	console.log(
-		`presence sweep: removed ${removed} expired rows, refreshed ${staleInstanceIds.length} instances`
+		`presence sweep: removed ${removed} expired rows, deleted ${emptyInstanceIds.length} empty instances, refreshed ${staleInstanceIds.length} instances`
 	)
 }
 
@@ -1311,7 +1653,8 @@ app.get(
 						'Room backend. Rooms and room instances are D1-backed (matchmaking finds or creates a',
 						'`room_instance` per session); presence — the instance each player is currently in —',
 						'lives in the shared `presence` table and expires on a TTL. A cron sweep clears',
-						'expired presence and frees up instances a crashed player never left.',
+						'expired presence, frees up instances a crashed player never left, and deletes',
+						'instances nobody is standing in any more.',
 					].join('\n'),
 				},
 				servers: [{ url: 'https://match.recflare.net', description: 'Production' }],

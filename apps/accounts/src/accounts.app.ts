@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { describeRoute, openAPIRouteHandler } from 'hono-openapi'
+import { describeRoute, openAPIRouteHandler, validator } from 'hono-openapi'
 import { useWorkersLogger } from 'workers-tagged-logger'
 
 import {
@@ -11,7 +11,7 @@ import {
 	searchAccounts,
 	updateAccount,
 } from '@repo/domain'
-import { logger, withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
+import { logger, withCleanSpec, withDefaultCors, withNotFound, withOnError } from '@repo/hono-helpers'
 import { validateAndGetAccountId } from '@repo/jwt'
 
 import {
@@ -72,6 +72,11 @@ const DEFAULT_USERNAME_CHANGES = 1
  * Username-change result envelope: `{ success, error, value }`, always HTTP 200.
  * On success `value` is the updated account; on error `error` carries the message
  * and `value` is an empty string.
+ *
+ * The envelope-at-200 is the reference's (`RecNet`) convention — a refusal is a
+ * successful call that answers "no", and the player-facing sentence rides in `error`.
+ * `POST /account/create` does the same. This was briefly a 400 so a caller could branch
+ * on the status; it isn't, because that's not what the real service does.
  */
 function usernameResult(c: Context<App>, error = '', value: unknown = '') {
 	return c.json({ success: error === '', error, value })
@@ -112,7 +117,9 @@ function toSelfAccountDto(account: Account) {
 	return {
 		...toAccountDto(account),
 		email: account.email ?? null,
-		birthday: null,
+		// @todo he game client needs this to be set. I forget how birthdays were set, so for now
+		// everyone can be old.
+		birthday: '1904-01-01T00:00:00.000Z',
 		availableUsernameChanges: account.availableUsernameChanges ?? DEFAULT_USERNAME_CHANGES,
 	}
 }
@@ -158,6 +165,14 @@ const app = new Hono<App>()
 				release: c.env.SENTRY_RELEASE,
 			})(c, next)
 	)
+
+	// The website (`www`) is a browser origin calling these endpoints directly, the way
+	// rec.net's own site called the game's API — so the responses need CORS headers or
+	// the browser discards them. `origin: '*'` is deliberate and safe HERE because these
+	// endpoints authenticate with a bearer token in the `Authorization` header, never a
+	// cookie: a hostile page can't read another origin's stored token, so there is no
+	// ambient credential for `*` to expose. Do not add cookie auth without narrowing it.
+	.use('*', withDefaultCors())
 
 	.onError(withOnError())
 	.notFound(withNotFound())
@@ -409,18 +424,20 @@ const app = new Hono<App>()
 			summary: 'Set display name',
 			description: 'Persisted and broadcast via an AccountUpdate notification.',
 			security: AUTHED,
-			requestBody: form(DisplayNameRequest, 'The new display name'),
 			responses: {
 				200: json(SuccessResponse, 'Updated'),
-				400: { description: 'Empty display name (empty body)' },
+				400: { description: 'Empty, over 15 characters, or non-alphanumeric (empty body)' },
 				401: UNAUTHORIZED_RESPONSE,
 			},
 		}),
+		// An EMPTY 400, which is what this route already answered for an empty name: it
+		// acks with a bare SuccessResponse and has never sent the client a body on
+		// failure, so enforcing the schema doesn't change what a refusal looks like.
+		validator('form', DisplayNameRequest, (r, c) => (r.success ? undefined : c.body(null, 400))),
 		async (c) => {
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
-			const displayName = (await formField(c, 'displayName')).trim()
-			if (displayName === '') return c.body(null, 400)
+			const { displayName } = c.req.valid('form')
 			const account = await updateAccount(c.env.DB, id, { displayName })
 			await pushAccountUpdate(c, account)
 			return c.json({ success: true })
@@ -436,23 +453,33 @@ const app = new Hono<App>()
 			tags: ['Profile'],
 			summary: 'Change username',
 			description: [
-				'Rejects a name taken by another account and requires a remaining change; on',
-				'success the name is persisted and the counter decremented. Always HTTP 200 —',
-				'failures carry a message in `error` (see the UsernameResult envelope).',
+				'Letters and digits only, at most 50 characters. Rejects a name taken by another',
+				'account and requires a remaining change; on success the name is persisted and',
+				'the counter decremented. Always HTTP 200 — failures carry a message in `error`',
+				'(see the UsernameResult envelope).',
 			].join(' '),
 			security: AUTHED,
-			requestBody: form(UsernameRequest, 'The desired username'),
 			responses: {
 				200: json(UsernameResult, 'Result envelope (success or a validation error)'),
 				401: UNAUTHORIZED_RESPONSE,
 			},
 		}),
+		// Shape is checked before the handler runs, so a rejected name costs no D1 read and
+		// — the part that matters — can never spend one of the account's rationed changes.
+		// The message is relayed rather than zod's issue array: `nameRejection` writes the
+		// sentence the player reads, and nothing can render an array of issues.
+		// `c` is annotated so the hook's context matches this app's bindings, and `error` is
+		// Standard Schema's flat issue list rather than a zod error object.
+		validator('form', UsernameRequest, (r, c: Context<App>) =>
+			r.success
+				? undefined
+				: usernameResult(c, r.error[0]?.message ?? 'That username cannot be used.')
+		),
 		async (c) => {
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
 
-			const username = (await formField(c, 'username')).trim()
-			if (username === '') return usernameResult(c, 'You must enter a username.')
+			const { username } = c.req.valid('form')
 
 			// Duplicate check first (case-insensitive); keeping your own name is allowed.
 			const existing = await getAccountByUsername(c.env.DB, username)
@@ -484,18 +511,17 @@ const app = new Hono<App>()
 			summary: 'Set email',
 			description: 'Persisted; surfaced only by `/account/me`. Not broadcast.',
 			security: AUTHED,
-			requestBody: form(EmailRequest, 'The new email'),
 			responses: {
 				200: json(SuccessResponse, 'Updated'),
-				400: { description: 'Email without an “@” (empty body)' },
+				400: { description: 'Not a syntactically valid address (empty body)' },
 				401: UNAUTHORIZED_RESPONSE,
 			},
 		}),
+		validator('form', EmailRequest, (r, c) => (r.success ? undefined : c.body(null, 400))),
 		async (c) => {
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
-			const email = (await formField(c, 'email')).trim()
-			if (!email.includes('@')) return c.body(null, 400)
+			const { email } = c.req.valid('form')
 			await updateAccount(c.env.DB, id, { email })
 			return c.json({ success: true })
 		}
@@ -509,18 +535,17 @@ const app = new Hono<App>()
 			summary: 'Set phone number',
 			description: 'Persisted on the account row. Not broadcast.',
 			security: AUTHED,
-			requestBody: form(PhoneRequest, 'The new phone number'),
 			responses: {
 				200: json(SuccessResponse, 'Updated'),
 				400: { description: 'Empty phone (empty body)' },
 				401: UNAUTHORIZED_RESPONSE,
 			},
 		}),
+		validator('form', PhoneRequest, (r, c) => (r.success ? undefined : c.body(null, 400))),
 		async (c) => {
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
-			const phone = (await formField(c, 'phone')).trim()
-			if (phone === '') return c.body(null, 400)
+			const { phone } = c.req.valid('form')
 			await updateAccount(c.env.DB, id, { phone })
 			return c.json({ success: true })
 		}
@@ -595,18 +620,20 @@ const app = new Hono<App>()
 		describeRoute({
 			tags: ['Profile'],
 			summary: 'Set bio',
-			description: 'Free text; empty is allowed. Persisted and broadcast.',
+			description: 'Free text up to 255 characters; empty is allowed. Persisted and broadcast.',
 			security: AUTHED,
-			requestBody: form(BioRequest, 'The new bio'),
 			responses: {
 				200: json(SuccessResponse, 'Updated'),
+				400: { description: 'Bio over 255 characters (empty body)' },
 				401: UNAUTHORIZED_RESPONSE,
 			},
 		}),
+		// Refused rather than truncated: silently storing half a sentence reads as data loss.
+		validator('form', BioRequest, (r, c) => (r.success ? undefined : c.body(null, 400))),
 		async (c) => {
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
-			const bio = await formField(c, 'bio')
+			const { bio } = c.req.valid('form')
 			const account = await updateAccount(c.env.DB, id, { bio })
 			await pushAccountUpdate(c, account)
 			return c.json({ success: true })

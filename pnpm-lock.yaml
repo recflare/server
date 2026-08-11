@@ -810,6 +810,9 @@ importers:
 
   apps/www:
     dependencies:
+      '@repo/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
       '@repo/hono-helpers':
         specifier: workspace:*
         version: link:../../packages/hono-helpers
@@ -864,6 +867,10 @@ importers:
         version: 4.105.0(@cloudflare/workers-types@4.20260630.1)
 
   packages/domain:
+    dependencies:
+      isemail:
+        specifier: ^3.2.0
+        version: 3.2.0
     devDependencies:
       '@cloudflare/workers-types':
         specifier: 4.20260630.1
@@ -3174,6 +3181,10 @@ packages:
     resolution: {integrity: sha512-rbku49cWloU5bSMI+zaRaXdQHXnthP6DZ/vLnfdSKyL4zUzuWnomtOEiZZOd+ioQ+avFo/qau3KPTc7Fjy1uPA==}
     engines: {node: '>=12'}
 
+  isemail@3.2.0:
+    resolution: {integrity: sha512-zKqkK+O+dGqevc93KNsbZ/TqTUFd46MwWjYOoMrjIMZ51eU7DtQG3Wmd9SQQT7i7RVnuTPEiYEWHU3MSbxC1Tg==}
+    engines: {node: '>=4.0.0'}
+
   jiti@2.6.1:
     resolution: {integrity: sha512-ekilCSN1jwRvIbgeg/57YFh8qQDNbwDb9xT/qu2DAHbFFZUicIl4ygVaAvzveMhMVr3LnpSKTNnwt8PoOfmKhQ==}
     hasBin: true
@@ -3541,6 +3552,10 @@ packages:
 
   property-information@7.2.0:
     resolution: {integrity: sha512-IAtzIB6sUiWaJYrX9smp3V46pBGbBeLFRGdh25kg1334VcBlD8HzhPeNIWQH9zhGmo2itIe25EHt9dQP7G5hmg==}
+
+  punycode@2.3.1:
+    resolution: {integrity: sha512-vYt7UD1U9Wg6138shLtLOvdAu+8DsC/ilFtEVHcH+wydcSpNE20AfSOduf6MkRFahL5FY7X1oU7nKVZFtfq8Fg==}
+    engines: {node: '>=6'}
 
   quansync@0.2.11:
     resolution: {integrity: sha512-AifT7QEbW9Nri4tAwR5M/uzpBuqfZf+zwaEM/QkzEjj7NBuFD2rBuy0K3dE+8wltbezDV7JMA0WfnCPYRSYbXA==}
@@ -6154,6 +6169,10 @@ snapshots:
 
   is-regexp@3.1.0: {}
 
+  isemail@3.2.0:
+    dependencies:
+      punycode: 2.3.1
+
   jiti@2.6.1:
     optional: true
 
@@ -6676,6 +6695,8 @@ snapshots:
       parse-ms: 4.0.0
 
   property-information@7.2.0: {}
+
+  punycode@2.3.1: {}
 
   quansync@0.2.11: {}
 

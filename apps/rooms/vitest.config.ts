@@ -21,11 +21,25 @@ export default defineConfig({
 						compatibilityDate: '2026-06-16',
 						compatibilityFlags: ['nodejs_compat'],
 						durableObjects: { RECFLARE_NOTIFICATIONS_HUB: 'NotificationsHub' },
+						// notifyPlayer records every call so tests can assert the notifications the
+						// worker pushed (type + payload). GET /all for the whole list, DELETE to
+						// reset it between assertions.
 						script: `
 							import { DurableObject } from 'cloudflare:workers'
 							export class NotificationsHub extends DurableObject {
-								async notifyPlayer() { return { delivered: 0, queued: true } }
+								sent = []
+								async notifyPlayer(playerId, notificationType, data) {
+									this.sent.push({ playerId, notificationType, data })
+									return { delivered: 0, queued: true }
+								}
 								async broadcast() { return { delivered: 0 } }
+								async fetch(request) {
+									if (request.method === 'DELETE') {
+										this.sent = []
+										return new Response(null, { status: 204 })
+									}
+									return Response.json(this.sent)
+								}
 							}
 							export default { fetch() { return new Response('ok') } }
 						`,

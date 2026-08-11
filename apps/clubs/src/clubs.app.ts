@@ -2,6 +2,11 @@ import { Hono } from 'hono'
 import { describeRoute, openAPIRouteHandler } from 'hono-openapi'
 import { useWorkersLogger } from 'workers-tagged-logger'
 
+import {
+	glyphLength,
+	MAX_CLUB_DESCRIPTION_LENGTH,
+	MAX_CLUB_NAME_LENGTH,
+} from '@repo/domain'
 import { intVar, logger, withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
 import { validateAndGetAccountId } from '@repo/jwt'
 
@@ -101,8 +106,6 @@ async function authedId(c: Context<App>): Promise<number | null> {
  */
 const DEFAULT_MAX_CLUBS_PER_ACCOUNT = 10
 
-/** Longest a club name may be (the reference's MaxNameLength). */
-const MAX_CLUB_NAME_LENGTH = 16
 
 /**
  * The tiers `members/invite` may grant — the real member roles only. Creator (100) is
@@ -665,6 +668,14 @@ const app = new Hono<App>()
 			if ([...name].length > MAX_CLUB_NAME_LENGTH) {
 				return clubError(c, `Club names can be at most ${MAX_CLUB_NAME_LENGTH} characters.`)
 			}
+			// Counted in code points like the name above, so an emoji-heavy description is
+			// measured the way a player sees it rather than by UTF-16 units.
+			if (glyphLength(description) > MAX_CLUB_DESCRIPTION_LENGTH) {
+				return clubError(
+					c,
+					`Club descriptions can be at most ${MAX_CLUB_DESCRIPTION_LENGTH} characters.`
+				)
+			}
 			// The per-account cap, checked after the cheap validations so a rejected name
 			// costs no extra D1 read.
 			const maxClubs = intVar(c.env.MAX_CLUBS_PER_ACCOUNT, DEFAULT_MAX_CLUBS_PER_ACCOUNT)
@@ -778,9 +789,19 @@ const app = new Hono<App>()
 				}
 			}
 
+			// Same absent-means-unchanged rule as the name, so a club with no description
+			// isn't forced to grow one just to be edited.
+			const description = field('description') || undefined
+			if (description !== undefined && glyphLength(description) > MAX_CLUB_DESCRIPTION_LENGTH) {
+				return clubError(
+					c,
+					`Club descriptions can be at most ${MAX_CLUB_DESCRIPTION_LENGTH} characters.`
+				)
+			}
+
 			const updated = await updateClub(c.env.DB, clubId, {
 				name,
-				description: field('description') || undefined,
+				description,
 				category: field('category')?.trim() || undefined,
 				visibility: parseVisibility(field('visibility')),
 				joinability: parseJoinability(field('joinability')),

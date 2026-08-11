@@ -96,6 +96,22 @@ export const RoomInstanceDto = z.object({
 })
 
 /**
+ * One live instance in the owner's management listing (`GET /room/:roomId/instances`).
+ * Not the client `RoomInstanceDto`: it carries who's in there and drops the connection
+ * details (photon ids, data blob, room code) of a session the owner isn't in.
+ */
+export const RoomInstanceSummaryDto = z.object({
+	roomInstanceId: z.int(),
+	roomId: z.int(),
+	subRoomId: z.int().describe('Which subroom (scene) of the room this instance is'),
+	isFull: z.boolean(),
+	createdAt: z.string().describe('ISO 8601 UTC, stamped when the instance was created'),
+	playerIds: z
+		.array(z.int())
+		.describe('Accounts currently in the instance (live presence); empty when nobody is'),
+})
+
+/**
  * A player's presence as the client reads it (`GET /player`, `POST /player/heartbeat`).
  * `isOnline` means "has a live (unexpired) presence row", NOT "is in a room" — a player
  * can be online in the lobby with `roomInstance` null. The `photon*`/`voice*`
@@ -128,7 +144,9 @@ export const PlayerDto = z.object({
  * a non-zero code (e.g. 20 NoSuchRoom) comes with `roomInstance: null`.
  */
 export const MatchmakeResponse = z.object({
-	errorCode: z.int().describe('0 = success; 20 = NoSuchRoom'),
+	errorCode: z
+		.int()
+		.describe('0 = success; 20 = NoSuchRoom; 55 = banned from the room (the one non-opaque code)'),
 	roomInstance: RoomInstanceDto.nullable(),
 })
 

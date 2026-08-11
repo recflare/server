@@ -3,13 +3,12 @@ import { describeRoute, openAPIRouteHandler } from 'hono-openapi'
 import { useWorkersLogger } from 'workers-tagged-logger'
 
 import {
-	countAccountsByPlatformId,
 	countAccountsBySignupIp,
 	createAccount,
 	GAME_VERSION,
 	getAccount,
 	getAccountByUsername,
-	getAccountsByPlatformId,
+	getAccountsByIds,
 	getPasswordHash,
 	getRoomById,
 	hashPassword,
@@ -19,11 +18,16 @@ import {
 	setPasswordHash,
 	setPresence,
 	subRoomDataBlob,
+	updateAccount,
 	verifyPassword,
 } from '@repo/domain'
-import { intVar, logger, withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
+import { intVar, logger, withCleanSpec, withDefaultCors, withNotFound, withOnError } from '@repo/hono-helpers'
 import { generateToken, TOKEN_TTL_SECONDS, validateAndGetAccountId } from '@repo/jwt'
 
+// The account-wide ban lives on a `report` row, whose table the api worker owns; its db
+// module is plain D1 queries with no runtime deps, so it imports cleanly here.
+import { banEvasionMatch, resolveBan } from '../../api/src/bans-db'
+import { verifyMetaNonce } from './meta-nonce'
 import {
 	CachedLogin,
 	ChangePasswordRequest,
@@ -38,21 +42,61 @@ import {
 	TokenRequest,
 	TokenResponse,
 } from './openapi'
+import {
+	countAccountsForPlatformIdentity,
+	getLinksForPlatformId,
+	getLinksForPlatformIdentity,
+	isPlatformIdentityLinked,
+	linkPlatformIdentity,
+} from './platform-db'
 import { consumeRefreshToken, issueRefreshToken } from './refresh-db'
 import { verifySteamTicket } from './steam-ticket'
 
 import type { Context } from 'hono'
 import type { Account } from '@repo/domain'
 import type { App } from './context'
+import type { PlatformLink } from './platform-db'
 
 /** OAuth scopes granted by `/connect/token`. */
 const TOKEN_SCOPE =
 	'offline_access profile rn rn.accounts rn.accounts.gc rn.api rn.chat rn.clubs rn.commerce rn.match.read rn.match.write rn.notify rn.rooms rn.storage'
 
-/** The canned entry served for any Oculus cached-login lookup. See the route below. */
+/**
+ * The `error_description` a banned account's grant is refused with. A fixed sentence,
+ * never interpolated with the expiry, because `www`'s shared auth-messages table keys on
+ * this exact string to put a real sentence in front of a player — anything varying would
+ * fall through to the generic "you could not be signed in". Keep the two in sync.
+ */
+const BANNED_DESCRIPTION = 'this account is banned'
+
+/**
+ * The refusal when it is not THIS account that is banned but one it shares an identity
+ * with (see bans-db's linked arms). Deliberately a different, vaguer sentence: the
+ * account being refused may be an innocent housemate of a banned player, so telling them
+ * "this account is banned" would be a lie, and naming the account we matched them to
+ * would hand out somebody else's moderation record.
+ */
+const BLOCKED_DESCRIPTION = 'this device or network is blocked'
+
+/**
+ * The platform id a SIDELOADED Oculus APK reports. It is not an identity: a sideloaded
+ * build has no Meta SDK to ask, so it has nothing real to report — and every sideloaded
+ * headset reports this same value. Two things follow, and both are enforced below:
+ *  - it is never verifiable (`verifyPlatformProof` refuses it outright), and
+ *  - it is therefore never LINKED to an account. A link is a password-free way in, so
+ *    one link on a shared id would open that account to every sideloaded build.
+ * It exists only to get such a client onto the username/password login screen.
+ */
+const SIDELOAD_PLATFORM_ID = '1'
+
+/**
+ * The canned entry served for the one Oculus cached-login lookup below — the sideloaded
+ * APK's way onto the password login screen. Not backed by a link, an account or a
+ * platform proof, hence `requirePassword: true`.
+ */
 const FAKE_OCULUS_CACHED_LOGIN = {
 	platform: PlatformType.Oculus,
-	platformId: '1',
+	platformId: SIDELOAD_PLATFORM_ID,
 	accountId: 1,
 	lastLoginTime: '2026-07-19T17:13:29.225Z',
 	requirePassword: true,
@@ -166,46 +210,167 @@ function accountRoles(account: Pick<Account, 'isDeveloper' | 'isModerator'> | nu
 /**
  * The platform an account's `platformId` belongs to. Nothing defaults the `platform`
  * field (see defaultAccount), so an account can carry a platform identity with no
- * platform recorded — and Steam is the only platform whose identity we can prove, so
- * an unset one *is* Steam.
+ * platform recorded — and until Meta verification landed Steam was the only identity
+ * we could prove, so an unset one *is* Steam. Every account bound since records its
+ * platform explicitly; this default only covers those older rows.
  */
 function accountPlatform(account: Pick<Account, 'platform'>): number {
 	return account.platform ?? 0
 }
 
 /**
- * Whether an account is the one linked to a given platform identity — the single
- * check behind both the cached-login picker and the `cached_login` grant. It lives in
- * one place on purpose: if the picker offers an account the grant then rejects, the
- * client is handed an `account_id` it can never log into ("no linked account for this
- * platform identity" on every attempt).
- *
- * `platformId` must be the *proven* identity (the SteamID64 from a verified
- * platform_auth ticket), never the client-supplied `platform_id` field.
- */
-export function isLinkedToPlatformIdentity(
-	account: Pick<Account, 'platform' | 'platformId'>,
-	platform: number,
-	platformId: string
-): boolean {
-	if (!account.platformId || platformId === '') return false
-	return account.platformId === platformId && accountPlatform(account) === platform
-}
-
-/**
  * Project a linked account into the client's CachedLogin DTO — the account-picker
  * entry on the login screen. The client posts the chosen `accountId` back as a
  * `grant_type=cached_login`. `requirePassword` is false because platform ownership
- * (the platform_auth ticket) is the credential for a cached login — no prompt.
+ * (the verified `platform_auth`) is the credential for a cached login — no prompt.
+ *
+ * The platform and id come from the LINK, not from the account: an account linked to
+ * both a Steam and a Meta identity appears in both pickers, and each has to report the
+ * identity that picker was asked about — that's what the client posts back, and what
+ * the grant then checks the link against.
  */
-function toCachedLogin(account: Account) {
+function toCachedLogin(account: Account, link: PlatformLink) {
 	return {
-		platform: accountPlatform(account),
-		platformId: account.platformId ?? '',
+		platform: link.platform,
+		platformId: link.platformId,
 		accountId: account.accountId,
 		lastLoginTime: account.lastLoginTime ?? account.createdAt,
 		requirePassword: false,
 	}
+}
+
+/**
+ * Project a set of links into picker entries, dropping any whose account no longer
+ * exists. One batched account read rather than one per link.
+ *
+ * Order follows the links (oldest first), so the picker is stable between launches.
+ */
+async function toCachedLogins(db: D1Database, links: PlatformLink[]) {
+	if (links.length === 0) return []
+	const accounts = await getAccountsByIds(db, [...new Set(links.map((l) => l.accountId))])
+	const byId = new Map(accounts.map((a) => [a.accountId, a]))
+	return links.flatMap((link) => {
+		const account = byId.get(link.accountId)
+		return account ? [toCachedLogin(account, link)] : []
+	})
+}
+
+/**
+ * Link the platform identity a password login proved to the account it logged into,
+ * so the next launch on that device is a cached login. Called only with a VERIFIED
+ * identity — a link is a password-free way into the account.
+ *
+ * Already linked is the common case (every subsequent login on that device) and costs
+ * one read and nothing else.
+ *
+ * The per-identity cap applies here as well as at signup, or it wouldn't be a cap:
+ * an identity could otherwise sit at the limit, have accounts created for it with a
+ * password, and link its way into all of them. Reaching it does NOT fail the login —
+ * the password was valid — it just leaves the account without a cached login, so the
+ * player types their password each time rather than being locked out.
+ *
+ * The first identity linked also becomes the account's primary (the blob's
+ * `platform`/`platformId`), which is what the account DTO and the refresh grant's
+ * claims report. Later platforms link without disturbing it.
+ */
+async function linkLoginIdentity(
+	db: D1Database,
+	accountId: number,
+	platform: number,
+	platformId: string,
+	maxAccountsPerIdentity: number
+): Promise<void> {
+	if (await isPlatformIdentityLinked(db, accountId, platform, platformId)) return
+
+	if (
+		maxAccountsPerIdentity > 0 &&
+		(await countAccountsForPlatformIdentity(db, platform, platformId)) >= maxAccountsPerIdentity
+	) {
+		logger.info('platform link refused: account limit reached for this platform identity', {
+			accountId,
+			platform,
+			platformId,
+		})
+		return
+	}
+
+	if (!(await linkPlatformIdentity(db, accountId, platform, platformId))) return
+	logger.info('linked platform identity to account', { accountId, platform, platformId })
+
+	const account = await getAccount(db, accountId)
+	if (account && !account.platformId) {
+		await updateAccount(db, accountId, { platform, platformId })
+	}
+}
+
+/**
+ * What a login's `platform_auth` proved, if anything. Failures are split because the
+ * callers act on them differently: a grant that authenticates BY platform identity has
+ * to refuse, while a password grant — which has already proven who it is — carries on
+ * and just doesn't link.
+ *
+ * `unconfigured` is an operator problem (no META_APP_SECRET), not a bad credential,
+ * and is the one case that warrants a 5xx.
+ */
+type PlatformProof =
+	/** Nothing was checked — the login offered no proof, so there is nothing to report. */
+	| { status: 'none' }
+	| { status: 'verified'; platform: number; platformId: string }
+	| { status: 'unsupported' }
+	| { status: 'unconfigured' }
+	| { status: 'rejected'; reason: string }
+
+/**
+ * Verify a login's `platform_auth` and return the identity it proves.
+ *
+ * The two verifiable platforms prove the id in opposite directions, which is why they
+ * can't share a code path: Steam's ticket *carries* a SteamID64 we read out and trust,
+ * so the posted `platform_id` is discarded. Meta's nonce carries nothing — it is
+ * validated *against* the posted `platform_id`, so that field is an input, and a
+ * spoofed one fails validation rather than being ignored. Either way the id that comes
+ * back is proven, never the raw client-supplied field, and only a proven id is ever
+ * written to an account or linked to one.
+ */
+async function verifyPlatformProof(
+	env: App['Bindings'],
+	platform: number,
+	platformAuth: string,
+	postedPlatformId: string
+): Promise<PlatformProof> {
+	// A sideloaded APK reports the placeholder id (see SIDELOAD_PLATFORM_ID) because it
+	// has no Meta SDK behind it. Refuse it here, before anything is asked of Meta, so no
+	// caller downstream can treat it as an identity — above all `linkLoginIdentity` on the
+	// password grant, which is the path such a client actually takes. Linking it would
+	// hand every sideloaded headset a password-free login into that account, since they
+	// all report this same id.
+	//
+	// Refusing costs a sideloaded player nothing: their password login still succeeds (a
+	// password grant carries its own credential and only *links* on a verified proof), it
+	// just never gets a cached login, so they type their password each launch. That is
+	// the intended shape of the sideload flow.
+	if (platform === PlatformType.Oculus && postedPlatformId === SIDELOAD_PLATFORM_ID) {
+		return { status: 'rejected', reason: 'sideload placeholder platform id is never an identity' }
+	}
+	if (platform === PlatformType.Steam) {
+		const verified = platformAuth ? await verifySteamTicket(platformAuth) : null
+		if (!verified) return { status: 'rejected', reason: 'invalid or missing Steam ticket' }
+		return { status: 'verified', platform: PlatformType.Steam, platformId: verified.steamId }
+	}
+	if (platform === PlatformType.Oculus) {
+		// `.get()` throws when the secret doesn't exist in the store at all (as opposed to
+		// holding an empty/placeholder value) — the same misconfiguration from the player's
+		// side, so it takes the same branch.
+		const appSecret = await env.META_APP_SECRET.get().catch(() => '')
+		if (appSecret === '') return { status: 'unconfigured' }
+		const verified = await verifyMetaNonce(platformAuth, postedPlatformId, appSecret)
+		if (!verified.ok) return { status: 'rejected', reason: verified.reason }
+		return {
+			status: 'verified',
+			platform: PlatformType.Oculus,
+			platformId: verified.identity.userId,
+		}
+	}
+	return { status: 'unsupported' }
 }
 
 const app = new Hono<App>()
@@ -218,6 +383,14 @@ const app = new Hono<App>()
 				release: c.env.SENTRY_RELEASE,
 			})(c, next)
 	)
+
+	// The website (`www`) is a browser origin calling these endpoints directly, the way
+	// rec.net's own site called the game's API — so the responses need CORS headers or
+	// the browser discards them. `origin: '*'` is deliberate and safe HERE because these
+	// endpoints authenticate with a bearer token in the `Authorization` header, never a
+	// cookie: a hostile page can't read another origin's stored token, so there is no
+	// ambient credential for `*` to expose. Do not add cookie auth without narrowing it.
+	.use('*', withDefaultCors())
 
 	.onError(withOnError())
 	.notFound(withNotFound())
@@ -250,33 +423,36 @@ const app = new Hono<App>()
 			tags: ['Cached login'],
 			summary: 'Accounts linked to a platform id',
 			description: [
-				'Accounts the client may offer on its login screen for this platform identity.',
-				'Filtered to those a `cached_login` grant would actually accept, so an entry here',
-				'is always redeemable. An unknown id yields `[]` (not a 404) and the client falls',
-				'back to a fresh login or create_account.',
-				'EXCEPT platform 1 (Oculus), which is stubbed: it ignores the id and returns one',
-				'canned, non-redeemable entry with `requirePassword: true`.',
+				'Accounts the client may offer on its login screen for this platform identity —',
+				'the links this identity has, so an entry here is always redeemable by a',
+				'`cached_login` grant (both read the same table). An account linked to several',
+				'platforms appears in each of their pickers. An unknown id yields `[]` (not a 404)',
+				'and the client falls back to a fresh login or create_account.',
+				'EXCEPT the exact identity `1/1` (Oculus, id `1`), which is stubbed for SIDELOADED',
+				'APKs: with no Meta SDK they have no real identity to ask about and stall on an',
+				'empty picker. It consults nothing and returns one canned, non-redeemable entry',
+				'with `requirePassword: true`, sending the build to username/password login.',
 			].join(' '),
 			parameters: [
 				{
 					name: 'platform',
 					in: 'path',
 					required: true,
-					description: 'PlatformType integer. A non-numeric value disables the link filter.',
+					description: 'PlatformType integer. A non-numeric value matches the id on any platform.',
 					schema: { type: 'string' },
 				},
 				{
 					name: 'id',
 					in: 'path',
 					required: true,
-					description: 'Platform-native id — a SteamID64 for Steam.',
+					description: 'Platform-native id — a SteamID64 for Steam, a user id for Meta.',
 					schema: { type: 'string' },
 				},
 			],
 			responses: {
 				200: json(
 					CachedLogin.or(FakeCachedLogin).array(),
-					'Matching accounts; `[]` if none. The canned entry for platform 1 (Oculus).'
+					'Matching accounts; `[]` if none. The canned entry for `1/1`.'
 				),
 			},
 		}),
@@ -284,21 +460,27 @@ const app = new Hono<App>()
 			const { platform, id } = c.req.param()
 			logger.info('cached login lookup', { platform, id })
 			const platformInt = Number.parseInt(platform, 10)
-			// Oculus has no identity flow yet, so there is nothing in the DB to look up and
-			// the real path would always yield []. Hand back one canned entry instead, so the
-			// Oculus client gets past its login screen. `requirePassword` is true — unlike a
-			// genuine cached login there is no platform ticket behind this, so the client must
-			// prompt. Delete this branch once Oculus platform auth lands.
-			if (platformInt === PlatformType.Oculus) return c.json([FAKE_OCULUS_CACHED_LOGIN])
-			const accounts = await getAccountsByPlatformId(c.env.DB, id)
-			// Offer only accounts the `cached_login` grant will actually accept — same check.
-			return c.json(
-				accounts
-					.filter(
-						(a) => Number.isNaN(platformInt) || isLinkedToPlatformIdentity(a, platformInt, id)
-					)
-					.map(toCachedLogin)
-			)
+			// SIDELOADED APKs ONLY. A sideloaded build has no Meta SDK behind it, so it can't
+			// produce a real Meta identity or a nonce to prove one with — it asks about the
+			// placeholder identity `1/1`, and an empty picker leaves it stuck on the platform
+			// login screen with nothing to do. Hand back one canned entry to push it onto the
+			// username/password login instead, which is the only flow such a build can finish.
+			// `requirePassword` is true for exactly that reason: there's no platform proof here,
+			// and the `cached_login` grant would (correctly) refuse this entry.
+			//
+			// Scoped to that ONE identity rather than to all of platform 1 — store builds do
+			// real Meta logins, and shadowing the whole platform would hide genuine links from
+			// their pickers.
+			if (platformInt === PlatformType.Oculus && id === SIDELOAD_PLATFORM_ID) {
+				return c.json([FAKE_OCULUS_CACHED_LOGIN])
+			}
+			// Listed straight from the link table, which is also what the `cached_login`
+			// grant authorizes against — so the picker can't offer an account the grant
+			// then refuses.
+			const links = Number.isNaN(platformInt)
+				? await getLinksForPlatformId(c.env.DB, id)
+				: await getLinksForPlatformIdentity(c.env.DB, platformInt, id)
+			return c.json(await toCachedLogins(c.env.DB, links))
 		}
 	)
 
@@ -312,8 +494,8 @@ const app = new Hono<App>()
 			description: [
 				'Resolves many platform ids at once. Results are flattened across all ids, so the',
 				'response cannot be mapped back to a specific input id — the client uses each',
-				'entry’s own `platformId`. Unlike the single-id route, results are NOT filtered to',
-				'redeemable accounts. Unknown ids contribute nothing; a body with no `id` yields `[]`.',
+				'entry’s own `platformId`. No platform accompanies these ids, so each matches on',
+				'any platform. Unknown ids contribute nothing; a body with no `id` yields `[]`.',
 			].join(' '),
 			requestBody: form(PlatformIdsRequest, 'Repeated `id=` form fields'),
 			responses: { 200: json(CachedLogin.array(), 'Flattened accounts across every id') },
@@ -324,7 +506,8 @@ const app = new Hono<App>()
 			const ids = (Array.isArray(raw) ? raw : raw != null ? [raw] : []).map(String)
 			const out: Array<ReturnType<typeof toCachedLogin>> = []
 			for (const pid of ids) {
-				out.push(...(await getAccountsByPlatformId(c.env.DB, pid)).map(toCachedLogin))
+				// No platform accompanies these ids, so they match on any platform.
+				out.push(...(await toCachedLogins(c.env.DB, await getLinksForPlatformId(c.env.DB, pid))))
 			}
 			return c.json(out)
 		}
@@ -345,12 +528,13 @@ const app = new Hono<App>()
 				'`password` becomes the login credential. Subject to two independent signup caps,',
 				'per verified platform id and per signup IP (`MAX_ACCOUNTS_PER_PLATFORM_ID` /',
 				'`MAX_ACCOUNTS_PER_IP`; either disabled by setting it to 0). If it asserts a',
-				'`platform`, that platform must be Steam and `platform_auth` must verify.',
+				'`platform`, that platform must be verifiable (Steam or Meta) and its `platform_auth`',
+				'must verify.',
 				'',
 				'**`cached_login`** — logs into an already-linked account using platform ownership as',
-				'the credential; no password. Requires a Steam `platform_auth` ticket, and the posted',
-				'`account_id` must be linked to exactly the identity that ticket proves. An account',
-				'with no stored platform identity cannot be cached-logged-into.',
+				'the credential; no password. Requires a verifying `platform_auth`, and the posted',
+				'`account_id` must be LINKED to exactly the identity it proves. An account with no',
+				'link for that identity cannot be cached-logged-into.',
 				'',
 				'**`refresh_token`** — redeems a stored single-use refresh token, rotating it. The',
 				'platform and platform id come from what was stored at issue time, not the body.',
@@ -358,16 +542,44 @@ const app = new Hono<App>()
 				'**`password`** (the fallback for any unrecognised or absent `grant_type`) —',
 				'identifies the account by `username` or numeric `account_id` and requires the',
 				'matching `password`. An account with no stored hash cannot be logged into at all,',
-				'which is what closes id/username-only takeover.',
+				'which is what closes id/username-only takeover. When it also posts a `platform_auth`',
+				'that verifies, that identity is LINKED to the account — this is how a player who',
+				'signed up on one platform gets a cached login on a second device. The login is',
+				'never failed over the link: an unverifiable proof (or one over the per-identity',
+				'cap) just leaves the account without a cached login there.',
 				'',
-				'**Platform verification.** Steam (platform `0`) is the only platform that can be',
-				'verified, via its signed `platform_auth` ticket, so any grant authenticating by',
-				'platform identity must be Steam. The verified SteamID64 replaces the client-supplied',
-				'`platform_id` and is the only value ever written to an account. Password and refresh',
-				'grants carry their own credential and are not gated this way.',
+				'**Platform identity.** An account can be reached from several platform identities;',
+				'the links are the one thing both the picker and `cached_login` consult, and only a',
+				'VERIFIED identity is ever linked. Two platforms can be verified. Steam (`0`) posts a',
+				'Steam-signed `platform_auth` ticket, checked offline; the SteamID64 it carries',
+				'replaces the client-supplied `platform_id`. Meta/Oculus (`1`) posts `platform_auth`',
+				'as `{"Nonce":…,"AppId":…}`, which recflare sends to Meta together with the posted',
+				'`platform_id` — validation is what binds the nonce to that user id, so a spoofed id',
+				'fails. Meta logins therefore need the app secret (`META_APP_SECRET`) and answer 500',
+				'when it is unset. The first identity linked also becomes the account’s primary',
+				'(what the account DTO and a refreshed token report); later ones only link.',
+				'',
+				'The one platform id that is never verified and never linked is `1` on platform `1`',
+				'— what a SIDELOADED Oculus APK reports, having no Meta SDK to ask. Every such',
+				'build reports it, so it identifies nobody. A password login that carries it still',
+				'succeeds; it simply links nothing, and the player types their password each launch.',
 				'',
 				'**Roles.** The token embeds a `role` claim from the account, so developer/moderator',
 				'powers refresh on every login and every refresh grant.',
+				'',
+				'**Bans.** Once the grant has resolved an account, a BANNED account is refused a',
+				'token at all (`invalid_grant`) — every grant, including a refresh. A ban is a',
+				'`report` row with `banned` set (the `api` worker owns that table); it lifts on its',
+				'own when `ban_expires` passes, and never if that is null.',
+				'',
+				'The refusal follows the player, not just the account: it also catches an account',
+				'that shares a PROVEN platform identity (a `platform_account` link) or an IP',
+				'(`signupIp`/`lastLoginIp`, or the address this request came from) with a banned',
+				'one, and a `create_account` carrying either is refused BEFORE it mints anything.',
+				'Those two arms are the operator’s `BAN_EVASION_MATCH` knob (`ip`, `platform`, or',
+				'`off`); the ban on the account itself is always enforced. A linked match answers a',
+				'deliberately vaguer description than a direct one — the account refused may belong',
+				'to a housemate of the banned player rather than to them.',
 			].join('\n'),
 			requestBody: form(
 				TokenRequest,
@@ -378,13 +590,18 @@ const app = new Hono<App>()
 				400: json(
 					OAuthError,
 					[
-						'Unusable grant: bad credentials, an unverifiable or non-Steam platform, an',
-						'invalid/expired refresh token, a missing account identifier, or a signup cap reached',
+						'Unusable grant: bad credentials, an unverifiable platform or platform_auth, an',
+						'invalid/expired refresh token, a missing account identifier, a signup cap reached,',
+						'or a banned account',
 					].join(' ')
 				),
 				500: json(
 					OAuthError,
-					'JWT_SECRET is unset — a token is refused rather than signed with an empty key'
+					[
+						'The server is missing a secret it cannot proceed without: JWT_SECRET (a token is',
+						'refused rather than signed with an empty key) or, on a Meta login, META_APP_SECRET',
+						'(no nonce can be validated without it).',
+					].join(' ')
 				),
 			},
 		}),
@@ -428,42 +645,90 @@ const app = new Hono<App>()
 				: (c.req.header('cf-connecting-ip') ?? '')
 			logger.info('DEBUG ip resolution', { internalSecretValid: internalSecretValid, presentedSecretLen: presentedSecret.length, envSecretLen: (c.env.INTERNAL_SECRET || '').length, forwardedIp: c.req.header('x-forwarded-client-ip') || null, connectingIp: c.req.header('cf-connecting-ip') || null, resolvedClientIp: clientIp })
 
-			// A platform-authenticated login proves who you are with the platform itself,
-			// and we can ONLY verify Steam (platform 0) — via its Steam-signed platform_auth
-			// ticket. So those logins must be Steam:
-			//   - cached_login authenticates purely by platform identity → always Steam-only.
-			//   - create_account that asserts a platform is rejected unless it's Steam, since
-			//     we won't bind an identity we can't prove. (create_account with NO platform
-			//     is the password-account path — allowed, but it binds no platformId.)
-			// The verified SteamID64 replaces the unauthenticated `platform_id` field and is
-			// the ONLY value ever written to an account's `platformId`. Credential (password)
-			// and refresh_token grants carry their own credential and aren't gated here.
-			let verifiedSteamId: string | null = null
+			// A platform-authenticated login proves who you are with the platform itself, and
+			// we can verify exactly two: Steam (0), from its Steam-signed platform_auth ticket,
+			// and Meta/Oculus (1), by asking Meta to validate the nonce in platform_auth (see
+			// verifyPlatformProof). Only a verified identity is ever bound or linked.
+			//
+			// Two grants are GATED on it — they have no other credential, so an unverifiable
+			// platform is fatal:
+			//   - cached_login authenticates purely by platform identity.
+			//   - create_account that asserts a platform: we won't bind an identity we can't
+			//     prove. (create_account with NO platform is the password-account path —
+			//     allowed, but binds no platformId.)
+			//
+			// A password grant is NOT gated: the password already proved who it is. It posts
+			// its platform proof too, and if that verifies we LINK the identity to the account
+			// (see below), which is how a player who created an account on Steam gets a cached
+			// login on their headset. If it doesn't verify, the login still succeeds — it just
+			// links nothing, because a link is a password-free way into the account and must
+			// never rest on an unproven id.
+			const platformAuth = typeof body.platform_auth === 'string' ? body.platform_auth : ''
 			const platformAsserted = !Number.isNaN(platformInt)
-			if (grantType === 'cached_login' || (grantType === 'create_account' && platformAsserted)) {
-				if (platformInt !== PlatformType.Steam) {
-					return c.json(
-						{
-							error: 'invalid_grant',
-							error_description: 'unsupported platform; only Steam can be verified',
-						},
-						400
-					)
-				}
-				const platformAuth = typeof body.platform_auth === 'string' ? body.platform_auth : ''
-				const verified = platformAuth ? await verifySteamTicket(platformAuth) : null
-				if (!verified) {
-					return c.json(
-						{
-							error: 'invalid_grant',
-							error_description: 'invalid or missing platform_auth ticket',
-						},
-						400
-					)
-				}
-				verifiedSteamId = verified.steamId
-				platformId = verified.steamId
+			const gatedOnPlatform =
+				grantType === 'cached_login' || (grantType === 'create_account' && platformAsserted)
+			// The password grant only spends a verification when the client actually offered
+			// one; the rest of the time there is nothing to link.
+			const proof: PlatformProof =
+				gatedOnPlatform || (platformAsserted && platformAuth !== '')
+					? await verifyPlatformProof(c.env, platformInt, platformAuth, platformId)
+					: { status: 'none' }
+
+			let verifiedPlatformId: string | null = null
+			let verifiedPlatform: number | null = null
+			if (proof.status === 'verified') {
+				verifiedPlatform = proof.platform
+				verifiedPlatformId = proof.platformId
+			} else if (proof.status !== 'none') {
+				// Log every failure, including the ones a password grant shrugs off: a player
+				// who silently never gets a cached login on their headset has no other symptom,
+				// and this line is where "Meta rejected the nonce" becomes visible.
+				logger.info('platform_auth not verified', {
+					platform: platformInt,
+					platformId,
+					grantType,
+					status: proof.status,
+					reason: proof.status === 'rejected' ? proof.reason : undefined,
+				})
 			}
+
+			if (gatedOnPlatform && proof.status !== 'verified') {
+				if (proof.status === 'unsupported') {
+					return c.json(
+						{
+							error: 'invalid_grant',
+							error_description: 'unsupported platform; only Steam and Meta can be verified',
+						},
+						400
+					)
+				}
+				if (proof.status === 'unconfigured') {
+					// An operator misconfiguration, not the client's fault: without the app secret
+					// every Meta player is locked out, so it answers 500 the way an unset
+					// JWT_SECRET does below rather than blaming the credential. (We never fall
+					// back to trusting the posted id — that would let anyone log into any
+					// Meta-linked account by naming its user id.)
+					logger.error('refusing a Meta login: META_APP_SECRET is empty')
+					return c.json(
+						{
+							error: 'server_error',
+							error_description: 'Meta platform verification is not configured',
+						},
+						500
+					)
+				}
+				// The reason is for the operator; the client is told only that it was rejected.
+				// A wrong app secret and a stale nonce look identical from the client side.
+				return c.json(
+					{ error: 'invalid_grant', error_description: 'invalid or missing platform_auth' },
+					400
+				)
+			}
+
+			// From here on `platformId` is the PROVEN identity wherever there is one — the
+			// SteamID64 out of the ticket or the Meta user id the nonce validated against,
+			// never the raw client-supplied field.
+			if (verifiedPlatformId !== null) platformId = verifiedPlatformId
 
 			// Resolve the account this token is for:
 			//  - create_account: mint + persist a brand-new account (auto-assigned random
@@ -479,6 +744,35 @@ const app = new Hono<App>()
 			//    via create_account or /account/me/changepassword.
 			let accountId: string
 			if (grantType === 'create_account') {
+				// A banned player's next move is a new account, so the ban is checked BEFORE
+				// one is minted — against the only identity a signup has, the IP it came from
+				// and the platform identity it just proved. Refusing after the fact (as the
+				// shared check below would) still refuses the token, but leaves the account
+				// row behind and burns a slot off both signup caps, so the evader gets to keep
+				// making them.
+				//
+				// Nothing here can match the account arm (there is no account yet), so this is
+				// purely the linked matching, and BAN_EVASION_MATCH=off leaves signup open —
+				// which is the honest default position: a server that won't accept the IP arm's
+				// false positives is choosing to let evaders re-register.
+				const blocked = await resolveBan(c.env.DB, null, {
+					identity: {
+						ip: clientIp,
+						platform: verifiedPlatform,
+						platformId: verifiedPlatformId,
+					},
+					arms: banEvasionMatch(c.env.BAN_EVASION_MATCH),
+				})
+				if (blocked) {
+					logger.info('signup refused: player banned', {
+						via: blocked.via,
+						bannedAccountId: blocked.bannedAccountId,
+						ip: clientIp,
+						platformId: verifiedPlatformId,
+					})
+					return c.json({ error: 'invalid_grant', error_description: BLOCKED_DESCRIPTION }, 400)
+				}
+
 				// Signup caps. Checked before minting anything, so a rejected signup leaves no
 				// account behind. Each arm is skipped when it's disabled (var <= 0) or when its
 				// identity is unknown (no verified platform id / no client IP) — an unattributable
@@ -491,10 +785,16 @@ const app = new Hono<App>()
 				const maxPerIp = intVar(c.env.MAX_ACCOUNTS_PER_IP, DEFAULT_MAX_ACCOUNTS_PER_IP)
 				if (
 					maxPerPlatformId > 0 &&
-					verifiedSteamId !== null &&
-					(await countAccountsByPlatformId(c.env.DB, verifiedSteamId)) >= maxPerPlatformId
+					verifiedPlatformId !== null &&
+					(await countAccountsForPlatformIdentity(
+						c.env.DB,
+						verifiedPlatform ?? 0,
+						verifiedPlatformId
+					)) >= maxPerPlatformId
 				) {
-					logger.info('signup rejected: platform account limit', { platformId: verifiedSteamId })
+					logger.info('signup rejected: platform account limit', {
+						platformId: verifiedPlatformId,
+					})
 					return c.json(
 						{
 							error: 'invalid_grant',
@@ -518,14 +818,15 @@ const app = new Hono<App>()
 					)
 				}
 
-				// Bind the platform identity ONLY when a Steam ticket proved it. That bound
-				// `platformId` (the SteamID64) is what a later cached login is checked against,
-				// so only this Steam user can log back into the account. A password/anonymous
-				// create_account (no platform) binds no platformId.
+				// Bind the platform identity ONLY when the platform proved it (a Steam ticket or
+				// a Meta-validated nonce). A password/anonymous create_account (no platform)
+				// binds nothing. The account blob keeps this first identity as its PRIMARY one
+				// (for the account DTO and the refresh grant's claims); the link written just
+				// below is what a later cached login is actually authorized against.
 				const account = await createAccount(c.env.DB, {
 					platforms: platformInt || 0,
-					platform: verifiedSteamId !== null ? 0 : undefined,
-					platformId: verifiedSteamId ?? undefined,
+					platform: verifiedPlatform ?? undefined,
+					platformId: verifiedPlatformId ?? undefined,
 					lastLoginTime: new Date().toISOString(),
 					deviceId: deviceId || undefined,
 					deviceClass: deviceId ? deviceClass : undefined,
@@ -533,6 +834,14 @@ const app = new Hono<App>()
 					lastLoginIp: clientIp || undefined,
 				})
 				accountId = String(account.accountId)
+				if (verifiedPlatformId !== null) {
+					await linkPlatformIdentity(
+						c.env.DB,
+						account.accountId,
+						verifiedPlatform ?? 0,
+						verifiedPlatformId
+					)
+				}
 				// Establish the login password when one is posted (raw password never stored).
 				const password = typeof body.password === 'string' ? body.password : ''
 				if (password !== '') {
@@ -556,18 +865,25 @@ const app = new Hono<App>()
 			} else if (grantType === 'cached_login') {
 				// Platform-authenticated login into an already-linked account. The client posts
 				// the `account_id` it got from /cachedlogin/forplatformid together with the
-				// `platform_id` its platform_auth ticket vouches for. Authorize ONLY when that
-				// account is linked to exactly this platform identity — this is the check that
-				// keeps anyone but platform user `platform_id` out of the account (platform
-				// ownership is the credential; no password needed). An account with no stored
-				// platform identity can't be cached-logged-into and must use a fresh login.
+				// `platform_id` its platform_auth vouches for. Authorize ONLY when the link
+				// table says that account is linked to exactly this platform identity — this is
+				// the check that keeps anyone but that platform user out of the account
+				// (platform ownership is the credential; no password needed). An account with no
+				// link for the presented identity must use a password.
 				//
-				// NB: `platform_id` here is the Steam-verified SteamID64 (set from the ticket
-				// above), never the client-supplied field. See steam-ticket.ts.
+				// The picker lists straight from the same table, so it can only offer accounts
+				// this check accepts.
+				//
+				// NB: `platform_id` here is the verified identity set above — the SteamID64 from
+				// the ticket, or the Meta user id the nonce validated against — never the raw
+				// client-supplied field. See steam-ticket.ts and meta-nonce.ts.
 				//
 				const postedId = typeof body.account_id === 'string' ? body.account_id.trim() : ''
 				const account = /^\d+$/.test(postedId) ? await getAccount(c.env.DB, Number(postedId)) : null
-				if (!account || !isLinkedToPlatformIdentity(account, platformInt, platformId)) {
+				const linked =
+					account !== null &&
+					(await isPlatformIdentityLinked(c.env.DB, account.accountId, platformInt, platformId))
+				if (!account || !linked) {
 					return c.json(
 						{
 							error: 'invalid_grant',
@@ -609,8 +925,59 @@ const app = new Hono<App>()
 					)
 				}
 				accountId = String(resolvedId)
+				// The password proved the account; the platform proof (when the client sent one
+				// and it verified) proves the device's platform identity. Linking the two is
+				// what gives a player who signed up on Steam a cached login on their headset —
+				// they type their password once there, and never again.
+				if (verifiedPlatformId !== null) {
+					await linkLoginIdentity(
+						c.env.DB,
+						resolvedId,
+						verifiedPlatform ?? 0,
+						verifiedPlatformId,
+						intVar(c.env.MAX_ACCOUNTS_PER_PLATFORM_ID, DEFAULT_MAX_ACCOUNTS_PER_PLATFORM_ID)
+					)
+				}
 				await setLastLoginTime(c.env.DB, resolvedId, new Date().toISOString())
 				await setLoginContext(c.env.DB, resolvedId, { deviceId, deviceClass, ip: clientIp })
+			}
+
+			// A banned player gets no token — and with no token every other worker is shut to
+			// them, so this is the outer wall of a ban; matchmaking's refusal is the inner
+			// one, which still has to exist because a token issued before the ban stays valid
+			// until it expires.
+			//
+			// Checked once here, after the grant has resolved an account, so it covers every
+			// grant: password, cached_login and a refresh_token redeemed by a client that has
+			// been running since before the ban. Deliberately AFTER the credential checks —
+			// a wrong password is still "invalid account_id or password", so this can't be
+			// used to probe whether an account exists or is banned without knowing it.
+			//
+			// The request's own IP and proven identity are passed alongside the account, so a
+			// ban also reaches an old, clean account logged into from the banned player's
+			// device or network — the stored ips alone would only catch that on the SECOND
+			// login. create_account was already refused before it minted anything (above);
+			// this still runs for it, so a signup that raced one is refused too.
+			const ban = await resolveBan(c.env.DB, Number(accountId), {
+				identity: { ip: clientIp, platform: verifiedPlatform, platformId: verifiedPlatformId },
+				arms: banEvasionMatch(c.env.BAN_EVASION_MATCH),
+			})
+			if (ban) {
+				logger.info('token refused: player banned', {
+					accountId,
+					grantType,
+					via: ban.via,
+					bannedAccountId: ban.bannedAccountId,
+					reportId: ban.ban.id,
+					banExpires: ban.ban.ban_expires,
+				})
+				return c.json(
+					{
+						error: 'invalid_grant',
+						error_description: ban.via === 'account' ? BANNED_DESCRIPTION : BLOCKED_DESCRIPTION,
+					},
+					400
+				)
 			}
 
 			// Never sign with an empty key. An empty JWT_SECRET (misconfigured/missing

@@ -95,6 +95,129 @@ parses it to finish the action, so a bare 200 reads as a failure and the item ne
 finishes unlocking. Deletes are scoped to the caller, so an unauthenticated or
 mismatched call is a harmless no-op (opening _another_ player's box is a 403).
 
+## Weekly challenge (`static/weekly-challenge.json`)
+
+Served verbatim by `GET /api/challenge/v2/getCurrent`. The server never evaluates it: the
+client reads the rule tree in each challenge's `Config`, watches its own gameplay, and
+posts the tree back to `/api/challenge/v2/updateProgress` with its verdict. So this file
+is the entire definition of a week's challenges — ids, display strings, matching rules and
+the reward preview.
+
+Everything below was read off reference data (one captured live rotation), not a spec.
+Field meanings marked _(inferred)_ are read from how the values line up with the strings
+the client renders; the rest are pinned by the data itself.
+
+### Top level
+
+| Field                  | Example                        | Notes                                                                                                                        |
+| ---------------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `ChallengeMapId`       | `17`                           | Id of the rotation as a whole ("map" of challenges). Echoed back on `updateProgress`; bump it when you publish a new week.   |
+| `CompletedRequired`    | `false`                        | _(inferred)_ Whether every challenge must be finished before the `Gift` is claimable.                                        |
+| `StartAt` / `EndAt`    | `2026-03-25T21:00:00`          | The window, 7 days apart, **no timezone suffix** — unlike `ServerTime`. Treat as UTC.                                        |
+| `ServerTime`           | `2026-03-31T14:42:54.2754728Z` | .NET round-trip timestamp (7-digit fraction, `Z`). The client dates the countdown off this, so it is **frozen** — see below. |
+| `Challenges`           | array                          | The week's challenges, rendered in order.                                                                                    |
+| `Gift`                 | object                         | The reward preview for finishing the set.                                                                                    |
+| `FallbackGiftName`     | `"4-Star Box"`                 | Shown when the client can't resolve `Gift` into a name.                                                                      |
+| `ChallengeThemeString` | a designer quote               | Free text carried through from the captured rotation; a theme note, not a rendered UI string as far as we can tell.          |
+
+**The frozen clock:** `ServerTime` (Mar 31) sits _inside_ `StartAt`…`EndAt` (Mar 25 → Apr 1),
+about a day before the end, and the file is static — so the client always sees an active
+rotation with a ~1-day countdown rather than an expired one. If you edit the window, move
+`ServerTime` inside the new one too, or the challenges may render as already over.
+
+### A challenge entry
+
+| Field         | Notes                                                                                                                                                                           |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ChallengeId` | Unique within the rotation, not sequential (`37, 38, 44, 49, 63`). Posted back on `updateProgress`.                                                                             |
+| `Name`        | Internal slug, never displayed — and **not authoritative**: `63` is named `Complete3SpillwayGames` but its `Config` and description are Clearcut. Trust `Config`, not the name. |
+| `Config`      | The rule tree, as an **escaped JSON string** (not a nested object). See below.                                                                                                  |
+| `Description` | The one-line goal, e.g. `"Complete 10 games in ^Paintball"`.                                                                                                                    |
+| `Tooltip`     | The longer hint under it.                                                                                                                                                       |
+| `Complete`    | Per-player state, so meaningless in a static catalog: always `false` here, and `updateProgress` is stubbed and never flips it.                                                  |
+
+`^Token` in `Description`/`Tooltip` is a client-side room link: the client resolves the
+token to a room and renders a tappable name. Subrooms use a dotted path
+(`^Paintball.Clearcut`). It is optional decoration, not markup the client requires — the
+same rotation writes both `"Complete 10 games in ^Paintball"` and, plainly,
+`"Complete 3 games of Paintball: Clear Cut"`.
+
+### The `Config` rule tree
+
+A tree of nodes, each with a numeric type in `ct`. Two node kinds appear:
+
+- **Match** (`ct: 0`) — `wc` is a list of predicates that must _all_ hold for one game
+  result (AND).
+- **Counter** (`ct: 1`) — `ctc` holds the child node to count and `t` is the target count.
+
+Which slot a node uses (`wc` vs `ctc`) tells you what its children are; a node never has
+both. `ipc` is `false` on every composite node in the reference data — purpose unknown, but
+the client echoes it back, so keep emitting it.
+
+Predicate leaves carry `vs`, a list of accepted values matched as OR:
+
+| `ct` | Shape                            | Meaning                                                                                                                                                                                     |
+| ---- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `6`  | `{"ct":6,"vs":[2]}`              | _(inferred)_ The kind of event being matched — a finished game/session. Present in **every** leaf group and always `[2]`; nothing observed varying it, so treat it as required boilerplate. |
+| `7`  | `{"ct":7,"vs":[{"l":"<guid>"}]}` | Scene allow-list: each `l` is a subroom's `UnitySceneId` (see `apps/rooms`). Matches if the game happened in any of them.                                                                   |
+| `9`  | `{"ct":9,"vs":[true],"v":"won"}` | A named session variable (`v`) equals one of `vs` — here, the player won.                                                                                                                   |
+
+The two idioms in the file, unescaped:
+
+```jsonc
+// "Complete ^TheRiseOfJumbotron quest" — one winning session in one scene
+{ "ct": 0, "ipc": false, "wc": [
+  { "ct": 6, "vs": [2] },
+  { "ct": 9, "vs": [true], "v": "won" },
+  { "ct": 7, "vs": [{ "l": "acc06e66-…" }] }   // TheRiseofJumbotron / Home
+]}
+
+// "Complete 5 Charades games" — count matching sessions to a target
+{ "ct": 1, "ipc": false, "t": 5, "ctc": [
+  { "ct": 0, "ipc": false, "wc": [
+    { "ct": 6, "vs": [2] },
+    { "ct": 7, "vs": [{ "l": "a673712c-…" }, { "l": "4078dfed-…" }] }   // 3DCharades + Legacy3DCharades
+  ]}
+]}
+```
+
+Note the quest challenges have **no `t`** (one qualifying session is the whole goal) and
+the counted ones have **no `won` predicate** (finishing counts, winning is irrelevant).
+
+On `updateProgress` the client posts the same tree back with **`cc`** added to the counter
+node — its current count (`…,"t":5,"cc":1`). `cc` never appears in this file; it is
+progress, not definition. Since the server persists nothing, that count lives only in the
+client.
+
+**Scene ids, not room ids.** Because `ct: 7` matches `UnitySceneId`, a screens room and its
+VR twin share ids and both count — the six Paintball scenes listed for challenge `44` are
+the subrooms of _both_ `Paintball` and `PaintballVR`, and each also exists as a standalone
+base room (`River`, `Clearcut`, …). One list covers every way in. How the rotation's five
+challenges resolve:
+
+| Challenge | Scenes                                                            |
+| --------- | ----------------------------------------------------------------- |
+| `37`      | TheRiseofJumbotron / Home                                         |
+| `38`      | Crescendo / Home                                                  |
+| `44`      | Paintball: River, Homestead, Quarry, Clearcut, Spillway, Drive-in |
+| `49`      | 3DCharades / InkSpaceHome + Legacy3DCharades / Home               |
+| `63`      | Clearcut only                                                     |
+
+### The `Gift` block
+
+Same item vocabulary as a storefront `GiftDrop` (`AvatarItemDesc` — a comma-separated list
+of avatar-item guids, `AvatarItemType`, `ConsumableItemDesc`, `EquipmentPrefabName`,
+`EquipmentModificationGuid`) plus `Xp`, `Level` and `StorefrontType`, but two fields are
+**renamed**: a storefront's `Context`/`Rarity` are `GiftContext`/`GiftRarity` here. Don't
+feed one shape to the other's reader.
+
+`EquipmentModificationGuid` is the Rec Room packed guid — 22-char URL-safe base64 of the 16
+guid bytes in .NET little-endian order, padding stripped (`g5u0weNLmkCLeUXFUVn74Q` →
+`c1b49b83-4be3-409a-8b79-45c55159fbe1`). The reward is identified by prefab + that guid,
+_not_ by `GiftDropId`: this block's `GiftDropId` is `3994`, while the same skin sells in
+`sf3.json` as `2121` ("Camera Skin (Comic)"). Nothing grants it — the reward is preview
+only (see Known gaps).
+
 ## Bindings
 
 | Binding                      | Type           | Notes                                                    |
@@ -114,3 +237,5 @@ Add a storefront by dropping a new `sfN.json` in `static/storefronts` — no cod
 - Consumables are granted and listed but never spent by gameplay, so `Count` only grows.
 - Several routes (room keys, wishlist, equipment, room consumables/currencies, game
   rewards) are empty-list stubs pending their own stores.
+- Weekly-challenge progress is never persisted and the rotation's `Gift` is never granted:
+  `updateProgress` echoes `Complete: false`, so nothing ever completes.

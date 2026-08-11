@@ -3,6 +3,7 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 import '../../chat.app'
 
+import { NotificationType } from '../../../../notify/src/notification-types'
 import {
 	ChatModerationState,
 	getMessage,
@@ -721,7 +722,7 @@ describe('ChatMessageReceived push', () => {
 	/** The stubbed hub (see vitest.config.ts) records what it was sent. */
 	interface SentNotification {
 		playerId: number
-		notificationType: number
+		notificationType: NotificationType
 		data: Record<string, unknown>
 	}
 	const hub = env.RECFLARE_NOTIFICATIONS_HUB as unknown as {
@@ -759,8 +760,9 @@ describe('ChatMessageReceived push', () => {
 
 		const sent = await hub.getByName('global').takeSent()
 		expect(sent.map((n) => n.playerId).sort((a, b) => a - b)).toEqual([caller, 886002, 886003])
-		// NotificationType.ChatMessageReceived
-		expect(sent.every((n) => n.notificationType === 90)).toBe(true)
+		expect(
+			sent.every((n) => n.notificationType === NotificationType.ChatMessageReceived)
+		).toBe(true)
 		expect(sent[0]!.data).toEqual({
 			chatMessageId: chatThread.latestMessage.chatMessageId,
 			chatThreadId: chatThread.chatThreadId,
@@ -982,7 +984,9 @@ describe('POST /thread/:id', () => {
 	it('pushes ChatMessageReceived to every member', async () => {
 		const hub = env.RECFLARE_NOTIFICATIONS_HUB as unknown as {
 			getByName(name: string): {
-				takeSent(): Promise<Array<{ playerId: number; notificationType: number }>>
+				takeSent(): Promise<
+					Array<{ playerId: number; notificationType: NotificationType }>
+				>
 			}
 		}
 		const caller = 889005
@@ -992,7 +996,9 @@ describe('POST /thread/:id', () => {
 		await send(caller, `/thread/${chatThreadId}`)
 		const sent = await hub.getByName('global').takeSent()
 		expect(sent.map((n) => n.playerId).sort((a, b) => a - b)).toEqual([caller, 889006])
-		expect(sent.every((n) => n.notificationType === 90)).toBe(true)
+		expect(
+			sent.every((n) => n.notificationType === NotificationType.ChatMessageReceived)
+		).toBe(true)
 	})
 
 	it('reports invalid arguments for blank contents without storing anything', async () => {

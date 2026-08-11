@@ -43,10 +43,12 @@ services but would require small code changes.
 
 ## Prerequisites
 
-- node (modern)
-- pnpm
-- bun
-- jq/awk/sed
+**You must have all these requirements or RecFlare deployment will fail!**
+
+- node 24 (https://nodejs.org)
+- pnpm (install with `npm install -g pnpm`)
+- bun (https://bun.sh)
+- jq/awk/sed (on Windows try `winget jq` etc.)
 - A Cloudflare account with a zone (domain) you control, for deploying.
 
 Cloudflare's free plan is good enough for testing (100k worker requests/day) but the
@@ -65,6 +67,8 @@ We use [Just](https://github.com/casey/just) for convenience. This will install 
 just install
 ```
 
+You do not have to use `just` but you will have to run things manually with `pnpm`/`bun`.
+
 **Configure your custom domain:**
 
 Create a new .env file from the template:
@@ -77,11 +81,11 @@ Edit `.env` and set `RECFLARE_DOMAIN` to your domain (or declare it with `export
 
 (Optional) - per-app subdomain overrides come from
 `RECFLARE_SUBDOMAINS` (a JSON object, e.g. `'{"playersettings":"settings"}'`). This would be used
-if you wanted to merge two services together.
+if you wanted to merge two services together e.g. send `datacollection` calls to `api`.
 
 **Create the storage resources:**
 
-The workers bind Cloudflare storage primitive. Create them once against your
+The workers bind Cloudflare storage primitives. Create them once against your
 Cloudflare account, then record the IDs in `.env`. The committed `wrangler.jsonc`
 files carry `"local"` placeholders; the real IDs are spliced in at deploy time, so
 nothing in version control needs editing. Authenticate wrangler first
@@ -103,6 +107,24 @@ binds it so tokens signed by `auth` verify everywhere. Record its id in `.env` a
 ```bash
 wrangler secrets-store secret create <store-id> --name JWT_SECRET --scopes workers --remote
 ```
+
+The same store also holds `META_APP_SECRET`, the app secret from your app's page in
+the Meta developer dashboard (developers.meta.com). Only the `auth` worker binds it,
+and only to authenticate itself to Meta when validating a headset login's nonce —
+unlike Steam's ticket, which verifies offline, a Meta login cannot be checked without
+it. Create it too:
+
+```bash
+wrangler secrets-store secret create <store-id> --name META_APP_SECRET --scopes workers --remote
+```
+
+> ⚠️ Both secrets must **exist** in the store or `just deploy` fails on the `auth`
+> worker — a binding to a missing secret is a deploy error. If you have no Meta app,
+> create `META_APP_SECRET` with any placeholder value: Meta sign-ins then fail with a
+> 500 ("Meta platform verification is not configured") and nothing else is affected.
+> Steam and password sign-ins are unaffected either way. Put the real value in later
+> with `wrangler secrets-store secret update` — no redeploy needed, the worker reads
+> the secret per request.
 
 Then apply the schema. `just migrate` will set up the database and populate it with data. This runs non-interactively, so be careful!
 
@@ -169,6 +191,7 @@ edit the value, then re-deploy the worker that reads them.
 | `RECFLARE_MAX_ACCOUNTS_PER_PLATFORM_ID` | `auth`  | `3`     | Accounts one Steam-verified identity may create. `0` disables. |
 | `RECFLARE_MAX_ACCOUNTS_PER_IP`          | `auth`  | `3`     | Accounts one signup IP may create. `0` disables.               |
 | `RECFLARE_STARTING_TOKENS`              | `econ`  | `10000` | RecCenterTokens a new player is granted.                       |
+| `RECFLARE_ROOM_REDIRECTS`               | `match` | unset   | Rooms to switch out on matchmake, e.g. `2=MyHub`.              |
 
 Then deploy just the worker that reads it:
 
@@ -198,6 +221,61 @@ single address, so raise it (or set it to `0`) if real players report being lock
 > worker's variables wholesale, so a dashboard-set value is wiped by your next
 > `just deploy`. `.env` is the durable place. Real secrets don't belong there either — they
 > go in the Cloudflare Secrets Store, like the shared `JWT_SECRET` above.
+
+### Signing up on the website (Turnstile)
+
+Players get an account by launching the game, which needs no setup. The website can create
+one too — that path has no platform identity behind it, so it runs behind a
+[Turnstile](https://developers.cloudflare.com/turnstile/) bot check and is **closed until
+you configure one**. Two steps, both one-time:
+
+1. Create the widget: Cloudflare dashboard → **Turnstile** → **Add widget**, mode
+   **Managed**, hostnames your domain (add `localhost` if you want it in `just dev` against
+   real keys). It gives you a **site key** and a **secret key**.
+2. Put both in the same Secrets Store the shared `JWT_SECRET` lives in — they're the switch
+   that opens signup, and store values survive deploys:
+
+   ```bash
+   wrangler secrets-store secret create <store-id> --name TURNSTILE_SITE_KEY \
+     --scopes workers --remote
+   wrangler secrets-store secret create <store-id> --name TURNSTILE_SECRET_KEY \
+     --scopes workers --remote
+   ```
+
+Then `just deploy -F www`. The site key is public — the browser needs it to render the
+widget, and gets it from `GET /api/config` — but it lives next to its secret so signup is
+configured in one place. The secret key never leaves the worker: `/api/signup` verifies the
+token against Turnstile server-side before it calls `auth`.
+
+Signup opens only when **both** resolve. With either missing, `/api/config` reports signup
+closed (the site shows sign-in only) and `POST /api/signup` refuses — a missed step costs
+you the signup form, never an unprotected one. That is also how you turn signup back off:
+`wrangler secrets-store secret delete <store-id> --name TURNSTILE_SECRET_KEY --remote`,
+then redeploy `www` (values are cached per isolate, so a warm worker keeps the old one
+until fresh isolates start). For local dev, seed the same two names into the local store
+from `apps/www` — Turnstile's documented always-passes test keypair
+(`1x00000000000000000000AA` / `1x0000000000000000000000000000000AA`) works there without a
+widget:
+
+```bash
+cd apps/www
+printf '1x00000000000000000000AA' |
+  wrangler secrets-store secret create local --name TURNSTILE_SITE_KEY --scopes workers
+printf '1x0000000000000000000000000000000AA' |
+  wrangler secrets-store secret create local --name TURNSTILE_SECRET_KEY --scopes workers
+```
+
+Both `auth` account caps above still apply on top of the bot check, and the per-IP one is
+the only cap that can see a web signup.
+
+`www` reaches `auth` through a **service binding**, not over `auth.<DOMAIN>`, so that the
+player's real IP survives the hop: a Worker subrequest to the public hostname re-enters
+the Cloudflare edge, which rewrites `CF-Connecting-IP` to Cloudflare's own address, and
+`auth` would then record one shared `signupIp` for every web account and cap the whole
+internet at three. Two consequences: **deploy `auth` before `www`** on a fresh account
+(the binding refuses to resolve otherwise), and web accounts created before this change
+carry that shared address as their permanent `signupIp` — harmless, but they are not
+counted against any real network.
 
 ## Repository Structure
 

@@ -5,6 +5,18 @@
 	"compatibility_date": "2026-06-16",
 	"compatibility_flags": ["nodejs_compat"],
 	"routes": [],
+	// The shared `recflare` D1 — read-only here, and only for the public
+	// `/server-status` head-count (see src/www.app.ts). The schema is owned by the
+	// workers that write it (presence lives in apps/rooms/migrations), so no
+	// migrations_dir: www never migrates. The "local" placeholder is spliced with
+	// RECFLARE_D1 at deploy time, as it is for every other worker.
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "recflare",
+			"database_id": "local"
+		}
+	],
 	// React SPA client build (Vite emits it to dist/www/client). Static assets are
 	// served directly; any non-asset request falls through to the Worker, which
 	// serves API routes and returns index.html for client-side routes (SPA).
@@ -13,22 +25,64 @@
 	// routing entirely, so the Worker runs ONLY for the listed patterns and every other
 	// path is served assets-first (with the SPA fallback → index.html). It must therefore
 	// list EVERY route the Worker handles, not just the new ones — otherwise `/api/*`
-	// falls through to index.html and the whole BFF breaks. Why it's needed at all: with
+	// falls through to index.html and both signup and the site config break (the SPA
+	// reads the other workers' hostnames from `/api/config`). Why it's needed at all: with
 	// SPA `not_found_handling`, a top-level *navigation* to a non-asset path (browsers
 	// send `Sec-Fetch-Mode: navigate`) is served index.html WITHOUT invoking the Worker,
 	// so a browser hitting `/docs` got the homepage. Keep this in sync with the Worker's
-	// routes (`/api/*`, `/docs*` and `/privacy`). `/docs/scalar.standalone.js` is
+	// routes (`/api/*`, `/docs*`, `/privacy` and `/server-status`).
+	// `/docs/scalar.standalone.js` is
 	// deliberately excluded so it's served directly as the static asset it is.
 	//
 	// `/privacy` is here for the same reason `/docs` is, and it matters more: the Meta
 	// Horizon Store re-fetches the privacy policy URL to confirm it's live, and dropping
 	// it from this list would serve that fetch the SPA shell instead of the policy.
 	"assets": {
-  "directory": "./dist/client",
+               "directory": "./dist/client",
 		"binding": "ASSETS",
 		"not_found_handling": "single-page-application",
-		"run_worker_first": ["/api/*", "/docs", "/docs/openapi/*", "/privacy"]
+		"run_worker_first": ["/api/*", "/docs", "/docs/openapi/*", "/privacy", "/server-status"]
 	},
+	// The Turnstile keypair guarding web signup, out of the same account-level Secrets
+	// Store every other worker binds for JWT_SECRET — values live there, never in this
+	// file. The "local" store_id placeholder is replaced with RECFLARE_SECRETS_STORE at
+	// deploy time, exactly as it is for the other workers.
+	//
+	//   wrangler secrets-store secret create <store-id> --name TURNSTILE_SITE_KEY \
+	//     --scopes workers --remote
+	//   wrangler secrets-store secret create <store-id> --name TURNSTILE_SECRET_KEY \
+	//     --scopes workers --remote
+	//
+	// Creating both is what OPENS signup; if either can't be resolved it stays closed, so
+	// an operator who skips this gets no signup rather than an unprotected one. The SITE
+	// key is public (it ships to the browser to render the widget) and is kept here beside
+	// its secret so one place configures signup. See src/turnstile.ts.
+	"secrets_store_secrets": [
+		{
+			"binding": "TURNSTILE_SITE_KEY",
+			"store_id": "local",
+			"secret_name": "TURNSTILE_SITE_KEY"
+		},
+		{
+			"binding": "TURNSTILE_SECRET_KEY",
+			"store_id": "local",
+			"secret_name": "TURNSTILE_SECRET_KEY"
+		}
+	],
+	// The `auth` worker, reached directly instead of over its public hostname. This is
+	// about the CLIENT IP, not latency: a Worker subrequest to https://auth.<DOMAIN>
+	// re-enters the Cloudflare edge, which overwrites CF-Connecting-IP with Cloudflare's
+	// own address — so auth recorded the SAME `signupIp` for every browser signup and its
+	// per-IP cap (3 by default) locked out every player after the third account ever
+	// created. A service binding skips the edge, so the real browser IP www forwards on
+	// that header survives (see src/upstream.ts `postAuthForm`).
+	//
+	// Only auth is bound, and only for SIGNUP — the one call this worker still makes on
+	// the browser's behalf, because Turnstile's secret key can't ship to a page. Sign-in,
+	// the profile mutations and the photo feed are posted by the browser straight to
+	// auth/accounts/api/notify (as rec.net's own site did), where the edge sets the real
+	// client IP for free.
+	"services": [{ "binding": "AUTH", "service": "auth" }],
 	"upload_source_maps": true,
 	"observability": {
 		"logs": {
@@ -39,10 +93,11 @@
 	"vars": {
 		"ENVIRONMENT": "development", // overridden during deployment
 		"SENTRY_RELEASE": "unknown", // overridden during deployment
-		// Base domain the auth/accounts hosts are derived from (auth.<DOMAIN>,
-		// accounts.<DOMAIN>). Overridden at deploy time with the real RECFLARE_DOMAIN
-		// (see run-wrangler-deploy). For local dev, point this at a deployed domain so
-		// the BFF proxy can reach the auth/accounts workers.
-		"DOMAIN": "rugnetarchival.xyz"
+		// Base domain every worker hostname is derived from (auth.<DOMAIN>,
+		// accounts.<DOMAIN>, …). Overridden at deploy time with the real RECFLARE_DOMAIN
+		// (see run-wrangler-deploy). www serves these to the SPA via `/api/config`, which
+		// is how one client build works for any operator. For local dev, point it at a
+		// deployed domain so the page has real workers to call.
+		"DOMAIN": "rec.example.com"
 	}
 }

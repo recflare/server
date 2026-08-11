@@ -8,12 +8,24 @@ import {
 	getAccountsByDeviceId,
 	hashPassword,
 	PRESENCE_SCHEMA_DDL,
+	ROOM_SCHEMA_DDL,
 	SCHEMA_DDL,
 	seedRoomWithSubRooms,
 	SUBROOM_SCHEMA_DDL,
 } from '@repo/domain'
+import { TOKEN_TTL_SECONDS } from '@repo/jwt'
 
-import { isLinkedToPlatformIdentity } from '../../auth.app'
+import {
+	banFromReport,
+	createReport,
+	SCHEMA_DDL as REPORTS_SCHEMA_DDL,
+} from '../../../../api/src/reports-db'
+import {
+	getLinksForAccount,
+	linkPlatformIdentity,
+	PLATFORM_BACKFILL_SQL,
+	PLATFORM_SCHEMA_DDL,
+} from '../../platform-db'
 import { REFRESH_SCHEMA_DDL } from '../../refresh-db'
 
 import type { Env } from '../../context'
@@ -31,14 +43,28 @@ const ORIENTATION_SCENE = 'c79709d8-a31b-48aa-9eb8-cc31ba9505e8'
 // accounts the login tests authenticate as (42, 77).
 const LOGIN_PASSWORD = 'correct-horse'
 
+// Meta (Oculus) logins verify their nonce by calling graph.oculus.com authenticated
+// as the app, so the tests seed an app secret and stub that call — see metaLogin.
+const META_APP_SECRET = 'test-meta-app-secret'
+const META_APP_ID = '1232175103309633'
+const META_USER_ID = '27061366730207360'
+const META_NONCE = 'xOUoGXJtC2N31BRDtoWJqBNo81o3DwfbQC57i9ApaiBIqkgmyMOgMYIng7c5jL5I'
+/** Set in beforeAll; needed to overwrite the secret in the not-configured test. */
+let metaSecretId: string
+
 // Apply the accounts schema so create_account can persist (mirrors the migration),
 // and seed the Orientation room (owned by the rooms worker) so signup can place
 // the new player there.
 beforeAll(async () => {
 	// Seed the shared JWT signing key into the local Secrets Store so .get() resolves.
 	await adminSecretsStore(env.JWT_SECRET).create('test-signing-key')
+	// The Meta app secret, likewise — a Meta login is refused outright without one.
+	metaSecretId = await adminSecretsStore(env.META_APP_SECRET).create(META_APP_SECRET)
 	for (const stmt of SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of REFRESH_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	// Platform identity links — one account can hold several (a PC and a headset), and
+	// this table is what both the picker and the cached_login grant read.
+	for (const stmt of PLATFORM_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	// Presence table (owned by the rooms worker) — signup seeds the Orientation row.
 	for (const stmt of PRESENCE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 
@@ -49,12 +75,9 @@ beforeAll(async () => {
 			.bind(JSON.stringify({ accountId: id, username: `Player${id}`, passwordHash: hash }))
 			.run()
 	}
-	await env.DB.prepare(
-		`CREATE TABLE IF NOT EXISTS room (
-			data TEXT NOT NULL,
-			room_id INTEGER GENERATED ALWAYS AS (json_extract(data, '$.RoomId')) VIRTUAL
-		)`
-	).run()
+	// The rooms worker's schema (room + interaction) — reading a room aggregates its
+	// cheer/favorite Stats from `interaction`, so both tables have to be here.
+	for (const stmt of ROOM_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	// Subrooms live in their own table; seed the Orientation room and split its subroom into it.
 	for (const stmt of SUBROOM_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	await seedRoomWithSubRooms(env.DB, {
@@ -63,7 +86,26 @@ beforeAll(async () => {
 		IsDorm: false,
 		SubRooms: [{ SubRoomId: 23, UnitySceneId: ORIENTATION_SCENE, MaxPlayers: 1 }],
 	})
+	// Report table (owned by the api worker) — a banned account is refused a token, and
+	// a ban is a report row with `banned` set.
+	for (const stmt of REPORTS_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 })
+
+/**
+ * Ban an account the way a moderator would: file a report against it and convert that
+ * report into a ban. `banExpires` null is a permanent ban.
+ */
+async function banAccount(accountId: number, banExpires: string | null = null): Promise<void> {
+	const row = await createReport(env.DB, { reporterPlayerId: 1, reportedPlayerId: accountId })
+	await banFromReport(env.DB, row.id, { banExpires })
+}
+
+/** Seed an account with LOGIN_PASSWORD set, so it can be logged into. */
+async function seedAccount(accountId: number, username: string): Promise<void> {
+	await env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
+		.bind(JSON.stringify({ accountId, username, passwordHash: await hashPassword(LOGIN_PASSWORD) }))
+		.run()
+}
 
 /** Decode a JWT payload (no verification) for asserting claims. */
 function decodePayload(token: string): Record<string, unknown> {
@@ -101,6 +143,51 @@ async function postToken(
 	return { status: res.status, json: (await res.json()) as Record<string, unknown> }
 }
 
+/**
+ * POST a Meta grant to /connect/token with graph.oculus.com stubbed to answer
+ * `is_valid`. The worker runs in this isolate, so replacing the global fetch is what
+ * stands in for Meta — `verifyMetaNonce` resolves `globalThis.fetch` per call for
+ * exactly this reason. Returns the graph requests the worker made alongside the
+ * response, so a test can assert WHICH user id the nonce was validated against.
+ */
+async function metaLogin(
+	body: string,
+	isValid: boolean
+): Promise<{ status: number; json: Record<string, unknown>; graphCalls: URLSearchParams[] }> {
+	const graphCalls: URLSearchParams[] = []
+	const realFetch = globalThis.fetch
+	globalThis.fetch = (async (url: string, init?: { body?: string }) => {
+		if (url.startsWith('https://graph.oculus.com/')) {
+			graphCalls.push(new URLSearchParams(init?.body ?? ''))
+			return Response.json({ is_valid: isValid })
+		}
+		return realFetch(url, init)
+	}) as unknown as typeof fetch
+	try {
+		return { ...(await postToken(body)), graphCalls }
+	} finally {
+		globalThis.fetch = realFetch
+	}
+}
+
+/** GET a JSON route on the worker and parse the body as `T`. */
+async function getJson<T>(path: string): Promise<T> {
+	const res = await exports.default.fetch(`${ORIGIN}${path}`)
+	return (await res.json()) as T
+}
+
+/** The picker entries a platform identity yields, as the client sees them. */
+function cachedLogins(platform: number, id: string) {
+	return getJson<Array<Record<string, unknown> & { accountId: number; platform: number }>>(
+		`/cachedlogin/forplatformid/${platform}/${id}`
+	)
+}
+
+/** The `platform_auth` payload a Meta client posts, as observed from a live login. */
+function metaPlatformAuth(): string {
+	return JSON.stringify({ Nonce: META_NONCE, AppId: META_APP_ID, Source: 'logged in user' })
+}
+
 /** POST a form-urlencoded body to changepassword with an optional bearer token. */
 function changePassword(body: string, token?: string): Promise<Response> {
 	return exports.default.fetch(`${ORIGIN}/account/me/changepassword`, {
@@ -122,16 +209,25 @@ describe('auth worker routes', () => {
 		expect(await res.text()).toBe('"AA=="')
 	})
 
-	// Platform 0 (Steam), not 1 — platform 1 is Oculus, which is stubbed below.
-	test('GET /cachedlogin/forplatformid/:platform/:id returns [] (no cached login)', async () => {
-		const res = await exports.default.fetch(`${ORIGIN}/cachedlogin/forplatformid/0/abc123`)
-		expect(res.status).toBe(200)
-		expect(await res.json()).toEqual([])
-	})
+	test.each([
+		['0 (Steam)', 0],
+		['1 (Meta)', 1],
+	])(
+		'GET /cachedlogin/forplatformid/%s/:id returns [] for an unknown id',
+		async (_label, platform) => {
+			const res = await exports.default.fetch(
+				`${ORIGIN}/cachedlogin/forplatformid/${platform}/abc123`
+			)
+			expect(res.status).toBe(200)
+			expect(await res.json()).toEqual([])
+		}
+	)
 
-	// Oculus is stubbed: no DB lookup, one canned entry whatever the id.
-	test('GET /cachedlogin/forplatformid/1/:id returns the canned Oculus entry', async () => {
-		const res = await exports.default.fetch(`${ORIGIN}/cachedlogin/forplatformid/1/anything`)
+	// The one stubbed identity: `1/1` consults nothing and always answers the canned
+	// entry, which is how a sideloaded APK (no Meta SDK, so no real identity) gets off
+	// the platform login screen and onto username/password.
+	test('GET /cachedlogin/forplatformid/1/1 returns the canned Oculus entry', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/cachedlogin/forplatformid/1/1`)
 		expect(res.status).toBe(200)
 		expect(await res.json()).toEqual([
 			{
@@ -144,10 +240,11 @@ describe('auth worker routes', () => {
 		])
 	})
 
-	// Only Steam (platform 0) can be verified (via its signed platform_auth ticket),
-	// so every OTHER platform is rejected on the platform-authenticated grants — we
-	// won't bind or authorize an identity we can't prove.
-	test.each([1, 2, 3, 4, 5, 6, 7, 8])(
+	// Only Steam (0) and Meta (1) can be verified — Steam by its signed platform_auth
+	// ticket, Meta by validating its nonce with Meta. Every OTHER platform is rejected
+	// on the platform-authenticated grants: we won't bind or authorize an identity we
+	// can't prove.
+	test.each([2, 3, 4, 5, 6, 7, 8])(
 		'create_account rejects unverifiable platform %i',
 		async (platform) => {
 			const res = await postToken(
@@ -155,11 +252,11 @@ describe('auth worker routes', () => {
 			)
 			expect(res.status).toBe(400)
 			expect(res.json.error).toBe('invalid_grant')
-			expect(res.json.error_description).toContain('only Steam')
+			expect(res.json.error_description).toContain('only Steam and Meta')
 		}
 	)
 
-	test.each([1, 2, 3, 4, 5, 6, 7, 8])(
+	test.each([2, 3, 4, 5, 6, 7, 8])(
 		'cached_login rejects unverifiable platform %i',
 		async (platform) => {
 			const res = await postToken(
@@ -167,7 +264,7 @@ describe('auth worker routes', () => {
 			)
 			expect(res.status).toBe(400)
 			expect(res.json.error).toBe('invalid_grant')
-			expect(res.json.error_description).toContain('only Steam')
+			expect(res.json.error_description).toContain('only Steam and Meta')
 		}
 	)
 
@@ -191,6 +288,109 @@ describe('auth worker routes', () => {
 		expect(res.json.error_description).toContain('platform_auth')
 	})
 
+	test('Meta create_account requires a platform_auth nonce', async () => {
+		// platform=1 with no nonce must not bind the spoofable platform_id field.
+		const res = await postToken(`grant_type=create_account&platform=1&platform_id=${META_USER_ID}`)
+		expect(res.status).toBe(400)
+		expect(res.json.error).toBe('invalid_grant')
+		expect(res.json.error_description).toContain('platform_auth')
+	})
+
+	test('Meta create_account binds the id Meta validated the nonce against', async () => {
+		const res = await metaLogin(
+			`grant_type=create_account&platform=1&platform_id=${META_USER_ID}` +
+				`&platform_auth=${encodeURIComponent(metaPlatformAuth())}&device_id=meta-device`,
+			true
+		)
+		expect(res.status).toBe(200)
+
+		// The nonce was validated against the posted user id, authenticated as the app.
+		expect(res.graphCalls).toHaveLength(1)
+		expect(res.graphCalls[0].get('nonce')).toBe(META_NONCE)
+		expect(res.graphCalls[0].get('user_id')).toBe(META_USER_ID)
+		expect(res.graphCalls[0].get('access_token')).toBe(`OC|${META_APP_ID}|${META_APP_SECRET}`)
+
+		// The account is bound to platform 1 with that id — which is what makes the
+		// cached-login picker offer it, and the cached_login grant accept it.
+		const payload = decodePayload(res.json.access_token as string)
+		const accountId = Number(payload.sub)
+		const linked = await cachedLogins(1, META_USER_ID)
+		expect(linked).toContainEqual(
+			expect.objectContaining({ accountId, platform: 1, platformId: META_USER_ID })
+		)
+		// Platform ownership is the credential, so the client is not asked for a password.
+		expect(linked.every((a) => a.requirePassword === false)).toBe(true)
+	})
+
+	test('Meta create_account is rejected when Meta does not vouch for the nonce', async () => {
+		const res = await metaLogin(
+			`grant_type=create_account&platform=1&platform_id=${META_USER_ID}` +
+				`&platform_auth=${encodeURIComponent(metaPlatformAuth())}`,
+			false
+		)
+		expect(res.status).toBe(400)
+		expect(res.json.error).toBe('invalid_grant')
+		expect(res.json.error_description).toContain('platform_auth')
+	})
+
+	test('Meta cached_login logs into the linked account with no password', async () => {
+		const userId = '27061366730209999'
+		await env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
+			.bind(
+				JSON.stringify({
+					accountId: 5150,
+					username: 'MetaPlayer',
+					platform: 1,
+					platformId: userId,
+				})
+			)
+			.run()
+		await linkPlatformIdentity(env.DB, 5150, 1, userId)
+		const res = await metaLogin(
+			`grant_type=cached_login&account_id=5150&platform=1&platform_id=${userId}` +
+				`&platform_auth=${encodeURIComponent(metaPlatformAuth())}`,
+			true
+		)
+		expect(res.status).toBe(200)
+		expect(res.graphCalls[0].get('user_id')).toBe(userId)
+		const payload = decodePayload(res.json.access_token as string)
+		expect(payload.sub).toBe('5150')
+	})
+
+	test('a Meta user id cannot log into an account it is not linked to', async () => {
+		// The Meta account seeded above, claimed by a different (but genuinely proven)
+		// Meta user. Even with a nonce Meta vouches for, the identity has to be one the
+		// account is actually linked to.
+		const res = await metaLogin(
+			`grant_type=cached_login&account_id=5150&platform=1&platform_id=${META_USER_ID}` +
+				`&platform_auth=${encodeURIComponent(metaPlatformAuth())}`,
+			true
+		)
+		expect(res.status).toBe(400)
+		expect(res.json.error_description).toContain('no linked account')
+	})
+
+	test('a Meta login is refused (500) when META_APP_SECRET is unset', async () => {
+		// An operator misconfiguration, not a bad credential: without the secret no nonce
+		// can be validated, and the alternative — trusting the posted platform_id — would
+		// let anyone log into any Meta-linked account by naming its user id.
+		const admin = adminSecretsStore(env.META_APP_SECRET)
+		await admin.update('', metaSecretId)
+		try {
+			const res = await metaLogin(
+				`grant_type=create_account&platform=1&platform_id=${META_USER_ID}` +
+					`&platform_auth=${encodeURIComponent(metaPlatformAuth())}`,
+				true
+			)
+			expect(res.status).toBe(500)
+			expect(res.json.error).toBe('server_error')
+			// Nothing was asked of Meta, and nothing was trusted.
+			expect(res.graphCalls).toHaveLength(0)
+		} finally {
+			await admin.update(META_APP_SECRET, metaSecretId)
+		}
+	})
+
 	test('cachedlogin/forplatformid returns the DTO for a bound (Steam) account', async () => {
 		// Seed a Steam-linked account directly (a real create_account needs a live
 		// ticket); assert the picker projects the CachedLogin DTO the client expects.
@@ -206,6 +406,7 @@ describe('auth worker routes', () => {
 				})
 			)
 			.run()
+		await linkPlatformIdentity(env.DB, 31380, 0, steamId)
 		const res = await exports.default.fetch(`${ORIGIN}/cachedlogin/forplatformid/0/${steamId}`)
 		expect(res.status).toBe(200)
 		expect(await res.json()).toEqual([
@@ -219,32 +420,69 @@ describe('auth worker routes', () => {
 		])
 	})
 
-	test('a Steam-linked account with no stored `platform` field still cached-logs in', async () => {
-		// Regression: nothing defaults an account's `platform` (see defaultAccount), so a
-		// Steam-linked account can carry a platformId with no platform. The picker offered
-		// such an account (it treats a missing platform as Steam) while the cached_login
-		// grant rejected it — "no linked account for this platform identity" forever.
-		// Both now run the same check.
+	test('one account, a Steam and a Meta identity: both pickers offer it', async () => {
+		// The point of the link table. The same account is reachable from the PC and from
+		// the headset, and each picker reports the identity IT was asked about — that's
+		// what the client posts back on the cached_login grant.
+		const steamId = '76561197962463777'
+		const metaId = '27061366730207777'
+		await env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
+			.bind(
+				JSON.stringify({
+					accountId: 6200,
+					username: 'CrossPlatform',
+					platform: 0,
+					platformId: steamId,
+					lastLoginTime: '2026-08-01T10:00:00.000Z',
+				})
+			)
+			.run()
+		await linkPlatformIdentity(env.DB, 6200, 0, steamId)
+		await linkPlatformIdentity(env.DB, 6200, 1, metaId)
+
+		const onSteam = await cachedLogins(0, steamId)
+		const onMeta = await cachedLogins(1, metaId)
+
+		expect(onSteam).toEqual([
+			expect.objectContaining({ accountId: 6200, platform: 0, platformId: steamId }),
+		])
+		expect(onMeta).toEqual([
+			expect.objectContaining({ accountId: 6200, platform: 1, platformId: metaId }),
+		])
+
+		// And the grant accepts both, without a password.
+		const viaMeta = await metaLogin(
+			`grant_type=cached_login&account_id=6200&platform=1&platform_id=${metaId}` +
+				`&platform_auth=${encodeURIComponent(metaPlatformAuth())}`,
+			true
+		)
+		expect(viaMeta.status).toBe(200)
+		expect(decodePayload(viaMeta.json.access_token as string).sub).toBe('6200')
+	})
+
+	test('the picker and the cached_login grant read the same table', async () => {
+		// Regression: the picker used to derive links from the account blob (treating a
+		// missing `platform` as Steam) while the grant ran its own check, so the client
+		// could be handed an account_id that answered "no linked account" forever. Both
+		// now read platform_account, which is why an account with a stale blob identity
+		// is NOT offered — and, since it isn't offered, never rejected either.
 		const steamId = '76561197962463211'
-		const account = { platformId: steamId } // no `platform` field
-
-		// The grant now accepts it — this is what was returning invalid_grant.
-		expect(isLinkedToPlatformIdentity(account, 0, steamId)).toBe(true)
-
-		// The identity is still the credential: another SteamID, an account with no
-		// platform identity, and an account bound to a different platform are all refused.
-		expect(isLinkedToPlatformIdentity(account, 0, '76561197962463299')).toBe(false)
-		expect(isLinkedToPlatformIdentity({}, 0, steamId)).toBe(false)
-		expect(isLinkedToPlatformIdentity({ ...account, platform: 3 }, 0, steamId)).toBe(false)
-
-		// And the picker offers exactly the accounts the grant accepts.
 		await env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
 			.bind(JSON.stringify({ accountId: 8, username: 'SteamOnly', platformId: steamId }))
 			.run()
-		const res = await exports.default.fetch(`${ORIGIN}/cachedlogin/forplatformid/0/${steamId}`)
-		const offered = (await res.json()) as Array<{ accountId: number; platform: number }>
-		expect(offered.map((a) => a.accountId)).toContain(8)
-		expect(offered.find((a) => a.accountId === 8)?.platform).toBe(0)
+
+		// No link row yet: not offered.
+		const before = await cachedLogins(0, steamId)
+		expect(before.map((a) => a.accountId)).not.toContain(8)
+
+		// The 0007 backfill is what gives accounts like this one — bound before the link
+		// table existed, and carrying no `platform` field at all — their link.
+		await env.DB.prepare(PLATFORM_BACKFILL_SQL).run()
+
+		const after = await cachedLogins(0, steamId)
+		expect(after.map((a) => a.accountId)).toContain(8)
+		// COALESCEd to Steam, which is what an unset platform meant.
+		expect(after.find((a) => a.accountId === 8)?.platform).toBe(0)
 	})
 
 	test('POST /connect/token issues a bearer token with role/scope claims', async () => {
@@ -260,7 +498,7 @@ describe('auth worker routes', () => {
 			expires_in: number
 		}
 		expect(json.token_type).toBe('Bearer')
-		expect(json.expires_in).toBe(3600)
+		expect(json.expires_in).toBe(TOKEN_TTL_SECONDS)
 		// header.payload.signature
 		const parts = json.access_token.split('.')
 		expect(parts).toHaveLength(3)
@@ -581,6 +819,157 @@ describe('auth worker routes', () => {
 		expect(payload.platform_id).toBe('steam-123')
 	})
 
+	// A password login is how a player who already has an account signs in on a NEW
+	// device. The client posts its platform proof alongside the password, and linking
+	// the two is what turns the next launch on that device into a cached login.
+	describe('password grant links the platform identity it proves', () => {
+		/** Seed an account with LOGIN_PASSWORD set and no platform identity at all. */
+		async function seedPasswordAccount(id: number, username: string) {
+			await env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
+				.bind(
+					JSON.stringify({
+						accountId: id,
+						username,
+						passwordHash: await hashPassword(LOGIN_PASSWORD),
+					})
+				)
+				.run()
+		}
+
+		test('a verified Meta login on an existing account links it, and cached login follows', async () => {
+			// Exactly the client's flow: an account made elsewhere, signed into on a headset
+			// with username + password, with the Meta nonce riding along.
+			await seedPasswordAccount(7100, 'djdevin')
+			const metaId = '27061366730201234'
+			const login = await metaLogin(
+				`grant_type=password&username=djdevin&password=${LOGIN_PASSWORD}` +
+					`&platform=1&platform_id=${metaId}` +
+					`&platform_auth=${encodeURIComponent(metaPlatformAuth())}`,
+				true
+			)
+			expect(login.status).toBe(200)
+			expect(decodePayload(login.json.access_token as string).sub).toBe('7100')
+			// The nonce was validated against the id being linked — an unproven id is never
+			// linked, since a link is a password-free way into the account.
+			expect(login.graphCalls[0].get('user_id')).toBe(metaId)
+
+			// The headset now gets a cached login: offered by the picker…
+			const offered = await cachedLogins(1, metaId)
+			expect(offered.map((a) => a.accountId)).toContain(7100)
+
+			// …and accepted by the grant, with no password.
+			const cached = await metaLogin(
+				`grant_type=cached_login&account_id=7100&platform=1&platform_id=${metaId}` +
+					`&platform_auth=${encodeURIComponent(metaPlatformAuth())}`,
+				true
+			)
+			expect(cached.status).toBe(200)
+		})
+
+		test('the first identity linked becomes the account primary; later ones just link', async () => {
+			await seedPasswordAccount(7101, 'multiplatform')
+			const metaId = '27061366730205678'
+			await metaLogin(
+				`grant_type=password&username=multiplatform&password=${LOGIN_PASSWORD}` +
+					`&platform=1&platform_id=${metaId}` +
+					`&platform_auth=${encodeURIComponent(metaPlatformAuth())}`,
+				true
+			)
+			// The blob's primary identity was empty, so the first link fills it in — this is
+			// what the account DTO and the refresh grant's claims report.
+			const account = (await env.DB.prepare(
+				'SELECT data FROM account WHERE account_id = 7101'
+			).first<{ data: string }>())!
+			expect(JSON.parse(account.data)).toMatchObject({ platform: 1, platformId: metaId })
+
+			// A second identity on another platform links without disturbing the primary.
+			await linkPlatformIdentity(env.DB, 7101, 0, '76561197962465678')
+			const links = await getLinksForAccount(env.DB, 7101)
+			expect(links.map((l) => [l.platform, l.platformId])).toEqual([
+				[1, metaId],
+				[0, '76561197962465678'],
+			])
+		})
+
+		test('an unverified platform_auth logs in but links nothing', async () => {
+			// The password already proved who this is, so the login stands — but a link is a
+			// password-free way in, and this identity was never proven, so none is written.
+			await seedPasswordAccount(7102, 'unproven')
+			const metaId = '27061366730209876'
+			const login = await metaLogin(
+				`grant_type=password&username=unproven&password=${LOGIN_PASSWORD}` +
+					`&platform=1&platform_id=${metaId}` +
+					`&platform_auth=${encodeURIComponent(metaPlatformAuth())}`,
+				false // Meta rejects the nonce
+			)
+			expect(login.status).toBe(200)
+			expect(await getLinksForAccount(env.DB, 7102)).toEqual([])
+		})
+
+		test('a login with no platform_auth links nothing and asks Meta nothing', async () => {
+			await seedPasswordAccount(7103, 'noproof')
+			const login = await metaLogin(
+				`grant_type=password&username=noproof&password=${LOGIN_PASSWORD}` +
+					`&platform=1&platform_id=27061366730204321`,
+				true
+			)
+			expect(login.status).toBe(200)
+			expect(login.graphCalls).toHaveLength(0)
+			expect(await getLinksForAccount(env.DB, 7103)).toEqual([])
+		})
+
+		test('a sideloaded APK (platform id 1) logs in but is never linked', async () => {
+			// The sideload placeholder identifies nobody — every sideloaded headset reports
+			// `1`, so a link on it would be a password-free way into this account from any of
+			// them. The password login still stands; Meta is never even asked, since there is
+			// nothing there to validate.
+			await seedPasswordAccount(7105, 'sideloader')
+			const login = await metaLogin(
+				`grant_type=password&username=sideloader&password=${LOGIN_PASSWORD}` +
+					`&platform=1&platform_id=1` +
+					`&platform_auth=${encodeURIComponent(metaPlatformAuth())}`,
+				true // even with Meta answering yes to everything
+			)
+			expect(login.status).toBe(200)
+			expect(login.graphCalls).toHaveLength(0)
+			expect(await getLinksForAccount(env.DB, 7105)).toEqual([])
+			// And so the picker never offers this account off the placeholder — only the
+			// canned stub entry is there.
+			expect((await cachedLogins(1, '1')).map((a) => a.accountId)).toEqual([1])
+		})
+
+		test('linking obeys the per-identity account cap, without failing the login', async () => {
+			// Otherwise the signup cap would be trivially bypassable: create accounts with a
+			// password, then link the capped identity into all of them.
+			const metaId = '27061366730203333'
+			for (let i = 0; i < 3; i++) await linkPlatformIdentity(env.DB, 8000 + i, 1, metaId)
+
+			await seedPasswordAccount(8100, 'overcap')
+			const login = await metaLogin(
+				`grant_type=password&username=overcap&password=${LOGIN_PASSWORD}` +
+					`&platform=1&platform_id=${metaId}` +
+					`&platform_auth=${encodeURIComponent(metaPlatformAuth())}`,
+				true
+			)
+			// The password was valid, so the player is logged in — they just don't get a
+			// cached login on this account.
+			expect(login.status).toBe(200)
+			expect(await getLinksForAccount(env.DB, 8100)).toEqual([])
+		})
+
+		test('re-logging in on the same device does not duplicate the link', async () => {
+			await seedPasswordAccount(7104, 'repeatlogin')
+			const metaId = '27061366730207654'
+			const body =
+				`grant_type=password&username=repeatlogin&password=${LOGIN_PASSWORD}` +
+				`&platform=1&platform_id=${metaId}` +
+				`&platform_auth=${encodeURIComponent(metaPlatformAuth())}`
+			await metaLogin(body, true)
+			await metaLogin(body, true)
+			expect(await getLinksForAccount(env.DB, 7104)).toHaveLength(1)
+		})
+	})
+
 	test('POST /connect/token refresh_token is single-use (rejected on reuse)', async () => {
 		const login = await postToken(`account_id=77&platform=0&password=${LOGIN_PASSWORD}`)
 		const refreshToken = login.json.refresh_token as string
@@ -717,6 +1106,275 @@ describe('auth worker routes', () => {
 		// documentation.
 		for (const ops of Object.values(spec.paths)) {
 			for (const op of Object.values(ops)) expect(op.summary).toBeTruthy()
+		}
+	})
+})
+
+// The website is a browser origin calling these endpoints directly — the same ones the
+// game calls — instead of proxying them through `www`. That only works if the responses
+// carry CORS headers: without them the browser discards a perfectly good token response
+// and sign-in fails with nothing in any server log to explain it.
+describe('CORS', () => {
+	test('answers the preflight the browser sends before a token grant', async () => {
+		const res = await exports.default.fetch(
+			new Request(`${ORIGIN}/connect/token`, {
+				method: 'OPTIONS',
+				headers: {
+					origin: 'https://www.example.com',
+					'access-control-request-method': 'POST',
+					'access-control-request-headers': 'content-type',
+				},
+			}),
+			env
+		)
+		expect(res.status).toBe(204)
+		expect(res.headers.get('access-control-allow-origin')).toBe('*')
+		expect(res.headers.get('access-control-allow-headers')?.toLowerCase()).toContain('content-type')
+	})
+
+	// The header has to be on the REAL response too, not just the preflight — and on a
+	// refusal as much as a success, or a rejected sign-in reaches the page as an opaque
+	// network error rather than "that password is incorrect".
+	test('allows the origin on the response itself, refusals included', async () => {
+		const res = await exports.default.fetch(
+			new Request(`${ORIGIN}/connect/token`, {
+				method: 'POST',
+				headers: {
+					origin: 'https://www.example.com',
+					'content-type': 'application/x-www-form-urlencoded',
+				},
+				body: new URLSearchParams({ grant_type: 'password', username: 'nobody' }).toString(),
+			}),
+			env
+		)
+		expect(res.status).toBe(400)
+		expect(res.headers.get('access-control-allow-origin')).toBe('*')
+	})
+
+	// The bearer header is what the SPA authenticates with, so it must be allowed by name
+	// — a preflight that omits it makes every signed-in call fail.
+	test('allows the Authorization header the SPA signs its calls with', async () => {
+		const res = await exports.default.fetch(
+			new Request(`${ORIGIN}/account/me/changepassword`, {
+				method: 'OPTIONS',
+				headers: {
+					origin: 'https://www.example.com',
+					'access-control-request-method': 'POST',
+					'access-control-request-headers': 'authorization',
+				},
+			}),
+			env
+		)
+		expect(res.status).toBe(204)
+		expect(res.headers.get('access-control-allow-headers')?.toLowerCase()).toContain(
+			'authorization'
+		)
+	})
+})
+
+// A banned account is refused a token at all — the outer wall of a ban, since with no
+// token every other worker is shut to it. The ban is a `report` row with `banned` set
+// (the api worker owns that table); matchmaking enforces the same ban on tokens issued
+// before it was handed down.
+describe('banned accounts', () => {
+	test('POST /connect/token refuses a password grant from a banned account', async () => {
+		await seedAccount(6101, 'BannedPlayer')
+		await banAccount(6101)
+
+		const res = await postToken(`account_id=6101&password=${LOGIN_PASSWORD}`)
+		expect(res.status).toBe(400)
+		expect(res.json.error).toBe('invalid_grant')
+		// The exact sentence www's shared auth-messages table keys on to put a real
+		// message in front of the player — changing it silently downgrades that to the
+		// generic "you could not be signed in".
+		expect(res.json.error_description).toBe('this account is banned')
+	})
+
+	test('POST /connect/token refuses a username login from a banned account', async () => {
+		await seedAccount(6102, 'BannedByName')
+		await banAccount(6102)
+
+		const res = await postToken(
+			`grant_type=password&username=BannedByName&password=${LOGIN_PASSWORD}`
+		)
+		expect(res.status).toBe(400)
+		expect(res.json.error_description).toBe('this account is banned')
+	})
+
+	// A client that was already signed in when the ban landed still holds a valid refresh
+	// token; redeeming it must not renew the session.
+	test('POST /connect/token refuses to refresh a banned account’s session', async () => {
+		await seedAccount(6103, 'BannedLater')
+		const login = await postToken(`account_id=6103&password=${LOGIN_PASSWORD}`)
+		expect(login.status).toBe(200)
+		const refreshToken = login.json.refresh_token as string
+
+		await banAccount(6103)
+		const refreshed = await postToken(
+			`grant_type=refresh_token&refresh_token=${encodeURIComponent(refreshToken)}`
+		)
+		expect(refreshed.status).toBe(400)
+		expect(refreshed.json.error_description).toBe('this account is banned')
+	})
+
+	// The ban check runs AFTER the credential check, so a wrong password on a banned
+	// account still answers the ordinary bad-credential refusal — it can't be used to
+	// find out whether an account exists or is banned without knowing its password.
+	test('a wrong password on a banned account is still a credential refusal', async () => {
+		await seedAccount(6104, 'BannedWrongPw')
+		await banAccount(6104)
+
+		const res = await postToken('account_id=6104&password=not-the-password')
+		expect(res.status).toBe(400)
+		expect(res.json.error_description).toBe('invalid account_id or password')
+	})
+
+	// A timed ban lifts itself when its expiry passes; nothing clears the flag.
+	test('an expired ban lets the account sign in again', async () => {
+		await seedAccount(6105, 'ServedTime')
+		await banAccount(6105, '2020-01-01T00:00:00.000Z')
+
+		const res = await postToken(`account_id=6105&password=${LOGIN_PASSWORD}`)
+		expect(res.status).toBe(200)
+		expect(decodePayload(res.json.access_token as string).sub).toBe('6105')
+	})
+
+	test('a ban that has not expired yet still refuses the login', async () => {
+		await seedAccount(6106, 'StillServing')
+		await banAccount(6106, new Date(Date.now() + 3_600_000).toISOString())
+
+		const res = await postToken(`account_id=6106&password=${LOGIN_PASSWORD}`)
+		expect(res.status).toBe(400)
+		expect(res.json.error_description).toBe('this account is banned')
+	})
+
+	// A report is not a ban until a moderator converts it.
+	test('an unbanned report does not refuse the login', async () => {
+		await seedAccount(6107, 'MerelyReported')
+		await createReport(env.DB, { reporterPlayerId: 1, reportedPlayerId: 6107 })
+
+		const res = await postToken(`account_id=6107&password=${LOGIN_PASSWORD}`)
+		expect(res.status).toBe(200)
+	})
+
+	// The ban is the ACCOUNT's: nothing here stops the player signing up again, which is
+	// the signup caps' job, not this check's.
+	test('a banned player can still create a new account', async () => {
+		await seedAccount(6108, 'BannedButNew')
+		await banAccount(6108)
+
+		const created = await postToken('grant_type=create_account&platform_id=steam-after-ban')
+		expect(created.status).toBe(200)
+	})
+})
+
+// The ban follows the player past the account it was written on: a login from an account
+// that shares a proven platform identity or an IP with a banned one is refused, and a
+// signup carrying either is refused before it mints anything. See the api worker's
+// bans-db.ts for the arms and the BAN_EVASION_MATCH knob.
+describe('ban evasion at the token endpoint', () => {
+	/** Seed a loginable account carrying the IPs it signed up / last logged in from. */
+	const account = async (id: number, name: string, ips: Record<string, string> = {}) => {
+		await env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
+			.bind(
+				JSON.stringify({
+					accountId: id,
+					username: name,
+					passwordHash: await hashPassword(LOGIN_PASSWORD),
+					...ips,
+				})
+			)
+			.run()
+	}
+
+	const login = (id: number, ip?: string) =>
+		postToken(`account_id=${id}&password=${LOGIN_PASSWORD}`, ip)
+
+	test('an account sharing a banned account’s platform identity cannot log in', async () => {
+		await account(6301, 'EvaderOne')
+		await linkPlatformIdentity(env.DB, 6301, 0, 'steam-tokenevader')
+		await banAccount(6301)
+		await account(6302, 'EvaderTwo')
+		await linkPlatformIdentity(env.DB, 6302, 0, 'steam-tokenevader')
+
+		const res = await login(6302)
+		expect(res.status).toBe(400)
+		// A vaguer sentence than a direct ban: this account may belong to somebody else.
+		expect(res.json.error_description).toBe('this device or network is blocked')
+	})
+
+	test('an account sharing a banned account’s IP cannot log in', async () => {
+		await account(6303, 'SameHouseBanned', { signupIp: '203.0.113.30' })
+		await banAccount(6303)
+		await account(6304, 'SameHouseClean', { signupIp: '203.0.113.30' })
+
+		const res = await login(6304)
+		expect(res.status).toBe(400)
+		expect(res.json.error_description).toBe('this device or network is blocked')
+	})
+
+	// The address the request arrives from counts, so an account that never logged in
+	// from the banned network before is caught on the first attempt rather than the second.
+	test('the request’s own IP is matched even when the account has none stored', async () => {
+		await account(6305, 'BannedAtHome', { signupIp: '203.0.113.31' })
+		await banAccount(6305)
+		await account(6306, 'CleanElsewhere')
+
+		expect((await login(6306, '203.0.113.31')).status).toBe(400)
+		// The same account from any other network signs in normally.
+		expect((await login(6306, '198.51.100.31')).status).toBe(200)
+	})
+
+	test('an unrelated account signs in normally', async () => {
+		await account(6307, 'Unrelated', { signupIp: '198.51.100.7' })
+		await banAccount(6307 + 1000) // a ban on somebody else entirely
+		expect((await login(6307)).status).toBe(200)
+	})
+
+	// The point of checking before minting: a refused signup must leave nothing behind,
+	// or the evader keeps the account (and burns a slot off the signup caps) anyway.
+	test('create_account from a banned IP is refused and creates no account', async () => {
+		await account(6310, 'BannedSignupSource', { signupIp: '203.0.113.40' })
+		await banAccount(6310)
+
+		const before = await env.DB.prepare('SELECT COUNT(*) AS n FROM account').first<{ n: number }>()
+		const res = await postToken('grant_type=create_account', '203.0.113.40')
+		expect(res.status).toBe(400)
+		expect(res.json.error_description).toBe('this device or network is blocked')
+		const after = await env.DB.prepare('SELECT COUNT(*) AS n FROM account').first<{ n: number }>()
+		expect(after?.n).toBe(before?.n)
+	})
+
+	test('create_account from an unrelated IP still works', async () => {
+		const res = await postToken('grant_type=create_account', '198.51.100.99')
+		expect(res.status).toBe(200)
+	})
+
+	// The knob an operator reaches for when the IP arm locks out real players.
+	test('BAN_EVASION_MATCH=platform drops the IP arm but keeps the direct ban', async () => {
+		const original = env.BAN_EVASION_MATCH
+		await account(6320, 'KnobBanned', { signupIp: '203.0.113.50' })
+		await linkPlatformIdentity(env.DB, 6320, 0, 'steam-knobevader')
+		await banAccount(6320)
+		await account(6321, 'KnobHousemate', { signupIp: '203.0.113.50' })
+		await account(6322, 'KnobEvader')
+		await linkPlatformIdentity(env.DB, 6322, 0, 'steam-knobevader')
+
+		try {
+			env.BAN_EVASION_MATCH = 'platform'
+			expect((await login(6321)).status).toBe(200)
+			expect((await login(6322)).status).toBe(400)
+			// And signup from that network is open again.
+			expect((await postToken('grant_type=create_account', '203.0.113.50')).status).toBe(200)
+
+			env.BAN_EVASION_MATCH = 'off'
+			expect((await login(6322)).status).toBe(200)
+			// The banned account itself is refused whatever the knob says.
+			const banned = await login(6320)
+			expect(banned.status).toBe(400)
+			expect(banned.json.error_description).toBe('this account is banned')
+		} finally {
+			env.BAN_EVASION_MATCH = original
 		}
 	})
 })

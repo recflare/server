@@ -6,19 +6,15 @@ import communityBoard from '../../static/community-board.json'
 import {
 	BareString,
 	idParam,
-	intQuery,
 	IsPureResponse,
 	json,
 	JsonArray,
 	jsonBody,
 	JsonObject,
 	KeepsakeConfig,
-	PlayerEventsAll,
-	PlayerEventsPage,
 	SanitizeRequest,
 	stringParam,
 	SubscriptionResponse,
-	TagFilters,
 } from '../openapi'
 
 import type { App } from '../context'
@@ -128,86 +124,8 @@ export const gameplayRoutes = new Hono<App>({ strict: false })
 		}),
 		(c) => c.json(communityBoard)
 	)
-	.get(
-		'/api/playerevents/v1/all',
-		describeRoute({
-			tags: ['Gameplay'],
-			summary: 'The caller’s player events',
-			description:
-				'Events the player created and events they have RSVP’d to. No player-event ' +
-				'storage yet, so both lists are empty.',
-			responses: { 200: json(PlayerEventsAll, 'Two empty lists') },
-		}),
-		(c) => c.json({ Created: [], Responses: [] })
-	)
-
-	// The tag filter chips on the player-events browse screen. Derived from the tags in
-	// use across events — we store no events, so there are no chips to offer.
-	// `TrendingFilters` is null even in the reference (it needs recent-activity data).
-	.get(
-		'/api/playerevents/v1/tagfilters',
-		describeRoute({
-			tags: ['Gameplay'],
-			summary: 'Player-event filter chips',
-			description:
-				'The filter chips on the player-events browse screen, derived from the tags in use ' +
-				'across events. We store no events, so there are no chips to offer. ' +
-				'`TrendingFilters` is null even in the reference — it needs recent-activity data.',
-			responses: { 200: json(TagFilters, 'Empty chip lists') },
-		}),
-		(c) => c.json({ PinnedFilters: [], PopularFilters: [], TrendingFilters: null })
-	)
-
-	// Player events for a set of clubs (`?id=1&id=2`) — the events shelf on a club's
-	// page. A bare array: the client deserializes this one as a list, and chokes on the
-	// `{ ContinuationToken, Events }` envelope the single-club form uses. No
-	// player-event storage yet, so the feed is empty.
-	.get(
-		'/api/playerevents/v1/clubs',
-		describeRoute({
-			tags: ['Gameplay'],
-			summary: 'Player events across several clubs',
-			description:
-				'The events shelf for a set of clubs (`?id=1&id=2`). This form returns a BARE ' +
-				'ARRAY — the client deserializes it as a list and chokes on the paged envelope the ' +
-				'single-club form below uses. Do not unify the two. No player-event storage yet, ' +
-				'so the feed is empty.',
-			parameters: [intQuery('id', 'Repeatable club id')],
-			responses: { 200: json(JsonArray, 'An empty list') },
-		}),
-		(c) => c.json([])
-	)
-
-	// The same feed for a single club (`/club/1`) — the form the reference serves,
-	// which *does* wrap the events with a paging cursor (empty = no next page).
-	.get(
-		'/api/playerevents/v1/club/:clubId{[0-9]+}',
-		describeRoute({
-			tags: ['Gameplay'],
-			summary: 'Player events for one club',
-			description:
-				'The same feed for a single club — and this form DOES wrap the events with a ' +
-				'paging cursor, matching the reference. An empty `ContinuationToken` means no next ' +
-				'page.',
-			parameters: [idParam('clubId', 'Club id')],
-			responses: { 200: json(PlayerEventsPage, 'An empty page') },
-		}),
-		(c) => c.json({ ContinuationToken: '', Events: [] })
-	)
-	// Live player-event search (the "happening now" browse query). No player-event
-	// storage yet, so there's nothing live to return — a bare empty array.
-	.get(
-		'/api/playerevents/v1/searchlive',
-		describeRoute({
-			tags: ['Gameplay'],
-			summary: 'Search live player events',
-			description:
-				'The "happening now" search on the player-events browse screen. No player-event ' +
-				'storage yet, so there are no live events — returns an empty list.',
-			responses: { 200: json(JsonArray, 'An empty list') },
-		}),
-		(c) => c.json([])
-	)
+	// Player events live in their own controller (routes/events.ts) — they're D1-backed
+	// now, unlike the stubs around them here.
 	.get(
 		'/api/announcement/v1/get',
 		describeRoute({

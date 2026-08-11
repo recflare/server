@@ -13,6 +13,8 @@ import {
 	getSlideshowImages,
 	SavedImageType,
 	setImageCheer,
+	SLIDESHOW_LIMIT,
+	SLIDESHOW_MAX_LIMIT,
 	toImagesPlayer,
 } from '../images-db'
 import {
@@ -312,6 +314,10 @@ export const imageRoutes = new Hono<App>({ strict: false })
 	// creator's username and room name. Public (no auth): it only surfaces already-public
 	// images and backs the anonymous homepage slideshow. Returns `{ Images, ValidTill }`,
 	// where ValidTill is a short (2-minute) cache hint the client refreshes against.
+	// Serves 10 by default and never more than SLIDESHOW_MAX_LIMIT (100): it's public and
+	// unauthenticated, so an unclamped `take` would let anyone ask for the whole image
+	// table — and the callers that rotate one photo at a time (the website's hero) don't
+	// want a long feed anyway.
 	.get(
 		'/api/images/v1/slideshow',
 		describeRoute({
@@ -323,10 +329,21 @@ export const imageRoutes = new Hono<App>({ strict: false })
 				'Deliberately public — it surfaces only already-public images and backs the ' +
 				'anonymous homepage slideshow. `ValidTill` is a short (2-minute) cache hint the ' +
 				'client refreshes against.',
+			parameters: [
+				intQuery(
+					'take',
+					`How many photos to return (default ${SLIDESHOW_LIMIT}, capped at ${SLIDESHOW_MAX_LIMIT})`
+				),
+			],
 			responses: { 200: json(SlideshowResponse, 'The feed plus its cache hint') },
 		}),
 		async (c) => {
-			const Images = await getSlideshowImages(c.env.DB)
+			// Junk, zero and negative takes fall back to the default rather than 400ing or
+			// serving an empty stage — the caller is a homepage, and no photos reads as the
+			// server being down.
+			const asked = Number.parseInt(c.req.query('take') ?? '', 10)
+			const take = asked > 0 ? Math.min(asked, SLIDESHOW_MAX_LIMIT) : SLIDESHOW_LIMIT
+			const Images = await getSlideshowImages(c.env.DB, take)
 			const ValidTill = new Date(Date.now() + 2 * 60 * 1000).toISOString()
 			return c.json({ Images, ValidTill })
 		}

@@ -16,9 +16,10 @@
 		}
 	],
 	// Presence sweep. Rows expire on their own TTL (15m) and reads already ignore
-	// expired ones, so this is housekeeping: it purges them and recomputes the
-	// fullness of the instances the departed players were in (a crashed player never
-	// matchmakes out, so nothing else notices they left). Every 5 minutes.
+	// expired ones, so this is housekeeping: it purges them, deletes the room
+	// instances left with nobody in them, and recomputes the fullness of the
+	// instances the departed players were in (a crashed player never matchmakes out,
+	// so nothing else notices they left). Every 5 minutes.
 	"triggers": {
 		"crons": ["*/5 * * * *"]
 	},
@@ -51,6 +52,10 @@
 			"head_sampling_rate": 1 // 100%
 		}
 	},
+	// The room substitutions (ROOM_REDIRECTS) are deliberately NOT set here. They're
+	// injected at deploy time from the gitignored .env (RECFLARE_ROOM_REDIRECTS, see
+	// .env.example), so swapping a room out never means editing a versioned file. Unset —
+	// the default — means every matchmake enters the room it asked for.
 	"vars": {
 		"ENVIRONMENT": "development", // overridden during deployment
 		"SENTRY_RELEASE": "unknown" // overridden during deployment

@@ -1,17 +1,23 @@
 import { Hono } from 'hono'
 import { describeRoute } from 'hono-openapi'
 
+import {
+	inventionDescriptionRejection,
+	inventionNameRejection,
+	inventionTagRejection,
+} from '@repo/domain'
+
 import { authedId, unauthorized } from '../http'
 import {
 	createInvention,
 	getFeaturedInventions,
 	getInventionById,
-	getInventionsByCreator,
 	getInventionsByIds,
 	getInventionsByRoom,
 	getInventionTagFilters,
 	getInventionTags,
 	getInventionVersion,
+	getMyInventions,
 	getTopInventions,
 	parsePermissionLevel,
 	publishInvention,
@@ -330,18 +336,21 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 	)
 
 	// A single version of an invention (`?inventionId=…&version=…`) — the bare
-	// RRInventionVersion, which carries the blob name the client downloads. Public.
-	// Only the current version exists (nothing writes version history yet), so any
-	// other version number 404s rather than naming a blob that isn't there.
+	// RRInventionVersion, which carries the blob name the client downloads and the
+	// SHA-256 of that blob. Public. Only the current version exists (nothing writes
+	// version history yet), so any other version number 404s rather than naming a
+	// blob that isn't there.
 	.get(
 		'/api/inventions/v1/version',
 		describeRoute({
 			tags: ['Inventions'],
 			summary: 'One version of an invention',
 			description:
-				'The bare `RRInventionVersion`, which carries the blob name the client downloads. ' +
-				'Only the current version exists — nothing writes version history yet — so any ' +
-				'other version number 404s rather than naming a blob that is not there.',
+				'The bare `RRInventionVersion`, which carries the blob name the client downloads ' +
+				'and `BlobHash`, the base64 SHA-256 of that blob (null when the named blob was ' +
+				'never uploaded). Only the current version exists — nothing writes version ' +
+				'history yet — so any other version number 404s rather than naming a blob that ' +
+				'is not there.',
 			parameters: [
 				intQuery('inventionId', 'Invention id; required'),
 				intQuery('version', 'Version number; required'),
@@ -358,7 +367,12 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 			const versionNumber = Number.parseInt(c.req.query('version') ?? '', 10)
 			if (Number.isNaN(versionNumber)) return c.json({ error: 'version is required' }, 400)
 
-			const version = await getInventionVersion(c.env.DB, inventionId, versionNumber)
+			const version = await getInventionVersion(
+				c.env.DB,
+				c.env.CDN_ASSETS,
+				inventionId,
+				versionNumber
+			)
 			return version === null ? c.notFound() : c.json(version)
 		}
 	)
@@ -379,18 +393,20 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 				'A GET that writes — that is what the client sends, with the fields to change as ' +
 				'query params. Absent params keep their stored value. An empty `description` ' +
 				'clears it, but an empty `name`/`imageName` is ignored rather than blanking the ' +
-				'invention. Publishing and pricing are separate endpoints.',
+				'invention. A supplied name/description must satisfy the same rules `v6/save` ' +
+				'enforces. Publishing and pricing are separate endpoints.',
 			security: AUTHED,
 			parameters: [
 				intQuery('inventionId', 'Invention id; required'),
-				stringQuery('name', 'New name; empty is ignored'),
-				stringQuery('description', 'New description; present-but-empty clears it'),
+				stringQuery('name', '3–24 chars, letters/digits/spaces/dashes/colons; empty is ignored'),
+				stringQuery('description', 'Max 512 chars; present-but-empty clears it'),
 				stringQuery('imageName', 'New thumbnail; empty is ignored'),
 				stringQuery('allowTrial', '`true`/`1` to allow trials'),
 				stringQuery('permission', 'A name like `useonly`, or the raw permission number'),
 			],
 			responses: {
 				200: json(InventionSaveResult, 'The updated invention, in the save envelope'),
+				400: json(ErrorResponse, 'A supplied name or description breaks its rule'),
 				401: UNAUTHORIZED_RESPONSE,
 				403: json(ErrorResponse, 'Not the caller’s invention'),
 				404: { description: 'No such invention' },
@@ -408,10 +424,23 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 			const allowTrial = c.req.query('allowTrial')
 			const permission = c.req.query('permission')
 
+			// Only a name that's actually being changed is checked — an absent or empty one
+			// keeps the stored name, which was already validated when it was set.
+			const name = nonEmpty('name')
+			const nameRejection = name === undefined ? null : inventionNameRejection(name)
+			if (nameRejection !== null) return c.json({ error: nameRejection }, 400)
+
+			// The description is checked on presence, not emptiness: empty is how a creator
+			// clears it, and the length rule accepts that.
+			const description = c.req.query('description')
+			const descriptionRejection =
+				description === undefined ? null : inventionDescriptionRejection(description)
+			if (descriptionRejection !== null) return c.json({ error: descriptionRejection }, 400)
+
 			const updated = await updateInvention(c.env.DB, gate.invention.InventionId, {
-				name: nonEmpty('name'),
+				name,
 				// Present-but-empty clears the description, so this checks presence.
-				description: c.req.query('description'),
+				description,
 				imageName: nonEmpty('imageName'),
 				allowTrial:
 					allowTrial === undefined
@@ -515,13 +544,15 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 				'`CustomTags` are the creator’s own (Type 0), `AutoTags` the ones the client ' +
 				'derives from the invention (Type 2); both lists are replaced wholesale. Creator ' +
 				'only.\n\n' +
+				'Every tag in either list must be at most 15 letters (a–z once lowercased); one ' +
+				'that isn’t fails the whole call, so no tag is ever silently dropped.\n\n' +
 				'Note the asymmetry: this answers the flat list of tag *names* (auto first, then ' +
 				'custom), while `v1/details` serves the typed `{ Tag, Type }` objects.',
 			security: AUTHED,
 			requestBody: jsonBody(SetTagsRequest, 'The replacement tag lists'),
 			responses: {
 				200: json(SetTagsResponse, 'The resulting tag names'),
-				400: json(ErrorResponse, 'Unparseable body'),
+				400: json(ErrorResponse, 'Unparseable body, or a tag that breaks the rule'),
 				401: UNAUTHORIZED_RESPONSE,
 				403: json(ErrorResponse, 'Not the caller’s invention'),
 				404: { description: 'No such invention' },
@@ -538,11 +569,29 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 			const strings = (v: unknown): string[] =>
 				Array.isArray(v) ? v.filter((t): t is string => typeof t === 'string') : []
 
+			const autoTags = strings(body.AutoTags)
+			const customTags = strings(body.CustomTags)
+
+			// Both lists are held to the tag rule, and one bad tag fails the whole call rather
+			// than being dropped — a silently missing tag looks to the creator like a tag that
+			// saved. Checked against the normalized form `setInventionTags` will store, so the
+			// rejection quotes the tag as it would have been stored, not as it was typed.
+			// Blanks are skipped, not rejected: the store already drops them, and the client
+			// pads its list with empties.
+			for (const raw of [...autoTags, ...customTags]) {
+				const tag = raw.trim().toLowerCase()
+				if (tag === '') continue
+				const rejection = inventionTagRejection(tag)
+				if (rejection !== null) {
+					return c.json({ error: `${rejection} (“${tag}”)` }, 400)
+				}
+			}
+
 			const tags = await setInventionTags(
 				c.env.DB,
 				gate.invention.InventionId,
-				strings(body.AutoTags),
-				strings(body.CustomTags)
+				autoTags,
+				customTags
 			)
 			return c.json({ Result: 0, Tags: (tags ?? []).map((t) => t.Tag) })
 		}
@@ -573,17 +622,21 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 		}
 	)
 
-	// The "top today" invention feed — published inventions ranked by engagement
-	// (lifetime, not per-day: we keep no daily counters). Paginated via skip/take
-	// (take defaults to 50, as the client asks for). Bare array.
+	// The "top today" invention feed — the inventions most acquired in the last 24 hours,
+	// counted from the purchase rows the `econ` worker writes. A real day window, so an
+	// empty list is a quiet day rather than a bug. Paginated via skip/take (take defaults
+	// to 50, as the client asks for). Bare array.
 	.get(
 		'/api/inventions/v1/toptoday',
 		describeRoute({
 			tags: ['Inventions'],
 			summary: 'The “top today” feed',
 			description:
-				'Published inventions ranked by engagement — lifetime, not per-day: we keep no ' +
-				'daily counters, so “today” is a label, not a window.',
+				'Published inventions ranked by how many players acquired them in the last 24 ' +
+				'hours, counted from the purchase records — free grants included, one per ' +
+				'player per invention. Genuinely a window: an invention nobody has picked up ' +
+				'since yesterday falls off, and a day with no acquisitions at all serves an ' +
+				'empty list. It trails the clock rather than resetting at midnight.',
 			parameters: pageParams(50),
 			responses: { 200: json(InventionDto.array(), 'The top inventions') },
 		}),
@@ -594,16 +647,17 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 		}
 	)
 
-	// The featured invention feed — curated (`IsFeatured`) inventions, falling back
-	// to the top feed while nothing is curated. Bare array, like toptoday.
+	// The featured invention feed — the curated (`IsFeatured`) inventions and nothing
+	// else, newest first. Empty until someone flags one. Bare array, like toptoday.
 	.get(
 		'/api/inventions/v1/featured',
 		describeRoute({
 			tags: ['Inventions'],
 			summary: 'The featured feed',
 			description:
-				'Curated (`IsFeatured`) inventions, falling back to the top feed while nothing is ' +
-				'curated — so this is never empty just because no one has picked favourites.',
+				'Curated (`IsFeatured`) inventions, newest first — published and non-hidden only. ' +
+				'Serves an empty list while nothing is flagged rather than standing in the top ' +
+				'feed: the client presents these as hand-picked, so a fallback would be a lie.',
 			parameters: pageParams(50),
 			responses: { 200: json(InventionDto.array(), 'The featured inventions') },
 		}),
@@ -640,16 +694,20 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 		}
 	)
 
-	// The signed-in player's saved inventions ("my inventions"), newest first.
-	// Auth-gated; returns a bare array (empty when the player has saved none).
+	// The signed-in player's invention shelf ("my inventions"), newest first — the ones
+	// they created AND the ones they bought (`inventory_invention`, written by the `econ`
+	// worker's buyInvention). A bought invention stays on the shelf whatever happens to it
+	// afterwards: unpublished or hidden since, the buyer paid for it.
+	// Auth-gated; returns a bare array (empty when the player has neither).
 	.get(
 		'/api/inventions/v2/mine',
 		describeRoute({
 			tags: ['Inventions'],
 			summary: 'The caller’s own inventions',
 			description:
-				'“My inventions”, newest first — including unpublished ones, which nobody else can ' +
-				'see. Not paginated.',
+				'“My inventions”, newest first — the ones the caller created plus the ones they ' +
+				'bought. Includes unpublished ones, which nobody else can see, and keeps a bought ' +
+				'invention listed even if it has since been unpublished or hidden. Not paginated.',
 			security: AUTHED,
 			responses: {
 				200: json(InventionDto.array(), 'The caller’s inventions'),
@@ -659,7 +717,7 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 		async (c) => {
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
-			return c.json(await getInventionsByCreator(c.env.DB, id))
+			return c.json(await getMyInventions(c.env.DB, id))
 		}
 	)
 
@@ -678,14 +736,19 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 				'Records an invention’s metadata. The data file itself is uploaded separately ' +
 				'through the `storage` worker and referenced here by `inventionDataFilename` — the ' +
 				'one required field, since an invention with no data blob is unusable. An omitted ' +
-				'name/description is defaulted rather than rejected.\n\n' +
+				'name/description is defaulted rather than rejected; a supplied one must be 3–24 ' +
+				'characters of letters, digits, spaces, dashes and colons (name) or at most 512 ' +
+				'characters (description).\n\n' +
 				'A freshly saved invention is private: it shows up only in the creator’s own list ' +
 				'until they call `v3/publish`.',
 			security: AUTHED,
 			requestBody: jsonBody(SaveInventionRequest, 'The invention metadata (camelCase)'),
 			responses: {
 				200: json(InventionSaveResult, 'The stored invention, carrying its assigned id'),
-				400: json(ErrorResponse, 'Unparseable body, or no inventionDataFilename'),
+				400: json(
+					ErrorResponse,
+					'Unparseable body, no inventionDataFilename, or an invalid name/description'
+				),
 				401: UNAUTHORIZED_RESPONSE,
 			},
 		}),
@@ -704,11 +767,24 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 				return c.json({ error: 'inventionDataFilename is required' }, 400)
 			}
 
-			const invention = await createInvention(c.env.DB, {
+			// An omitted or blank name/description is defaulted by `createInvention` ("Untitled",
+			// "No description yet"), so only a supplied one is held to the rules — otherwise
+			// saving an unnamed invention would fail the 3-character minimum on a name the
+			// player never typed.
+			const name = str(body.name)?.trim()
+			const nameRejection = name === undefined || name === '' ? null : inventionNameRejection(name)
+			if (nameRejection !== null) return c.json({ error: nameRejection }, 400)
+
+			const description = str(body.description)
+			const descriptionRejection =
+				description === undefined ? null : inventionDescriptionRejection(description)
+			if (descriptionRejection !== null) return c.json({ error: descriptionRejection }, 400)
+
+			const invention = await createInvention(c.env.DB, c.env.CDN_ASSETS, {
 				creatorPlayerId: id,
 				inventionDataFilename,
-				name: str(body.name),
-				description: str(body.description),
+				name,
+				description,
 				imageName: str(body.imageName),
 				instantiationCost: num(body.instantiationCost),
 				lightsCost: num(body.lightsCost),

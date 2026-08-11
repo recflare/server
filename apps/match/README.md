@@ -91,6 +91,28 @@ Several behaviours are load-bearing and reverse-engineered from the client:
   solo Orientation room) and only falls back to the dorm when the player has none.
   `goto/none` always goes to the dorm.
 
+### Switching a room out (`ROOM_REDIRECTS`)
+
+An operator can substitute one room for another at matchmake time — the way to replace a
+stock RRO room, typically the Rec Center (room 2), with a room of their own without
+touching the client. The knob is `RECFLARE_ROOM_REDIRECTS` in the root `.env` (see
+`.env.example`), comma-separated `<fromRoomId>=<to>` pairs where `<to>` is a room id or
+name: `2=MyHub`, or `2=100,3=MyHub`.
+
+Substitution happens where a matchmake resolves a named room, so it covers every route
+that names one — the two- and three-segment room matchmakes and a club's clubhouse — and
+everything downstream (the ban check, presence, the visit count) sees only the room
+actually entered. Matching is on the resolved room id, so asking by name (`RecCenter`)
+substitutes the same as asking by id.
+
+- **A requested subroom is dropped** when a substitution fires: the id addresses a subroom
+  of the room the client asked for, so entry falls back to the substitute's default one.
+- **One hop only** — `2=3,3=2` swaps the two rooms rather than looping.
+- **An unresolvable target leaves the original room in place** (logged), so a typo doesn't
+  make a room unreachable.
+- **Following a friend and joining a specific instance are unaffected** — those enter a
+  live instance, which is already in whichever room it was created in.
+
 ## Bindings
 
 | Binding      | Type          | Notes                                                        |

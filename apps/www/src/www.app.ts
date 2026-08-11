@@ -1,115 +1,42 @@
 import { Hono } from 'hono'
-import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import { useWorkersLogger } from 'workers-tagged-logger'
 
-import { withOnError } from '@repo/hono-helpers'
+import { countOnlinePlayers } from '@repo/domain/src/presence-db'
+import { logger, withDefaultCors, withOnError } from '@repo/hono-helpers'
 
-import { NotificationType } from '../../notify/src/notification-types'
+import { authUnreachable } from './auth-messages'
 import { docsPage, fetchSpec } from './docs'
 import { privacyPage } from './privacy'
-import { accountsBase, apiBase, authBase, imgBase, notifyBase, postForm } from './upstream'
+import { turnstileKeys, verifyTurnstile } from './turnstile'
+import {
+	accountsBase,
+	apiBase,
+	authBase,
+	cdnBase,
+	imgBase,
+	notifyBase,
+	postAuthForm,
+	readAuthError,
+	roomsBase,
+} from './upstream'
 
-import type { Context } from 'hono'
-import type { CookieOptions } from 'hono/utils/cookie'
 import type { App } from './context'
 
 /**
- * www — the first frontend worker. It serves the React SPA (create account, set
- * email, change password) and acts as a backend-for-frontend: the browser talks
- * only to www, and www forwards to the `auth`/`accounts` workers server-side (see
- * `upstream.ts`). The account's JWT lives in an httpOnly cookie set here, so it's
- * never exposed to page JS.
+ * www — the website worker. It serves the React SPA (create account, sign in, change
+ * username/email/password) and almost nothing else: the SPA calls the SAME endpoints
+ * the game does, on `auth`/`accounts`/`api`/`notify` directly, exactly as rec.net's own
+ * site did. Those workers answer CORS for it, and the browser holds the access token.
+ *
+ * Two things stay server-side here, both because they can't work any other way:
+ *
+ *  - `/api/signup`, because it's gated by Turnstile and the secret key that turns a
+ *    widget token into a verdict cannot ship to a browser. It's also the one account
+ *    endpoint with no game equivalent — the game never creates password accounts — so
+ *    there's no client contract being duplicated.
+ *  - `/api/config`, which tells the SPA the Turnstile site key and where the other
+ *    workers live, so one client build works for any operator's domain.
  */
-
-/** Name of the httpOnly session cookie holding the account's access token. */
-const SESSION_COOKIE = 'rf_token'
-
-/**
- * RecNet (4) is the web platform, stamped as the token's `platform` claim on login.
- * NOT passed on signup: create_account treats an asserted platform as one to verify
- * against Steam and rejects RecNet — the web signup is the (platform-less) password
- * account path.
- */
-const WEB_PLATFORM = '4'
-
-/**
- * Roles that unlock the admin controls in the UI. Mirrors the notify worker's
- * `ADMIN_ROLES` gate — www only decides whether to *show* the controls; notify does
- * the real enforcement (it verifies the token) on every call.
- */
-const ADMIN_ROLES = new Set(['developer', 'moderator'])
-
-/** Cookie flags for the session token. `secure` is dropped for local http dev. */
-function sessionCookieOptions(c: Context<App>, maxAge: number): CookieOptions {
-	const local = c.env.ENVIRONMENT === 'development' || c.env.ENVIRONMENT === 'VITEST'
-	return {
-		httpOnly: true,
-		secure: !local,
-		sameSite: 'Lax',
-		path: '/',
-		maxAge,
-	}
-}
-
-/** Pull the session token out of the request cookie, or null when absent. */
-function sessionToken(c: Context<App>): string | null {
-	return getCookie(c, SESSION_COOKIE) ?? null
-}
-
-/**
- * Whether the session token carries an admin role. Decodes the JWT's `role` claim
- * WITHOUT verifying — www holds no signing key, and this only gates whether admin UI
- * is shown; the notify worker verifies the token before acting on it. A malformed
- * token simply reads as "not admin".
- */
-function isAdminToken(token: string): boolean {
-	const payload = token.split('.')[1]
-	if (!payload) return false
-	try {
-		const b64 = payload.replace(/-/g, '+').replace(/_/g, '/')
-		const padded = b64.padEnd(b64.length + ((4 - (b64.length % 4)) % 4), '=')
-		const claims = JSON.parse(atob(padded)) as { role?: unknown }
-		return Array.isArray(claims.role) && claims.role.some((r) => ADMIN_ROLES.has(r as string))
-	} catch {
-		return false
-	}
-}
-
-/** Relay an upstream worker's JSON response back to the browser unchanged. */
-async function relay(c: Context<App>, res: Response) {
-	const body = await res.text()
-	return c.body(body, res.status as never, {
-		'content-type': res.headers.get('content-type') ?? 'application/json',
-	})
-}
-
-/**
- * Exchange an auth `/connect/token` response for a session: persist the returned
- * access token in the httpOnly cookie, then return the caller's self account
- * (fetched from the accounts worker with the fresh token).
- */
-async function establishSession(c: Context<App>, tokenResponse: Response) {
-	if (!tokenResponse.ok) return relay(c, tokenResponse)
-
-	const token = (await tokenResponse.json()) as { access_token?: string; expires_in?: number }
-	if (!token.access_token) {
-		return c.json({ error: 'auth did not return an access token' }, 502)
-	}
-
-	setCookie(
-		c,
-		SESSION_COOKIE,
-		token.access_token,
-		sessionCookieOptions(c, token.expires_in ?? 3600)
-	)
-
-	const me = await fetch(`${accountsBase(c.env)}/account/me`, {
-		headers: { authorization: `Bearer ${token.access_token}` },
-	})
-	if (!me.ok) return c.json({ error: 'failed to load account after auth' }, 502)
-	const account = (await me.json()) as Record<string, unknown>
-	return c.json({ account: { ...account, isAdmin: isAdminToken(token.access_token) } })
-}
 
 const app = new Hono<App>()
 	.use(
@@ -124,177 +51,120 @@ const app = new Hono<App>()
 
 	.onError(withOnError())
 
-	// ---- BFF API ------------------------------------------------------------
+	// ---- Site config --------------------------------------------------------
 
-	// Manual web signups are disabled for now — accounts are created via the game /
-	// platform, not the website. Kept as an explicit closed endpoint (rather than
-	// removed) so a direct POST is refused too, not just hidden in the UI. To reopen,
-	// forward a platform-less `grant_type=create_account` to auth and start a session
-	// (see git history), and restore the SignupForm in the client.
-	.post('/api/signup', async (c) => {
-        const body = await c.req.json()
-        const password = typeof body.password === 'string' ? body.password : ''
-
-        if (!password) {
-                return c.json({ error: 'Password is required.' }, 400)
-        }
-
-        const res = await postForm(`${authBase(c.env)}/connect/token`, {
-                grant_type: 'create_account',
-                password,
-        }, undefined, c.req.header('cf-connecting-ip') ?? '', c.env.INTERNAL_SECRET)
-
-        return establishSession(c, res)
-})
-
-	// Log in with a username + password, then start a session. The auth password grant
-	// resolves the account by `username` (case-insensitive) — web players sign in with
-	// their username, not the numeric account id.
-	.post('/api/login', async (c) => {
-		const { username, password } = await c.req
-			.json<{ username?: string; password?: string }>()
-			.catch(() => ({}) as { username?: string; password?: string })
-		if (!username || !password) {
-			return c.json({ error: 'Username and password are required.' }, 400)
-		}
-
-		const res = await postForm(`${authBase(c.env)}/connect/token`, {
-			grant_type: 'password',
-			username,
-			platform: WEB_PLATFORM,
-			password,
-		})
-		return establishSession(c, res)
-	})
-
-	// Clear the session cookie.
-	.post('/api/logout', (c) => {
-		deleteCookie(c, SESSION_COOKIE, { path: '/' })
-		return c.json({ success: true })
-	})
-
-	// Public homepage slideshow. Proxies the api worker's (public) slideshow feed and
-	// projects each image to a full img.<domain> URL the browser can load directly, so
-	// the page JS never has to know the upstream hosts. No session required.
-	.get('/api/slideshow', async (c) => {
-		const res = await fetch(`${apiBase(c.env)}/api/images/v1/slideshow`)
-		if (!res.ok) return relay(c, res)
-		const data = (await res.json()) as {
-			Images?: Array<{ ImageName: string; Username: string; RoomName: string | null }>
-			ValidTill?: string
-		}
-		const images = (data.Images ?? []).map((i) => ({
-			url: `${imgBase(c.env)}/${i.ImageName}`,
-			username: i.Username,
-			roomName: i.RoomName,
-		}))
-		return c.json({ images, validTill: data.ValidTill ?? null })
-	})
-
-	// Current session's self account (used to restore UI state on page load).
-	.get('/api/me', async (c) => {
-		const token = sessionToken(c)
-		if (!token) return c.json({ error: 'not signed in' }, 401)
-
-		const res = await fetch(`${accountsBase(c.env)}/account/me`, {
-			headers: { authorization: `Bearer ${token}` },
-		})
-		// Token expired/invalid — drop the stale cookie so the client shows sign-in.
-		if (res.status === 401) {
-			deleteCookie(c, SESSION_COOKIE, { path: '/' })
-			return c.json({ error: 'session expired' }, 401)
-		}
-		if (!res.ok) return relay(c, res)
-		// Augment the self account with whether this session may use admin controls,
-		// read from the token's role claim (see isAdminToken).
-		const account = (await res.json()) as Record<string, unknown>
-		return c.json({ ...account, isAdmin: isAdminToken(token) })
-	})
-
-	// Set the signed-in account's email.
-	.post('/api/email', async (c) => {
-		const token = sessionToken(c)
-		if (!token) return c.json({ error: 'not signed in' }, 401)
-
-		const { email } = await c.req.json<{ email?: string }>().catch(() => ({}) as { email?: string })
-		if (!email) return c.json({ error: 'An email is required.' }, 400)
-
-		const res = await postForm(`${accountsBase(c.env)}/account/me/email`, { email }, token)
-		return relay(c, res)
-	})
-
-	// Change the signed-in account's password (current password required).
-	.post('/api/password', async (c) => {
-		const token = sessionToken(c)
-		if (!token) return c.json({ error: 'not signed in' }, 401)
-
-		const { oldPassword, newPassword } = await c.req
-			.json<{ oldPassword?: string; newPassword?: string }>()
-			.catch(() => ({}) as { oldPassword?: string; newPassword?: string })
-		if (!newPassword) return c.json({ error: 'A new password is required.' }, 400)
-
-		const res = await postForm(
-			`${authBase(c.env)}/account/me/changepassword`,
-			{ oldPassword: oldPassword ?? '', newPassword },
-			token
-		)
-		return relay(c, res)
-	})
-
-	// Broadcast a ServerMaintenance countdown to every connected client. Forwards the
-	// session token to the notify worker, which enforces the admin-role gate — so a
-	// non-admin session is rejected upstream (403) even though www shows no button.
-	// The notification frame carries `Msg: { StartsInMinutes }`, matching the client's
-	// ServerMaintenance handler; the response mirrors the reference maintenance API.
-	.post('/api/maintenance', async (c) => {
-		const token = sessionToken(c)
-		if (!token) return c.json({ error: 'not signed in' }, 401)
-
-		const { startsInMinutes } = await c.req
-			.json<{ startsInMinutes?: number }>()
-			.catch(() => ({}) as { startsInMinutes?: number })
-		const minutes = Number(startsInMinutes)
-		const startsIn = Number.isFinite(minutes) && minutes > 0 ? Math.floor(minutes) : 0
-
-		const res = await fetch(`${notifyBase(c.env)}/internal/broadcast`, {
-			method: 'POST',
-			headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-			body: JSON.stringify({
-				notificationType: NotificationType.ServerMaintenance,
-				data: { StartsInMinutes: startsIn },
-			}),
-		})
-		if (!res.ok) return relay(c, res)
-
-		const result = (await res.json()) as { delivered?: number }
+	// What the SPA has to know before it can do anything: whether web signup is open,
+	// the Turnstile site key to mount its widget with, and the hostnames of the workers
+	// it calls directly. All three are served rather than baked into the client build so
+	// one build works for any operator. The site key is public (it ships in the widget
+	// markup either way); the secret never leaves the worker.
+	.get('/api/config', async (c) => {
+		const keys = await turnstileKeys(c.env)
 		return c.json({
-			success: true,
-			starts_in_minutes: startsIn,
-			connections: result.delivered ?? 0,
+			signupEnabled: keys !== null,
+			turnstileSiteKey: keys?.siteKey ?? null,
+			hosts: {
+				auth: authBase(c.env),
+				accounts: accountsBase(c.env),
+				api: apiBase(c.env),
+				img: imgBase(c.env),
+				notify: notifyBase(c.env),
+				rooms: roomsBase(c.env),
+				cdn: cdnBase(c.env),
+			},
 		})
 	})
 
-	// Send a coach/system message to every online player. Like maintenance, this
-	// forwards the session token to notify, which enforces the admin-role gate.
-	.post('/api/coach-message', async (c) => {
-		const token = sessionToken(c)
-		if (!token) return c.json({ error: 'not signed in' }, 401)
+	// ---- Server status ------------------------------------------------------
 
-		const { messageContent } = await c.req
-			.json<{ messageContent?: string }>()
-			.catch(() => ({}) as { messageContent?: string })
-		const content = typeof messageContent === 'string' ? messageContent.trim() : ''
-		if (content === '') return c.json({ error: 'A message is required.' }, 400)
-
-		const res = await fetch(`${notifyBase(c.env)}/internal/coach-message-all`, {
-			method: 'POST',
-			headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-			body: JSON.stringify({ messageContent: content }),
+	// A public, unauthenticated snapshot of the server — what a status page, a Discord
+	// bot or the homepage can poll without a token. CORS is open on this one route (the
+	// rest of www is same-origin) so a page hosted anywhere can read it.
+	//
+	// `status` is a stub: this handler only runs when the worker is up, so there is no
+	// state in which it answers anything but "online". It's here so callers can key off
+	// a field rather than off HTTP 200, and so a real health signal can replace the
+	// constant without changing the payload's shape.
+	.get('/server-status', withDefaultCors(), async (c) => {
+		return c.json({
+			status: 'online',
+			// One presence row per account, expired rows excluded — see countOnlinePlayers.
+			// Players sitting in the lobby count as online, same as anywhere else we read
+			// presence.
+			players: await countOnlinePlayers(c.env.DB),
 		})
-		if (!res.ok) return relay(c, res)
+	})
 
-		const result = (await res.json()) as { sent?: number }
-		return c.json({ success: true, sent: result.sent ?? 0 })
+	// ---- Signup -------------------------------------------------------------
+
+	// Create an account from the website, behind a Turnstile bot check. The check is what
+	// makes this safe to leave open: `auth` binds no platform identity to a web account, so
+	// its per-IP cap (3, never decaying) is the only other thing in front of this path —
+	// and `auth` has no bot check of its own, which is why this one endpoint can't simply
+	// be called from the browser like the rest.
+	//
+	// Deliberately passes NO `platform`: create_account treats an asserted platform as one
+	// to verify against Steam and would reject RecNet, so this is the platform-less
+	// password-account path. The username is auto-assigned by auth — players don't pick one.
+	//
+	// On success auth's token response is returned VERBATIM, so the SPA stores it the same
+	// way it stores the one it gets from calling `/connect/token` itself to sign in. The
+	// account's email, when the player gave one, is saved by the client afterwards with
+	// that token — `create_account` takes no email, and `accounts` owns the field.
+	.post('/api/signup', async (c) => {
+		// No usable keypair means signup is closed rather than unprotected (see turnstile.ts).
+		const keys = await turnstileKeys(c.env)
+		if (!keys) return c.json({ error: 'Account creation is currently disabled.' }, 403)
+
+		type SignupBody = { password?: string; turnstileToken?: string }
+		const { password, turnstileToken } = await c.req
+			.json<SignupBody>()
+			.catch(() => ({}) as SignupBody)
+		if (!password) return c.json({ error: 'A password is required.' }, 400)
+		if (!turnstileToken) return c.json({ error: 'Please complete the bot check.' }, 400)
+
+		// The IP Turnstile cross-checks the token against — set by the edge, so the client
+		// can't spoof it (unlike X-Forwarded-For). `auth` records the same header as the
+		// account's signup IP, which is why it's forwarded to the grant below rather than
+		// left to the edge: see `postAuthForm`.
+		const clientIp = c.req.header('cf-connecting-ip')
+		const verified = await verifyTurnstile(keys.secretKey, turnstileToken, clientIp)
+		// A token is single-use, so the client resets its widget before letting them retry.
+		if (!verified) return c.json({ error: 'Bot check failed. Please try again.' }, 403)
+
+		// A throw here is auth being unreachable, not a rejected signup — answered as such
+		// rather than falling through to the generic 500 handler, whose "internal server
+		// error" tells the player nothing about whether they now have an account (they don't:
+		// nothing was created).
+		const res = await postAuthForm(
+			c.env,
+			'/connect/token',
+			{ grant_type: 'create_account', password },
+			{ clientIp }
+		).catch(() => null)
+		if (res === null) {
+			logger.error('could not reach auth to create an account')
+			return c.json({ error: authUnreachable('signup') }, 502)
+		}
+
+		// A refused grant is translated (see `readAuthError`) rather than relayed: auth
+		// answers the OAuth shape, whose `error` is always a code like `invalid_grant`, and
+		// that code is what the form used to show for every failure — including the
+		// per-network cap, which the player could otherwise understand. Sign-in doesn't need
+		// this (the browser calls `/connect/token` itself and reads `error_description`), but
+		// the cap is reachable only from signup, so the sentences live on this path.
+		if (!res.ok) {
+			const failure = await readAuthError(res, 'signup')
+			logger.info('auth refused a signup', { status: res.status, upstream: failure.upstream })
+			return c.json({ error: failure.message }, failure.status)
+		}
+
+		const token = (await res.json().catch(() => null)) as { access_token?: string } | null
+		if (!token?.access_token) {
+			logger.error('auth answered a signup with no access_token')
+			return c.json({ error: authUnreachable('signup') }, 502)
+		}
+		return c.json(token)
 	})
 
 	// ---- Privacy policy -----------------------------------------------------

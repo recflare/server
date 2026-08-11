@@ -16,6 +16,7 @@
 		"test": "run-vitest"
 	},
 	"dependencies": {
+		"@repo/domain": "workspace:*",
 		"@repo/hono-helpers": "workspace:*",
 		"@scalar/api-reference": "1.63.0",
 		"hono": "4.12.27",

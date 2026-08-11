@@ -50,13 +50,20 @@
 		"crons": ["*/5 * * * *"]
 	},
 	"logpush": false,
-	// Shared Secrets Store holding the HS256 JWT signing key. "local" store_id replaced
-	// with RECFLARE_SECRETS_STORE at deploy.
+	// Shared Secrets Store holding the HS256 JWT signing key, plus the Meta app secret
+	// the mounted `auth` app needs to verify Oculus logins. "local" store_id replaced
+	// with RECFLARE_SECRETS_STORE at deploy. Both must exist in the store or the deploy
+	// fails — see DEPLOYING.md.
 	"secrets_store_secrets": [
 		{
 			"binding": "JWT_SECRET",
 			"store_id": "local",
 			"secret_name": "JWT_SECRET"
+		},
+		{
+			"binding": "META_APP_SECRET",
+			"store_id": "local",
+			"secret_name": "META_APP_SECRET"
 		}
 	],
 	"upload_source_maps": true,

@@ -24,7 +24,7 @@ export enum NotificationType {
 	ModerationUpdateRequired = 21,
 	ModerationKick = 22,
 	ModerationKickAttemptFailed = 23,
-	ModerationRoomBan = 24,
+	ModerationRoomBan = "ModerationRoomBan",
 	ServerMaintenance = 25,
 	GiftPackageReceived = 30,
 	GiftPackageReceivedImmediate = 31,

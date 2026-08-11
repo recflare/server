@@ -35,7 +35,7 @@ import type { App } from './context'
  */
 const UPLOAD_SUBFOLDER: Record<number, string> = {
 	1: 'room',
-	2: 'holotar',
+	2: 'data',
 	3: 'image',
 	4: 'video',
 	5: 'invention',
@@ -150,8 +150,14 @@ const app = new Hono<App>()
 				// does the extension, which is why it goes on the key, not just the name.
 				const datePrefix = new Date().toISOString().slice(0, 10)
 				const filename = `${datePrefix}/${crypto.randomUUID()}${extensionForFileType(fileType)}`
-				await c.env.CDN_ASSETS.put(`${subfolder}/${filename}`, await file.arrayBuffer(), {
+				const bytes = await file.arrayBuffer()
+				await c.env.CDN_ASSETS.put(`${subfolder}/${filename}`, bytes, {
 					httpMetadata: { contentType: file.type || 'application/octet-stream' },
+					// Record the SHA-256 on the object. R2 stores an md5 on its own, but the
+					// hashes the client is served (an invention's `BlobHash`) are SHA-256, and
+					// only a checksum given at put time is readable later — this lets the `api`
+					// worker answer one from a HEAD instead of downloading the blob to digest it.
+					sha256: await crypto.subtle.digest('SHA-256', bytes),
 				})
 				return c.json({ filename })
 			}

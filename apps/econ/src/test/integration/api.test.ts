@@ -4,8 +4,15 @@ import { beforeAll, describe, expect, test } from 'vitest'
 
 import '../../econ.app'
 
-import { RECEIVED_GIFT_SCHEMA_DDL } from '@repo/domain'
+import {
+	getOwnedInventionIds,
+	INVENTORY_INVENTION_SCHEMA_DDL,
+	RECEIVED_GIFT_SCHEMA_DDL,
+} from '@repo/domain'
 
+// The `invention` table belongs to the `api` worker; buyInvention reads it, so its DDL
+// is built here too (see the same cross-worker import in econ.app.ts).
+import { SCHEMA_DDL as INVENTION_SCHEMA_DDL } from '../../../../api/src/inventions-db'
 import { SCHEMA_DDL } from '../../avatar-db'
 import {
 	BALANCE_SCHEMA_DDL,
@@ -39,10 +46,75 @@ beforeAll(async () => {
 	for (const stmt of CONSUMABLE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of EQUIPMENT_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of RECEIVED_GIFT_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	for (const stmt of INVENTORY_INVENTION_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	for (const stmt of INVENTION_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	await env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
 		.bind(JSON.stringify({ accountId: 42, username: 'Tester', displayName: 'Tester' }))
 		.run()
+	for (const invention of SEEDED_INVENTIONS) {
+		await env.DB.prepare('INSERT INTO invention (data) VALUES (?1)')
+			.bind(JSON.stringify(invention))
+			.run()
+	}
 })
+
+/**
+ * Inventions the buyInvention tests buy (or fail to buy). Only the fields that path
+ * reads are meaningful — id, creator, published flag and price — but the record is
+ * shaped like a real stored `RRInvention` so the response envelope is realistic.
+ */
+function invention(
+	inventionId: number,
+	overrides: { CreatorPlayerId?: number; IsPublished?: boolean; Price?: number } = {}
+) {
+	return {
+		InventionId: inventionId,
+		ReplicationId: `replication-${inventionId}`,
+		CreatorPlayerId: 999,
+		Name: `Invention ${inventionId}`,
+		Description: 'A test invention',
+		ImageName: '',
+		CurrentVersionNumber: 1,
+		CurrentVersion: {
+			InventionId: inventionId,
+			ReplicationId: `version-${inventionId}`,
+			VersionNumber: 1,
+			BlobName: `invention-${inventionId}.inv`,
+			BlobHash: null,
+			InstantiationCost: 0,
+			LightsCost: 0,
+			ChipsCost: 0,
+			CloudVariablesCost: 0,
+			AICost: 0,
+		},
+		Accessibility: 0,
+		IsPublished: true,
+		IsFeatured: false,
+		ModifiedAt: '2026-01-01T00:00:00.000Z',
+		CreatedAt: '2026-01-01T00:00:00.000Z',
+		FirstPublishedAt: '2026-01-01T00:00:00.000Z',
+		CreationRoomId: 0,
+		NumPlayersHaveUsedInRoom: 0,
+		NumDownloads: 0,
+		CheerCount: 0,
+		CreatorPermission: 100,
+		GeneralPermission: 20,
+		IsAGInvention: false,
+		IsCertifiedInvention: false,
+		Price: 0,
+		AllowTrial: true,
+		HideFromPlayer: false,
+		ReferencedInventions: [],
+		...overrides,
+	}
+}
+
+const SEEDED_INVENTIONS = [
+	invention(8), // free, published, someone else's — the sellable one
+	invention(9, { Price: 250 }), // priced: buying it pays creator 999 250 tokens
+	invention(10, { IsPublished: false }), // a draft, not on sale even at 0
+	invention(11, { CreatorPlayerId: 60 }), // account 60's own invention
+]
 
 /**
  * A real outfit as the client posts it to /api/avatar/v3/saved/set — kept verbatim
@@ -268,6 +340,37 @@ describe('econ endpoints', () => {
 			expect(res.status).toBe(200)
 			expect(await res.json()).toEqual([])
 		}
+	})
+
+	test('POST /api/objectives/v1/updateobjective echoes the group, never completed', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/objectives/v1/updateobjective`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({
+				Index: 2,
+				Group: 3,
+				Progress: 1,
+				VisualProgress: 0,
+				IsCompleted: true,
+				HasClaimedReward: false,
+			}),
+		})
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as { group: number; isCompleted: boolean; clearedAt: string }
+		expect(body.group).toBe(3)
+		expect(body.isCompleted).toBe(false)
+		expect(Number.isNaN(Date.parse(body.clearedAt))).toBe(false)
+	})
+
+	test('POST /api/objectives/v1/updateobjective tolerates a non-JSON body', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/objectives/v1/updateobjective`, {
+			method: 'POST',
+			body: 'not json',
+		})
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as { group: number; isCompleted: boolean }
+		expect(body.group).toBe(0)
+		expect(body.isCompleted).toBe(false)
 	})
 
 	test('GET /api/checklist/v1/current 401s without a token, returns [] with one', async () => {
@@ -629,6 +732,7 @@ describe('econ endpoints', () => {
 
 	test('POST /api/storefronts/v2/buyItem debits, grants the item, and hands back a gift box', async () => {
 		// Account 20: fresh, so its first balance touch grants the 10000 default.
+		await drainFrames()
 		const res = await exports.default.fetch(`${ORIGIN}/api/storefronts/v2/buyItem`, {
 			method: 'POST',
 			headers: { ...(await bearer('20')), 'Content-Type': 'application/json' },
@@ -655,6 +759,16 @@ describe('econ endpoints', () => {
 		const gift = body.BalanceUpdates[0].Data[0]
 		expect(gift.AvatarItemDesc).not.toBe('')
 		expect(gift.Id).toBeGreaterThan(0)
+
+		// The socket frame carries the same change the response does — the client adds it to
+		// the balance it is showing, so the resulting total here would double-count the 9550.
+		expect(await drainFrames()).toEqual([
+			{
+				accountId: 20,
+				notificationType: STOREFRONT_BALANCE_UPDATE,
+				payload: { Balance: -450, CurrencyType: 2, BalanceType: -2 },
+			},
+		])
 
 		// The balance endpoint reflects the debit (this is the resulting total, 10000 - 450).
 		const bal = await exports.default.fetch(`${ORIGIN}/api/storefronts/v4/balance/2`, {
@@ -920,6 +1034,153 @@ describe('econ endpoints', () => {
 		expect(list.every((i) => i.FriendlyName !== 'Bowtie (White)')).toBe(true)
 	})
 
+	/**
+	 * The StorefrontBalanceUpdate (and other) frames the worker has pushed since the last
+	 * drain, read back off the stub hub in vitest.config.ts. Notification sends are
+	 * best-effort — the worker logs and swallows a hub failure — so this is the only way a
+	 * test sees what was actually pushed.
+	 */
+	const drainFrames = async (): Promise<
+		Array<{ accountId: number; notificationType: number; payload: Record<string, number> }>
+	> =>
+		(
+			env.RECFLARE_NOTIFICATIONS_HUB.getByName('global') as unknown as {
+				drainFrames(): Promise<
+					Array<{ accountId: number; notificationType: number; payload: Record<string, number> }>
+				>
+			}
+		).drainFrames()
+
+	/** `NotificationType.StorefrontBalanceUpdate` in the notify worker's enum. */
+	const STOREFRONT_BALANCE_UPDATE = 61
+
+	// buyInvention is a GET with query params — that is how the client sends it.
+	const buyInvention = async (sub: string, inventionId: number, requestedPrice = 0) =>
+		exports.default.fetch(
+			`${ORIGIN}/api/storefronts/v2/buyInvention?inventionId=${inventionId}&requestedPrice=${requestedPrice}`,
+			{ headers: await bearer(sub) }
+		)
+
+	test('GET /api/storefronts/v2/buyInvention 401s without a token', async () => {
+		const res = await exports.default.fetch(
+			`${ORIGIN}/api/storefronts/v2/buyInvention?inventionId=8&requestedPrice=0`
+		)
+		expect(res.status).toBe(401)
+	})
+
+	test('GET /api/storefronts/v2/buyInvention records ownership of a free invention', async () => {
+		const res = await buyInvention('50', 8)
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as {
+			BalanceUpdateResponse: {
+				Balance: number
+				BalanceType: number
+				CurrencyType: number
+				BalanceUpdates: Array<{ UpdateResponse: number; Data: { InventionId: number } }>
+			}
+			InventionResponse: {
+				Status: number
+				Invention: { InventionId: number; Name: string }
+				InventionVersion: { InventionId: number; VersionNumber: number }
+			}
+		}
+		// Nothing was debited, so `Balance` is the resulting total — the untouched starting
+		// grant — not a change, unlike buyItem's.
+		expect(body.BalanceUpdateResponse.Balance).toBe(DEFAULT_STARTING_TOKENS)
+		expect(body.BalanceUpdateResponse.CurrencyType).toBe(CurrencyType.RecCenterTokens)
+		expect(body.BalanceUpdateResponse.BalanceType).toBe(-2)
+		expect(body.BalanceUpdateResponse.BalanceUpdates[0].Data.InventionId).toBe(8)
+		expect(body.InventionResponse.Status).toBe(0)
+		expect(body.InventionResponse.Invention.Name).toBe('Invention 8')
+		expect(body.InventionResponse.InventionVersion.VersionNumber).toBe(1)
+
+		expect(await getOwnedInventionIds(env.DB, 50)).toEqual([8])
+
+		// Owning an invention is boolean: buying it again is a conflict, not a second row.
+		expect((await buyInvention('50', 8)).status).toBe(409)
+		expect(await getOwnedInventionIds(env.DB, 50)).toEqual([8])
+	})
+
+	test('GET /api/storefronts/v2/buyInvention pays the creator the buyer’s tokens', async () => {
+		// Invention 9 costs 250 and was made by account 999. Buying it moves 250 tokens from
+		// the buyer to that creator — no house cut, so the two sides are equal and opposite.
+		await drainFrames()
+		const res = await buyInvention('51', 9, 250)
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as { BalanceUpdateResponse: { Balance: number } }
+		// `Balance` is the buyer's RESULTING total, so it already has the debit in it.
+		expect(body.BalanceUpdateResponse.Balance).toBe(DEFAULT_STARTING_TOKENS - 250)
+		expect(
+			await getBalance(env.DB, 51, CurrencyType.RecCenterTokens, DEFAULT_STARTING_TOKENS)
+		).toBe(DEFAULT_STARTING_TOKENS - 250)
+		// The creator had never touched their balance: they keep their starting grant AND get
+		// paid, rather than the payout standing in for the grant.
+		expect(
+			await getBalance(env.DB, 999, CurrencyType.RecCenterTokens, DEFAULT_STARTING_TOKENS)
+		).toBe(DEFAULT_STARTING_TOKENS + 250)
+		expect(await getOwnedInventionIds(env.DB, 51)).toEqual([9])
+
+		// Both sides get a socket frame carrying their CHANGE, not their new total: the client
+		// ADDS what it receives to the balance it is showing, so a total would have the creator
+		// reading their own balance plus the payout. Equal and opposite, like the ledger.
+		expect(await drainFrames()).toEqual([
+			{
+				accountId: 999,
+				notificationType: STOREFRONT_BALANCE_UPDATE,
+				payload: { Balance: 250, CurrencyType: CurrencyType.RecCenterTokens, BalanceType: -2 },
+			},
+			{
+				accountId: 51,
+				notificationType: STOREFRONT_BALANCE_UPDATE,
+				payload: { Balance: -250, CurrencyType: CurrencyType.RecCenterTokens, BalanceType: -2 },
+			},
+		])
+	})
+
+	test('GET /api/storefronts/v2/buyInvention rejects a stale price and an unaffordable one', async () => {
+		// Sending 0 for the 250-token invention 9 is a stale (or tampered) price.
+		expect((await buyInvention('53', 9, 0)).status).toBe(409)
+
+		// Account 54 can't afford it: nothing is debited, nobody is paid, nothing is owned.
+		await spendCurrency(
+			env.DB,
+			54,
+			CurrencyType.RecCenterTokens,
+			DEFAULT_STARTING_TOKENS,
+			DEFAULT_STARTING_TOKENS
+		)
+		const creatorBefore = await getBalance(
+			env.DB,
+			999,
+			CurrencyType.RecCenterTokens,
+			DEFAULT_STARTING_TOKENS
+		)
+		expect((await buyInvention('54', 9, 250)).status).toBe(400)
+		expect(
+			await getBalance(env.DB, 54, CurrencyType.RecCenterTokens, DEFAULT_STARTING_TOKENS)
+		).toBe(0)
+		expect(
+			await getBalance(env.DB, 999, CurrencyType.RecCenterTokens, DEFAULT_STARTING_TOKENS)
+		).toBe(creatorBefore)
+		expect(await getOwnedInventionIds(env.DB, 53)).toEqual([])
+		expect(await getOwnedInventionIds(env.DB, 54)).toEqual([])
+	})
+
+	test('GET /api/storefronts/v2/buyInvention rejects drafts, self-buys and unknown ids', async () => {
+		// Unpublished — a draft is not on sale, free or not.
+		expect((await buyInvention('52', 10)).status).toBe(403)
+		// Account 60 created invention 11; a creator already owns it.
+		expect((await buyInvention('60', 11)).status).toBe(400)
+		expect((await buyInvention('52', 9999)).status).toBe(404)
+		// Missing/non-numeric inventionId.
+		const res = await exports.default.fetch(`${ORIGIN}/api/storefronts/v2/buyInvention`, {
+			headers: await bearer('52'),
+		})
+		expect(res.status).toBe(400)
+		expect(await getOwnedInventionIds(env.DB, 52)).toEqual([])
+		expect(await getOwnedInventionIds(env.DB, 60)).toEqual([])
+	})
+
 	test('POST /api/avatar/v2/gifts/consume opens the box the way the client sends it', async () => {
 		// Buy an item for account 24, then consume the box the way the client does: on the
 		// econ host, with a form body (`Id=..&UnlockedLevel=..`).
@@ -1182,6 +1443,7 @@ describe('econ endpoints', () => {
 			'GET /api/roomkeys/v1/mine',
 			'GET /api/roomkeys/v1/room',
 			'GET /api/storefronts/v1/adcarouselitems',
+			'GET /api/storefronts/v2/buyInvention',
 			'GET /api/storefronts/v3/giftdropstore/{id}',
 			'GET /api/storefronts/v4/balance/{currencyType}',
 			'GET /econ/customAvatarItems/v1/owned',
@@ -1194,6 +1456,7 @@ describe('econ endpoints', () => {
 			'POST /api/consumables/v1/consume',
 			'POST /api/gamerewards/v1/request',
 			'POST /api/objectives/v1/cleargroup',
+			'POST /api/objectives/v1/updateobjective',
 			'POST /api/storefronts/v2/buyItem',
 			'PUT /api/equipment/v1/update',
 		])

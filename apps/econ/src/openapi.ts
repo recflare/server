@@ -113,6 +113,17 @@ export const ChallengeProgressResponse = z.object({
 })
 
 /**
+ * `POST /api/objectives/v1/updateobjective` — the group the objective belongs to, after
+ * the update. camelCase, unlike the PascalCase body the client posts and the PascalCase
+ * `ObjectiveGroups` entries `myprogress` serves — three spellings of the same group.
+ */
+export const UpdateObjectiveResponse = z.object({
+	group: z.int().describe('Echoed back from the request'),
+	isCompleted: z.boolean().describe('Always false — no objectives store yet'),
+	clearedAt: z.string().describe('When the group was cleared — now, since nothing persists'),
+})
+
+/**
  * `POST /api/storefronts/v2/buyItem` — the purchase result. `Balance` is the CHANGE
  * applied (the negated price), not the resulting total; the client reads its new total
  * from `GET /balance/:type`. `BalanceType` -2 is account-wide. Each `Data` entry is the
@@ -130,7 +141,34 @@ export const BuyItemResponse = z.object({
 	BalanceType: z.int().describe('-2 = account-wide'),
 })
 
-/** buyItem error body (`{ error }`), returned on 400/404/409. */
+/**
+ * `GET /api/storefronts/v2/buyInvention` — the purchase result. Two envelopes side by
+ * side: the balance update (shaped like buyItem's, except `Balance` is the RESULTING
+ * total, not the change, and `Data` is a single invention rather than a gift-drop list)
+ * and the invention envelope the invention endpoints already serve.
+ */
+export const BuyInventionResponse = z.object({
+	BalanceUpdateResponse: z.object({
+		Balance: z.int().describe('The resulting balance — NOT the change, unlike buyItem'),
+		BalanceType: z.int().describe('-2 = account-wide'),
+		CurrencyType: z.int().describe('2 = RecCenterTokens'),
+		BalanceUpdates: z.array(
+			z.object({
+				UpdateResponse: z.int(),
+				Data: JsonObject.describe('The bought invention (`RRInvention`)'),
+			})
+		),
+	}),
+	InventionResponse: z
+		.object({
+			Status: z.int(),
+			Invention: JsonObject,
+			InventionVersion: JsonObject,
+		})
+		.describe('The same envelope `POST /api/inventions/v6/save` returns'),
+})
+
+/** buyItem / buyInvention error body (`{ error }`), returned on 400/403/404/409. */
 export const ErrorResponse = z.object({ error: z.string() })
 
 // ---- Request schemas -------------------------------------------------------
@@ -169,6 +207,20 @@ export const ChallengeProgressRequest = z.object({
 	ChallengeMapId: z.union([z.string(), z.int()]).optional(),
 	ChallengeId: z.union([z.string(), z.int()]).optional(),
 	Config: z.string().optional().describe('The client-evaluated rule tree'),
+})
+
+/**
+ * `POST /api/objectives/v1/updateobjective` JSON body — one objective's state as the
+ * client now sees it. `Index`/`Group` identify it within `myprogress`; the rest is the
+ * progress it wants persisted.
+ */
+export const UpdateObjectiveRequest = z.object({
+	Index: z.int().describe('Which objective within the group'),
+	Group: z.int().describe('Which objective group'),
+	Progress: z.int().optional(),
+	VisualProgress: z.int().optional().describe('What the client animates towards'),
+	IsCompleted: z.boolean().optional(),
+	HasClaimedReward: z.boolean().optional(),
 })
 
 /** `POST /api/avatar/v3/saved/set` JSON body — an outfit with a target `Slot`. */

@@ -48,16 +48,61 @@ CONFIG="wrangler.jsonc"
 # (main: index.js), the resolved assets.directory, and no_bundle. The committed
 # wrangler.jsonc leaves assets.directory out on purpose — the plugin fills it in —
 # so deploying the source config fails with "assets ... missing the required
-# directory property". Prefer the generated config when it exists. These workers
-# have no D1/KV/Secrets bindings, so the id-splicing below is skipped.
+# directory property". Prefer the generated config when it exists.
+#
+# The plugin copies the bindings across verbatim, placeholders and all, so these
+# configs need the same id-splicing as the rest — www binds the Secrets Store for its
+# Turnstile keys. It gets its own branch below because the emitted file is minified
+# single-line JSON, which the line-oriented sed/awk passes can't edit correctly.
 VITE_CONFIG="dist/$DIR/wrangler.json"
+IS_VITE=""
 if [ -f "$VITE_CONFIG" ]; then
 	CONFIG="$VITE_CONFIG"
+	IS_VITE=1
 fi
 
-NEEDS_D1=$(grep -q '"database_id": *"local"' wrangler.jsonc 2>/dev/null && echo 1 || true)
-NEEDS_KV=$(grep -q '"id": *"local"' wrangler.jsonc 2>/dev/null && echo 1 || true)
-NEEDS_STORE=$(grep -q '"store_id": *"local"' wrangler.jsonc 2>/dev/null && echo 1 || true)
+NEEDS_D1=$(grep -q '"database_id": *"local"' "$CONFIG" 2>/dev/null && echo 1 || true)
+NEEDS_KV=$(grep -q '"id": *"local"' "$CONFIG" 2>/dev/null && echo 1 || true)
+NEEDS_STORE=$(grep -q '"store_id": *"local"' "$CONFIG" 2>/dev/null && echo 1 || true)
+
+# Vite-built config: plain JSON, so jq does the splicing structurally (by binding
+# name for KV) rather than by line. Written beside the original so its relative
+# paths (main, assets.directory) still resolve. Gitignored; removed on exit.
+if [ "$CONFIG" = "$VITE_CONFIG" ] && { [ -n "$NEEDS_D1" ] || [ -n "$NEEDS_KV" ] || [ -n "$NEEDS_STORE" ]; }; then
+	GENERATED="dist/$DIR/wrangler.generated.json"
+	trap 'rm -f "$GENERATED"' EXIT
+
+	if [ -n "$NEEDS_D1" ] && [ -z "${RECFLARE_D1:-}" ]; then
+		echo "error: RECFLARE_D1 is not set — add the recflare D1 id to .env (see .env.example)" >&2
+		exit 1
+	fi
+	if [ -n "$NEEDS_STORE" ] && [ -z "${RECFLARE_SECRETS_STORE:-}" ]; then
+		echo "error: RECFLARE_SECRETS_STORE is not set — add the secrets store id to .env (see .env.example)" >&2
+		exit 1
+	fi
+
+	KV_JSON=${RECFLARE_KV:-}
+	[ -n "$KV_JSON" ] || KV_JSON='{}'
+
+	jq \
+		--arg db "${RECFLARE_D1:-}" \
+		--arg store "${RECFLARE_SECRETS_STORE:-}" \
+		--argjson kv "$KV_JSON" '
+		(.d1_databases // []) |= map(
+			if .database_id == "local" then .database_id = $db else . end
+		)
+		| (.kv_namespaces // []) |= map(
+			if .id == "local" then
+				.id = ($kv[.binding] //
+					error("no KV id for binding [" + .binding + "] in RECFLARE_KV — add it to .env (see .env.example)"))
+			else . end
+		)
+		| (.secrets_store_secrets // []) |= map(
+			if .store_id == "local" then .store_id = $store else . end
+		)
+	' "$VITE_CONFIG" >"$GENERATED" || exit 1
+	CONFIG="$GENERATED"
+fi
 
 if [ "$CONFIG" = "wrangler.jsonc" ] && { [ -n "$NEEDS_D1" ] || [ -n "$NEEDS_KV" ] || [ -n "$NEEDS_STORE" ]; }; then
 	CONFIG="wrangler.generated.jsonc"
@@ -131,13 +176,15 @@ EXTRA_VARS=$(recflare_vars)
 
 # Vite-built configs set no_bundle (vite already bundled and minified), which is
 # incompatible with --minify. Only pass --minify when wrangler does the bundling.
+# Keyed on IS_VITE, not on $CONFIG: the splicing above may have swapped $CONFIG for
+# the generated copy, which is just as no_bundle as the file it came from.
 MINIFY="--minify"
-[ "$CONFIG" = "$VITE_CONFIG" ] && MINIFY=""
+[ -n "$IS_VITE" ] && MINIFY=""
 
 # Deploy with wrangler using the extracted values as binding variables
 echo "Deploying worker $NAME version $VERSION to $HOST"
-# $EXTRA_VARS is intentionally unquoted — it's a flag list to word-split, and every
-# value in it is an integer, so there's nothing to split on inside a value.
+# $EXTRA_VARS is intentionally unquoted — it's a flag list to word-split, and no knob value
+# contains whitespace (see recflare_vars), so there's nothing to split on inside a value.
 wrangler deploy \
 	--config "$CONFIG" \
 	--var NAME:"$NAME" \

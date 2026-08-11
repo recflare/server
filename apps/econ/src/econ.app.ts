@@ -2,10 +2,21 @@ import { Hono } from 'hono'
 import { describeRoute, openAPIRouteHandler } from 'hono-openapi'
 import { useWorkersLogger } from 'workers-tagged-logger'
 
-import { consumeGift, createGift, getGift, getPendingGifts } from '@repo/domain'
+import {
+	consumeGift,
+	createGift,
+	getGift,
+	getPendingGifts,
+	grantInvention,
+	ownsInvention,
+} from '@repo/domain'
 import { intVar, logger, withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
 import { validateAndGetAccountId } from '@repo/jwt'
 
+// Invention storage (owned by the `api` worker, on this same `recflare` database).
+// Imported directly rather than copied: these are plain D1 helpers with no bindings of
+// their own, and buyInvention has to read the very rows `api` writes.
+import { getInventionById, toSaveResult } from '../../api/src/inventions-db'
 // The notification-type ids the hub carries (owned by the `notify` worker). Imported
 // as a value — the enum has no runtime dependencies.
 import { NotificationType } from '../../notify/src/notification-types'
@@ -17,7 +28,10 @@ import weeklyChallenge from '../static/weekly-challenge.json'
 import { getAvatar, setAvatar } from './avatar-db'
 import {
 	ALL_PLATFORMS,
+	creditCurrency,
+	CurrencyType,
 	DEFAULT_STARTING_TOKENS,
+	ensureStartingBalances,
 	getBalance,
 	isSpendable,
 	spendCurrency,
@@ -34,6 +48,7 @@ import {
 	AUTHED,
 	AvatarV2Dto,
 	BalanceEntry,
+	BuyInventionResponse,
 	BuyItemRequest,
 	BuyItemResponse,
 	ChallengeProgressRequest,
@@ -54,6 +69,8 @@ import {
 	SaveOutfitV4Response,
 	SubscriptionResponse,
 	UNAUTHORIZED_RESPONSE,
+	UpdateObjectiveRequest,
+	UpdateObjectiveResponse,
 } from './openapi'
 import { getOutfits, setOutfit } from './outfit-db'
 
@@ -69,7 +86,8 @@ import type { Outfit } from './outfit-db'
 /**
  * Economy Worker. Hosts the avatar/economy endpoints the game client calls on
  * the `econ` service (these are separate from the main `api` worker). Balances,
- * inventory, consumables, saved outfits, avatars and gift boxes are D1-backed;
+ * inventory (avatar items, equipment, bought inventions), consumables, saved outfits,
+ * avatars and gift boxes are D1-backed;
  * storefront catalogs are static assets (`sf{N}.json`) served via the ASSETS
  * binding. Some routes are still empty-list stubs (room keys, wishlist, …).
  *
@@ -187,23 +205,30 @@ async function pushConsumableAdded(
  * Push a StorefrontBalanceUpdate to a player after their balance changes, mirroring the
  * reference's
  * `HubSendToPlayer(accountID, NotifFrame(StorefrontBalanceUpdate, {Balance, CurrencyType, BalanceType}))`.
- * The client applies it to the shown balance so a purchase debit reflects immediately,
- * without waiting for a `GET /balance` re-fetch. `Balance` is the resulting total in that
- * currency (not the delta), `BalanceType` is -2 (account-wide, all platforms). Best-effort:
- * a hub failure is logged and swallowed, since the balance change has already committed.
+ * The client applies it to the shown balance so a purchase reflects immediately, without
+ * waiting for a `GET /balance` re-fetch.
+ *
+ * `Balance` is the CHANGE — negative for a debit, positive for a payout — not the
+ * resulting total. The client ADDS what it receives to the balance it is already showing,
+ * so sending the total made a 10,000-token player who earned 250 read 20,250: their own
+ * balance plus the new total. That also makes this frame non-idempotent, so push exactly
+ * once per change and never re-send it as a "refresh".
+ *
+ * `BalanceType` is -2 (account-wide, all platforms). Best-effort: a hub failure is logged
+ * and swallowed, since the balance change has already committed.
  */
 async function pushBalanceUpdate(
 	c: Context<App>,
 	accountId: number,
 	currencyType: number,
-	balance: number
+	change: number
 ): Promise<void> {
 	try {
 		await c.env.RECFLARE_NOTIFICATIONS_HUB.getByName(HUB_INSTANCE).notifyPlayer(
 			accountId,
 			NotificationType.StorefrontBalanceUpdate,
 			{
-				Balance: balance,
+				Balance: change,
 				CurrencyType: currencyType,
 				BalanceType: ALL_PLATFORMS,
 			}
@@ -475,6 +500,37 @@ const app = new Hono<App>({ strict: false })
 			responses: { 200: json(JsonArray, 'Always empty for now') },
 		}),
 		(c) => c.json([])
+	)
+
+	// Report one objective's progress. The client posts the whole objective as it now
+	// sees it (Index/Group identify it within `myprogress`) and reads back the state of
+	// the GROUP that objective belongs to — camelCase here, unlike the PascalCase body it
+	// posted. Stubbed: with no objectives store yet we persist nothing, echo the group
+	// back and never complete it, so the reward-claim flow isn't triggered. `clearedAt`
+	// is the clear time, which for a group we didn't clear is just now.
+	.post(
+		'/api/objectives/v1/updateobjective',
+		describeRoute({
+			tags: ['Econ'],
+			summary: 'Report objective progress',
+			description: [
+				'Stubbed: with no objectives store we persist nothing and never complete a group.',
+				'Echoes `Group` back as camelCase `group` with `isCompleted: false` so the client',
+				'gets a well-formed body.',
+			].join(' '),
+			requestBody: jsonBody(UpdateObjectiveRequest, 'The objective as the client now sees it'),
+			responses: { 200: json(UpdateObjectiveResponse, 'The echoed group, never completed') },
+		}),
+		async (c) => {
+			const body = await c.req
+				.json<{ Group?: string | number }>()
+				.catch(() => ({}) as Record<string, never>)
+			return c.json({
+				group: Number(body.Group) || 0,
+				isCompleted: false,
+				clearedAt: new Date().toISOString(),
+			})
+		}
 	)
 
 	// The player's avatar, stored as a JSON blob on their account row. Falls back
@@ -996,7 +1052,8 @@ const app = new Hono<App>({ strict: false })
 				'still matches, debits the buyer atomically, grants the item (into the inventory or',
 				'consumable table), and returns a gift box. A `Gift` block routes the item to another',
 				'player, but the caller always pays. `Balance` in the response is the CHANGE (negated',
-				'price), not the new total. Pushes a StorefrontBalanceUpdate socket notification.',
+				'price), not the new total. Pushes a StorefrontBalanceUpdate socket frame carrying the',
+				'same change, which the client ADDS to the balance it is showing.',
 			].join(' '),
 			security: AUTHED,
 			requestBody: jsonBody(BuyItemRequest, 'The item, currency, price, and optional Gift'),
@@ -1117,11 +1174,11 @@ const app = new Hono<App>({ strict: false })
 				)
 			)
 
-			// Push the buyer's new (reduced) balance over the socket so their client updates the
-			// shown total immediately — the buyer (`id`) is who was debited, in the currency they
-			// spent. Best-effort; the HTTP response still carries the change either way.
-			const newBalance = await getBalance(c.env.DB, id, currencyType as number, startingTokens)
-			await pushBalanceUpdate(c, id, currencyType as number, newBalance)
+			// Push the debit over the socket so the buyer's client updates the shown total
+			// immediately — the buyer (`id`) is who was charged, in the currency they spent. The
+			// frame carries the CHANGE, so a purchase is negative. Best-effort; the HTTP response
+			// carries the same change either way.
+			await pushBalanceUpdate(c, id, currencyType as number, -price.Price)
 
 			// The response mirrors a captured real buyItem: `Balance` is the change applied (the
 			// negated price), not the resulting balance (the client reads its new total from
@@ -1160,6 +1217,158 @@ const app = new Hono<App>({ strict: false })
 				Balance: -price.Price,
 				CurrencyType: currencyType,
 				BalanceType: ALL_PLATFORMS,
+			})
+		}
+	)
+
+	// Buy an invention. [Authorize]. A GET, despite being a purchase — the client sends
+	// `?inventionId=…&requestedPrice=…` with no body, so that's what we answer.
+	//
+	// A priced invention is settled player-to-player: the buyer is debited its `Price` in
+	// RecCenterTokens and the CREATOR is credited the same amount — no house cut, so the
+	// tokens are moved rather than minted or burned. A free invention (`Price` 0) skips the
+	// money entirely: nothing is debited and nobody is paid. The stored price is confirmed
+	// against the price the client rendered first, so a stale or tampered client can't buy
+	// at a price the creator no longer offers (409), and an unaffordable one is a 400 —
+	// the same "Insufficient balance" buyItem answers with.
+	//
+	// Ownership is recorded in `inventory_invention`; the creator is not sold their own
+	// invention (they own it already, via CreatorPlayerId) and a re-buy is a 409 rather
+	// than a second row. The invention's `NumDownloads` counter is deliberately NOT
+	// bumped: that column lives on the `invention` table the `api` worker owns, and this
+	// worker only reads it.
+	.get(
+		'/api/storefronts/v2/buyInvention',
+		describeRoute({
+			tags: ['Storefront'],
+			summary: 'Buy an invention',
+			description: [
+				'Looks the invention up by id, confirms the client’s `requestedPrice` still matches',
+				'its stored `Price`, debits the buyer and pays the creator that price in',
+				'RecCenterTokens (a free invention moves nothing), records ownership in',
+				'`inventory_invention`, and returns the invention alongside the buyer’s resulting',
+				'balance. When tokens moved, both players get a StorefrontBalanceUpdate push carrying',
+				'their CHANGE (the buyer’s negative, the creator’s positive), which the client adds to',
+				'the balance it is showing — unlike this response body, which replaces it.',
+				'A GET because that is how the client sends it.',
+			].join(' '),
+			security: AUTHED,
+			parameters: [
+				{
+					name: 'inventionId',
+					in: 'query',
+					required: true,
+					description: 'Invention id; missing or non-numeric is 400',
+					schema: { type: 'integer' },
+				},
+				{
+					name: 'requestedPrice',
+					in: 'query',
+					required: false,
+					description: 'The price the client rendered; a mismatch is 409. Defaults to 0',
+					schema: { type: 'integer' },
+				},
+			],
+			responses: {
+				200: json(BuyInventionResponse, 'The purchase result (invention + balance)'),
+				400: json(
+					ErrorResponse,
+					'Missing/non-numeric inventionId, buying your own, or insufficient balance'
+				),
+				401: UNAUTHORIZED_RESPONSE,
+				403: json(ErrorResponse, 'The invention is not published, so it is not for sale'),
+				404: json(ErrorResponse, 'No such invention'),
+				409: json(ErrorResponse, 'Already owned, or the price has changed'),
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const inventionId = Number.parseInt(c.req.query('inventionId') ?? '', 10)
+			if (Number.isNaN(inventionId)) return c.json({ error: 'inventionId is required' }, 400)
+			// Absent/non-numeric requestedPrice reads as 0, which only matches a free invention —
+			// a priced one then fails the confirmation below rather than selling for nothing.
+			const requestedPrice = Number.parseInt(c.req.query('requestedPrice') ?? '0', 10) || 0
+
+			const invention = await getInventionById(c.env.DB, inventionId)
+			if (invention === null) return c.json({ error: 'Invention not found' }, 404)
+			// An unpublished invention is a draft: it isn't on sale, not even for free.
+			if (!invention.IsPublished) return c.json({ error: 'Invention is not for sale' }, 403)
+			if (invention.CreatorPlayerId === id) {
+				return c.json({ error: 'Cannot buy your own invention' }, 400)
+			}
+			if (await ownsInvention(c.env.DB, id, inventionId)) {
+				return c.json({ error: 'Already owned' }, 409)
+			}
+
+			// The price the client rendered must still be the stored one: a mismatch is a stale
+			// catalog or a tampered request, never a sale.
+			if (invention.Price !== requestedPrice) {
+				return c.json({ error: 'Price has changed' }, 409)
+			}
+
+			const startingTokens = intVar(c.env.STARTING_TOKENS, DEFAULT_STARTING_TOKENS)
+			// Inventions are priced in RecCenterTokens only — the store shows no other currency
+			// for them, and `Price` carries no currency of its own to pick a different one from.
+			const price = invention.Price
+			if (price > 0) {
+				// Debit the buyer atomically; false means they couldn't afford it and nothing
+				// changed, so no ownership is recorded and the creator is not paid.
+				const paid = await spendCurrency(
+					c.env.DB,
+					id,
+					CurrencyType.RecCenterTokens,
+					price,
+					startingTokens
+				)
+				if (!paid) return c.json({ error: 'Insufficient balance' }, 400)
+			}
+
+			// Grant before paying out: these are three separate D1 writes with no transaction
+			// around them, so order them by what a failure costs. A buyer who paid and got the
+			// invention but left the creator unpaid is recoverable; a buyer charged for nothing
+			// is not.
+			await grantInvention(c.env.DB, id, inventionId)
+
+			if (price > 0) {
+				// Seed the creator's signup grant BEFORE crediting them: `creditCurrency` upserts
+				// the balance row, and `ensureStartingBalances` is an INSERT OR IGNORE, so a
+				// creator who had never touched their balance would otherwise have the row created
+				// here and lose their starting tokens forever.
+				await ensureStartingBalances(c.env.DB, invention.CreatorPlayerId, startingTokens)
+				await creditCurrency(
+					c.env.DB,
+					invention.CreatorPlayerId,
+					CurrencyType.RecCenterTokens,
+					price,
+					startingTokens
+				)
+				// The creator is a different, probably-online player: push the payout so a sale
+				// lands on their shown balance without a re-fetch. Positive, because the frame
+				// carries the change. Best-effort, as everywhere.
+				await pushBalanceUpdate(c, invention.CreatorPlayerId, CurrencyType.RecCenterTokens, price)
+			}
+
+			// Unlike buyItem — whose `Balance` is the change applied — the reference server
+			// answers this one with the RESULTING total (a first read seeds the buyer's starting
+			// grant, as everywhere else). The socket frame below is the other way round: the HTTP
+			// body REPLACES the shown balance, the push ADDS to it.
+			const balance = await getBalance(c.env.DB, id, CurrencyType.RecCenterTokens, startingTokens)
+			// A free invention moved nothing, so there is no change to push for it.
+			if (price > 0) {
+				await pushBalanceUpdate(c, id, CurrencyType.RecCenterTokens, -price)
+			}
+			return c.json({
+				BalanceUpdateResponse: {
+					Balance: balance,
+					BalanceType: ALL_PLATFORMS,
+					CurrencyType: CurrencyType.RecCenterTokens,
+					BalanceUpdates: [{ UpdateResponse: 0, Data: invention }],
+				},
+				// The same `{ Status, Invention, InventionVersion }` envelope the invention
+				// save/read endpoints serve — the client re-renders the invention from it.
+				InventionResponse: toSaveResult(invention),
 			})
 		}
 	)

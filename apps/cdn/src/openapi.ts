@@ -46,6 +46,7 @@ export function assetResponses(description: string): OpenAPIV3_1.ResponsesObject
 		304: { description: '`If-None-Match` matched the stored etag (no body)' },
 		400: { description: 'The key contains `..` (no body)' },
 		404: { description: 'No such object in the bucket' },
+		416: { description: 'The `Range` header could not be satisfied (no body)' },
 	}
 }
 
@@ -56,7 +57,7 @@ export const CONDITIONAL_HEADERS: OpenAPIV3_1.ParameterObject[] = [
 		in: 'header',
 		required: false,
 		description:
-			'A single byte range (`bytes=start-end`, `bytes=start-`, `bytes=-suffix`). Honoured with a 206; a malformed or multi-range value is ignored and the whole object served.',
+			'A single byte range (`bytes=start-end`, `bytes=start-`, `bytes=-suffix`), parsed by R2 itself. Any `bytes=` value is answered 206 with a `Content-Range` naming the bytes enclosed — never a bare 200 carrying the whole object, which a chunked downloader would write at the offset it asked for. A multi-range or unsatisfiable value yields the whole object, but says so in the `Content-Range`. A unit other than `bytes` is ignored (200).',
 		schema: { type: 'string', example: 'bytes=0-1023' },
 	},
 	{

@@ -2,15 +2,40 @@ import { adminSecretsStore, env } from 'cloudflare:test'
 import { exports } from 'cloudflare:workers'
 import { beforeAll, describe, expect, test } from 'vitest'
 
-import { GAME_VERSION, seedRoomWithSubRooms, SUBROOM_SCHEMA_DDL } from '@repo/domain'
+import {
+	GAME_VERSION,
+	grantInvention,
+	INVENTORY_INVENTION_SCHEMA_DDL,
+	ROOM_SCHEMA_DDL,
+	seedRoomWithSubRooms,
+	SUBROOM_SCHEMA_DDL,
+} from '@repo/domain'
 
 import '../../api.app'
 
+import { PLATFORM_SCHEMA_DDL } from '../../../../auth/src/platform-db'
+import { banEvasionMatch, resolveBan } from '../../bans-db'
+import {
+	countGoing,
+	SCHEMA_DDL as EVENTS_SCHEMA_DDL,
+	getEventAttendees,
+	getEventResponse,
+} from '../../events-db'
 import { createImage, getImageByName, SCHEMA_DDL as IMAGES_SCHEMA_DDL } from '../../images-db'
 import { SCHEMA_DDL as INVENTIONS_SCHEMA_DDL } from '../../inventions-db'
 import { SCHEMA_DDL as RELATIONSHIPS_SCHEMA_DDL } from '../../relationships-db'
+import {
+	banFromReport,
+	createReport,
+	getActiveBan,
+	getReportsAgainst,
+	isPlayerBanned,
+	SCHEMA_DDL as REPORTS_SCHEMA_DDL,
+} from '../../reports-db'
+import { getWarningsAgainst, SCHEMA_DDL as WARNINGS_SCHEMA_DDL } from '../../warnings-db'
 
 import type { Env } from '../../context'
+import type { PlayerEvent, PlayerEventResult } from '../../events-db'
 import type { SavedImage } from '../../images-db'
 import type { InventionSaveResult, SavedInvention } from '../../inventions-db'
 
@@ -44,14 +69,9 @@ const TEST_ROOMS = [
 beforeAll(async () => {
 	// Seed the shared JWT signing key into the local Secrets Store so .get() resolves.
 	await adminSecretsStore(env.JWT_SECRET).create('test-signing-key')
-	await env.DB.prepare(
-		`CREATE TABLE IF NOT EXISTS room (
-			data TEXT NOT NULL,
-			room_id INTEGER GENERATED ALWAYS AS (json_extract(data, '$.RoomId')) VIRTUAL,
-			name_lower TEXT GENERATED ALWAYS AS (lower(json_extract(data, '$.Name'))) VIRTUAL,
-			creator_account_id INTEGER GENERATED ALWAYS AS (json_extract(data, '$.CreatorAccountId')) VIRTUAL
-		)`
-	).run()
+	// The rooms worker's schema (room + interaction) — reading a room aggregates its
+	// cheer/favorite Stats from `interaction`, so both tables have to be here.
+	for (const stmt of ROOM_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	// Subrooms live in their own table now; getRoomById hydrates from it, so create it and
 	// split each seeded room's subrooms into it (mirrors the rooms worker's 0007 migration).
 	for (const stmt of SUBROOM_SCHEMA_DDL) await env.DB.prepare(stmt).run()
@@ -81,6 +101,21 @@ beforeAll(async () => {
 
 	// Inventions table (owned by the api worker) — invention save/mine use it.
 	for (const stmt of INVENTIONS_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+
+	// Bought-invention ownership (owned by the econ worker) — `v2/mine` folds it in.
+	for (const stmt of INVENTORY_INVENTION_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+
+	// Reports table (owned by the api worker) — player reports are recorded here.
+	for (const stmt of REPORTS_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	// Platform identity links (owned by the auth worker) — the sharp arm of the
+	// ban-evasion resolution matches on them.
+	for (const stmt of PLATFORM_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+
+	// Warnings table (owned by the api worker) — moderator-issued warnings land here.
+	for (const stmt of WARNINGS_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+
+	// Player events table (owned by the api worker) — scheduled events live here.
+	for (const stmt of EVENTS_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 })
 
 // Mint a token the way the `auth` worker does, signing with the shared test key seeded into the JWT_SECRET store, so the
@@ -94,10 +129,13 @@ function b64url(input: ArrayBuffer | string): string {
 	return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
-async function bearer(sub = '42'): Promise<Record<string, string>> {
+// `roles` mints the `role` claim the auth worker stamps from an account's flags; left
+// off, the token carries none, which is what a plain player's looks like to the
+// role-gated routes.
+async function bearer(sub = '42', roles?: string[]): Promise<Record<string, string>> {
 	const now = Math.floor(Date.now() / 1000)
 	const signingInput = `${b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))}.${b64url(
-		JSON.stringify({ sub, exp: now + 3600 })
+		JSON.stringify({ sub, exp: now + 3600, ...(roles && { role: roles }) })
 	)}`
 	const key = await crypto.subtle.importKey(
 		'raw',
@@ -108,6 +146,12 @@ async function bearer(sub = '42'): Promise<Record<string, string>> {
 	)
 	const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(signingInput))
 	return { Authorization: `Bearer ${signingInput}.${b64url(sig)}` }
+}
+
+/** Base64 SHA-256 — the form an invention version's `BlobHash` takes. */
+async function base64Sha256(bytes: Uint8Array): Promise<string> {
+	const digest = await crypto.subtle.digest('SHA-256', bytes)
+	return btoa(String.fromCharCode(...new Uint8Array(digest)))
 }
 
 describe('public endpoints', () => {
@@ -188,17 +232,6 @@ describe('public endpoints', () => {
 		expect(reps.map((r) => r.AccountId)).toEqual([1, 2])
 	})
 
-	test('GET /api/playerevents/v1/tagfilters returns empty filter chips', async () => {
-		// No player-event storage → no tags in use → no chips. Trending is null.
-		const res = await exports.default.fetch(`${ORIGIN}/api/playerevents/v1/tagfilters`)
-		expect(res.status).toBe(200)
-		expect(await res.json()).toEqual({
-			PinnedFilters: [],
-			PopularFilters: [],
-			TrendingFilters: null,
-		})
-	})
-
 	test('GET /api/activities/charades/v1/words/Charades returns the word bank', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/api/activities/charades/v1/words/Charades`)
 		expect(res.status).toBe(200)
@@ -206,26 +239,6 @@ describe('public endpoints', () => {
 		expect(Array.isArray(words)).toBe(true)
 		expect(words.length).toBeGreaterThan(0)
 		expect(words[0]).toEqual({ Id: 1, Difficulty: 0, EN_US: 'David Bowie' })
-	})
-
-	test('GET /api/playerevents/v1/clubs returns an empty event list', async () => {
-		// The client deserializes this as a bare array — an envelope here fails with
-		// "expected:'[', actual:'{'". No player-event storage yet → empty.
-		const res = await exports.default.fetch(`${ORIGIN}/api/playerevents/v1/clubs?id=1&id=2`)
-		expect(res.status).toBe(200)
-		expect(await res.json()).toEqual([])
-
-		// The single-club form does wrap its events with a paging cursor.
-		const one = await exports.default.fetch(`${ORIGIN}/api/playerevents/v1/club/1`)
-		expect(one.status).toBe(200)
-		expect(await one.json()).toEqual({ ContinuationToken: '', Events: [] })
-	})
-
-	test('GET /api/playerevents/v1/searchlive returns an empty list', async () => {
-		// No player-event storage yet → nothing live to return.
-		const res = await exports.default.fetch(`${ORIGIN}/api/playerevents/v1/searchlive`)
-		expect(res.status).toBe(200)
-		expect(await res.json()).toEqual([])
 	})
 
 	test('GET /api/PlayerReporting/v1/moderationBlockDetails reports "not blocked"', async () => {
@@ -425,7 +438,7 @@ describe('public endpoints', () => {
 		const withExt = await exports.default.fetch(`${ORIGIN}/api/inventions/v6/save`, {
 			method: 'POST',
 			headers: { ...(await bearer('5150')), 'Content-Type': 'application/json' },
-			body: JSON.stringify({ name: 'Already .inv', inventionDataFilename: '2026-07-12/x.inv' }),
+			body: JSON.stringify({ name: 'Already Suffixed', inventionDataFilename: '2026-07-12/x.inv' }),
 		})
 		expect(((await withExt.json()) as InventionSaveResult).InventionVersion.BlobName).toBe(
 			'2026-07-12/x.inv'
@@ -457,6 +470,49 @@ describe('public endpoints', () => {
 		expect((await one.json()) as SavedInvention).toMatchObject({ InventionId: saved.InventionId })
 	})
 
+	test('GET /api/inventions/v2/mine lists bought inventions alongside the caller’s own', async () => {
+		// Account 6100 creates one; 6101 buys it (the econ worker's buyInvention writes
+		// exactly this row) and also creates one of their own.
+		const save = async (sub: string, name: string) => {
+			const res = await exports.default.fetch(`${ORIGIN}/api/inventions/v6/save`, {
+				method: 'POST',
+				headers: { ...(await bearer(sub)), 'Content-Type': 'application/json' },
+				body: JSON.stringify({ name, inventionDataFilename: `${name}.inv` }),
+			})
+			expect(res.status).toBe(200)
+			return ((await res.json()) as InventionSaveResult).Invention
+		}
+		const mine = async (sub: string) => {
+			const res = await exports.default.fetch(`${ORIGIN}/api/inventions/v2/mine`, {
+				headers: await bearer(sub),
+			})
+			expect(res.status).toBe(200)
+			return (await res.json()) as SavedInvention[]
+		}
+
+		const bought = await save('6100', 'bought-invention')
+		const own = await save('6101', 'own-invention')
+		await grantInvention(env.DB, 6101, bought.InventionId)
+
+		// Newest first, whichever set it came from: 6101 saved theirs after buying.
+		const list = await mine('6101')
+		expect(list.map((i) => i.InventionId)).toEqual([own.InventionId, bought.InventionId])
+		// A bought invention is still the creator's — it is listed, not re-attributed.
+		expect(list.find((i) => i.InventionId === bought.InventionId)?.CreatorPlayerId).toBe(6100)
+		// It is unpublished (a fresh save is), and stays on the buyer's shelf regardless.
+		expect(list.find((i) => i.InventionId === bought.InventionId)?.IsPublished).toBe(false)
+
+		// The seller's own list is unaffected by the sale.
+		expect((await mine('6100')).map((i) => i.InventionId)).toEqual([bought.InventionId])
+
+		// An ownership row pointing at an invention that no longer exists just drops out.
+		await grantInvention(env.DB, 6101, 999_888)
+		expect((await mine('6101')).map((i) => i.InventionId)).toEqual([
+			own.InventionId,
+			bought.InventionId,
+		])
+	})
+
 	test('POST /api/inventions/v6/save 401s without a bearer token', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/api/inventions/v6/save`, {
 			method: 'POST',
@@ -486,6 +542,51 @@ describe('public endpoints', () => {
 			Name: 'Untitled',
 			Description: 'No description yet',
 		})
+	})
+
+	test('POST /api/inventions/v6/save enforces the name and description rules', async () => {
+		const save = async (fields: Record<string, unknown>): Promise<Response> =>
+			exports.default.fetch(`${ORIGIN}/api/inventions/v6/save`, {
+				method: 'POST',
+				headers: { ...(await bearer('6262')), 'Content-Type': 'application/json' },
+				body: JSON.stringify({ inventionDataFilename: 'a.inv', ...fields }),
+			})
+
+		// A name is 3–24 characters of letters, digits, spaces, dashes and colons.
+		expect((await save({ name: 'ab' })).status).toBe(400)
+		expect((await save({ name: 'a'.repeat(25) })).status).toBe(400)
+		expect((await save({ name: 'Rocket!' })).status).toBe(400)
+		expect((await save({ name: 'Café Lamp' })).status).toBe(400)
+		const ok = await save({ name: 'Rocket Sofa-Bed 2' })
+		expect(ok.status).toBe(200)
+		expect(((await ok.json()) as InventionSaveResult).Invention.Name).toBe('Rocket Sofa-Bed 2')
+
+		// The rejection carries the player-facing sentence, not a code.
+		const short = await save({ name: 'ab' })
+		expect((await short.json()) as { error: string }).toEqual({
+			error: 'Invention names must be at least 3 characters.',
+		})
+
+		// A description is prose: any characters, at most 512 of them.
+		expect((await save({ name: 'Long Winded', description: 'x'.repeat(513) })).status).toBe(400)
+		expect((await save({ name: 'Long Winded', description: 'x'.repeat(512) })).status).toBe(200)
+		expect((await save({ name: 'Punctuated', description: 'Yes! It’s 100% good.' })).status).toBe(
+			200
+		)
+	})
+
+	test('POST /api/inventions/v6/save accepts the client’s auto-generated timestamp name', async () => {
+		// The real client names an unnamed invention after the moment it was saved
+		// (`071126 13:10:50`, captured from a live save), so the colon is in the allowed name
+		// charset on purpose. Dropping it from the pattern would 400 every unnamed save the
+		// game makes — this test is what would catch that.
+		const res = await exports.default.fetch(`${ORIGIN}/api/inventions/v6/save`, {
+			method: 'POST',
+			headers: { ...(await bearer('6363')), 'Content-Type': 'application/json' },
+			body: JSON.stringify({ inventionDataFilename: 'a.inv', name: '071126 13:10:50' }),
+		})
+		expect(res.status).toBe(200)
+		expect(((await res.json()) as InventionSaveResult).Invention.Name).toBe('071126 13:10:50')
 	})
 
 	test('GET /api/inventions/v1 404s for an unknown invention', async () => {
@@ -566,6 +667,39 @@ describe('public endpoints', () => {
 			CustomTags: ['Modern', ' modern ', 'Bed'],
 		})
 		expect(await replaced.json()).toEqual({ Result: 0, Tags: ['modern', 'bed'] })
+
+		// A tag is at most 15 letters once lowercased. One bad tag in either list fails the
+		// whole call — nothing is dropped silently — and leaves the stored tags alone.
+		const punctuated = await settags({
+			InventionId: Invention.InventionId,
+			CustomTags: ['racing', 'Cool Stuff!'],
+		})
+		expect(punctuated.status).toBe(400)
+		expect((await punctuated.json()) as { error: string }).toEqual({
+			error: 'Invention tags can only contain letters. (“cool stuff!”)',
+		})
+		expect(
+			(await settags({ InventionId: Invention.InventionId, AutoTags: ['a'.repeat(16)] })).status
+		).toBe(400)
+		expect(
+			(await settags({ InventionId: Invention.InventionId, CustomTags: ['tag2'] })).status
+		).toBe(400)
+		const stillThere = await exports.default.fetch(
+			`${ORIGIN}/api/inventions/v1/details?inventionId=${Invention.InventionId}`
+		)
+		expect(await stillThere.json()).toEqual({
+			Tags: [
+				{ Tag: 'modern', Type: 0 },
+				{ Tag: 'bed', Type: 0 },
+			],
+		})
+
+		// Blank entries are skipped rather than rejected: the store already drops them.
+		const padded = await settags({
+			InventionId: Invention.InventionId,
+			CustomTags: ['modern', '', '  '],
+		})
+		expect(await padded.json()).toEqual({ Result: 0, Tags: ['modern'] })
 
 		// Only the creator may retag; unknown inventions 404; no token → 401.
 		const notMine = await settags({ InventionId: Invention.InventionId, CustomTags: ['x'] }, '9999')
@@ -766,6 +900,12 @@ describe('public endpoints', () => {
 	})
 
 	test('GET /api/inventions/v1/version serves the version; unknown versions 404', async () => {
+		// The data file is uploaded (via the storage worker) before the metadata save,
+		// so the version carries its hash from the start. No sha256 recorded on this
+		// object — the api worker digests the blob itself in that case.
+		const data = new Uint8Array([1, 2, 3, 4])
+		await env.CDN_ASSETS.put('invention/2026-07-12/lamp.inv', data)
+
 		const save = await exports.default.fetch(`${ORIGIN}/api/inventions/v6/save`, {
 			method: 'POST',
 			headers: { ...(await bearer('7373')), 'Content-Type': 'application/json' },
@@ -777,7 +917,8 @@ describe('public endpoints', () => {
 		})
 		const { Invention } = (await save.json()) as InventionSaveResult
 
-		// The bare RRInventionVersion — the blob name is what the client downloads.
+		// The bare RRInventionVersion — the blob name is what the client downloads,
+		// BlobHash the base64 SHA-256 of what it will download.
 		const res = await exports.default.fetch(
 			`${ORIGIN}/api/inventions/v1/version?inventionId=${Invention.InventionId}&version=1`
 		)
@@ -786,6 +927,7 @@ describe('public endpoints', () => {
 			InventionId: Invention.InventionId,
 			VersionNumber: 1,
 			BlobName: '2026-07-12/lamp.inv',
+			BlobHash: await base64Sha256(data),
 			InstantiationCost: 42,
 		})
 
@@ -806,6 +948,44 @@ describe('public endpoints', () => {
 		expect(noVersion.status).toBe(400)
 		const noId = await exports.default.fetch(`${ORIGIN}/api/inventions/v1/version?version=1`)
 		expect(noId.status).toBe(400)
+	})
+
+	test('BlobHash is null until the blob exists, then backfilled onto the invention', async () => {
+		// Saved before the upload landed: nothing to hash, so the field stays null
+		// rather than carrying a hash of something the client can't download.
+		const save = await exports.default.fetch(`${ORIGIN}/api/inventions/v6/save`, {
+			method: 'POST',
+			headers: { ...(await bearer('7474')), 'Content-Type': 'application/json' },
+			body: JSON.stringify({ name: 'Late Lamp', inventionDataFilename: '2026-07-12/late.inv' }),
+		})
+		const { Invention, InventionVersion } = (await save.json()) as InventionSaveResult
+		expect(InventionVersion.BlobHash).toBeNull()
+
+		const version = async (): Promise<Record<string, unknown>> => {
+			const res = await exports.default.fetch(
+				`${ORIGIN}/api/inventions/v1/version?inventionId=${Invention.InventionId}&version=1`
+			)
+			return (await res.json()) as Record<string, unknown>
+		}
+		expect((await version()).BlobHash).toBeNull()
+
+		// Once the blob is there the hash resolves — here from the checksum recorded at
+		// upload time (what the storage worker puts), not by digesting the body.
+		const data = new Uint8Array([9, 8, 7])
+		await env.CDN_ASSETS.put('invention/2026-07-12/late.inv', data, {
+			sha256: await crypto.subtle.digest('SHA-256', data),
+		})
+		const hash = await base64Sha256(data)
+		expect((await version()).BlobHash).toBe(hash)
+
+		// And it's kept, so the other invention endpoints serve it too — without the
+		// read counting as an edit (ModifiedAt is untouched).
+		const details = await exports.default.fetch(
+			`${ORIGIN}/api/inventions/v1?inventionId=${Invention.InventionId}`
+		)
+		const stored = (await details.json()) as SavedInvention
+		expect(stored.CurrentVersion.BlobHash).toBe(hash)
+		expect(stored.ModifiedAt).toBe(Invention.ModifiedAt)
 	})
 
 	test('GET /api/inventions/v1/update edits metadata + permission, creator only', async () => {
@@ -848,6 +1028,16 @@ describe('public endpoints', () => {
 		// An empty description clears it; an empty name does *not* blank the invention.
 		const cleared = (await (await update('description=&name=')).json()) as InventionSaveResult
 		expect(cleared.Invention).toMatchObject({ Description: '', Name: 'Draft Lamp' })
+
+		// A supplied name/description is held to the same rules as the save path, and a
+		// rejected edit changes nothing.
+		expect((await update('name=xy')).status).toBe(400)
+		expect((await update(`name=${encodeURIComponent('Lamp?')}`)).status).toBe(400)
+		expect((await update(`description=${'x'.repeat(513)}`)).status).toBe(400)
+		const unchanged = (await (await update('permission=20')).json()) as InventionSaveResult
+		expect(unchanged.Invention).toMatchObject({ Name: 'Draft Lamp', Description: '' })
+		const renamed = (await (await update('name=Draft-Lamp%20Two')).json()) as InventionSaveResult
+		expect(renamed.Invention.Name).toBe('Draft-Lamp Two')
 
 		// allowTrial takes true/1.
 		const trial = (await (await update('allowTrial=true')).json()) as InventionSaveResult
@@ -960,12 +1150,15 @@ describe('public endpoints', () => {
 		const ids = async (res: Response): Promise<number[]> =>
 			((await res.json()) as SavedInvention[]).map((i) => i.InventionId)
 
-		// Nothing is flagged IsFeatured yet → featured falls back to the top feed.
-		const beforeTop = await ids(await exports.default.fetch(`${ORIGIN}/api/inventions/v1/toptoday`))
-		const beforeFeatured = await ids(
-			await exports.default.fetch(`${ORIGIN}/api/inventions/v1/featured`)
+		// Both feeds start EMPTY, for different reasons: nothing is flagged IsFeatured, and
+		// the only inventions acquired so far in this file are an unpublished one and an id
+		// with no invention row — neither of which a public feed may show.
+		expect(await ids(await exports.default.fetch(`${ORIGIN}/api/inventions/v1/toptoday`))).toEqual(
+			[]
 		)
-		expect(beforeFeatured).toEqual(beforeTop)
+		expect(await ids(await exports.default.fetch(`${ORIGIN}/api/inventions/v1/featured`))).toEqual(
+			[]
+		)
 
 		const feedInvention = (
 			id: number,
@@ -1003,19 +1196,42 @@ describe('public endpoints', () => {
 				.run()
 		}
 
-		// Top: engagement-ranked, so the biggest download counts lead.
-		const top = await ids(await exports.default.fetch(`${ORIGIN}/api/inventions/v1/toptoday`))
-		expect(top.slice(0, 3)).toEqual([202, 203, 201])
-		expect(top).not.toContain(204)
-		expect(top).not.toContain(205)
+		// Recent acquisitions, which is what "top today" now counts: 201 picked up by three
+		// players, 203 by one. 204/205 are acquired too — an unpublished and a hidden
+		// invention can still be owned — and must not surface in a public feed.
+		for (const accountId of [7001, 7002, 7003]) await grantInvention(env.DB, accountId, 201)
+		await grantInvention(env.DB, 7001, 203)
+		await grantInvention(env.DB, 7001, 204)
+		await grantInvention(env.DB, 7002, 205)
+		// 202 was acquired 25 hours ago, just past the trailing 24-hour window, so it is out —
+		// the feed really does forget, rather than accumulating every acquisition ever.
+		await env.DB.prepare(
+			'INSERT INTO inventory_invention (account_id, invention_id, acquired_at) VALUES (?1, ?2, ?3)'
+		)
+			.bind(7004, 202, new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString())
+			.run()
 
-		// Featured: only the flagged, visible inventions — newest first.
+		// Top: most acquisitions in the window first. Download counts no longer rank anything —
+		// 202 has the biggest of them and is absent entirely.
+		const top = await ids(await exports.default.fetch(`${ORIGIN}/api/inventions/v1/toptoday`))
+		expect(top).toEqual([201, 203])
+
+		// Featured: only the flagged, visible inventions — newest first. 201 is published but
+		// unflagged, so it stays out however popular it is.
 		const featured = await ids(await exports.default.fetch(`${ORIGIN}/api/inventions/v1/featured`))
 		expect(featured).toEqual([203, 202])
 
-		// skip/take paginate the top feed.
+		// skip/take paginate both feeds.
 		const page = await exports.default.fetch(`${ORIGIN}/api/inventions/v1/toptoday?skip=1&take=1`)
 		expect(await ids(page)).toEqual([203])
+		// Pagination happens after the visibility filter, so the hidden/unpublished
+		// acquisitions don't leave holes in a page.
+		const firstPage = await exports.default.fetch(`${ORIGIN}/api/inventions/v1/toptoday?take=1`)
+		expect(await ids(firstPage)).toEqual([201])
+		const featuredPage = await exports.default.fetch(
+			`${ORIGIN}/api/inventions/v1/featured?skip=1&take=1`
+		)
+		expect(await ids(featuredPage)).toEqual([202])
 	})
 
 	test('POST /api/sanitize/v1 echoes the value; isPure reports true', async () => {
@@ -1044,6 +1260,257 @@ describe('auth-gated endpoints', () => {
 			headers: { Authorization: 'Bearer not-a-real-token' },
 		})
 		expect(res.status).toBe(401)
+	})
+})
+
+describe('player reports', () => {
+	const submit = async (fields: Record<string, string>, headers?: Record<string, string>) =>
+		exports.default.fetch(`${ORIGIN}/api/PlayerReporting/v3/create`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...headers },
+			body: new URLSearchParams(fields),
+		})
+
+	test('POST /api/PlayerReporting/v3/create records the report', async () => {
+		const res = await submit(
+			{
+				PlayerIdReported: '205',
+				ReportCategory: '100',
+				Details: 'ya know',
+				HeightReporter: '1.64',
+				HeightReported: '1.65',
+				RoomId: '58',
+				RoomInstanceType: 'Public',
+			},
+			await bearer()
+		)
+		expect(res.status).toBe(200)
+		// `error` is an empty string, not null — the real service's envelope.
+		expect(await res.json()).toEqual({ success: true, error: '' })
+
+		const [row] = await getReportsAgainst(env.DB, 205)
+		expect(row).toMatchObject({
+			// The reporter is the token's subject, not a body field.
+			reporter_player_id: 42,
+			reported_player_id: 205,
+			report_category: 100,
+			details: 'ya know',
+			height_reporter: 1.64,
+			height_reported: 1.65,
+			room_id: 58,
+			room_instance_type: 'Public',
+		})
+		expect(row?.created_at).toBeTruthy()
+	})
+
+	// Everything but the reported player is optional — a report raised outside a room
+	// carries no RoomId, and 0 means "no room" rather than room zero.
+	test('POST /api/PlayerReporting/v3/create stores absent fields as null', async () => {
+		const res = await submit({ PlayerIdReported: '206', RoomId: '0' }, await bearer())
+		expect(res.status).toBe(200)
+
+		const [row] = await getReportsAgainst(env.DB, 206)
+		expect(row).toMatchObject({
+			reporter_player_id: 42,
+			reported_player_id: 206,
+			report_category: 0,
+			details: null,
+			height_reporter: null,
+			height_reported: null,
+			room_id: null,
+			room_instance_type: null,
+		})
+	})
+
+	// Append-only: a second report against the same player is a second row.
+	test('POST /api/PlayerReporting/v3/create appends rather than dedupes', async () => {
+		await submit({ PlayerIdReported: '207', Details: 'first' }, await bearer())
+		await submit({ PlayerIdReported: '207', Details: 'second' }, await bearer())
+		const rows = await getReportsAgainst(env.DB, 207)
+		expect(rows).toHaveLength(2)
+		// Newest first.
+		expect(rows.map((r) => r.details)).toEqual(['second', 'first'])
+	})
+
+	test('POST /api/PlayerReporting/v3/create 401s without a bearer token', async () => {
+		const res = await submit({ PlayerIdReported: '205' })
+		expect(res.status).toBe(401)
+	})
+
+	test('POST /api/PlayerReporting/v3/create 400s without a reported player', async () => {
+		const res = await submit({ Details: 'ya know' }, await bearer())
+		expect(res.status).toBe(400)
+		// Same envelope as the success branch — the client parses only one shape.
+		expect(await res.json()).toEqual({ success: false, error: 'PlayerIdReported is required' })
+	})
+
+	// A report is filed unbanned; a moderator converting it into a ban is what the
+	// `banned` / `ban_expires` columns are for. `match` and `auth` read exactly this.
+	test('a report is filed unbanned', async () => {
+		await submit({ PlayerIdReported: '210' }, await bearer())
+		const [row] = await getReportsAgainst(env.DB, 210)
+		expect(row).toMatchObject({ banned: 0, ban_expires: null })
+		expect(await isPlayerBanned(env.DB, 210)).toBe(false)
+	})
+
+	test('banFromReport bans the reported player, permanently by default', async () => {
+		await submit({ PlayerIdReported: '211', Details: 'the evidence' }, await bearer())
+		const [row] = await getReportsAgainst(env.DB, 211)
+
+		const banned = await banFromReport(env.DB, row!.id)
+		expect(banned).toMatchObject({ banned: 1, ban_expires: null })
+		// The report the ban was made from is still attached to it — the point of
+		// banning on the row rather than in a table of its own.
+		expect(banned?.details).toBe('the evidence')
+		expect(await isPlayerBanned(env.DB, 211)).toBe(true)
+		// It bans the REPORTED player, not the reporter who filed it.
+		expect(await isPlayerBanned(env.DB, 42)).toBe(false)
+	})
+
+	// A timed ban lifts itself: nothing clears the flag, the expiry just passes.
+	test('a ban with a past expiry is no longer in force', async () => {
+		await submit({ PlayerIdReported: '212' }, await bearer())
+		const [row] = await getReportsAgainst(env.DB, 212)
+		await banFromReport(env.DB, row!.id, { banExpires: '2020-01-01T00:00:00.000Z' })
+
+		expect(await isPlayerBanned(env.DB, 212)).toBe(false)
+		// Still on the row, as the record that it happened.
+		expect((await getReportsAgainst(env.DB, 212))[0]).toMatchObject({ banned: 1 })
+		// And in force while it lasted.
+		expect(await isPlayerBanned(env.DB, 212, new Date('2019-06-01T00:00:00.000Z'))).toBe(true)
+	})
+
+	test('a ban with a future expiry is in force', async () => {
+		await submit({ PlayerIdReported: '213' }, await bearer())
+		const [row] = await getReportsAgainst(env.DB, 213)
+		const expires = new Date(Date.now() + 86_400_000).toISOString()
+		await banFromReport(env.DB, row!.id, { banExpires: expires })
+
+		expect(await isPlayerBanned(env.DB, 213)).toBe(true)
+		expect((await getActiveBan(env.DB, 213))?.ban_expires).toBe(expires)
+	})
+
+	// Two bans in force: the longest-lasting one is the one reported, so a fresh short
+	// ban can't shorten a standing permanent one.
+	test('getActiveBan prefers the permanent ban', async () => {
+		await submit({ PlayerIdReported: '214', Details: 'timed' }, await bearer())
+		await submit({ PlayerIdReported: '214', Details: 'permanent' }, await bearer())
+		const rows = await getReportsAgainst(env.DB, 214)
+		const timed = rows.find((r) => r.details === 'timed')!
+		const permanent = rows.find((r) => r.details === 'permanent')!
+		await banFromReport(env.DB, timed.id, {
+			banExpires: new Date(Date.now() + 3_600_000).toISOString(),
+		})
+		await banFromReport(env.DB, permanent.id)
+
+		expect(await getActiveBan(env.DB, 214)).toMatchObject({ details: 'permanent' })
+	})
+
+	test('banFromReport with banned:false lifts the ban and clears the expiry', async () => {
+		await submit({ PlayerIdReported: '215' }, await bearer())
+		const [row] = await getReportsAgainst(env.DB, 215)
+		await banFromReport(env.DB, row!.id, { banExpires: '2999-01-01T00:00:00.000Z' })
+		expect(await isPlayerBanned(env.DB, 215)).toBe(true)
+
+		const lifted = await banFromReport(env.DB, row!.id, { banned: false })
+		expect(lifted).toMatchObject({ banned: 0, ban_expires: null })
+		expect(await isPlayerBanned(env.DB, 215)).toBe(false)
+	})
+
+	// No such report — the caller can tell that from having banned nobody.
+	test('banFromReport returns null for an unknown report', async () => {
+		expect(await banFromReport(env.DB, 999_999)).toBeNull()
+	})
+})
+
+describe('player warnings', () => {
+	const MOD = ['gameClient', 'moderator']
+
+	const issue = async (fields: Record<string, string>, headers?: Record<string, string>) =>
+		exports.default.fetch(`${ORIGIN}/api/playerwarnings`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...headers },
+			body: new URLSearchParams(fields),
+		})
+
+	test('POST /api/playerwarnings records the warning', async () => {
+		const res = await issue(
+			{
+				WarnedPlayerId: '205',
+				ReportCategory: '101',
+				DisplayReason: 'Sexual gestures',
+				ModeratorNote: 'dfg',
+			},
+			await bearer('42', MOD)
+		)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ success: true, error: '' })
+
+		const [row] = await getWarningsAgainst(env.DB, 205)
+		expect(row).toMatchObject({
+			// The moderator is the token's subject, not a body field.
+			moderator_player_id: 42,
+			warned_player_id: 205,
+			report_category: 101,
+			display_reason: 'Sexual gestures',
+			moderator_note: 'dfg',
+		})
+		expect(row?.created_at).toBeTruthy()
+	})
+
+	test('POST /api/playerwarnings stores absent fields as null', async () => {
+		const res = await issue({ WarnedPlayerId: '206' }, await bearer('42', MOD))
+		expect(res.status).toBe(200)
+
+		const [row] = await getWarningsAgainst(env.DB, 206)
+		expect(row).toMatchObject({
+			warned_player_id: 206,
+			report_category: 0,
+			display_reason: null,
+			moderator_note: null,
+		})
+	})
+
+	// Append-only, like reports: warning the same player twice is two rows.
+	test('POST /api/playerwarnings appends rather than dedupes', async () => {
+		await issue({ WarnedPlayerId: '207', ModeratorNote: 'first' }, await bearer('42', MOD))
+		await issue({ WarnedPlayerId: '207', ModeratorNote: 'second' }, await bearer('42', MOD))
+		const rows = await getWarningsAgainst(env.DB, 207)
+		expect(rows).toHaveLength(2)
+		// Newest first.
+		expect(rows.map((r) => r.moderator_note)).toEqual(['second', 'first'])
+	})
+
+	test('POST /api/playerwarnings 401s without a bearer token', async () => {
+		const res = await issue({ WarnedPlayerId: '205' })
+		expect(res.status).toBe(401)
+	})
+
+	// A valid token is not enough — a plain player's carries neither staff role.
+	// Nothing is written on the rejected branch.
+	test('POST /api/playerwarnings 403s without a staff role', async () => {
+		for (const roles of [undefined, ['gameClient']]) {
+			const res = await issue({ WarnedPlayerId: '208' }, await bearer('42', roles))
+			expect(res.status).toBe(403)
+			expect(await res.json()).toEqual({ success: false, error: 'Forbidden' })
+		}
+		expect(await getWarningsAgainst(env.DB, 208)).toHaveLength(0)
+	})
+
+	// `developer` gets in as well as `moderator` — staff hold both.
+	test('POST /api/playerwarnings accepts the developer role', async () => {
+		const res = await issue(
+			{ WarnedPlayerId: '209' },
+			await bearer('42', ['gameClient', 'developer'])
+		)
+		expect(res.status).toBe(200)
+		expect(await getWarningsAgainst(env.DB, 209)).toHaveLength(1)
+	})
+
+	test('POST /api/playerwarnings 400s without a warned player', async () => {
+		const res = await issue({ ModeratorNote: 'dfg' }, await bearer('42', MOD))
+		expect(res.status).toBe(400)
+		expect(await res.json()).toEqual({ success: false, error: 'WarnedPlayerId is required' })
 	})
 })
 
@@ -1152,6 +1619,29 @@ describe('images', () => {
 			Accessibility: 1,
 			PlayerIds: [7, 8],
 		})
+	})
+
+	// The feed is public and unauthenticated, so `take` is clamped rather than trusted:
+	// without the cap a single anonymous request could pull the whole image table through
+	// the two joins behind it.
+	test('GET /api/images/v1/slideshow serves 10 by default and caps take at 100', async () => {
+		// 120 public ShareCamera photos — more than both the default and the cap.
+		for (let i = 0; i < 120; i++) {
+			await createImage(env.DB, { imageName: `bulkslide${i}.jpg`, playerId: 42 })
+		}
+		const feed = async (query: string) => {
+			const res = await exports.default.fetch(`${ORIGIN}/api/images/v1/slideshow${query}`)
+			expect(res.status).toBe(200)
+			return ((await res.json()) as { Images: unknown[] }).Images.length
+		}
+
+		expect(await feed('')).toBe(10)
+		expect(await feed('?take=25')).toBe(25)
+		expect(await feed('?take=500')).toBe(100)
+		// Junk and non-positive takes fall back rather than erroring or emptying the stage.
+		expect(await feed('?take=0')).toBe(10)
+		expect(await feed('?take=-5')).toBe(10)
+		expect(await feed('?take=lots')).toBe(10)
 	})
 
 	test('POST /api/images/v1/cheer persists, syncs CheerCount, and the bulk lookup reflects it', async () => {
@@ -1867,6 +2357,707 @@ describe('relationships', () => {
 	})
 })
 
+describe('messages', () => {
+	// The notify DO is stubbed to record every notifyPlayer call (see vitest.config).
+	type Sent = {
+		playerId: number
+		notificationType: number
+		data: { FromPlayerId: number; ToPlayerId: number; Type: number; Data: string }
+	}
+	const hub = () => env.RECFLARE_NOTIFICATIONS_HUB.getByName('global')
+	const pushed = async (): Promise<Sent[]> =>
+		(await (await hub().fetch('http://do/all')).json()) as Sent[]
+
+	const send = async (fields: Record<string, string>, headers?: Record<string, string>) => {
+		await hub().fetch('http://do/all', { method: 'DELETE' })
+		return exports.default.fetch(`${ORIGIN}/api/messages/v2/send`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...headers },
+			body: new URLSearchParams(fields),
+		})
+	}
+
+	// NotificationType.MessageReceived — the same frame the Coach broadcast uses.
+	const MESSAGE_RECEIVED = 2
+
+	test('POST /api/messages/v2/send pushes MessageReceived to the recipient', async () => {
+		const res = await send({ ToPlayerId: '2', Type: '10', Data: '' }, await bearer('42'))
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ success: true, error: '' })
+
+		expect(await pushed()).toEqual([
+			{
+				// Delivered to the recipient, not the sender.
+				playerId: 2,
+				notificationType: MESSAGE_RECEIVED,
+				// FromPlayerId is the token's subject, not a body field.
+				data: { FromPlayerId: 42, ToPlayerId: 2, Type: 10, Data: '' },
+			},
+		])
+	})
+
+	test('POST /api/messages/v2/send defaults Type and Data when omitted', async () => {
+		const res = await send({ ToPlayerId: '2' }, await bearer('42'))
+		expect(res.status).toBe(200)
+		expect((await pushed())[0]?.data).toEqual({
+			FromPlayerId: 42,
+			ToPlayerId: 2,
+			Type: 0,
+			Data: '',
+		})
+	})
+
+	test('POST /api/messages/v2/send 400s without a recipient, pushing nothing', async () => {
+		const res = await send({ Type: '10' }, await bearer('42'))
+		expect(res.status).toBe(400)
+		expect(await res.json()).toEqual({ success: false, error: 'ToPlayerId is required' })
+		expect(await pushed()).toEqual([])
+	})
+
+	test('POST /api/messages/v2/send is auth-gated', async () => {
+		const res = await send({ ToPlayerId: '2' })
+		expect(res.status).toBe(401)
+		expect(await pushed()).toEqual([])
+	})
+
+	// The bulk form takes a JSON body, not the form encoding the single send uses.
+	const sendMultiple = async (body: unknown, headers?: Record<string, string>) => {
+		await hub().fetch('http://do/all', { method: 'DELETE' })
+		return exports.default.fetch(`${ORIGIN}/api/messages/v1/sendMultiple`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', ...headers },
+			body: JSON.stringify(body),
+		})
+	}
+
+	test('POST /api/messages/v1/sendMultiple pushes one frame per recipient', async () => {
+		const res = await sendMultiple(
+			{ ToPlayerIds: [205, 206], Type: 20, Data: 'hi' },
+			await bearer('42')
+		)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ success: true, error: '' })
+
+		// Each frame is addressed to its own recipient; the sender is the token's subject.
+		expect(await pushed()).toEqual([
+			{
+				playerId: 205,
+				notificationType: MESSAGE_RECEIVED,
+				data: { FromPlayerId: 42, ToPlayerId: 205, Type: 20, Data: 'hi' },
+			},
+			{
+				playerId: 206,
+				notificationType: MESSAGE_RECEIVED,
+				data: { FromPlayerId: 42, ToPlayerId: 206, Type: 20, Data: 'hi' },
+			},
+		])
+	})
+
+	test('POST /api/messages/v1/sendMultiple defaults Type and Data, and de-duplicates ids', async () => {
+		const res = await sendMultiple({ ToPlayerIds: [205, 205] }, await bearer('42'))
+		expect(res.status).toBe(200)
+
+		const sent = await pushed()
+		expect(sent).toHaveLength(1)
+		expect(sent[0]?.data).toEqual({ FromPlayerId: 42, ToPlayerId: 205, Type: 0, Data: '' })
+	})
+
+	test('POST /api/messages/v1/sendMultiple 400s with no usable recipient, pushing nothing', async () => {
+		for (const body of [{ Type: 20 }, { ToPlayerIds: [] }, { ToPlayerIds: ['nope', 0] }]) {
+			const res = await sendMultiple(body, await bearer('42'))
+			expect(res.status).toBe(400)
+			expect(await res.json()).toEqual({ success: false, error: 'ToPlayerIds is required' })
+			expect(await pushed()).toEqual([])
+		}
+	})
+
+	test('POST /api/messages/v1/sendMultiple is auth-gated', async () => {
+		const res = await sendMultiple({ ToPlayerIds: [205] })
+		expect(res.status).toBe(401)
+		expect(await pushed()).toEqual([])
+	})
+})
+
+describe('mutual friends', () => {
+	// High, distinct ids so the friendships seeded here don't collide with the
+	// relationship tests above.
+	const CALLER = 800
+	const OTHER = 801
+
+	type Card = { AccountId: number; Username: string; DisplayName: string; ProfileImage: string }
+
+	const mutuals = async (query: string, sub = String(CALLER)): Promise<Response> =>
+		exports.default.fetch(`${ORIGIN}/api/relationships/mutualfriends${query}`, {
+			headers: await bearer(sub),
+		})
+
+	beforeAll(async () => {
+		const rel = (a: number, b: number, type = 3) =>
+			env.DB.prepare(
+				'INSERT INTO relationship (requester_id, target_id, relationship_type) VALUES (?1, ?2, ?3)'
+			).bind(a, b, type)
+		// 804 has no profileImage key at all — the projection must still answer a
+		// string. 806 is deliberately given no account row.
+		const account = (id: number, extra: Record<string, unknown>) =>
+			env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)').bind(
+				JSON.stringify({ accountId: id, username: `P${id}`, displayName: `Player ${id}`, ...extra })
+			)
+
+		await env.DB.batch([
+			account(CALLER, { profileImage: 'p800.jpg' }),
+			account(OTHER, { profileImage: 'p801.jpg' }),
+			account(802, { profileImage: 'p802.jpg' }),
+			account(803, { profileImage: 'p803.jpg' }),
+			account(804, {}),
+			// Seeded 804-first so the ascending order of the answer is the code's doing,
+			// not the insertion order's.
+			rel(CALLER, 804),
+			rel(802, CALLER), // friendship recorded from the other direction
+			rel(CALLER, 803),
+			rel(CALLER, 806),
+			rel(OTHER, 804), // shared → in the answer
+			rel(OTHER, 802), // shared → in the answer
+			rel(803, OTHER, 1), // only a pending request → NOT a friend of OTHER
+			rel(OTHER, 806), // shared, but 806 has no account row → dropped
+		])
+	})
+
+	test('GET /api/relationships/mutualfriends returns the shared friends', async () => {
+		const res = await mutuals(`?id=${OTHER}`)
+		expect(res.status).toBe(200)
+		const cards = (await res.json()) as Card[]
+		// 803 is only a pending request on OTHER's side, and 806 has no account row.
+		expect(cards.map((p) => p.AccountId)).toEqual([802, 804])
+		expect(cards[0]).toEqual({
+			AccountId: 802,
+			Username: 'P802',
+			DisplayName: 'Player 802',
+			ProfileImage: 'p802.jpg',
+		})
+		// No stored image → an empty string, never null/undefined.
+		expect(cards[1]?.ProfileImage).toBe('')
+	})
+
+	// The degenerate cases answer an empty list rather than an error — this feeds a
+	// profile panel, which would otherwise have nothing to render.
+	// `?id=` is the only accepted form — `?playerId=` reads as no id at all.
+	test('GET /api/relationships/mutualfriends answers [] for a missing/self/bad id', async () => {
+		for (const query of ['', '?id=0', '?id=-5', '?id=abc', `?id=${CALLER}`, `?playerId=${OTHER}`]) {
+			const res = await mutuals(query)
+			expect(res.status, query).toBe(200)
+			expect(await res.json(), query).toEqual([])
+		}
+	})
+
+	// Symmetric: 802 and 803 aren't friends with each other, but both are friends with
+	// 800, so 800 is what they have in common.
+	test('GET /api/relationships/mutualfriends works between two other players', async () => {
+		const cards = (await (await mutuals('?id=803', '802')).json()) as Card[]
+		expect(cards.map((p) => p.AccountId)).toEqual([CALLER])
+	})
+
+	test('GET /api/relationships/mutualfriends answers [] with nothing in common', async () => {
+		// 809 has no relationships at all.
+		const cards = (await (await mutuals('?id=809', '802')).json()) as Card[]
+		expect(cards).toEqual([])
+	})
+
+	test('GET /api/relationships/mutualfriends is auth-gated', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/relationships/mutualfriends?id=${OTHER}`)
+		expect(res.status).toBe(401)
+	})
+})
+
+describe('player events', () => {
+	const HOUR = 60 * 60 * 1000
+	/**
+	 * Seconds precision, no milliseconds — the form the client sends and reads back.
+	 *
+	 * Anchored to one instant fixed when this suite is defined, NOT to `Date.now()` per
+	 * call: the same offset is evaluated once to build a fixture and again to assert what
+	 * came back, and a re-read clock makes those two strings differ by a second whenever
+	 * the pair straddles a second boundary. Offsets are whole hours, so pinning the anchor
+	 * leaves the upcoming/live/finished distinction the browse queries make intact.
+	 */
+	const NOW = Date.now()
+	const at = (offsetMs: number): string =>
+		new Date(NOW + offsetMs).toISOString().replace(/\.\d{3}Z$/, 'Z')
+
+	const post = async (path: string, body: unknown, sub = '42'): Promise<Response> =>
+		exports.default.fetch(`${ORIGIN}${path}`, {
+			method: 'POST',
+			headers: { ...(await bearer(sub)), 'content-type': 'application/json' },
+			body: JSON.stringify(body),
+		})
+
+	const create = async (body: unknown, sub = '42'): Promise<PlayerEvent> => {
+		const res = await post('/api/playerevents/v2', body, sub)
+		expect(res.status).toBe(200)
+		return ((await res.json()) as PlayerEventResult).PlayerEvent
+	}
+
+	const get = async (path: string, sub?: string): Promise<Response> =>
+		exports.default.fetch(`${ORIGIN}${path}`, sub ? { headers: await bearer(sub) } : undefined)
+
+	// The fixture set every test below reads. Times are relative to the run so the
+	// upcoming/live/finished distinction the browse queries make is real.
+	let upcoming: PlayerEvent
+	let clubEvent: PlayerEvent
+	let liveEvent: PlayerEvent
+	let pastEvent: PlayerEvent
+
+	beforeAll(async () => {
+		// Posted nested under `PlayerEvent` — the envelope form the client sends back.
+		upcoming = await create({
+			PlayerEvent: {
+				ImageName: 'e63dcbffe8d14a7696bea7117dc3dd28.jpg',
+				RoomId: 10916706,
+				SubRoomId: 11195660,
+				ClubId: null,
+				Name: 'Building a Better Room Using Trigonometry',
+				Description: '',
+				StartTime: at(HOUR),
+				EndTime: at(2 * HOUR),
+				State: 0,
+				Accessibility: 1,
+				IsMultiInstance: false,
+				SupportMultiInstanceRoomChat: true,
+				DefaultBroadcastPermissions: 0,
+				CanRequestBroadcastPermissions: 0,
+			},
+		})
+		// …and this one at the top level, the other form in circulation.
+		clubEvent = await create({
+			RoomId: 23570830,
+			ClubId: 7,
+			Name: 'DUNGEONS Escape ROOM',
+			Description: 'Try and escape the DUNGEONS with upto 4 players!',
+			StartTime: at(3 * HOUR),
+			EndTime: at(4 * HOUR),
+			CanRequestBroadcastPermissions: 2147483647,
+		})
+		liveEvent = await create(
+			{ RoomId: 3, ClubId: 7, Name: 'Live Jam', StartTime: at(-HOUR), EndTime: at(HOUR) },
+			'43'
+		)
+		pastEvent = await create({
+			RoomId: 3,
+			Name: 'Trigonometry Retrospective',
+			StartTime: at(-3 * HOUR),
+			EndTime: at(-2 * HOUR),
+		})
+	})
+
+	test('GET /api/playerevents/v1/tagfilters serves the event categories, auth-gated', async () => {
+		expect((await get('/api/playerevents/v1/tagfilters')).status).toBe(401)
+
+		const res = await get('/api/playerevents/v1/tagfilters', '42')
+		expect(res.status).toBe(200)
+		// Static — the categories the client offers, not derived from stored events.
+		// Trending is null even in the reference: it needs recent-activity data.
+		expect(await res.json()).toEqual({
+			PinnedFilters: [
+				'workshops',
+				'celebration',
+				'game',
+				'meetup',
+				'performance',
+				'coop',
+				'grandopening',
+				'class',
+				'competition',
+			],
+			PopularFilters: [
+				'workshops',
+				'celebration',
+				'class',
+				'coop',
+				'competition',
+				'game',
+				'grandopening',
+				'meetup',
+				'performance',
+			],
+			TrendingFilters: null,
+		})
+	})
+
+	test('POST /api/playerevents/v2 creates an event, auth-gated', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/playerevents/v2`, {
+			method: 'POST',
+			body: '{}',
+		})
+		expect(res.status).toBe(401)
+
+		// The stored record carries exactly the client's field set — nothing more.
+		expect(upcoming).toEqual({
+			PlayerEventId: upcoming.PlayerEventId,
+			CreatorPlayerId: 42,
+			ImageName: 'e63dcbffe8d14a7696bea7117dc3dd28.jpg',
+			RoomId: 10916706,
+			SubRoomId: 11195660,
+			ClubId: null,
+			Name: 'Building a Better Room Using Trigonometry',
+			Description: '',
+			StartTime: at(HOUR),
+			EndTime: at(2 * HOUR),
+			AttendeeCount: 1,
+			State: 0,
+			Accessibility: 1,
+			IsMultiInstance: false,
+			SupportMultiInstanceRoomChat: true,
+			DefaultBroadcastPermissions: 0,
+			CanRequestBroadcastPermissions: 0,
+		})
+		// Timestamps come back at seconds precision, as the client sends them.
+		expect(upcoming.StartTime).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/)
+	})
+
+	// The one thing the event writes are strict about. Everything else here defaults a
+	// missing or unusable field (a nameless event becomes "Untitled Event"), but a name or
+	// description past the stored length can't be defaulted into anything sensible, and
+	// truncating a player's description silently is worse than refusing the write.
+	//
+	// Deliberately length ONLY: an event name is a title, not an identifier — the fixture
+	// above is called "Building a Better Room Using Trigonometry" — so the alphanumeric
+	// rule that guards usernames and room names would be wrong here.
+	test('POST /api/playerevents/v2 caps the name at 64 and the description at 512', async () => {
+		expect((await post('/api/playerevents/v2', { Name: 'n'.repeat(65), RoomId: 3 })).status).toBe(
+			400
+		)
+		expect((await post('/api/playerevents/v2', { Name: 'n'.repeat(64), RoomId: 3 })).status).toBe(
+			200
+		)
+
+		const withDescription = (description: string) =>
+			post('/api/playerevents/v2', { Name: 'Described', RoomId: 3, Description: description })
+		expect((await withDescription('d'.repeat(513))).status).toBe(400)
+		expect((await withDescription('d'.repeat(512))).status).toBe(200)
+		// Counted in code points, so an emoji costs one character rather than two.
+		expect((await withDescription('🎉'.repeat(512))).status).toBe(200)
+
+		// Spaces and punctuation stay fine — this is a title, not an identifier.
+		expect(
+			(await post('/api/playerevents/v2', { Name: "Bob's Big Night (2)!", RoomId: 3 })).status
+		).toBe(200)
+
+		// The update path enforces the same limits, and a refusal leaves the event alone.
+		const event = await create({ Name: 'EditMe', RoomId: 3 })
+		const tooLong = await post(`/api/playerevents/v2/${event.PlayerEventId}`, {
+			Name: 'n'.repeat(65),
+		})
+		expect(tooLong.status).toBe(400)
+		const after = await get(`/api/playerevents/v1/${event.PlayerEventId}`)
+		expect(((await after.json()) as PlayerEvent).Name).toBe('EditMe')
+	})
+
+	test('POST /api/playerevents/v2 answers the write envelope, not the bare event', async () => {
+		const res = await post('/api/playerevents/v2', { Name: 'Enveloped', RoomId: 3 })
+		const body = (await res.json()) as PlayerEventResult
+		expect(body.Result).toBe(0)
+		// Always null: no event tags are stored, but the field has to be present.
+		expect(body.TagModifyResult).toBeNull()
+		expect(body.PlayerEvent.Name).toBe('Enveloped')
+	})
+
+	test('POST /api/playerevents/v2 pushes a PlayerEventCreated notification to the creator', async () => {
+		// The notify DO is stubbed to record its last notifyPlayer call (see vitest.config).
+		const event = await create({
+			RoomId: 58,
+			Name: 'Open Mic',
+			Description: 'come hang',
+			StartTime: at(HOUR),
+			EndTime: at(3 * HOUR),
+		})
+		const res = await env.RECFLARE_NOTIFICATIONS_HUB.getByName('global').fetch('http://do/last')
+		const last = (await res.json()) as {
+			playerId: number
+			notificationType: number
+			data: Record<string, unknown>
+		}
+		expect(last.playerId).toBe(42) // the creator
+		expect(last.notificationType).toBe(80) // NotificationType.PlayerEventCreated
+
+		// camelCase, unlike the PascalCase record the response carries; `tags` and
+		// `broadcastingRoomInstanceId` don't exist on the record, and `State` is dropped.
+		// The real hub strips the null values from the frame before it goes on the wire.
+		expect(last.data).toEqual({
+			tags: [],
+			playerEventId: event.PlayerEventId,
+			creatorPlayerId: 42,
+			roomId: 58,
+			subRoomId: null,
+			clubId: null,
+			name: 'Open Mic',
+			description: 'come hang',
+			imageName: '', // empty string, not the record's null
+			startTime: `${event.StartTime.slice(0, -1)}.0000000Z`,
+			endTime: `${event.EndTime.slice(0, -1)}.0000000Z`,
+			attendeeCount: 1,
+			accessibility: 1,
+			isMultiInstance: false,
+			supportMultiInstanceRoomChat: false,
+			defaultBroadcastPermissions: 0,
+			canRequestBroadcastPermissions: 0,
+			broadcastingRoomInstanceId: null,
+		})
+		// Tick precision on the frame; the stored record keeps its bare form.
+		expect(event.StartTime).toMatch(/:\d{2}Z$/)
+	})
+
+	test('POST /api/playerevents/v2 takes the creator from the token, not the body', async () => {
+		const event = await create({ Name: 'Not Yours', RoomId: 3, CreatorPlayerId: 999 })
+		expect(event.CreatorPlayerId).toBe(42)
+	})
+
+	test('POST /api/playerevents/v2 defaults an empty body rather than rejecting it', async () => {
+		const event = await create({})
+		expect(event).toMatchObject({
+			Name: 'Untitled Event',
+			Description: '',
+			RoomId: 0,
+			SubRoomId: null,
+			ClubId: null,
+			ImageName: null,
+			AttendeeCount: 1,
+			State: 0,
+			Accessibility: 1,
+			IsMultiInstance: false,
+			SupportMultiInstanceRoomChat: false,
+			DefaultBroadcastPermissions: 0,
+			CanRequestBroadcastPermissions: 0,
+		})
+		// A start with no end runs for an hour.
+		expect(Date.parse(event.EndTime) - Date.parse(event.StartTime)).toBe(HOUR)
+	})
+
+	test('GET /api/playerevents/v1/:eventId serves the bare event', async () => {
+		const res = await get(`/api/playerevents/v1/${upcoming.PlayerEventId}`)
+		expect(res.status).toBe(200)
+		// No envelope here — unlike the writes.
+		expect(await res.json()).toEqual(upcoming)
+
+		expect((await get('/api/playerevents/v1/999999')).status).toBe(404)
+	})
+
+	test('GET /api/playerevents/v1/bulk answers in request order, skipping unknown ids', async () => {
+		const res = await get(
+			`/api/playerevents/v1/bulk?id=${clubEvent.PlayerEventId}&id=999999&id=${upcoming.PlayerEventId}`
+		)
+		expect(res.status).toBe(200)
+		const events = (await res.json()) as PlayerEvent[]
+		// Request order, not id order — and the missing id leaves no hole.
+		expect(events.map((e) => e.PlayerEventId)).toEqual([
+			clubEvent.PlayerEventId,
+			upcoming.PlayerEventId,
+		])
+
+		// No ids is an empty list, not every event.
+		expect(await (await get('/api/playerevents/v1/bulk')).json()).toEqual([])
+	})
+
+	test('GET /api/playerevents/v1/search matches name and description, skipping finished events', async () => {
+		const search = async (qs: string): Promise<PlayerEvent[]> =>
+			(await (await get(`/api/playerevents/v1/search${qs}`)).json()) as PlayerEvent[]
+
+		// Every term has to match, across name OR description.
+		expect((await search('?query=dungeons+escape')).map((e) => e.PlayerEventId)).toEqual([
+			clubEvent.PlayerEventId,
+		])
+		// …matched case-insensitively, and against the description too.
+		expect((await search('?query=upto%204%20players')).map((e) => e.PlayerEventId)).toEqual([
+			clubEvent.PlayerEventId,
+		])
+
+		// `pastEvent` matches on name but has already ended, so the browse query drops it.
+		const trig = await search('?query=trigonometry')
+		expect(trig.map((e) => e.PlayerEventId)).toEqual([upcoming.PlayerEventId])
+		expect(trig.map((e) => e.PlayerEventId)).not.toContain(pastEvent.PlayerEventId)
+
+		// Soonest first, and take/skip page through that order.
+		const all = await search('')
+		const starts = all.map((e) => e.StartTime)
+		expect([...starts].sort()).toEqual(starts)
+		expect(await search('?take=1')).toEqual([all[0]])
+		expect(await search('?skip=1&take=1')).toEqual([all[1]])
+	})
+
+	test('GET /api/playerevents/v1/searchlive serves what is running right now', async () => {
+		const res = await get('/api/playerevents/v1/searchlive')
+		expect(res.status).toBe(200)
+		const ids = ((await res.json()) as PlayerEvent[]).map((e) => e.PlayerEventId)
+		expect(ids).toContain(liveEvent.PlayerEventId)
+		// Started in an hour / finished already — neither is live.
+		expect(ids).not.toContain(upcoming.PlayerEventId)
+		expect(ids).not.toContain(pastEvent.PlayerEventId)
+	})
+
+	test('GET /api/playerevents/v1/clubs is a bare array; /club/:id is a paged envelope', async () => {
+		// The client deserializes the multi-club form as a list — an envelope here fails
+		// with "expected:'[', actual:'{'". Do not unify the two.
+		const many = await get('/api/playerevents/v1/clubs?id=7&id=8')
+		expect(many.status).toBe(200)
+		const events = (await many.json()) as PlayerEvent[]
+		expect(events.map((e) => e.PlayerEventId)).toEqual([
+			liveEvent.PlayerEventId, // started an hour ago — soonest first
+			clubEvent.PlayerEventId,
+		])
+
+		// The single-club form does wrap its events with a paging cursor.
+		const one = await get('/api/playerevents/v1/club/7')
+		expect(one.status).toBe(200)
+		expect(await one.json()).toEqual({ ContinuationToken: '', Events: events })
+
+		// A club with no events, and the no-ids case.
+		expect(await (await get('/api/playerevents/v1/club/8')).json()).toEqual({
+			ContinuationToken: '',
+			Events: [],
+		})
+		expect(await (await get('/api/playerevents/v1/clubs')).json()).toEqual([])
+	})
+
+	test('GET /api/playerevents/v1/all lists the caller’s own events, auth-gated', async () => {
+		expect((await get('/api/playerevents/v1/all')).status).toBe(401)
+
+		const mine = (await (await get('/api/playerevents/v1/all', '42')).json()) as {
+			Created: PlayerEvent[]
+			Responses: unknown[]
+		}
+		const ids = mine.Created.map((e) => e.PlayerEventId)
+		expect(ids).toContain(upcoming.PlayerEventId)
+		// 43 created that one, not 42.
+		expect(ids).not.toContain(liveEvent.PlayerEventId)
+		// Finished events stay in the creator's own list — only the browse queries drop them.
+		expect(ids).toContain(pastEvent.PlayerEventId)
+		// Nothing records an RSVP yet.
+		expect(mine.Responses).toEqual([])
+
+		const theirs = (await (await get('/api/playerevents/v1/all', '43')).json()) as {
+			Created: PlayerEvent[]
+		}
+		expect(theirs.Created.map((e) => e.PlayerEventId)).toEqual([liveEvent.PlayerEventId])
+	})
+
+	test('POST /api/playerevents/v1/respond records an RSVP and recounts attendees', async () => {
+		const respond = async (body: unknown, sub = '42'): Promise<Response> =>
+			post('/api/playerevents/v1/respond', body, sub)
+
+		const event = await create({ RoomId: 3, Name: 'RSVP Test', StartTime: at(HOUR) })
+		const id = event.PlayerEventId
+		// The creator is Going from create, which is where the initial 1 comes from.
+		expect(event.AttendeeCount).toBe(1)
+		expect(await countGoing(env.DB, id)).toBe(1)
+
+		// 43 says Going → 2 attendees, and the envelope carries the updated event.
+		const res = await respond({ PlayerEventId: id, Type: 0 }, '43')
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as PlayerEventResult
+		expect(body.Result).toBe(0)
+		expect(body.PlayerEvent.AttendeeCount).toBe(2)
+		expect(await getEventResponse(env.DB, id, 43)).toMatchObject({
+			event_id: id,
+			player_id: 43,
+			status: 0,
+		})
+
+		// Changing the answer REPLACES it — one row per player, not a second RSVP.
+		const changed = await respond({ PlayerEventId: id, Type: 2 }, '43')
+		expect(((await changed.json()) as PlayerEventResult).PlayerEvent.AttendeeCount).toBe(1)
+		expect(await getEventResponse(env.DB, id, 43)).toMatchObject({ player_id: 43, status: 2 })
+		expect((await getEventAttendees(env.DB, id)).map((a) => a.player_id)).toEqual([42, 43])
+
+		// Interested is a maybe — recorded, but not counted.
+		await respond({ PlayerEventId: id, Type: 1 }, '43')
+		expect(await countGoing(env.DB, id)).toBe(1)
+
+		// And the count sticks on the stored event, not just the response.
+		const fetched = (await (await get(`/api/playerevents/v1/${id}`)).json()) as PlayerEvent
+		expect(fetched.AttendeeCount).toBe(1)
+	})
+
+	test('POST /api/playerevents/v1/respond rejects a bad body, an unknown event and no token', async () => {
+		const event = await create({ RoomId: 3, Name: 'Guarded' })
+
+		expect(
+			(
+				await exports.default.fetch(`${ORIGIN}/api/playerevents/v1/respond`, {
+					method: 'POST',
+					body: JSON.stringify({ PlayerEventId: event.PlayerEventId, Type: 0 }),
+				})
+			).status
+		).toBe(401)
+
+		// An unrecognized Type is rejected rather than defaulted — stored as Going it
+		// would silently inflate the count.
+		expect((await post('/api/playerevents/v1/respond', { PlayerEventId: 1, Type: 7 })).status).toBe(
+			400
+		)
+		expect((await post('/api/playerevents/v1/respond', { Type: 0 })).status).toBe(400)
+		expect((await post('/api/playerevents/v1/respond', {})).status).toBe(400)
+		expect(
+			(await post('/api/playerevents/v1/respond', { PlayerEventId: 999999, Type: 0 })).status
+		).toBe(404)
+	})
+
+	test('POST /api/playerevents/v2/:eventId edits only what the body carries, creator-only', async () => {
+		const event = await create({
+			RoomId: 5,
+			SubRoomId: 6,
+			ClubId: 9,
+			Name: 'Original',
+			Description: 'Original description',
+			StartTime: at(5 * HOUR),
+			EndTime: at(6 * HOUR),
+		})
+		const path = `/api/playerevents/v2/${event.PlayerEventId}`
+
+		expect(
+			(await exports.default.fetch(`${ORIGIN}${path}`, { method: 'POST', body: '{}' })).status
+		).toBe(401)
+		// 43 didn't create it.
+		expect((await post(path, { Name: 'Hijacked' }, '43')).status).toBe(403)
+		expect((await post('/api/playerevents/v2/999999', { Name: 'Nope' })).status).toBe(404)
+
+		const res = await post(path, { Name: 'Renamed' })
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as PlayerEventResult
+		expect(body.Result).toBe(0)
+		// Only the name moved; a partial post can't blank out the rest.
+		expect(body.PlayerEvent).toEqual({ ...event, Name: 'Renamed' })
+
+		// And it stuck.
+		expect(await (await get(`/api/playerevents/v1/${event.PlayerEventId}`)).json()).toEqual(
+			body.PlayerEvent
+		)
+	})
+
+	test('POST /api/playerevents/v2/:eventId clears a nullable id when the body sends null', async () => {
+		const event = await create({ RoomId: 5, SubRoomId: 6, ClubId: 9, Name: 'Clearable' })
+		const res = await post(`/api/playerevents/v2/${event.PlayerEventId}`, {
+			// Nested form again, and an explicit null — absent leaves the value alone,
+			// null genuinely clears it.
+			PlayerEvent: { ClubId: null, ImageName: null },
+		})
+		const updated = ((await res.json()) as PlayerEventResult).PlayerEvent
+		expect(updated.ClubId).toBeNull()
+		expect(updated.ImageName).toBeNull()
+		expect(updated.SubRoomId).toBe(6)
+	})
+
+	test('POST /api/playerevents/v2/:eventId cannot move ownership or the attendee count', async () => {
+		const event = await create({ RoomId: 5, Name: 'Fixed' })
+		const res = await post(`/api/playerevents/v2/${event.PlayerEventId}`, {
+			PlayerEventId: 424242,
+			CreatorPlayerId: 43,
+			AttendeeCount: 500,
+		})
+		const updated = ((await res.json()) as PlayerEventResult).PlayerEvent
+		expect(updated.PlayerEventId).toBe(event.PlayerEventId)
+		expect(updated.CreatorPlayerId).toBe(42)
+		expect(updated.AttendeeCount).toBe(1)
+	})
+})
+
 describe('openapi', () => {
 	test('GET /openapi.json documents every route', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/openapi.json`)
@@ -1938,13 +3129,17 @@ describe('openapi', () => {
 			'GET /api/playerReputation/v1/{id}',
 			'GET /api/playerReputation/v2/bulk',
 			'GET /api/playerevents/v1/all',
+			'GET /api/playerevents/v1/bulk',
 			'GET /api/playerevents/v1/club/{clubId}',
 			'GET /api/playerevents/v1/clubs',
+			'GET /api/playerevents/v1/search',
 			'GET /api/playerevents/v1/searchlive',
 			'GET /api/playerevents/v1/tagfilters',
+			'GET /api/playerevents/v1/{eventId}',
 			'GET /api/players/v1/progression/{id}',
 			'GET /api/players/v2/progression/bulk',
 			'GET /api/quickPlay/v1/getandclear',
+			'GET /api/relationships/mutualfriends',
 			'GET /api/relationships/v1/favorite',
 			'GET /api/relationships/v1/ignore',
 			'GET /api/relationships/v1/mute',
@@ -1964,6 +3159,7 @@ describe('openapi', () => {
 			'POST /api/CampusCard/v1/UpdateAndGetSubscription',
 			'POST /api/PlayerReporting/v1/deviceId',
 			'POST /api/PlayerReporting/v1/hile',
+			'POST /api/PlayerReporting/v3/create',
 			'POST /api/avatar/v2/gifts/generate',
 			'POST /api/gamesight/event',
 			'POST /api/images/v1/cheer',
@@ -1971,10 +3167,16 @@ describe('openapi', () => {
 			'POST /api/inventions/v1/settags',
 			'POST /api/inventions/v1/updateprice',
 			'POST /api/inventions/v6/save',
+			'POST /api/messages/v1/sendMultiple',
+			'POST /api/messages/v2/send',
 			'POST /api/playerReputation/v1/bulk',
 			'POST /api/playerReputation/v2/bulk',
+			'POST /api/playerevents/v1/respond',
+			'POST /api/playerevents/v2',
+			'POST /api/playerevents/v2/{eventId}',
 			'POST /api/players/v1/progression/bulk',
 			'POST /api/players/v2/progression/bulk',
+			'POST /api/playerwarnings',
 			'POST /api/relationships/v1/favorite',
 			'POST /api/relationships/v1/ignore',
 			'POST /api/relationships/v1/mute',
@@ -2018,5 +3220,197 @@ describe('openapi', () => {
 		const integers = raw.match(/"type":"integer"/g) ?? []
 		expect(integers.length).toBeGreaterThan(0)
 		expect(raw.match(/"example":12345/g)?.length).toBe(integers.length)
+	})
+})
+
+// A ban follows the player, not just the account row it was written on: an evader makes
+// a new account in seconds, so the block also reaches accounts sharing a PROVEN platform
+// identity or an IP with a banned one. See bans-db.ts — and note the IP arm is the coarse
+// one, which is why `BAN_EVASION_MATCH` can narrow or disable both linked arms.
+describe('ban evasion', () => {
+	/** Seed an account with the IPs it signed up / last logged in from. */
+	const account = async (id: number, ips: { signupIp?: string; lastLoginIp?: string } = {}) => {
+		await env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
+			.bind(JSON.stringify({ accountId: id, username: `Evader${id}`, ...ips }))
+			.run()
+	}
+
+	/** Link a proven platform identity to an account, as a verified login does. */
+	const link = async (id: number, platform: number, platformId: string) => {
+		await env.DB.prepare(
+			`INSERT OR IGNORE INTO platform_account (account_id, platform, platform_id, linked_at)
+			 VALUES (?1, ?2, ?3, ?4)`
+		)
+			.bind(id, platform, platformId, new Date().toISOString())
+			.run()
+	}
+
+	/** File a report against `playerId` and convert it into a ban. */
+	const ban = async (playerId: number, banExpires: string | null = null) => {
+		const row = await createReport(env.DB, { reporterPlayerId: 1, reportedPlayerId: playerId })
+		await banFromReport(env.DB, row.id, { banExpires })
+	}
+
+	test('a banned account is matched directly', async () => {
+		await account(7001)
+		await ban(7001)
+		expect(await resolveBan(env.DB, 7001)).toMatchObject({ via: 'account', bannedAccountId: 7001 })
+	})
+
+	test('an unrelated account is not matched', async () => {
+		await account(7002, { signupIp: '198.51.100.9' })
+		await link(7002, 0, 'steam-clean')
+		expect(await resolveBan(env.DB, 7002)).toBeNull()
+	})
+
+	test('an account sharing a signup IP with a banned account is matched', async () => {
+		await account(7010, { signupIp: '203.0.113.7' })
+		await ban(7010)
+		await account(7011, { signupIp: '203.0.113.7' })
+
+		const match = await resolveBan(env.DB, 7011)
+		expect(match).toMatchObject({ via: 'ip', bannedAccountId: 7010 })
+	})
+
+	// The IPs are compared as SETS: the new account's last-login IP against the banned
+	// account's signup IP counts, which is the shape evasion actually takes (sign up
+	// somewhere else, come back to the same connection).
+	test('a last-login IP matching a banned signup IP is matched', async () => {
+		await account(7012, { signupIp: '203.0.113.20' })
+		await ban(7012)
+		await account(7013, { signupIp: '198.51.100.1', lastLoginIp: '203.0.113.20' })
+
+		expect(await resolveBan(env.DB, 7013)).toMatchObject({ via: 'ip', bannedAccountId: 7012 })
+	})
+
+	test('an account sharing a platform identity with a banned account is matched', async () => {
+		await account(7020)
+		await link(7020, 0, 'steam-76561')
+		await ban(7020)
+		await account(7021)
+		await link(7021, 0, 'steam-76561')
+
+		expect(await resolveBan(env.DB, 7021)).toMatchObject({ via: 'platform', bannedAccountId: 7020 })
+	})
+
+	// The same id on a DIFFERENT platform is a different person — ids are namespaced per
+	// platform, so the arm matches the pair, not the bare id.
+	test('the same platform id on another platform is not matched', async () => {
+		await account(7022)
+		await link(7022, 0, 'id-collision')
+		await ban(7022)
+		await account(7023)
+		await link(7023, 1, 'id-collision')
+
+		expect(await resolveBan(env.DB, 7023)).toBeNull()
+	})
+
+	// Two accounts that merely both lack an IP have nothing in common — "unknown" must
+	// never match "unknown", or every IP-less account would be banned by the first one.
+	test('accounts with no IP at all are not matched to each other', async () => {
+		await account(7030)
+		await ban(7030)
+		await account(7031)
+		expect(await resolveBan(env.DB, 7031)).toBeNull()
+		// Nor does an empty-string IP, which is what a login outside the CF edge stores.
+		await account(7032, { signupIp: '', lastLoginIp: '' })
+		expect(await resolveBan(env.DB, 7032)).toBeNull()
+	})
+
+	test('an expired ban reaches nobody, linked or not', async () => {
+		await account(7040, { signupIp: '203.0.113.40' })
+		await link(7040, 0, 'steam-expired')
+		await ban(7040, '2020-01-01T00:00:00.000Z')
+		await account(7041, { signupIp: '203.0.113.40' })
+		await link(7041, 0, 'steam-expired')
+
+		expect(await resolveBan(env.DB, 7040)).toBeNull()
+		expect(await resolveBan(env.DB, 7041)).toBeNull()
+	})
+
+	// The strongest evidence is reported: a player whose own account is banned is told
+	// that, not that their network was.
+	test('a direct ban outranks a linked one', async () => {
+		await account(7050, { signupIp: '203.0.113.50' })
+		await ban(7050)
+		await account(7051, { signupIp: '203.0.113.50' })
+		await ban(7051)
+
+		expect(await resolveBan(env.DB, 7051)).toMatchObject({ via: 'account', bannedAccountId: 7051 })
+	})
+
+	test('a platform match outranks an IP one', async () => {
+		await account(7060, { signupIp: '203.0.113.60' })
+		await ban(7060)
+		await account(7061)
+		await link(7061, 0, 'steam-both')
+		await ban(7061)
+		// 7062 shares an IP with 7060 and a platform identity with 7061.
+		await account(7062, { signupIp: '203.0.113.60' })
+		await link(7062, 0, 'steam-both')
+
+		expect(await resolveBan(env.DB, 7062)).toMatchObject({ via: 'platform', bannedAccountId: 7061 })
+	})
+
+	// A signup has no account yet — the identity the request carries is all there is to
+	// go on, and refusing it there is what stops the next account being created at all.
+	test('an identity with no account is matched on its IP and platform id', async () => {
+		await account(7070, { signupIp: '203.0.113.70' })
+		await link(7070, 0, 'steam-signup')
+		await ban(7070)
+
+		expect(await resolveBan(env.DB, null, { identity: { ip: '203.0.113.70' } })).toMatchObject({
+			via: 'ip',
+			bannedAccountId: 7070,
+		})
+		expect(
+			await resolveBan(env.DB, null, { identity: { platform: 0, platformId: 'steam-signup' } })
+		).toMatchObject({ via: 'platform', bannedAccountId: 7070 })
+		// An identity that matches nothing is not blocked.
+		expect(
+			await resolveBan(env.DB, null, {
+				identity: { ip: '198.51.100.200', platform: 0, platformId: 'steam-unknown' },
+			})
+		).toBeNull()
+		// And an identity carrying nothing at all can't be matched to anyone.
+		expect(await resolveBan(env.DB, null, { identity: {} })).toBeNull()
+	})
+
+	// The arms an operator can turn off — and the one they cannot.
+	test('BAN_EVASION_MATCH arms narrow the linked matching only', async () => {
+		await account(7080, { signupIp: '203.0.113.80' })
+		await link(7080, 0, 'steam-arms')
+		await ban(7080)
+		await account(7081, { signupIp: '203.0.113.80' }) // shares the IP only
+		await account(7082)
+		await link(7082, 0, 'steam-arms') // shares the identity only
+
+		const arms = (value: string | undefined) => ({ arms: banEvasionMatch(value) })
+		// Default: both arms reach.
+		expect(await resolveBan(env.DB, 7081, arms(undefined))).toMatchObject({ via: 'ip' })
+		expect(await resolveBan(env.DB, 7082, arms(undefined))).toMatchObject({ via: 'platform' })
+		// Platform only: the household bystander is let through, the evader isn't.
+		expect(await resolveBan(env.DB, 7081, arms('platform'))).toBeNull()
+		expect(await resolveBan(env.DB, 7082, arms('platform'))).toMatchObject({ via: 'platform' })
+		// Off: neither linked arm reaches...
+		expect(await resolveBan(env.DB, 7081, arms('off'))).toBeNull()
+		expect(await resolveBan(env.DB, 7082, arms('off'))).toBeNull()
+		// ...but the ban itself still applies to the account it was handed to.
+		expect(await resolveBan(env.DB, 7080, arms('off'))).toMatchObject({ via: 'account' })
+	})
+
+	test('banEvasionMatch reads the knob', () => {
+		expect(banEvasionMatch(undefined)).toEqual({ ip: true, platform: true })
+		expect(banEvasionMatch('ip,platform')).toEqual({ ip: true, platform: true })
+		expect(banEvasionMatch(' PLATFORM ')).toEqual({ ip: false, platform: true })
+		expect(banEvasionMatch('ip')).toEqual({ ip: true, platform: false })
+		expect(banEvasionMatch('off')).toEqual({ ip: false, platform: false })
+		expect(banEvasionMatch('none')).toEqual({ ip: false, platform: false })
+		expect(banEvasionMatch('')).toEqual({ ip: false, platform: false })
+		// `off` wins over anything else in the list, and a typo is ignored rather than
+		// fatal — this is read on the matchmake path.
+		expect(banEvasionMatch('off,ip')).toEqual({ ip: false, platform: false })
+		expect(banEvasionMatch('ipv6')).toEqual({ ip: false, platform: false })
+		expect(banEvasionMatch('ip,typo')).toEqual({ ip: true, platform: false })
 	})
 })

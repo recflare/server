@@ -19,11 +19,17 @@
 		}
 	],
 	// Image bucket shared with the `img` worker (which serves objects back by key).
-	// Saved-image uploads are written here.
+	// Saved-image uploads are written here. The `recflare-cdn` bucket (owned by the
+	// `cdn` worker, written by `storage`) is bound read-only alongside it, to hash an
+	// invention's uploaded data blob for its `BlobHash`.
 	"r2_buckets": [
 		{
 			"binding": "IMAGES",
 			"bucket_name": "recflare-img"
+		},
+		{
+			"binding": "CDN_ASSETS",
+			"bucket_name": "recflare-cdn"
 		}
 	],
 	// Cross-worker binding to the SignalR notifications hub DO (owned/migrated by

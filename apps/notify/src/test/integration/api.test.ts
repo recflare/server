@@ -581,3 +581,44 @@ describe('clearing pending notifications', () => {
 		expect((await clear('all=true', await bearer('3', ['gameClient']))).status).toBe(403)
 	})
 })
+
+// The website's admin controls (maintenance countdown, coach broadcast) are a browser
+// calling `/internal/*` directly rather than through a `www` proxy, so these need CORS.
+describe('CORS', () => {
+	// The catch: `/internal/*` is behind `requireAdmin`, and a browser preflight carries
+	// NO Authorization header — it can't, that's the header it's asking permission to
+	// send. So the CORS middleware has to answer it before the admin gate sees it,
+	// otherwise every admin action fails the preflight with a 401 and never gets sent.
+	test('answers the preflight on an admin endpoint without a token', async () => {
+		const res = await exports.default.fetch(
+			new Request(`${ORIGIN}/internal/broadcast`, {
+				method: 'OPTIONS',
+				headers: {
+					origin: 'https://www.example.com',
+					'access-control-request-method': 'POST',
+					'access-control-request-headers': 'authorization, content-type',
+				},
+			}),
+			env
+		)
+		expect(res.status).toBe(204)
+		expect(res.headers.get('access-control-allow-origin')).toBe('*')
+		const allowed = res.headers.get('access-control-allow-headers')?.toLowerCase() ?? ''
+		expect(allowed).toContain('authorization')
+		expect(allowed).toContain('content-type')
+	})
+
+	// The gate itself is untouched: the preflight passing is not the request passing.
+	test('still rejects the actual call without an admin token', async () => {
+		const res = await exports.default.fetch(
+			new Request(`${ORIGIN}/internal/broadcast`, {
+				method: 'POST',
+				headers: { origin: 'https://www.example.com', 'content-type': 'application/json' },
+				body: JSON.stringify({ notificationType: 25, data: {} }),
+			}),
+			env
+		)
+		expect(res.status).toBe(401)
+		expect(res.headers.get('access-control-allow-origin')).toBe('*')
+	})
+})

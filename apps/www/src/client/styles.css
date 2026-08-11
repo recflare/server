@@ -84,7 +84,7 @@ body {
 	max-width: 880px;
 }
 
-/* The homepage: the stage runs full-bleed above this, so it brings its own top space. */
+/* The homepage: the stage above brings its own top space and shares this width. */
 .shell.home {
 	max-width: 1040px;
 	padding-top: 0;
@@ -153,19 +153,42 @@ body {
 /* ---- The stage (hero) --------------------------------------------------- */
 
 /*
- * Full-bleed, edge to edge under the nav: a photo somebody actually took in game,
- * with the headline and the way in over it. The photo is the backdrop and never the
- * payload — with no photo the stage is still a solid panel carrying the same words.
+ * Split down the middle: what this is and the way in on the left, a photo somebody
+ * actually took in game on the right. The photo is proof and never the payload — with
+ * no photo the frame holds its space and the left half carries the same words.
  */
 .stage {
-	position: relative;
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	align-items: center;
+	gap: 48px;
+	max-width: 1040px;
+	margin: 0 auto;
+	padding: 56px 20px 16px;
+}
+
+/* min-width: 0 on both halves, or the split isn't one: a `1fr` track's automatic
+   minimum is its content's min-content width, so a wide child (the slideshow controls,
+   a long unbroken credit) grows its column past 50% and takes the space out of the
+   other one — which is how this last read as 30/70 with the buttons crushed. */
+.stage-show {
 	display: flex;
 	flex-direction: column;
-	justify-content: flex-end;
-	min-height: min(40vh, 320px);
+	gap: 12px;
+	min-width: 0;
+}
+
+/* Fixed shape, filled by whatever lands: screenshots arrive at any aspect ratio, and a
+   frame that resized per photo would jog the headline beside it on every rotation. The
+   ratio is landscape rather than 4:3 so the photo doesn't tower over the column beside
+   it — equal columns still read unequal when one is half again as tall. */
+.stage-frame {
+	position: relative;
+	aspect-ratio: 3 / 2;
 	overflow: hidden;
+	border: 1px solid var(--line);
+	border-radius: var(--radius);
 	background: var(--surface-hi);
-	isolation: isolate;
 }
 
 .stage-photo {
@@ -174,11 +197,6 @@ body {
 	width: 100%;
 	height: 100%;
 	object-fit: cover;
-	z-index: -2;
-	/* Softened so the headline reads over any screenshot. Scaled up past the frame
-	   because blur samples past the edges and would otherwise feather them. */
-	filter: blur(5px) saturate(1.08);
-	transform: scale(1.06);
 	animation: photo-in 0.7s ease;
 }
 
@@ -188,40 +206,20 @@ body {
 	}
 }
 
-/* Scrim: enough weight at the bottom to hold white text over any screenshot. */
-.stage::before {
-	content: '';
-	position: absolute;
-	inset: 0;
-	z-index: -1;
-	background: linear-gradient(
-		to top,
-		rgb(10 7 4 / 90%) 0%,
-		rgb(10 7 4 / 74%) 40%,
-		rgb(10 7 4 / 44%) 100%
-	);
-}
-
 .stage-body {
-	max-width: 1040px;
-	width: 100%;
-	margin: 0 auto;
-	padding: 0 20px 28px;
+	min-width: 0;
 }
 
+/* No width cap here, unlike the headings below: this one shares a row with the photo,
+   and a headline that stops short of its column makes the split read as 30/70. */
 .stage-title {
 	font-family: var(--display);
 	font-weight: 800;
-	font-size: clamp(2rem, 5vw, 3.4rem);
+	font-size: clamp(2rem, 5vw, 3.5rem);
 	line-height: 1;
 	letter-spacing: -0.03em;
-	color: #fff;
-	margin: 0 0 20px;
-	max-width: 15ch;
+	margin: 0 0 16px;
 	text-wrap: balance;
-	/* Bloom: a wide, soft shadow rather than a hard one, so it separates the type from
-	   a bright screenshot without reading as a drop shadow. */
-	text-shadow: 0 2px 30px rgb(8 5 2 / 55%);
 }
 
 /* The one place the orange carries meaning in the headline: the year it restores. */
@@ -230,55 +228,84 @@ body {
 	color: var(--accent);
 }
 
-/* Credit line and slide dots, sitting under the headline on the photo itself. */
+.stage-lede {
+	font-size: 1.05rem;
+	color: var(--muted);
+	margin: 0 0 28px;
+}
+
+/* The signup offer under the hero buttons. Deliberately quieter than a CTA — it sits
+   below the downloads without competing with them — but the link itself carries the
+   accent so it reads as the action it is. */
+.stage-alt {
+	font-size: 0.925rem;
+	color: var(--muted);
+	margin: 18px 0 0;
+}
+
+.stage-alt a {
+	color: var(--accent);
+	font-weight: 600;
+	text-decoration: none;
+}
+
+.stage-alt a:hover {
+	text-decoration: underline;
+}
+
+/* Credit line and slideshow controls, under the photo rather than on it. */
 .stage-foot {
 	display: flex;
 	flex-wrap: wrap;
 	justify-content: space-between;
 	align-items: center;
-	gap: 12px 20px;
-	max-width: 1040px;
-	width: 100%;
-	margin: 0 auto;
-	padding: 0 20px 22px;
+	gap: 8px 20px;
+	/* Reserved even while the feed is in flight, so nothing shifts when it lands. */
+	min-height: 28px;
 	font-size: 0.8rem;
-	color: rgb(255 255 255 / 72%);
-	text-shadow: 0 1px 12px rgb(8 5 2 / 60%);
+	color: var(--muted);
 }
 
-/* The dots are the only way to steer the stage, so each one gets a 24px target
-   even though the mark itself is 7px. */
-.dots {
+/* Long usernames and room names wrap instead of widening the column. */
+.credit {
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+/* Back / forward, with the position between them. Fixed width whatever the feed
+   length is — see the note on .stage-show for what a per-photo control did here. */
+.steer {
 	display: flex;
-	margin: -8px -6px;
+	align-items: center;
+	gap: 4px;
+	flex: none;
 }
 
-.dots button {
+.steer button {
 	display: grid;
 	place-content: center;
-	width: 24px;
-	height: 24px;
+	width: 28px;
+	height: 28px;
 	padding: 0;
-	border: none;
-	background: none;
+	border: 1px solid var(--line);
+	border-radius: 8px;
+	background: transparent;
+	color: var(--muted);
 	cursor: pointer;
+	transition:
+		color 0.15s ease,
+		border-color 0.15s ease;
 }
 
-.dots button::after {
-	content: '';
-	width: 7px;
-	height: 7px;
-	border-radius: 50%;
-	background: rgb(255 255 255 / 34%);
-	transition: background 0.2s ease;
+.steer button:hover {
+	color: var(--text);
+	border-color: var(--muted);
 }
 
-.dots button:hover::after {
-	background: rgb(255 255 255 / 65%);
-}
-
-.dots button.on::after {
-	background: var(--accent);
+/* Tabular figures so the frame doesn't twitch as the index rolls 9 → 10. */
+.count {
+	font-variant-numeric: tabular-nums;
+	padding: 0 6px;
 }
 
 /* ---- What it is (below the stage) --------------------------------------- */
@@ -544,6 +571,308 @@ h2 {
 	color: var(--muted);
 }
 
+/* Sign in / create account, at the top of the auth card. Two of a kind, so they read as
+   one control rather than as two buttons competing with the orange submit below. */
+.tabs {
+	display: flex;
+	gap: 6px;
+	margin-bottom: 20px;
+	padding: 4px;
+	background: var(--bg);
+	border: 1px solid var(--line);
+	border-radius: 8px;
+}
+
+.tabs button {
+	flex: 1;
+	background: transparent;
+	border: none;
+	color: var(--muted);
+	padding: 8px;
+	border-radius: 6px;
+	cursor: pointer;
+	font-family: var(--body);
+	font-size: 0.9rem;
+}
+
+.tabs button:hover {
+	color: var(--text);
+}
+
+.tabs button.active {
+	background: var(--surface-hi);
+	color: var(--text);
+	font-weight: 600;
+}
+
+/* ---- My rooms ----------------------------------------------------------- */
+
+/*
+ * The owner's own room list. Rows rather than a grid of tiles: a room is identified by
+ * its name, and the counts underneath are the reason to look — both read left-to-right,
+ * which a tile would stack into a column of tiny type.
+ */
+.rooms {
+	list-style: none;
+	margin: 18px 0 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+
+.room {
+	padding-top: 12px;
+	border-top: 1px solid var(--line);
+}
+
+/* The first row sits directly under the intro copy, which already separates it. */
+.room:first-child {
+	padding-top: 0;
+	border-top: none;
+}
+
+/* The whole row is the link to the room's page, so the target is the size of the thing
+   you're aiming at rather than the name alone. Padded out to the card edge and pulled
+   back by the same amount, so the hover fill covers the row instead of stopping short. */
+.room-link {
+	display: grid;
+	grid-template-columns: 112px minmax(0, 1fr);
+	gap: 14px;
+	align-items: start;
+	margin: 0 -10px;
+	padding: 10px;
+	border-radius: 8px;
+	color: inherit;
+	text-decoration: none;
+}
+
+.room-link:hover {
+	background: var(--surface-hi);
+}
+
+.room-link:hover .room-name {
+	color: var(--accent);
+}
+
+/* Fixed 3:2 frame — room thumbnails are screenshots and arrive at any ratio, and a
+   per-room height would leave the names in a ragged column. */
+.room-thumb {
+	width: 100%;
+	aspect-ratio: 3 / 2;
+	object-fit: cover;
+	border: 1px solid var(--line);
+	border-radius: 8px;
+	background: var(--surface-hi);
+}
+
+.room-body {
+	min-width: 0;
+}
+
+.room-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+}
+
+/* Room names have no spaces to break at, so let a long one wrap anywhere rather than
+   widen the row past the panel. */
+.room-name {
+	font-family: var(--display);
+	font-weight: 700;
+	font-size: 1rem;
+	letter-spacing: -0.01em;
+	overflow-wrap: anywhere;
+}
+
+/* Whether the room is visible to anyone else — the one piece of state an owner can't
+   see anywhere but here. Public gets the same green "healthy" reading as the server
+   status; every other value stays neutral, since Private isn't a fault. */
+.badge {
+	flex: none;
+	font-size: 0.7rem;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	padding: 2px 8px;
+	border-radius: 999px;
+	border: 1px solid var(--line);
+	color: var(--muted);
+}
+
+.badge.live {
+	color: var(--live);
+	border-color: color-mix(in srgb, var(--live) 45%, transparent);
+}
+
+.room-desc {
+	margin: 6px 0 0;
+	font-size: 0.875rem;
+	color: var(--muted);
+	/* Two lines: enough to tell rooms apart, not enough for one to own the list. */
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	overflow: hidden;
+	overflow-wrap: anywhere;
+}
+
+.room-stats {
+	margin: 8px 0 0;
+	font-size: 0.8rem;
+	color: var(--muted);
+	font-variant-numeric: tabular-nums;
+}
+
+/* ---- One room's page ---------------------------------------------------- */
+
+/* The way back out, above the page's own heading. */
+.backlink {
+	margin: 0 0 16px;
+	font-size: 0.9rem;
+}
+
+.backlink a {
+	color: var(--muted);
+	text-decoration: none;
+}
+
+.backlink a:hover {
+	color: var(--text);
+}
+
+/* Wider thumbnail than the list's, and the name beside it rather than under: this is
+   the page about this one room, so the photo can carry some of the weight. */
+.room-hero {
+	display: grid;
+	grid-template-columns: 260px minmax(0, 1fr);
+	gap: 20px;
+	align-items: start;
+}
+
+.room-hero-img {
+	width: 100%;
+	aspect-ratio: 3 / 2;
+	object-fit: cover;
+	border: 1px solid var(--line);
+	border-radius: 8px;
+	background: var(--surface-hi);
+}
+
+.room-hero-name {
+	font-family: var(--display);
+	font-weight: 700;
+	font-size: 1.5rem;
+	letter-spacing: -0.02em;
+	margin: 0;
+	overflow-wrap: anywhere;
+}
+
+.room-hero-desc {
+	margin: 10px 0 0;
+	overflow-wrap: anywhere;
+}
+
+/* Label/value pairs. A two-column grid rather than a list of "Label: value" lines, so
+   the values line up and the page can be read down one column. */
+.facts {
+	display: grid;
+	grid-template-columns: 150px minmax(0, 1fr);
+	gap: 8px 16px;
+	margin: 0;
+	font-size: 0.9rem;
+}
+
+.facts dt {
+	color: var(--muted);
+}
+
+.facts dd {
+	margin: 0;
+	overflow-wrap: anywhere;
+}
+
+.subrooms {
+	list-style: none;
+	margin: 18px 0 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+}
+
+.subroom {
+	padding-top: 14px;
+	border-top: 1px solid var(--line);
+}
+
+.subroom:first-child {
+	padding-top: 0;
+	border-top: none;
+}
+
+.subroom-name {
+	font-family: var(--display);
+	font-weight: 700;
+	font-size: 0.975rem;
+	letter-spacing: -0.01em;
+	overflow-wrap: anywhere;
+}
+
+.subroom-meta,
+.subroom-save {
+	margin: 6px 0 0;
+	font-size: 0.825rem;
+	color: var(--muted);
+	overflow-wrap: anywhere;
+}
+
+/* Something the owner probably wants to act on — an unpublished subroom, a staged save
+   nobody can see yet. Not an error: nothing is broken, it just isn't live. */
+.warn {
+	color: var(--accent);
+}
+
+/*
+ * A scene-data blob and the link that downloads it. The KEY is the link, rather than a
+ * "Download" button beside it: the key is the thing an owner came to find (it's what
+ * `CurrentSave.DataBlob` holds, and what a bug report quotes), so making it the target
+ * keeps it readable and clickable without a second control competing for the row.
+ */
+.blob {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 4px 10px;
+	margin-top: 8px;
+	font-size: 0.8rem;
+}
+
+.blob-label {
+	flex: none;
+	color: var(--muted);
+}
+
+/* Blob keys are `<date>/<uuid>` — long, and with only two places a line could break.
+   `anywhere` lets one wrap mid-key instead of pushing the card sideways. */
+.blob-key {
+	color: var(--accent);
+	text-decoration: none;
+	overflow-wrap: anywhere;
+	min-width: 0;
+}
+
+.blob-key:hover {
+	text-decoration: underline;
+}
+
+.blob-note {
+	color: var(--muted);
+	overflow-wrap: anywhere;
+}
+
 /* ---- Forms -------------------------------------------------------------- */
 
 label {
@@ -572,11 +901,40 @@ textarea {
 	min-height: 76px;
 }
 
+/* Marks a field the form will submit without. Quiet, but next to the label rather than
+   inside the input, so it survives the field being filled in. */
+.optional {
+	font-size: 0.75rem;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	color: var(--muted);
+	opacity: 0.7;
+	margin-left: 4px;
+}
+
+/* Why a field is worth filling in, under the input it belongs to. Sits inside the label,
+   so it's read out with the field rather than as loose text after it. */
+.hint {
+	display: block;
+	margin-top: 6px;
+	font-size: 0.8rem;
+	line-height: 1.45;
+	color: var(--muted);
+}
+
 input:focus,
 textarea:focus {
 	outline: 2px solid var(--accent);
 	outline-offset: 0;
 	border-color: transparent;
+}
+
+/* Where the Turnstile iframe mounts. It brings its own chrome, so this only reserves the
+   space (the widget is 300×65 at normal size) — otherwise the submit button jumps down
+   the moment the check finishes loading. */
+.turnstile {
+	min-height: 65px;
+	margin-bottom: 14px;
 }
 
 button[type='submit'] {
@@ -600,6 +958,22 @@ button[type='submit']:not(:disabled):hover {
 button[type='submit']:disabled {
 	opacity: 0.55;
 	cursor: default;
+}
+
+/* The cross-link under an auth form ("Don't have an account? Create one"). Sits under
+   the submit button, which hugs its label, so it needs its own separation from it. */
+.swap {
+	margin: 16px 0 0;
+}
+
+.swap a {
+	color: var(--accent);
+	font-weight: 600;
+	text-decoration: none;
+}
+
+.swap a:hover {
+	text-decoration: underline;
 }
 
 /* ---- Utilities ---------------------------------------------------------- */
@@ -633,6 +1007,15 @@ button[type='submit']:disabled {
 
 /* ---- Responsive --------------------------------------------------------- */
 
+@media (max-width: 860px) {
+	/* One column: the words lead, the photo follows. */
+	.stage {
+		grid-template-columns: 1fr;
+		gap: 32px;
+		padding: 40px 20px 8px;
+	}
+}
+
 @media (max-width: 760px) {
 	/* One column: the copy first, then the links and the status under it. */
 	.about {
@@ -643,8 +1026,9 @@ button[type='submit']:disabled {
 }
 
 @media (max-width: 620px) {
-	.stage {
-		min-height: min(38vh, 300px);
+	.stage-actions .cta {
+		flex: 1 1 auto;
+		text-align: center;
 	}
 
 	.about-links .cta {
@@ -663,6 +1047,21 @@ button[type='submit']:disabled {
 
 	.vtabs button {
 		border-color: var(--line);
+	}
+
+	/* The room page's hero and its fact table both stack: 260px of photo (or 150px of
+	   label) beside a value leaves the value in a column too narrow to read. */
+	.room-hero {
+		grid-template-columns: 1fr;
+	}
+
+	.facts {
+		grid-template-columns: 1fr;
+		gap: 2px 0;
+	}
+
+	.facts dd {
+		margin-bottom: 10px;
 	}
 }
 

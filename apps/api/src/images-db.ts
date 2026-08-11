@@ -299,8 +299,15 @@ export function toImagesPlayer(img: SavedImage): ImagesPlayer {
 	}
 }
 
-/** Default number of recent images the slideshow feed returns. */
-export const SLIDESHOW_LIMIT = 130
+/** How many recent images the slideshow feed returns when the caller doesn't say. */
+export const SLIDESHOW_LIMIT = 10
+
+/**
+ * The most a caller can ask the slideshow feed for. The endpoint is public and
+ * unauthenticated, so the cap is what keeps an arbitrary `take` from turning into a
+ * scan of the whole image table plus the two batched joins behind it.
+ */
+export const SLIDESHOW_MAX_LIMIT = 100
 
 /** The slideshow projection of an image — creator username + room name joined in. */
 export interface SlideshowImage {

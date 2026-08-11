@@ -1,20 +1,35 @@
 import { resolver } from 'hono-openapi'
 import { z } from 'zod'
 
+import {
+	isValidBio,
+	isValidEmail,
+	MAX_DISPLAY_NAME_LENGTH,
+	MAX_USERNAME_LENGTH,
+	nameRejection,
+} from '@repo/domain'
+
 import type { OpenAPIV3_1 } from 'openapi-types'
 
 /**
  * OpenAPI schemas for the accounts worker.
  *
- * IMPORTANT: these are DESCRIPTIVE ONLY. They are passed to `describeRoute` to
- * generate the spec and are never wired into `hono-openapi`'s `validator()`.
+ * Most of these are DESCRIPTIVE ONLY: they are passed to `describeRoute` to generate the
+ * spec, and the handler stays lenient. That is deliberate — the Rec Room client is the
+ * real consumer, form fields are read as `typeof value === 'string' ? value : ''`, and
+ * missing or malformed input falls through to a graceful path (or a synthesized default
+ * account) rather than a hard error. A schema that rejected what the client actually
+ * sends would break the game, not protect it.
  *
- * As with the auth worker, this is deliberate. The Rec Room client is the only real
- * consumer and the handlers are intentionally lenient — form fields are read as
- * `typeof value === 'string' ? value : ''` and missing/malformed input falls through
- * to a graceful path (or a synthesized default account) rather than a hard error.
- * These schemas record what the client is observed to send and what we send back; to
- * enforce one, do it per-route and land a test with it.
+ * The EXCEPTION is the profile mutations a player types into a box — displayName,
+ * username, email, phone, bio. Those carry real rules (see `@repo/domain`), and each is
+ * wired into `hono-openapi`'s `validator()` per route, with tests, exactly as the older
+ * version of this note prescribed. Wiring one up means the schema both validates the
+ * request and generates the spec, so a limit can't be changed in one and not the other —
+ * which is precisely how the documented email limit came to disagree with the real one.
+ *
+ * A validated route drops `requestBody: form(...)` from its `describeRoute`: the
+ * validator registers the body itself, and declaring it twice would emit it twice.
  */
 
 /** Emit a zod schema as an `application/json` response body. */
@@ -122,21 +137,54 @@ export const CreateAccountRequest = z.object({
 	platformId: z.string().optional().describe('Parsed for fidelity; currently unused'),
 })
 
-/** Single-string form bodies, one per profile mutation. */
+/**
+ * Single-string form bodies, one per profile mutation.
+ *
+ * These are ENFORCED, not just described: each is handed to hono-openapi's `validator`,
+ * so the same schema both validates the request and generates the spec. Before this they
+ * were documentation only, and the real rule lived in the handler — which meant every
+ * limit had to be edited in two places and nothing caught them disagreeing.
+ *
+ * The rules themselves come from `@repo/domain` so `rooms` and `clubs` can't drift from
+ * `accounts`; `superRefine` is used where the message matters, because `nameRejection`
+ * writes the player-facing sentence and there's no reason to write it twice.
+ */
+
+/** Zod check that defers to the shared name rule, message and all. */
+const nameCheck = (label: string, max: number) =>
+	z.string()
+		.trim()
+		.superRefine((value, ctx) => {
+			const rejection = nameRejection(value, label, max)
+			if (rejection !== null) ctx.addIssue({ code: 'custom', message: rejection })
+		})
+
 export const DisplayNameRequest = z.object({
-	displayName: z.string().describe('Trimmed; empty is rejected (400)'),
+	displayName: nameCheck('display name', MAX_DISPLAY_NAME_LENGTH)
+		.min(1)
+		.describe('Trimmed; letters and digits only, max 15. Empty or invalid is rejected (400)'),
 })
 
 export const UsernameRequest = z.object({
-	username: z.string().describe('Trimmed; must be unique and changes must remain'),
+	username: nameCheck('username', MAX_USERNAME_LENGTH)
+		.min(1, 'You must enter a username.')
+		.describe(
+			'Trimmed; letters and digits only, max 50. Must be unique and changes must remain'
+		),
 })
 
 export const EmailRequest = z.object({
-	email: z.string().describe('Must contain "@"; otherwise 400'),
+	email: z
+		.string()
+		.trim()
+		.refine(isValidEmail, 'That email address looks wrong.')
+		.describe('A syntactically valid address (RFC 5321/5322, so at most 254); otherwise 400'),
 })
 
 export const PhoneRequest = z.object({
-	phone: z.string().describe('Trimmed; empty is rejected (400)'),
+	// No shape rule on purpose: the client sends E.164 (`+15552223333`), which the name
+	// rule above would reject outright by eating the leading `+`.
+	phone: z.string().trim().min(1).describe('Trimmed; empty is rejected (400)'),
 })
 
 export const IdentityFlagsRequest = z.object({
@@ -147,7 +195,10 @@ export const PronounsRequest = z.object({
 	pronounFlags: z.string().describe('Integer string bitmask; non-numeric is 400'),
 })
 
-export const BioRequest = z.object({ bio: z.string().describe('Free text; empty is allowed') })
+export const BioRequest = z.object({
+	// Not trimmed — a bio is free text, and leading whitespace is the player's business.
+	bio: z.string().refine(isValidBio).describe('Free text, max 255; empty is allowed'),
+})
 
 export const ProfileImageRequest = z.object({
 	imageName: z.string().describe('Avatar object key; empty is rejected (400)'),

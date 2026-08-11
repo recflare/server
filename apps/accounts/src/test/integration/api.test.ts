@@ -459,4 +459,179 @@ describe('auth-gated endpoints', () => {
 			for (const op of Object.values(ops)) expect(op.summary).toBeTruthy()
 		}
 	})
+
+	// hono-openapi registers a validated form body under `multipart/form-data` only, and
+	// its `media` option can't say otherwise (a precedence bug — see `withCleanSpec`). The
+	// real callers post `application/x-www-form-urlencoded`, so a spec that named only
+	// multipart would tell an integrator to send the one thing nothing here sends.
+	test('GET /openapi.json documents both form content types on validated routes', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/openapi.json`)
+		const spec = (await res.json()) as {
+			paths: Record<string, Record<string, { requestBody?: { content: Record<string, unknown> } }>>
+		}
+
+		for (const [path, method] of [
+			['/account/me/email', 'post'],
+			['/account/me/username', 'put'],
+			['/account/me/displayname', 'put'],
+			['/account/me/bio', 'put'],
+			['/account/me/phone', 'post'],
+		] as const) {
+			const content = spec.paths[path]?.[method]?.requestBody?.content ?? {}
+			expect(Object.keys(content).sort(), path).toEqual([
+				'application/x-www-form-urlencoded',
+				'multipart/form-data',
+			])
+		}
+	})
+})
+
+// The names a player chooses are alphanumeric and length-capped, by the same rule the
+// `rooms` worker applies (see `nameRejection` in @repo/domain). The three limits come
+// from the client's own input boxes rather than a round number, so anything stored is
+// something the game can render and re-edit.
+//
+// Server-generated names go around this deliberately — the seeded "Rec Room" account
+// above has a space in its display name, and dorms are called `@<username>'s Dorm`. The
+// check belongs at the request handler, not in the db helpers.
+describe('name, email and bio validation', () => {
+	const authed = async (sub: string) => ({
+		...(await bearer(sub)),
+		'Content-Type': 'application/x-www-form-urlencoded',
+	})
+
+	test('PUT /account/me/username refuses anything but letters and digits, max 50', async () => {
+		const headers = await authed('8801')
+		for (const username of ['has space', 'under_score', 'punct!', 'café', 'a'.repeat(51)]) {
+			const res = await exports.default.fetch(`${ORIGIN}/account/me/username`, {
+				...form({ username }),
+				headers,
+			})
+			// Refused by the SCHEMA (see openapi.ts `UsernameRequest`) before the handler
+			// runs — but still the envelope at HTTP 200, like every other refusal here,
+			// because the hook puts it there.
+			expect(res.status, username).toBe(200)
+			const body = (await res.json()) as { success: boolean; error: string; value: string }
+			expect(body.success, username).toBe(false)
+			expect(body.error).toMatch(/letters and numbers|at most 50 characters/)
+			expect(body.value).toBe('')
+		}
+
+		// The rationed change must NOT be spent by a refusal: an account starts with one,
+		// and burning it on a typo would leave the player stuck with a name they never had.
+		const me = (await (
+			await exports.default.fetch(`${ORIGIN}/account/me`, { headers: await bearer('8801') })
+		).json()) as { availableUsernameChanges: number }
+		expect(me.availableUsernameChanges).toBe(1)
+
+		// 50 is the client's own cap, so a name that long has to be accepted.
+		const ok = await exports.default.fetch(`${ORIGIN}/account/me/username`, {
+			...form({ username: 'a'.repeat(50) }),
+			headers,
+		})
+		expect(((await ok.json()) as { success: boolean }).success).toBe(true)
+	})
+
+	test('PUT /account/me/displayname refuses anything but letters and digits, max 15', async () => {
+		const headers = await authed('8802')
+		for (const displayName of ['has space', 'punct!', 'a'.repeat(16)]) {
+			const res = await exports.default.fetch(`${ORIGIN}/account/me/displayname`, {
+				...form({ displayName }),
+				headers,
+			})
+			// An empty 400, matching what this route already answers for an empty name —
+			// it acks with a bare `{ success: true }` and has never sent the client a body
+			// on failure.
+			expect(res.status, displayName).toBe(400)
+		}
+
+		// 15 is the client's box, so it must fit.
+		const ok = await exports.default.fetch(`${ORIGIN}/account/me/displayname`, {
+			...form({ displayName: 'a'.repeat(15) }),
+			headers,
+		})
+		expect(ok.status).toBe(200)
+	})
+
+	// Syntax comes from the `isemail` package rather than a pattern written here — this is
+	// a contact address nothing is ever sent to in order to prove it, so a hand-rolled
+	// regex only buys more edge cases to get wrong. It enforces the RFC's own
+	// 254-character maximum, which is why there's no separate length check.
+	test('POST /account/me/email requires a syntactically valid address', async () => {
+		const headers = await authed('8803')
+		const bad = [
+			'nope', // no @ at all — what this route used to be the only check for
+			'@example.com', // nothing to deliver to
+			'someone@', // no domain
+			'someone@example.', // empty last label
+			'two words@example.com', // whitespace
+			`${'a'.repeat(250)}@example.com`, // past the RFC's 254
+		]
+		for (const email of bad) {
+			const res = await exports.default.fetch(`${ORIGIN}/account/me/email`, {
+				...form({ email }),
+				method: 'POST',
+				headers,
+			})
+			expect(res.status, email).toBe(400)
+		}
+
+		// `someone@localhost` is in the ACCEPTED list on purpose: it's valid per the RFC,
+		// and an undeliverable address costs nothing here.
+		for (const email of [
+			'someone@example.com',
+			'first.last+tag@mail.example.co.uk',
+			'someone@localhost',
+		]) {
+			const res = await exports.default.fetch(`${ORIGIN}/account/me/email`, {
+				...form({ email }),
+				method: 'POST',
+				headers,
+			})
+			expect(res.status, email).toBe(200)
+		}
+	})
+
+	test('PUT /account/me/bio caps the stored text at 255 characters', async () => {
+		const headers = await authed('8804')
+
+		const ok = await exports.default.fetch(`${ORIGIN}/account/me/bio`, {
+			...form({ bio: 'b'.repeat(255) }),
+			headers,
+		})
+		expect(ok.status).toBe(200)
+
+		// Refused rather than truncated — storing half a sentence reads as data loss.
+		const tooLong = await exports.default.fetch(`${ORIGIN}/account/me/bio`, {
+			...form({ bio: 'b'.repeat(256) }),
+			headers,
+		})
+		expect(tooLong.status).toBe(400)
+
+		// The refusal changed nothing: the 255-character bio is still what's stored.
+		const me = await exports.default.fetch(`${ORIGIN}/account/8804/bio`)
+		expect(((await me.json()) as { bio: string }).bio).toBe('b'.repeat(255))
+	})
+})
+
+// Phone is deliberately NOT held to the name rule above: the client sends E.164
+// (`+15552223333`), so a letters-and-digits check would reject every real number by
+// eating the leading `+`. Pinned here because this route sits between two that DID just
+// get stricter, and the obvious next "cleanup" is to make it match them.
+test('POST /account/me/phone stores an E.164 number exactly as the client sends it', async () => {
+	const res = await exports.default.fetch(`${ORIGIN}/account/me/phone`, {
+		...form({ phone: '+15552223333' }),
+		method: 'POST',
+		headers: { ...(await bearer('8805')), 'Content-Type': 'application/x-www-form-urlencoded' },
+	})
+	expect(res.status).toBe(200)
+	expect(await res.json()).toEqual({ success: true })
+
+	// Read from the row: phone is stored but not surfaced by any DTO, so there's no
+	// endpoint to check it through.
+	const row = await env.DB.prepare(
+		"SELECT json_extract(data, '$.phone') AS phone FROM account WHERE json_extract(data, '$.accountId') = 8805"
+	).first<{ phone: string }>()
+	// Verbatim — no normalising, no stripping of the +.
+	expect(row?.phone).toBe('+15552223333')
 })

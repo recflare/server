@@ -70,6 +70,11 @@ inconsistency here without checking the client first.
 - A club's `AdditionalImages` (`clubs`) is an array of whole `SavedImage` records, not
   image names — a bare string array fails the client's parser ("expected '{'"). The list
   is packed: removing an image shifts the rest up, never leaving a blank slot.
+- A room's `LoadScreens` (`rooms`: `PUT /rooms/:id/loadscreen`) is an array — the
+  client's parser wants one — but the client renders only the FIRST entry and only ever
+  posts one. So the endpoint REPLACES the list rather than appending: an appended screen
+  sits unreachable behind the old one and setting a load screen looks like it did
+  nothing. Keep the array shape for eventual multi-screen support.
 - Endpoints the client re-renders from must return the updated entity, not
   `{ error, success, value: null }` — e.g. `clubs` `PUT /club/:id/clubhouse` left the old
   clubhouse on screen until it answered the full details envelope.
@@ -94,9 +99,23 @@ inconsistency here without checking the client first.
   publish: no publish step exists in the client for them. Saves live in the
   `subroom_save` table with globally-unique ids (a bare id has to resolve —
   `StagedSubRoomDataSaveId` carries no subroom context), and nothing is overwritten, so
-  `…/saves` is real history and `publish_save` doubles as restore-a-save. `…/saves` is
-  auth-gated and CREATOR-only (not co-owners) — it lists unpublished staged saves. There
+  `…/saves` is real history and `publish_save` doubles as restore-a-save. There
   is no `GET …/subrooms/:sid/data`; only the POST (the room save) exists on that path.
+  `GET …/saves/:saveId` is the detail behind a list row, under the same gate, but in the
+  CAMELCASE projection the room save's response uses — not the PascalCase rows the list
+  serves. Three shapes of one save; keep them straight.
+- Both save reads (`rooms`: `…/saves` and `…/saves/:saveId`) are auth-gated and readable by
+  the room's CREATOR or by anyone whose live `presence` row puts them in that room — not by
+  co-owners as such (a co-owner passes only by standing there). They list unpublished
+  staged saves, so they aren't public; but a visitor resolves which version an instance is
+  running from this list, so creator-only locks them out of loading the room. The grant
+  expires with the presence row.
+- A room save writes ONLY to the subroom and its save row — never to the room. Everything
+  the body carries describes that one revision: `Description` is the save comment shown in
+  `…/saves`, and `PersistenceVersion`/`InventionUsage` describe the scene just saved (the
+  latter lives on the SUBROOM). The room's public description is `PUT /rooms/:id/description`'s
+  alone; copying the save comment onto `room.Description` (as this once did) silently
+  replaces the room's description every time someone saves.
 - Matchmaking (`match`: `/matchmake/room/:roomId/:subRoomId`) always serves the PUBLISHED
   `CurrentSave` blob, creator included. Joining a private instance, the client itself asks
   the owner whether to load the latest or the published version and resolves it from the

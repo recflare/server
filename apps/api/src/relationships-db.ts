@@ -156,6 +156,48 @@ export async function getRelationshipsForPlayer(
 }
 
 /**
+ * The ids of everyone a player is actually friends with — `Friend` rows only, from
+ * either side of the pair (the row records one direction, the friendship is mutual).
+ * Pending requests and `None` rows are excluded, unlike
+ * {@link getRelationshipsForPlayer}, which reports the whole graph.
+ */
+export async function getFriendIds(db: D1Database, playerId: number): Promise<number[]> {
+	const { results } = await db
+		.prepare(
+			`SELECT CASE WHEN requester_id = ?1 THEN target_id ELSE requester_id END AS id
+			 FROM relationship
+			 WHERE relationship_type = ?2 AND (requester_id = ?1 OR target_id = ?1)`
+		)
+		.bind(playerId, RelationshipType.Friend)
+		.all<{ id: number }>()
+	return results.map((r) => r.id)
+}
+
+/** How many mutual friends the mutual-friends lookup will return at most. */
+export const MUTUAL_FRIENDS_LIMIT = 100
+
+/**
+ * The ids two players are both friends with — the intersection of their friend lists,
+ * ascending and capped at {@link MUTUAL_FRIENDS_LIMIT}. Each player's friends are a
+ * small set, so the intersection is done in memory rather than as a SQL INTERSECT.
+ */
+export async function getMutualFriendIds(
+	db: D1Database,
+	playerId: number,
+	otherId: number
+): Promise<number[]> {
+	const [mine, theirs] = await Promise.all([
+		getFriendIds(db, playerId),
+		getFriendIds(db, otherId),
+	])
+	const ours = new Set(theirs)
+	return mine
+		.filter((id) => ours.has(id))
+		.sort((a, b) => a - b)
+		.slice(0, MUTUAL_FRIENDS_LIMIT)
+}
+
+/**
  * Persist `type` for the pair, with `requesterId` recorded as the row's
  * requester. Inserts a new row or, if one already exists for the pair (either
  * direction), rewrites it so the requester is normalized to `requesterId` and

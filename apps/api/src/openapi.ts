@@ -97,6 +97,16 @@ export const BareString = z.string()
 /** The `{ error }` body the 400 / 403 branches return. */
 export const ErrorResponse = z.object({ error: z.string() })
 
+/**
+ * The `{ success, error }` envelope the report / warning writes and the message send
+ * answer with — `error` is an empty string on success, never null, and the rejected
+ * branches use the same shape so there is only one thing to parse.
+ */
+export const SuccessErrorEnvelope = z.object({
+	success: z.boolean(),
+	error: z.string().describe('Empty string when the call succeeded'),
+})
+
 // ---- Config ----------------------------------------------------------------
 
 /** `GET /api/config/v1/amplitude` — analytics keys (all disabled on this server). */
@@ -160,8 +170,48 @@ export const RelationshipDto = z.object({
 	Muted: z.int().describe('0/1 — the caller‘s own flag'),
 })
 
+/**
+ * `POST /api/messages/v2/send` form body — a message sent to another player. Everything
+ * is a string on the wire (it's form-encoded). The sender is NOT in the body — it's
+ * taken from the bearer token.
+ */
+export const SendMessageRequest = z.object({
+	ToPlayerId: z.string().describe('Account id of the recipient'),
+	Type: z
+		.string()
+		.optional()
+		.describe('The Message-model type, e.g. `10`. Passed through unmapped; defaults to 0'),
+	Data: z.string().optional().describe('The message payload; often empty'),
+})
+
+/**
+ * `POST /api/messages/v1/sendMultiple` JSON body — the same message fanned out to
+ * several recipients. Unlike the form-encoded single send, this one is real JSON, so
+ * `Type` arrives as a number and `ToPlayerIds` as an array of numbers. The sender is
+ * still taken from the bearer token, not the body.
+ */
+export const SendMultipleMessagesRequest = z.object({
+	ToPlayerIds: z.array(z.int()).describe('Account ids of the recipients'),
+	Type: z
+		.int()
+		.optional()
+		.describe('The Message-model type, e.g. `20`. Passed through unmapped; defaults to 0'),
+	Data: z.string().optional().describe('The message payload; often empty'),
+})
+
 /** The `{ Success, Message }` ack the flag toggles answer with. */
 export const AckResponse = z.object({ Success: z.boolean(), Message: z.string() })
+
+/**
+ * One entry of `GET /api/relationships/mutualfriends` — a friend both players share.
+ * A trimmed account card, not a relationship: no relationship type or flags.
+ */
+export const MutualFriendDto = z.object({
+	AccountId: z.int(),
+	Username: z.string(),
+	DisplayName: z.string(),
+	ProfileImage: z.string().describe('The image name; an empty string when the account has none'),
+})
 
 // ---- Progression -----------------------------------------------------------
 
@@ -206,7 +256,10 @@ export const InventionVersionDto = z.object({
 	ReplicationId: z.string(),
 	VersionNumber: z.int(),
 	BlobName: z.string().describe('The `.inv` key in the storage worker‘s bucket'),
-	BlobHash: z.string().nullable(),
+	BlobHash: z
+		.string()
+		.nullable()
+		.describe('Base64 SHA-256 of the blob; null when it was never uploaded'),
 	InstantiationCost: z.int(),
 	LightsCost: z.int(),
 	ChipsCost: z.int(),
@@ -282,8 +335,14 @@ export const InventionPersonalDetails = z.object({
 /** `POST /api/inventions/v1/settags` JSON body — both lists are replaced wholesale. */
 export const SetTagsRequest = z.object({
 	InventionId: z.int(),
-	AutoTags: z.array(z.string()).optional().describe('Client-derived tags (Type 2)'),
-	CustomTags: z.array(z.string()).optional().describe('Creator-submitted tags (Type 0)'),
+	AutoTags: z
+		.array(z.string())
+		.optional()
+		.describe('Client-derived tags (Type 2); each at most 15 letters once lowercased'),
+	CustomTags: z
+		.array(z.string())
+		.optional()
+		.describe('Creator-submitted tags (Type 0); each at most 15 letters once lowercased'),
 })
 
 /** `POST /api/inventions/v1/settags` response — `Tags` is the flat list of tag NAMES. */
@@ -303,8 +362,14 @@ export const SaveInventionRequest = z.object({
 	inventionDataFilename: z
 		.string()
 		.describe('The blob uploaded through the storage worker; the one required field'),
-	name: z.string().optional().describe('Defaults to “Untitled”'),
-	description: z.string().optional(),
+	name: z
+		.string()
+		.optional()
+		.describe('3–24 chars: letters, digits, spaces, dashes, colons. Omitted/blank ⇒ “Untitled”'),
+	description: z
+		.string()
+		.optional()
+		.describe('At most 512 chars. Omitted/blank ⇒ “No description yet”'),
 	imageName: z.string().optional(),
 	instantiationCost: z.int().optional(),
 	lightsCost: z.int().optional(),
@@ -370,10 +435,68 @@ export const KeepsakeConfig = z.object({
 	SocialXpBoostEnabled: z.boolean(),
 })
 
+/**
+ * A scheduled player event (Rec Room's `PlayerEvent`) — the record every read endpoint
+ * serves verbatim. The `State` / `Accessibility` / `*Permissions` ints are stored and
+ * echoed as the client sends them; their enums aren't reversed yet.
+ */
+export const PlayerEventDto = z.object({
+	PlayerEventId: z.int(),
+	CreatorPlayerId: z.int(),
+	ImageName: z.string().nullable().describe('Banner image; null until one is uploaded'),
+	RoomId: z.int(),
+	SubRoomId: z.int().nullable().describe('Null when the event doesn’t pin a subroom'),
+	ClubId: z.int().nullable().describe('Null when the event isn’t a club’s'),
+	Name: z.string(),
+	Description: z.string(),
+	StartTime: z.string().describe('ISO 8601 UTC, seconds precision (`2020-11-29T22:00:00Z`)'),
+	EndTime: z.string().describe('ISO 8601 UTC, seconds precision'),
+	AttendeeCount: z.int().describe('Starts at 1 — the creator attends their own event'),
+	State: z.int().describe('0 = scheduled'),
+	Accessibility: z.int(),
+	IsMultiInstance: z.boolean(),
+	SupportMultiInstanceRoomChat: z.boolean(),
+	DefaultBroadcastPermissions: z.int(),
+	CanRequestBroadcastPermissions: z.int(),
+})
+
+/** The `{ Result, TagModifyResult, PlayerEvent }` envelope the event writes answer with. */
+export const PlayerEventResultDto = z.object({
+	Result: z.int().describe('0 = success'),
+	TagModifyResult: z
+		.null()
+		.describe('Always null — the write carries no tag edit, as no event tags are stored'),
+	PlayerEvent: PlayerEventDto,
+})
+
+/**
+ * The JSON body of an event create / update. Every field is optional: create defaults
+ * what's missing, update leaves anything absent at its stored value. The fields may be
+ * posted at the top level or nested under `PlayerEvent` — the client posts back the
+ * same envelope it read — and both forms are accepted. `PlayerEventId`,
+ * `CreatorPlayerId` and `AttendeeCount` are ignored if present: the id is assigned
+ * here, the creator comes from the bearer token, and RSVPs aren't set by hand.
+ */
+export const PlayerEventRequest = PlayerEventDto.partial().extend({
+	PlayerEvent: z
+		.unknown()
+		.optional()
+		.describe('The event’s fields, if nested rather than posted at the top level'),
+})
+
+/** `POST /api/playerevents/v1/respond` JSON body — how the caller is answering. */
+export const PlayerEventRespondRequest = z.object({
+	PlayerEventId: z.int(),
+	Type: z.int().describe('0 Going, 1 Interested, 2 Can’t go'),
+})
+
 /** `GET /api/playerevents/v1/all` — the caller's created events and RSVPs. */
 export const PlayerEventsAll = z.object({
-	Created: JsonArray,
-	Responses: JsonArray,
+	Created: z.array(PlayerEventDto).describe('Events the caller created, soonest first'),
+	Responses: JsonArray.describe(
+		'Events the caller RSVP’d to — always empty; RSVPs are stored, but this field’s ' +
+			'entry shape has not been observed yet'
+	),
 })
 
 /** `GET /api/playerevents/v1/club/:clubId` — the paged single-club event feed. */
@@ -406,6 +529,48 @@ export const ModerationBlockDetails = z.object({
 	Message: z.string().nullable(),
 	PlayerIdReporter: z.int().nullable(),
 	TimeoutStartedAt: z.string().nullable(),
+})
+
+/**
+ * `POST /api/PlayerReporting/v3/create` form body — a player report. Everything is a
+ * string on the wire (it's form-encoded); only `PlayerIdReported` is required. The
+ * reporter is NOT in the body — it's taken from the bearer token.
+ */
+export const CreateReportRequest = z.object({
+	PlayerIdReported: z.string().describe('Account id of the player being reported'),
+	ReportCategory: z
+		.string()
+		.optional()
+		.describe('The reason picked in the report UI, e.g. `100`. Stored verbatim; unmapped'),
+	Details: z.string().optional().describe('The free-text description the reporter typed'),
+	HeightReporter: z
+		.string()
+		.optional()
+		.describe('Reporter’s player height in metres at report time, e.g. `1.64`'),
+	HeightReported: z.string().optional().describe('Reported player’s height in metres'),
+	RoomId: z.string().optional().describe('Room the report was raised in, if any'),
+	RoomInstanceType: z
+		.string()
+		.optional()
+		.describe('Instance type name, e.g. `Public`. Stored verbatim'),
+})
+
+/**
+ * `POST /api/playerwarnings` form body — a warning a moderator hands down. Everything
+ * is a string on the wire (it's form-encoded); only `WarnedPlayerId` is required. The
+ * moderator is NOT in the body — it's taken from the bearer token.
+ */
+export const CreateWarningRequest = z.object({
+	WarnedPlayerId: z.string().describe('Account id of the player being warned'),
+	ReportCategory: z
+		.string()
+		.optional()
+		.describe('The reason category, e.g. `101`. Stored verbatim; unmapped'),
+	DisplayReason: z
+		.string()
+		.optional()
+		.describe('What the warned player is shown, e.g. `Sexual gestures`'),
+	ModeratorNote: z.string().optional().describe('Internal note; never shown to the player'),
 })
 
 /** `POST /api/PlayerReporting/v1/deviceId` form body — the id rotation the client reports. */

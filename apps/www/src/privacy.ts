@@ -23,11 +23,14 @@ import { DISCORD_INVITE, ISSUES_URL, PRIVACY_EMAIL } from './links'
  * the claim Privacy.2 is judged on, and it goes stale the moment a worker stores
  * something new.
  *
- * "How you sign in" describes Meta SSO (PlatformType.Oculus), which the auth worker
- * still stubs — see the FAKE_OCULUS_CACHED_LOGIN branch in apps/auth/src/auth.app.ts.
- * When that lands, check the text still matches what the integration actually requests
- * from Meta: Privacy.2 asks for extra detail about platform features specifically, and
- * the same disclosure has to agree with the Data Use Checkup filed for the app.
+ * "How you sign in" describes Meta SSO (PlatformType.Oculus), now implemented in
+ * apps/auth/src/meta-nonce.ts. What that integration actually sends Meta is the login
+ * nonce plus the user id it is claimed for, and all it gets back is valid/not valid —
+ * so the disclosure's claim that Meta "learns that a sign-in happened" is right, but it
+ * over-discloses on two points that should be squared with the Data Use Checkup filed
+ * for the app: we do NOT retrieve a display name (only the user id is stored, see
+ * accounts-db.ts), and nonce validation does not check app entitlement. Privacy.2 asks
+ * for extra detail about platform features specifically, so keep this exact.
  */
 
 /** Last substantive revision, shown in the header. Bump when the text changes. */

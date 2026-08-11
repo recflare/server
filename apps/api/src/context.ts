@@ -21,6 +21,9 @@ export type Env = SharedHonoEnv & {
 	// Image bucket (shared with the `img` worker, which serves objects back by
 	// key). Uploaded saved images are written here.
 	IMAGES: R2Bucket
+	// Shared CDN bucket (owned by the `cdn` worker, written by `storage`). Read
+	// here only to hash an invention's uploaded data blob under `invention/`.
+	CDN_ASSETS: R2Bucket
 	// SignalR notifications hub (DO owned by the `notify` worker). Bound here to
 	// push RelationshipChanged notifications when a player's relationship changes.
 	RECFLARE_NOTIFICATIONS_HUB: DurableObjectNamespace<NotificationsHub>

@@ -22,11 +22,23 @@
 	// Shared Secrets Store holding the HS256 JWT signing key. Every worker binds the
 	// same store as JWT_SECRET so tokens signed by `auth` verify here. The "local"
 	// store_id placeholder is replaced with RECFLARE_SECRETS_STORE at deploy time.
+	//
+	// META_APP_SECRET is the Meta (Oculus) app secret, bound only by this worker: Meta
+	// logins are verified by asking Meta to validate the login nonce, which requires
+	// authenticating as the app (see src/meta-nonce.ts). Both secrets must EXIST in the
+	// store or the deploy fails — an operator with no Meta app still has to create
+	// META_APP_SECRET (any placeholder will do); Meta logins then fail with a 500 until
+	// it holds the real value, and nothing else is affected. See DEPLOYING.md.
 	"secrets_store_secrets": [
 		{
 			"binding": "JWT_SECRET",
 			"store_id": "local",
 			"secret_name": "JWT_SECRET"
+		},
+		{
+			"binding": "META_APP_SECRET",
+			"store_id": "local",
+			"secret_name": "META_APP_SECRET"
 		}
 	],
 	"upload_source_maps": true,

@@ -17,10 +17,18 @@
 		"run_worker_first": true
 	},
 	// Images are stored as objects in an R2 bucket and streamed back by key.
+	// `recflare-cdn` (owned by the `cdn` worker, written by `storage`) is bound
+	// alongside it: uploads posted to `storage` as FileType 3 land under its
+	// `image/` prefix with no extension, and the client asks THIS worker for them
+	// by the bare name — see the extensionless-key branch in src/img.app.ts.
 	"r2_buckets": [
 		{
 			"binding": "IMAGES",
 			"bucket_name": "recflare-img"
+		},
+		{
+			"binding": "CDN_ASSETS",
+			"bucket_name": "recflare-cdn"
 		}
 	],
 	// Shared `recflare` D1 — the `img` worker owns the `images` metadata table
@@ -46,6 +54,14 @@
 	"vars": {
 		"ENVIRONMENT": "development", // overridden during deployment
 		"SENTRY_RELEASE": "unknown", // overridden during deployment
+		// Feature flag for REAL `?sig=p1` signing. OFF: the client only needs a
+		// Content-Signature header to EXIST, and never checks it, while signing for
+		// real buffers the whole object into the isolate instead of streaming it from
+		// R2 and pays a SHA-1 over the full body plus an RSA-2048 private-key op on
+		// every edge-cache miss. So the header is filled with a placeholder derived
+		// from the object key (see stubSignature in src/img.app.ts). Flip to true if
+		// anything ever needs to verify it.
+		"IMG_SIGNING_ENABLED": false,
 		// RSA-2048 private key (PKCS8 DER, base64) used to sign image responses
 		// requested with ?sig=p1. This is an INSECURE DEV KEY committed for local
 		// dev / tests — override in production with `wrangler secret put IMG_SIGNING_KEY`.

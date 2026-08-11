@@ -1,40 +1,422 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { DISCORD_INVITE, DOWNLOAD_URL, LICENSE_URL } from '../links'
+import { Accessibility } from '@repo/domain/src/enums'
+
+import { NotificationType } from '../../../notify/src/notification-types'
+import { authFailure, authUnreachable } from '../auth-messages'
+import {
+    DISCORD_INVITE,
+    DOWNLOAD_URL,
+    LICENSE_URL,
+    QUEST_DOWNLOAD_URL,
+    SOURCE_REPO,
+} from '../links'
 
 import type { ReactNode } from 'react'
 
-/** The self-account shape returned by the www BFF (`/api/me`, `/api/login`, …). */
+/**
+ * The SPA calls the SAME endpoints the game does — `auth` for tokens and the password
+ * change, `accounts` for the profile, `api` for the photo feed, `notify` for the admin
+ * broadcasts — rather than proxying each one through `www`, exactly as rec.net's own
+ * site did. Those workers answer CORS for it (see their `withDefaultCors()`), and the
+ * access token lives here in the browser.
+ *
+ * `www` serves only two things of its own (see www.app.ts): the config below, and
+ * signup, which is Turnstile-gated and so cannot leave the server.
+ */
+
+/** Where each worker lives. From `/api/config`, never baked into this build. */
+interface Hosts {
+	auth: string
+	accounts: string
+	api: string
+	img: string
+	notify: string
+	rooms: string
+	cdn: string
+}
+
+/**
+ * Site config from `www`. `signupEnabled` is false when the operator has no Turnstile
+ * keypair configured — web signup runs behind that bot check, so without it the endpoint
+ * is closed and the UI must not offer the form.
+ */
+interface SiteConfig {
+	signupEnabled: boolean
+	turnstileSiteKey: string | null
+}
+
+/** The private self DTO from `accounts` (`GET /account/me`). */
 interface SelfAccount {
 	accountId: number
 	username: string
 	displayName: string
 	email: string | null
-	/** Whether this session may use admin controls (from the token's role claim). */
-	isAdmin?: boolean
+	/**
+	 * Username changes left on the account — each change spends one, and an account
+	 * starts with one. Absent on an older self DTO, which reads as "unknown": the form
+	 * stays usable and lets the server be the one to refuse.
+	 */
+	availableUsernameChanges?: number
 }
 
 /**
- * Call a www BFF endpoint. GET when no body is given, else POST JSON. Throws with
- * the upstream error message (auth uses `error`/`error_description`, the account
- * mutations use `error`) so callers can surface it.
+ * One subroom, as `rooms` re-attaches them to every room read. A room is a container;
+ * the subrooms are the actual places players load into, each with its own accessibility
+ * and its own save history.
  */
-async function api<T = unknown>(path: string, body?: unknown): Promise<T> {
-	const res = await fetch(path, {
-		method: body === undefined ? 'GET' : 'POST',
-		headers: body === undefined ? undefined : { 'content-type': 'application/json' },
-		body: body === undefined ? undefined : JSON.stringify(body),
+interface SubRoom {
+	SubRoomId: number
+	Name: string
+	/** Set INDEPENDENTLY of the room's — a public room can hold a private subroom. */
+	Accessibility: number
+	IsSandbox: boolean
+	MaxPlayers: number
+	/** The subroom's scene-data key, served back by `cdn` under `room/`. */
+	DataBlob?: string
+	/**
+	 * A save posted without `AutoPublish` waits here. Cleared when that save is
+	 * published, so a non-null value means "edited since players last saw a change".
+	 */
+	StagedSubRoomDataSaveId: number | null
+	/**
+	 * What players actually load. Null until the first publish — and a subroom without
+	 * one silently loads nothing, which is worth surfacing to an owner who can't tell
+	 * that apart from a broken room.
+	 */
+	CurrentSave: {
+		SubRoomDataSaveId: number
+		CreatedAt: string
+		Description: string
+		/**
+		 * The scene-data key for the published save — what the client downloads to load
+		 * the place, and the file worth keeping a copy of. `subRoomDataBlob()` resolves
+		 * this one first, ahead of the subroom's own.
+		 */
+		DataBlob: string
+	} | null
+}
+
+/**
+ * One room from `rooms` (`GET /rooms/ownedby/me`), narrowed to what these pages draw.
+ * The worker serves the stored room blob verbatim — dozens of fields the game needs and
+ * the website doesn't — so only the ones read here are declared.
+ */
+interface OwnedRoom {
+	RoomId: number
+	Name: string
+	Description: string
+	/** A key on the `img` worker; a room with no image of its own gets the fallback. */
+	ImageName: string
+	/** The `Accessibility` ordinal, NOT the enum name — see ACCESSIBILITY_LABEL. */
+	Accessibility: number
+	CreatedAt: string
+	MaxPlayers: number
+	/** False blocks `POST /rooms/{id}/clone` — nobody can take a copy of the room. */
+	CloningAllowed: boolean
+	SupportsScreens: boolean
+	SupportsWalkVR: boolean
+	SupportsTeleportVR: boolean
+	SupportsQuest2: boolean
+	SupportsMobile: boolean
+	SupportsJuniors: boolean
+	/** `Type` 0 is a tag the owner set, 2 one the server derived. */
+	Tags: Array<{ Tag: string; Type: number }>
+	SubRooms: SubRoom[]
+	/** Always present: the worker folds the live counters in on every read. */
+	Stats: {
+		CheerCount: number
+		FavoriteCount: number
+		VisitorCount: number
+		VisitCount: number
+	}
+}
+
+/**
+ * What an `Accessibility` ordinal is called on screen — rooms and subrooms both carry
+ * one. The two dev values are reachable (the game sets them), so they're named rather
+ * than left to fall through to the unknown case in `accessibilityLabel`.
+ */
+const ACCESSIBILITY_LABEL: Record<number, string> = {
+	[Accessibility.Private]: 'Private',
+	[Accessibility.Public]: 'Public',
+	[Accessibility.Unlisted]: 'Unlisted',
+	[Accessibility.Dev_only]: 'Dev only',
+	[Accessibility.Dev_Unlisted]: 'Dev unlisted',
+}
+
+/**
+ * RecNet (4) is the web platform, stamped as the token's `platform` claim on sign-in.
+ * NOT passed on signup: create_account treats an asserted platform as one to verify
+ * against Steam and rejects RecNet — the web signup is the (platform-less) password
+ * account path.
+ */
+const WEB_PLATFORM = '4'
+
+/**
+ * The session's access token, in localStorage so a reload stays signed in.
+ *
+ * Readable by page JS, which the httpOnly cookie this replaced was not — that is the
+ * tradeoff that comes with the browser calling the workers itself, and it's the same
+ * posture the game client has. Nothing third-party runs on this origin except the
+ * Turnstile widget, which is Cloudflare's own.
+ */
+const TOKEN_KEY = 'rf_token'
+let token: string | null = localStorage.getItem(TOKEN_KEY)
+
+function setToken(next: string | null) {
+	token = next
+	if (next === null) localStorage.removeItem(TOKEN_KEY)
+	else localStorage.setItem(TOKEN_KEY, next)
+}
+
+/**
+ * Filled in once `/api/config` lands, before any worker call is made — a module value
+ * rather than a prop threaded through every form, since the components that call a
+ * worker only render after the config resolves.
+ */
+let hosts: Hosts | null = null
+
+/** The hostnames, once known. Throws rather than guessing a domain. */
+function where(): Hosts {
+	if (hosts === null) throw new Error('Still starting up — please reload the page.')
+	return hosts
+}
+
+/**
+ * Roles that unlock the admin controls. Mirrors the notify worker's `ADMIN_ROLES` gate —
+ * this only decides whether to SHOW them; notify verifies the token on every call.
+ */
+const ADMIN_ROLES = new Set(['developer', 'moderator'])
+
+/**
+ * Whether the session token carries an admin role. Decodes the `role` claim WITHOUT
+ * verifying it — a page holds no signing key, and faking one here only reveals buttons
+ * whose endpoints reject the same token. A malformed token reads as "not admin".
+ */
+function isAdmin(): boolean {
+	const payload = token?.split('.')[1]
+	if (!payload) return false
+	try {
+		const b64 = payload.replace(/-/g, '+').replace(/_/g, '/')
+		const padded = b64.padEnd(b64.length + ((4 - (b64.length % 4)) % 4), '=')
+		const claims = JSON.parse(atob(padded)) as { role?: unknown }
+		return Array.isArray(claims.role) && claims.role.some((r) => ADMIN_ROLES.has(r as string))
+	} catch {
+		return false
+	}
+}
+
+/**
+ * An OAuth machine code (`invalid_grant`, `server_error`) rather than a sentence — a
+ * lower_snake_case word with no spaces. A worker that speaks OAuth puts one of these in
+ * `error`, where the readable reason is in `error_description`.
+ */
+const isErrorCode = (s: string) => /^[a-z][a-z\d]*(_[a-z\d]+)+$/.test(s)
+
+/**
+ * The message worth showing for a refusal. `error` wins, since that's where a worker
+ * puts a sentence it wrote for the player — but NOT when it's a bare OAuth code, which
+ * tells nobody anything. Some refusals carry no body at all (accounts answers a
+ * malformed email with an empty 400), hence the last-resort line.
+ */
+function errorMessage(data: Record<string, unknown>, status: number): string {
+	const error = typeof data.error === 'string' ? data.error : ''
+	const description = typeof data.error_description === 'string' ? data.error_description : ''
+	return (
+		(error && !(isErrorCode(error) && description) && error) ||
+		description ||
+		error ||
+		`Request failed (${status})`
+	)
+}
+
+interface CallOptions {
+	method?: 'GET' | 'POST' | 'PUT'
+	/** Form fields — auth and accounts read their input with Hono's `parseBody()`. */
+	form?: Record<string, string>
+	/** A JSON body — what notify's internal endpoints take instead. */
+	json?: unknown
+	/** Send the session token. */
+	authed?: boolean
+	/**
+	 * What to say when the worker refuses with a 400 and NO body. Several accounts routes
+	 * do exactly that (email, display name, bio), so without this the player reads
+	 * "Request failed (400)" — the status, not the reason.
+	 */
+	refusal?: string
+}
+
+/** Call a worker. Returns the parsed body, or throws with something worth showing. */
+async function call<T = Record<string, unknown>>(url: string, opts: CallOptions = {}): Promise<T> {
+	const headers: Record<string, string> = {}
+	if (opts.authed && token) headers.authorization = `Bearer ${token}`
+	let body: string | undefined
+	if (opts.form) {
+		headers['content-type'] = 'application/x-www-form-urlencoded'
+		body = new URLSearchParams(opts.form).toString()
+	} else if (opts.json !== undefined) {
+		headers['content-type'] = 'application/json'
+		body = JSON.stringify(opts.json)
+	}
+
+	const res = await fetch(url, {
+		method: opts.method ?? (body === undefined ? 'GET' : 'POST'),
+		headers,
+		body,
 	})
 	const data = (await res.json().catch(() => ({}))) as Record<string, unknown>
+
 	if (!res.ok) {
-		const message =
-			(typeof data.error === 'string' && data.error) ||
-			(typeof data.error_description === 'string' && data.error_description) ||
-			`Request failed (${res.status})`
-		throw new Error(message)
+		// Expired or revoked. Cleared here so no caller has to remember to.
+		if (res.status === 401 && opts.authed) {
+			setToken(null)
+			throw new Error('Your session has expired. Please sign in again.')
+		}
+		// Only when the body really is empty — a worker that did send a reason keeps it.
+		if (opts.refusal !== undefined && res.status === 400 && Object.keys(data).length === 0) {
+			throw new Error(opts.refusal)
+		}
+		throw new Error(errorMessage(data, res.status))
 	}
 	return data as T
 }
+
+/** The signed-in account, straight from `accounts`. */
+const fetchMe = (): Promise<SelfAccount> =>
+	call<SelfAccount>(`${where().accounts}/account/me`, { authed: true })
+
+/**
+ * The caller's own rooms, from the `rooms` worker — the same list the game's "My Rooms"
+ * loads. `ownedby/me` rather than `createdby/me`: the dorm is auto-provisioned, not a
+ * room the player made, and it's the one room they can't do anything with from here.
+ *
+ * The worker deliberately does NOT filter on accessibility for this list, so a room that
+ * has never been published shows up — which is the point, since that's the one its owner
+ * is most likely to be looking for.
+ *
+ * Sorted newest-first here rather than upstream: the query has no ORDER BY (D1 hands
+ * back insertion order, which is not a promise), and the room someone just made is the
+ * one they came to see.
+ */
+async function fetchMyRooms(): Promise<OwnedRoom[]> {
+	const rooms = await call<OwnedRoom[]>(`${where().rooms}/rooms/ownedby/me`, { authed: true })
+	// A bare array is the contract; anything else is treated as "no rooms" rather than
+	// thrown, since `.sort` on a non-array would surface as an unreadable TypeError.
+	if (!Array.isArray(rooms)) return []
+	// ISO-8601 timestamps, so lexical order IS chronological order.
+	return [...rooms].sort((a, b) => (a.CreatedAt < b.CreatedAt ? 1 : -1))
+}
+
+/**
+ * Sign in with auth's password grant, posted directly the way the game posts it. The
+ * account is resolved by `username` (case-insensitive) — web players sign in with their
+ * username, not the numeric account id.
+ *
+ * A refusal is translated through the table shared with the worker (see
+ * `auth-messages.ts`): auth's `error` is always a machine code, and the reason in
+ * `error_description` is written for an operator, not a player.
+ */
+async function signIn(username: string, password: string): Promise<void> {
+	const res = await fetch(`${where().auth}/connect/token`, {
+		method: 'POST',
+		headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		body: new URLSearchParams({
+			grant_type: 'password',
+			username,
+			platform: WEB_PLATFORM,
+			password,
+		}).toString(),
+	}).catch(() => null)
+	if (res === null) throw new Error(authUnreachable('login'))
+
+	const data = (await res.json().catch(() => ({}))) as Record<string, unknown>
+	if (!res.ok) {
+		const code = typeof data.error === 'string' ? data.error : ''
+		const description = typeof data.error_description === 'string' ? data.error_description : ''
+		throw new Error(authFailure('login', res.status, code, description).message)
+	}
+	if (typeof data.access_token !== 'string') throw new Error(authUnreachable('login'))
+	setToken(data.access_token)
+}
+
+/**
+ * Create an account — the one flow that goes through `www`, because it's gated by
+ * Turnstile and that check needs a secret key a page can't hold. www hands back auth's
+ * token response unchanged, so the session is established just as sign-in establishes it.
+ */
+async function signUp(password: string, turnstileToken: string): Promise<void> {
+	const data = await call<{ access_token?: string }>('/api/signup', {
+		json: { password, turnstileToken },
+	})
+	if (typeof data.access_token !== 'string') throw new Error(authUnreachable('signup'))
+	setToken(data.access_token)
+}
+
+/**
+ * Change the username.
+ *
+ * `accounts` answers this one in its own envelope — `{ success, error, value }` at HTTP
+ * 200 even when it refused (taken name, no changes left) — so a 200 is not enough to
+ * call it done. The sentences it writes are already player-facing, so they're shown as-is.
+ *
+ * On success the SELF account is re-read rather than using the envelope's `value`: that
+ * is the PUBLIC DTO, and it carries no `availableUsernameChanges` — the very field this
+ * form needs to know whether another change is left.
+ */
+async function changeUsername(username: string): Promise<SelfAccount> {
+	const result = await call<{ error?: unknown }>(`${where().accounts}/account/me/username`, {
+		method: 'PUT',
+		form: { username },
+		authed: true,
+	})
+	const refusal = typeof result.error === 'string' ? result.error : ''
+	if (refusal !== '') throw new Error(refusal)
+	return fetchMe()
+}
+
+/**
+ * Set the account's email.
+ *
+ * The address is NOT checked here first. `accounts` validates it with `isemail`, which
+ * can't come along into the browser (it reaches for node's `util`, which vite stubs with
+ * a throwing Proxy in dev) — and a second, looser copy of the rule would only disagree
+ * with the real one. The server decides; this just names the refusal it answers with.
+ */
+const saveEmail = (email: string): Promise<unknown> =>
+	call(`${where().accounts}/account/me/email`, {
+		form: { email },
+		authed: true,
+		refusal: 'That email address looks wrong.',
+	})
+
+/** Change the account's password. Lives on `auth`, not `accounts`. */
+const changePassword = (oldPassword: string, newPassword: string): Promise<unknown> =>
+	call(`${where().auth}/account/me/changepassword`, {
+		form: { oldPassword, newPassword },
+		authed: true,
+	})
+
+/**
+ * Admin-only broadcasts. The token goes to `notify`, which enforces the admin-role gate
+ * — so a session without the role is rejected there (403) even though the UI shows no
+ * button. The maintenance frame carries `Msg: { StartsInMinutes }`, matching the game
+ * client's ServerMaintenance handler.
+ */
+const broadcastMaintenance = (startsInMinutes: number): Promise<{ delivered?: number }> =>
+	call<{ delivered?: number }>(`${where().notify}/internal/broadcast`, {
+		json: {
+			notificationType: NotificationType.ServerMaintenance,
+			data: { StartsInMinutes: startsInMinutes },
+		},
+		authed: true,
+	})
+
+const coachMessageAll = (messageContent: string): Promise<{ sent?: number }> =>
+	call<{ sent?: number }>(`${where().notify}/internal/coach-message-all`, {
+		json: { messageContent },
+		authed: true,
+	})
 
 /** Minimal history-based router: current pathname + a navigate() that pushes state. */
 function useRouter() {
@@ -82,19 +464,51 @@ function Link({
 	)
 }
 
+/**
+ * The room id in `/rooms/<id>`, or null for any other path. Numeric rather than the
+ * room's name: a name is renameable (`PUT /rooms/{id}/name`), so a link someone
+ * bookmarked would rot the moment they renamed the room.
+ */
+function roomIdFromPath(path: string): number | null {
+	const match = /^\/rooms\/(\d+)$/.exec(path)
+	return match ? Number.parseInt(match[1], 10) : null
+}
+
 export function App() {
 	// undefined = still checking the session; null = signed out.
 	const [account, setAccount] = useState<SelfAccount | null | undefined>(undefined)
+	// undefined until the config lands. Signup is treated as closed until told otherwise,
+	// so a slow (or failed) config fetch can't flash a form the server would refuse.
+	const [config, setConfig] = useState<SiteConfig | undefined>(undefined)
 	const { path, navigate } = useRouter()
+	const roomId = roomIdFromPath(path)
 
 	useEffect(() => {
-		api<SelfAccount>('/api/me')
-			.then((me) => setAccount(me))
-			.catch(() => setAccount(null))
+		// Config first, and everything else after it: it carries the hostnames every other
+		// call needs. A config that doesn't land leaves the page signed out with signup
+		// closed rather than guessing where the workers are.
+		call<SiteConfig & { hosts: Hosts }>('/api/config')
+			.then(async ({ hosts: resolved, ...site }) => {
+				hosts = resolved
+				setConfig(site)
+				if (token === null) return setAccount(null)
+				// A stored token that `accounts` rejects is stale — `call` has already dropped
+				// it, so this just falls back to signed-out rather than surfacing an error.
+				await fetchMe()
+					.then(setAccount)
+					.catch(() => setAccount(null))
+			})
+			.catch(() => {
+				setConfig({ signupEnabled: false, turnstileSiteKey: null })
+				setAccount(null)
+			})
 	}, [])
 
-	const logout = useCallback(async () => {
-		await api('/api/logout', {})
+	// Nothing to tell a server: the access token is a stateless JWT, so dropping it here
+	// IS the sign-out. (The refresh token auth issues alongside it is never stored, so a
+	// closed session leaves nothing behind to redeem.)
+	const logout = useCallback(() => {
+		setToken(null)
 		setAccount(null)
 		navigate('/')
 	}, [navigate])
@@ -102,14 +516,24 @@ export function App() {
 	return (
 		<>
 			<NavBar account={account} path={path} navigate={navigate} onLogout={logout} />
-			{path === '/login' ? (
-				<LoginPage account={account} navigate={navigate} onAuthed={setAccount} />
-			) : path === '/signup' ? (
-                                <SignupPage navigate={navigate} onAuthed={setAccount} />
-                        ) : path === '/account' ? (
+                    {path === '/login' || path === '/signup' ? (
+                            // One page, two doors. `/signup` exists so the homepage's create-account link
+                            // lands on that tab instead of dropping people on sign-in to find it — and so
+                            // the URL is linkable. Unknown paths fall back to index.html (see the assets
+                            // config in wrangler.jsonc), so a cold load of /signup reaches the SPA.
+                            <LoginPage
+                                    account={account}
+                                    config={config}
+                                    initialTab={path === '/signup' ? 'signup' : 'login'}
+                                    navigate={navigate}
+                                    onAuthed={setAccount}
+                            />
+                    ) : path === '/account' ? (
 				<AccountPage account={account} navigate={navigate} onChange={setAccount} />
+			) : roomId !== null ? (
+				<RoomPage account={account} roomId={roomId} navigate={navigate} />
 			) : (
-				<HomePage />
+				<HomePage account={account} config={config} navigate={navigate} />
 			)}
 			<SiteFooter />
 		</>
@@ -178,6 +602,14 @@ function NavBar({
 	)
 }
 
+/**
+ * How many photos the hero asks the feed for. Explicit rather than left to the api's
+ * default, since the count is a design decision here: the stage rotates one photo every
+ * six seconds, so ten is a minute of it — long enough that a repeat visitor sees fresh
+ * photos, short enough that the arrows stay walkable and the payload stays small.
+ */
+const SLIDESHOW_TAKE = 10
+
 /** A recent public image plus who took it and where. */
 interface Slide {
 	url: string
@@ -185,16 +617,35 @@ interface Slide {
 	roomName: string | null
 }
 
-/** Loads the public photo feed once. `slides === null` means still in flight. */
-function useSlideshow() {
+/**
+ * Loads the public photo feed once. `slides === null` means still in flight.
+ *
+ * Waits for the config, since the feed is served by the `api` worker — the same public
+ * endpoint the game reads it from — and its hostname arrives with the config. Each entry
+ * names an image; the browsable URL for it is on the `img` worker.
+ */
+function useSlideshow(config: SiteConfig | undefined) {
 	const [slides, setSlides] = useState<Slide[] | null>(null)
 	const [error, setError] = useState('')
 
 	useEffect(() => {
-		api<{ images: Slide[] }>('/api/slideshow')
-			.then((d) => setSlides(d.images))
-			.catch((e) => setError(e instanceof Error ? e.message : String(e)))
-	}, [])
+		if (config === undefined) return
+		type Feed = { Images?: Array<{ ImageName: string; Username: string; RoomName: string | null }> }
+		// Wrapped in an async call rather than started directly, because `where()` THROWS
+		// when the config didn't land — synchronously, which straight out of an effect
+		// would take the page down instead of leaving an empty stage behind the fold.
+		void (async () => {
+			const h = where()
+			const d = await call<Feed>(`${h.api}/api/images/v1/slideshow?take=${SLIDESHOW_TAKE}`)
+			setSlides(
+				(d.Images ?? []).map((i) => ({
+					url: `${h.img}/${i.ImageName}`,
+					username: i.Username,
+					roomName: i.RoomName,
+				}))
+			)
+		})().catch((e) => setError(e instanceof Error ? e.message : String(e)))
+	}, [config])
 
 	return { slides, error }
 }
@@ -204,12 +655,25 @@ function useSlideshow() {
  * on top of them. Everything about how the thing is built sits below, for whoever
  * scrolls looking for it.
  */
-function HomePage() {
-	const feed = useSlideshow()
+function HomePage({
+	account,
+	config,
+	navigate,
+}: {
+	account: SelfAccount | null | undefined
+	config: SiteConfig | undefined
+	navigate: Navigate
+}) {
+	const feed = useSlideshow(config)
+
+	// The signup offer only makes sense to a signed-out visitor when the server would
+	// actually take one. `account === undefined` is still-checking, so it shows nothing
+	// rather than offering an account to someone who already has one.
+	const offerSignup = account === null && config?.signupEnabled === true
 
 	return (
 		<main>
-			<Stage slides={feed.slides} />
+			<Stage slides={feed.slides} offerSignup={offerSignup} navigate={navigate} />
 			<div className="shell home">
 				<About slides={feed.slides} error={feed.error} />
 			</div>
@@ -218,31 +682,36 @@ function HomePage() {
 }
 
 /**
- * The hero: a rotating in-game photo with the headline and the way in over it. The
- * photo is the backdrop, never the payload — when the feed is slow or down the stage
- * still renders, so "Play now!" is reachable either way.
+ * The hero: the headline and the way in on the left, a rotating in-game photo on the
+ * right. The photo is proof, never the payload — when the feed is slow or down the
+ * frame holds its space and the left half reads the same, so "Play now!" is reachable
+ * either way.
  */
-function Stage({ slides }: { slides: Slide[] | null }) {
+function Stage({
+	slides,
+	offerSignup,
+	navigate,
+}: {
+	slides: Slide[] | null
+	offerSignup: boolean
+	navigate: Navigate
+}) {
 	const [idx, setIdx] = useState(0)
+	const count = slides?.length ?? 0
 
+	// A timeout keyed on the current slide rather than one long-lived interval: steering
+	// by hand re-arms it, so a photo you just picked gets its full six seconds.
 	useEffect(() => {
-		if (!slides || slides.length < 2) return
-		const t = setInterval(() => setIdx((i) => (i + 1) % slides.length), 6000)
-		return () => clearInterval(t)
-	}, [slides])
+		if (count < 2) return
+		const t = setTimeout(() => setIdx((i) => (i + 1) % count), 6000)
+		return () => clearTimeout(t)
+	}, [count, idx])
 
 	const slide = slides && slides.length > 0 ? slides[idx] : null
+	const step = (by: number) => setIdx((i) => (i + by + count) % count)
 
 	return (
 		<section className="stage">
-			{slide && (
-				<img
-					className="stage-photo"
-					key={slide.url}
-					src={slide.url}
-					alt={`Photo taken in game by ${slide.username}`}
-				/>
-			)}
 			<div className="stage-body">
 				{/* Deliberately doesn't name the game: this is a fan project, so the
 				    trademark stays out of the headline and appears lower down, in
@@ -250,38 +719,90 @@ function Stage({ slides }: { slides: Slide[] | null }) {
 				<h1 className="stage-title">
 					Play like it&apos;s <em>2024</em>.
 				</h1>
+				<p className="stage-lede">
+					The servers you remember, rebuilt and running — free, open source, and up right now.
+				</p>
 				<div className="stage-actions">
 					<a className="cta" href={DOWNLOAD_URL} target="_blank" rel="noreferrer">
 						Download for PC
+					</a>
+					<a className="cta" href={QUEST_DOWNLOAD_URL} target="_blank" rel="noreferrer">
+						Download for Quest
 					</a>
 					<a className="cta discord" href={DISCORD_INVITE} target="_blank" rel="noreferrer">
 						Join the Discord
 					</a>
 				</div>
+				{/* A line rather than a fourth button: the download is the point of this page,
+				    and launching the game makes an account by itself — signing up here is the
+				    way in for someone who wants one first. Hidden entirely when signup is
+				    closed, matching /login, which hides its create-account tab the same way. */}
+				{offerSignup && (
+					<p className="stage-alt">
+						New here?{' '}
+						<Link to="/signup" navigate={navigate}>
+							Create an account
+						</Link>
+					</p>
+				)}
 			</div>
-			{slide && (
+			<div className="stage-show">
+				<div className="stage-frame">
+					{slide && (
+						<img
+							className="stage-photo"
+							key={slide.url}
+							src={slide.url}
+							alt={`Photo taken in game by ${slide.username}`}
+						/>
+					)}
+				</div>
+				{/* Always mounted, so the frame doesn't shift down when the feed lands. */}
 				<div className="stage-foot">
-					<span className="credit">
-						Photo by @{slide.username}
-						{slide.roomName && ` in ${slide.roomName}`}
-					</span>
-					{slides && slides.length > 1 && (
-						<span className="dots">
-							{slides.map((s, i) => (
-								<button
-									key={s.url}
-									className={i === idx ? 'on' : ''}
-									onClick={() => setIdx(i)}
-									aria-label={`Show photo ${i + 1} of ${slides.length}`}
-									aria-current={i === idx}
-								/>
-							))}
+					{slide && (
+						<span className="credit">
+							Photo by @{slide.username}
+							{slide.roomName && ` in ${slide.roomName}`}
+						</span>
+					)}
+					{/* Arrows and a count, not a dot per photo: a dot each is wide enough to
+					    shove the headline's half of the split off the page, and it would have
+					    to be rebuilt the moment SLIDESHOW_TAKE grows. */}
+					{count > 1 && (
+						<span className="steer">
+							<button onClick={() => step(-1)} aria-label="Previous photo">
+								<Chevron />
+							</button>
+							<span className="count">
+								{idx + 1} / {count}
+							</span>
+							<button onClick={() => step(1)} aria-label="Next photo">
+								<Chevron next />
+							</button>
 						</span>
 					)}
 				</div>
-			)}
+			</div>
 		</section>
 	)
+}
+
+/**
+ * The slideshow's back/forward mark. Decorative — the buttons carry the label.
+ */
+function Chevron({ next }: { next?: boolean }) {
+    return (
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false">
+                    <path
+                            d={next ? 'M9 5l7 7-7 7' : 'M15 5l-7 7 7 7'}
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2.2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                    />
+            </svg>
+    )
 }
 
 /** What Rug Room is, under the fold, for whoever wants it. */
@@ -295,7 +816,7 @@ function About({ slides, error }: { slides: Slide[] | null; error: string }) {
 			<div>
 				<h2 className="about-title">An Community Made Rec Room Revival, Made For the Community.</h2>
 				<p className="about-lede">
-					Rug Room is a 2024 build of Rec Room. It is completely free, and will always be free. No microtransactions ever.
+                                    Rug Room is a 2024 build of Rec Room. It is completely free, and will always be free. No microtransactions ever.
 				</p>
 			</div>
 			<div className="about-side">
@@ -321,34 +842,85 @@ function About({ slides, error }: { slides: Slide[] | null; error: string }) {
 	)
 }
 
-/** The sign-in page. Redirects to the account page once a session exists. */
+/**
+ * The sign-in page — sign in, plus create-account when the server says signup is open
+ * (it needs a Turnstile keypair; see SiteConfig). Redirects to the account page once a
+ * session exists, however it was obtained.
+ */
 function LoginPage({
 	account,
+	config,
+	initialTab,
 	navigate,
 	onAuthed,
 }: {
 	account: SelfAccount | null | undefined
+	config: SiteConfig | undefined
+	initialTab: 'signup' | 'login'
 	navigate: Navigate
 	onAuthed: (a: SelfAccount) => void
 }) {
+	// The tab IS the route (`/login` vs `/signup`) rather than local state, so the two can
+	// never disagree — switching tabs pushes history, and back goes back to the other one.
+	const tab = initialTab
+
 	useEffect(() => {
 		if (account) navigate('/account')
 	}, [account, navigate])
 
+	const authed = (a: SelfAccount) => {
+		onAuthed(a)
+		navigate('/account')
+	}
+
+	const siteKey = config?.signupEnabled ? config.turnstileSiteKey : null
+
 	return (
 		<main className="shell">
 			<section className="card">
-				<h2>Sign in</h2>
-				<p className="muted">
-					Launch the game first — that creates an account linked to your Steam ID. Once you set a
-					password, use your username and that password to sign in here.
-				</p>
-				<LoginForm
-					onAuthed={(a) => {
-						onAuthed(a)
-						navigate('/account')
-					}}
-				/>
+				{siteKey && (
+					<div className="tabs">
+						<button className={tab === 'login' ? 'active' : ''} onClick={() => navigate('/login')}>
+							Sign in
+						</button>
+						<button
+							className={tab === 'signup' ? 'active' : ''}
+							onClick={() => navigate('/signup')}
+						>
+							Create account
+						</button>
+					</div>
+				)}
+				{siteKey && tab === 'signup' ? (
+					<>
+						<h2>Create account</h2>
+						<p className="muted">
+							A username is assigned for you — you&apos;ll see it on your account page. Choose a
+							password, and the two together sign you in here and in the game.
+						</p>
+						<SignupForm siteKey={siteKey} onAuthed={authed} />
+					</>
+				) : (
+					<>
+						<h2>Sign in</h2>
+						<p className="muted">
+							Use your username and password. Launching the game also creates an account, linked to
+							your Steam ID — set a password on it and it signs in here too.
+						</p>
+						<LoginForm onAuthed={authed} />
+						{/* The tabs above already offer this; the line under the button is where
+						    someone who just found out they have no account is actually looking.
+						    Gated on the same key, so it can't point at a door that isn't there. */}
+						{siteKey && (
+							<p className="muted swap">
+								Don&apos;t have an account?{' '}
+								<Link to="/signup" navigate={navigate}>
+									Create one
+								</Link>
+							</p>
+						)}
+					</>
+				)}
 			</section>
 		</main>
 	)
@@ -379,8 +951,338 @@ function AccountPage({
 	return (
 		<main className="shell wide">
 			<h1>My account</h1>
-			<Dashboard account={account} onChange={onChange} />
+			<Dashboard account={account} navigate={navigate} onChange={onChange} />
 		</main>
+	)
+}
+
+/**
+ * One room's own page — what it is, how it's set up, and the subrooms inside it.
+ *
+ * The room is found in the caller's OWN list rather than read from the public
+ * `GET /rooms?id=`, which is unfiltered by design (the game looks any room up that way).
+ * Going through `ownedby/me` is what makes this the owner's page: a room that isn't
+ * yours simply isn't in the list, so there's no second ownership rule here to drift out
+ * of step with the one the mutating endpoints enforce.
+ */
+function RoomPage({
+	account,
+	roomId,
+	navigate,
+}: {
+	account: SelfAccount | null | undefined
+	roomId: number
+	navigate: Navigate
+}) {
+	const [rooms, setRooms] = useState<OwnedRoom[] | null>(null)
+	const [error, setError] = useState('')
+	const accountId = account?.accountId
+
+	useEffect(() => {
+		if (account === null) navigate('/login')
+	}, [account, navigate])
+
+	useEffect(() => {
+		// Waits for the session: the list is auth-gated, and `account === undefined` only
+		// means the stored token hasn't been checked yet.
+		if (accountId === undefined) return
+		void fetchMyRooms()
+			.then(setRooms)
+			.catch((e) => setError(e instanceof Error ? e.message : String(e)))
+	}, [accountId])
+
+	if (!account) {
+		return (
+			<main className="shell">
+				<p className="muted">{account === undefined ? 'Loading…' : 'Redirecting…'}</p>
+			</main>
+		)
+	}
+
+	const room = rooms?.find((r) => r.RoomId === roomId)
+
+	return (
+		<main className="shell wide">
+			<p className="backlink">
+				<Link to="/account" navigate={navigate}>
+					← My rooms
+				</Link>
+			</p>
+			{error ? (
+				<p className="error">{error}</p>
+			) : rooms === null ? (
+				<p className="muted">Loading…</p>
+			) : room === undefined ? (
+				// Covers both "no such room" and "someone else's" — deliberately the same
+				// sentence, since telling a stranger which of the two it is answers a question
+				// they have no business asking.
+				<p className="muted">That isn&apos;t one of your rooms.</p>
+			) : (
+				<RoomDetail room={room} imgHost={where().img} cdnHost={where().cdn} />
+			)}
+		</main>
+	)
+}
+
+/** The platforms a room says it supports, named the way the game names them. */
+function platformList(room: OwnedRoom): string[] {
+	const on: string[] = []
+	if (room.SupportsScreens) on.push('Screens')
+	if (room.SupportsWalkVR) on.push('VR (walk)')
+	if (room.SupportsTeleportVR) on.push('VR (teleport)')
+	if (room.SupportsQuest2) on.push('Quest 2')
+	if (room.SupportsMobile) on.push('Mobile')
+	if (room.SupportsJuniors) on.push('Juniors')
+	return on
+}
+
+/** A room's settings and its subrooms. Read-only: rooms are edited in game. */
+function RoomDetail({
+	room,
+	imgHost,
+	cdnHost,
+}: {
+	room: OwnedRoom
+	imgHost: string
+	cdnHost: string
+}) {
+	const created = new Date(room.CreatedAt)
+	const platforms = platformList(room)
+	const subRooms = room.SubRooms ?? []
+
+	return (
+		<>
+			<section className="card room-hero">
+				{/* 512 rather than the list's 256: this one is displayed large. Both are sizes
+				    the img worker allows, so each is a cached variant. */}
+				<img className="room-hero-img" src={`${imgHost}/${room.ImageName}?width=512`} alt="" />
+				<div className="room-hero-body">
+					<div className="room-head">
+						<h1 className="room-hero-name">^{room.Name}</h1>
+						<VisibilityBadge accessibility={room.Accessibility} />
+					</div>
+					{room.Description ? (
+						<p className="muted room-hero-desc">{room.Description}</p>
+					) : (
+						<p className="muted room-hero-desc">No description set.</p>
+					)}
+					<p className="room-stats">
+						{room.Stats.VisitCount.toLocaleString()} visit
+						{room.Stats.VisitCount === 1 ? '' : 's'} · {room.Stats.FavoriteCount.toLocaleString()}{' '}
+						favourite
+						{room.Stats.FavoriteCount === 1 ? '' : 's'} · {room.Stats.CheerCount.toLocaleString()}{' '}
+						cheer{room.Stats.CheerCount === 1 ? '' : 's'}
+					</p>
+				</div>
+			</section>
+
+			<section className="card">
+				<h2>Settings</h2>
+				<dl className="facts">
+					<dt>Room id</dt>
+					<dd>{room.RoomId}</dd>
+					<dt>Visibility</dt>
+					<dd>{accessibilityLabel(room.Accessibility)}</dd>
+					<dt>Max players</dt>
+					<dd>{room.MaxPlayers}</dd>
+					<dt>Cloning</dt>
+					<dd>
+						{room.CloningAllowed ? 'Anyone may clone this room' : 'Nobody may clone this room'}
+					</dd>
+					<dt>Plays on</dt>
+					<dd>
+						{platforms.length > 0 ? platforms.join(', ') : 'Nothing — no platform is enabled'}
+					</dd>
+					<dt>Tags</dt>
+					<dd>{room.Tags?.length ? room.Tags.map((t) => t.Tag).join(', ') : 'None'}</dd>
+					<dt>Created</dt>
+					<dd>{Number.isNaN(created.getTime()) ? room.CreatedAt : created.toLocaleDateString()}</dd>
+				</dl>
+			</section>
+
+			<section className="card">
+				<h2>Subrooms</h2>
+				<p className="muted">
+					The places inside the room players actually load into. Each keeps its own accessibility
+					and its own saves, so a public room can still hold a subroom nobody else can reach.
+				</p>
+				{subRooms.length === 0 ? (
+					<p className="muted">This room has no subrooms.</p>
+				) : (
+					<ul className="subrooms">
+						{subRooms.map((sub) => (
+							<SubRoomRow key={sub.SubRoomId} sub={sub} roomName={room.Name} cdnHost={cdnHost} />
+						))}
+					</ul>
+				)}
+			</section>
+		</>
+	)
+}
+
+/** One subroom: what it is, and — the part an owner can't see anywhere else — its save. */
+function SubRoomRow({
+	sub,
+	roomName,
+	cdnHost,
+}: {
+	sub: SubRoom
+	roomName: string
+	cdnHost: string
+}) {
+	const save = sub.CurrentSave ?? null
+	const saved = save ? new Date(save.CreatedAt) : null
+	// Cleared when that save is published (see publishSubRoomSave), so a value here always
+	// means work the owner saved but players still can't see.
+	const staged = sub.StagedSubRoomDataSaveId !== null && sub.StagedSubRoomDataSaveId !== undefined
+	const name = sub.Name || `Subroom ${sub.SubRoomId}`
+
+	return (
+		<li className="subroom">
+			<div className="room-head">
+				<span className="subroom-name">{name}</span>
+				<VisibilityBadge accessibility={sub.Accessibility} />
+				{sub.IsSandbox && <span className="badge">Sandbox</span>}
+			</div>
+			<p className="subroom-meta">
+				#{sub.SubRoomId} · up to {sub.MaxPlayers} players
+			</p>
+			<p className="subroom-save">
+				{save === null ? (
+					// A subroom with no published save loads an empty scene without erroring, which
+					// from the inside looks exactly like a broken room. Say so plainly.
+					<span className="warn">Never published — players load an empty scene.</span>
+				) : (
+					<>
+						Published save #{save.SubRoomDataSaveId}
+						{saved && !Number.isNaN(saved.getTime()) && `, saved ${saved.toLocaleString()}`}
+						{save.Description && ` — “${save.Description}”`}
+					</>
+				)}
+				{staged && (
+					<span className="warn"> · a newer save is staged, waiting to be published.</span>
+				)}
+			</p>
+			{/* The published save's blob first: that's the copy of the room worth keeping,
+			    and the one the client resolves ahead of the subroom's own key. */}
+			{save?.DataBlob && (
+				<BlobDownload
+					label="Save DataBlob"
+					blobKey={save.DataBlob}
+					filename={safeFilename(roomName, name, `save-${save.SubRoomDataSaveId}`)}
+					cdnHost={cdnHost}
+				/>
+			)}
+			{sub.DataBlob && (
+				<BlobDownload
+					label="Subroom DataBlob"
+					blobKey={sub.DataBlob}
+					filename={safeFilename(roomName, name, 'datablob')}
+					cdnHost={cdnHost}
+				/>
+			)}
+		</li>
+	)
+}
+
+/**
+ * A download filename built from player-supplied names, with everything that isn't a
+ * word character, dot or dash flattened to a dash — a subroom can be called anything,
+ * and that string is about to become a path on someone's disk.
+ */
+const safeFilename = (...parts: string[]): string =>
+	`${parts.join('-').replace(/[^\w.-]+/g, '-')}.bin`
+
+/**
+ * One scene-data blob: the key, and a link that downloads it from `cdn`.
+ *
+ * `href` is the real CDN URL, so open-in-new-tab and right-click → Save As work like any
+ * other link. The click is intercepted only to give the file a NAME: blobs are stored
+ * under a date-foldered UUID, so three downloads otherwise land as three
+ * indistinguishable extensionless files. The `download` attribute can't do that on its
+ * own — browsers ignore it cross-origin, and `cdn` is always a different origin from the
+ * website — hence fetching the bytes and saving them through an object URL.
+ */
+function BlobDownload({
+	label,
+	blobKey,
+	filename,
+	cdnHost,
+}: {
+	label: string
+	blobKey: string
+	filename: string
+	cdnHost: string
+}) {
+	// Room build data is served under `room/` — the same prefix the storage worker
+	// uploads it to, and the one the game downloads it from.
+	const url = `${cdnHost}/room/${blobKey}`
+	const [pending, setPending] = useState(false)
+	const [error, setError] = useState('')
+
+	const download = async () => {
+		setPending(true)
+		setError('')
+		try {
+			const res = await fetch(url)
+			// The blob key is stored on the subroom, so a miss here means the object is gone
+			// from the bucket — worth saying, rather than saving a file of the 404 body.
+			if (!res.ok) throw new Error(`the CDN answered ${res.status}`)
+			const href = URL.createObjectURL(await res.blob())
+			const link = document.createElement('a')
+			link.href = href
+			link.download = filename
+			link.click()
+			// The click is dispatched synchronously but the save reads the URL after this
+			// frame, so the revoke waits a tick rather than pulling it out from under.
+			setTimeout(() => URL.revokeObjectURL(href), 0)
+		} catch (e) {
+			setError(e instanceof Error ? e.message : String(e))
+		} finally {
+			setPending(false)
+		}
+	}
+
+	return (
+		<div className="blob">
+			<span className="blob-label">{label}</span>
+			<a
+				className="blob-key"
+				href={url}
+				download={filename}
+				onClick={(e) => {
+					e.preventDefault()
+					void download()
+				}}
+			>
+				{blobKey}
+			</a>
+			{/* Only rendered when it has something to say — an empty span would still take a
+			    gap from the flex row, leaving the key trailed by a stray space. */}
+			{pending ? (
+				<span className="blob-note">Downloading…</span>
+			) : error ? (
+				<span className="blob-note error">Couldn’t download — {error}.</span>
+			) : null}
+		</div>
+	)
+}
+
+/** How a room or subroom's `Accessibility` reads on screen. */
+const accessibilityLabel = (accessibility: number): string =>
+	// Unknown ordinals shouldn't happen, but this label is the only thing telling an owner
+	// whether a room is visible — so show the raw value rather than nothing at all.
+	ACCESSIBILITY_LABEL[accessibility] ?? `Accessibility ${accessibility}`
+
+/**
+ * The visibility pill. Public gets the same green "healthy" reading as the server
+ * status; every other value stays neutral, since Private is a choice, not a fault.
+ */
+function VisibilityBadge({ accessibility }: { accessibility: number }) {
+	return (
+		<span className={`badge ${accessibility === Accessibility.Public ? 'live' : ''}`}>
+			{accessibilityLabel(accessibility)}
+		</span>
 	)
 }
 
@@ -406,9 +1308,194 @@ function useAction() {
 	return { pending, error, done, run }
 }
 
-// Manual web signups are disabled for now, so only sign-in is exposed (accounts are
-// created via the game/platform, not the website). To bring signups back, restore a
-// SignupForm calling POST /api/signup and re-enable that endpoint in www.app.ts.
+/**
+ * Turnstile's browser API, as much of it as the signup widget uses. Loaded from
+ * Cloudflare at runtime (see loadTurnstile) rather than bundled, so it isn't in
+ * node_modules and has no types of its own.
+ */
+interface TurnstileApi {
+	render: (
+		el: HTMLElement,
+		opts: {
+			sitekey: string
+			action?: string
+			callback?: (token: string) => void
+			'expired-callback'?: () => void
+		}
+	) => string | undefined
+	reset: (widgetId?: string) => void
+	remove: (widgetId?: string) => void
+}
+
+declare global {
+	interface Window {
+		turnstile?: TurnstileApi
+	}
+}
+
+/**
+ * Load Turnstile's script, once per page, resolving when `window.turnstile` is ready.
+ * `render=explicit` stops it scanning the document for widgets: this is a SPA, so the
+ * container mounts and unmounts with the form and we render into it ourselves.
+ *
+ * The promise is cached at module scope, so switching tabs back and forth reuses the
+ * loaded script instead of appending another tag. A rejection is cached too — the retry
+ * is a page reload, which is what the error message asks for.
+ */
+let turnstileScript: Promise<void> | null = null
+function loadTurnstile(): Promise<void> {
+	turnstileScript ??= new Promise<void>((resolve, reject) => {
+		const el = document.createElement('script')
+		el.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'
+		el.async = true
+		el.defer = true
+		el.onload = () => resolve()
+		el.onerror = () => reject(new Error('load failed'))
+		document.head.appendChild(el)
+	})
+	return turnstileScript
+}
+
+/**
+ * Mount a Turnstile widget and hand back the token it produces. No token means no
+ * submit: the BFF refuses a signup without one, so the form gates its button on it
+ * rather than letting the request fail.
+ *
+ * `reset` re-arms the widget for another attempt — a token is single-use, so a rejected
+ * signup can't be retried with the same one.
+ */
+function useTurnstile(siteKey: string) {
+	const container = useRef<HTMLDivElement | null>(null)
+	const widgetId = useRef<string | undefined>(undefined)
+	const [token, setToken] = useState('')
+	const [error, setError] = useState('')
+
+	useEffect(() => {
+		let live = true
+		loadTurnstile()
+			.then(() => {
+				// StrictMode mounts twice, and the cleanup below removes the first widget; bail
+				// if this effect is the stale one so we don't render into a detached container.
+				if (!live || !container.current || !window.turnstile) return
+				widgetId.current = window.turnstile.render(container.current, {
+					sitekey: siteKey,
+					// Marker Cloudflare uses to segment Turnstile integrations; carries no user data.
+					action: 'turnstile-spin-v1',
+					callback: (t) => setToken(t),
+					// Tokens expire after a few minutes; drop ours so the button locks again and
+					// Turnstile can hand us a fresh one.
+					'expired-callback': () => setToken(''),
+				})
+			})
+			.catch(() => {
+				if (live) setError("Couldn't load the bot check — reload the page to try again.")
+			})
+
+		return () => {
+			live = false
+			if (widgetId.current) window.turnstile?.remove(widgetId.current)
+			widgetId.current = undefined
+		}
+	}, [siteKey])
+
+	const reset = useCallback(() => {
+		setToken('')
+		if (widgetId.current) window.turnstile?.reset(widgetId.current)
+	}, [])
+
+	return { container, token, error, reset }
+}
+
+/**
+ * Create an account from the website: a password, plus a Turnstile token proving a human
+ * filled the form. The username comes back auto-assigned from `auth` (players don't pick
+ * one), and the session is live on success — so this lands on the account page, where the
+ * username is shown.
+ */
+function SignupForm({
+	siteKey,
+	onAuthed,
+}: {
+	siteKey: string
+	onAuthed: (a: SelfAccount) => void
+}) {
+	const [password, setPassword] = useState('')
+	const [email, setEmail] = useState('')
+	const { container, token: widgetToken, error: widgetError, reset } = useTurnstile(siteKey)
+	const { pending, error, run } = useAction()
+
+	return (
+		<form
+			onSubmit={(e) => {
+				e.preventDefault()
+				void run(async () => {
+					const wanted = email.trim()
+
+					try {
+						await signUp(password, widgetToken)
+					} catch (err) {
+						// The widget token is spent either way, so re-arm before they retry. Only
+						// a failed signup gets here — past this point the account exists, and a
+						// retry would spend another slot against auth's per-IP cap.
+						reset()
+						throw err
+					}
+
+					// Saved with the new session's own token: `create_account` takes no email,
+					// `accounts` owns the field. Deliberately not fatal — the account exists and
+					// the session is live, and the same field is one call away on the account
+					// page.
+					if (wanted !== '') await saveEmail(wanted).catch(() => {})
+
+					// The session is already stored, so a failure here isn't one they can act on
+					// by retrying: a reload finds them signed in.
+					const me = await fetchMe().catch(() => {
+						throw new Error(
+							'Your account was created, but loading it failed. Reload the page — you are already signed in.'
+						)
+					})
+					onAuthed(me)
+					return ''
+				})
+			}}
+		>
+			<label>
+				Password
+				<input
+					type="password"
+					value={password}
+					autoComplete="new-password"
+					onChange={(e) => setPassword(e.target.value)}
+					required
+				/>
+			</label>
+			{/* Optional, and the button doesn't wait on it — but it's the only contact detail
+			    an account has, so the hint says plainly what it's for rather than leaving it
+			    to be guessed. `type="email"` gets the right keyboard on mobile and a free
+			    format check; the worker re-checks it before the account is created. */}
+			<label>
+				Email <span className="optional">optional</span>
+				<input
+					type="email"
+					value={email}
+					autoComplete="email"
+					onChange={(e) => setEmail(e.target.value)}
+				/>
+				<span className="hint">
+					How you get back in if you forget your password — there&apos;s no other way to reach you.
+					You can add it later on your account page.
+				</span>
+			</label>
+			<div className="turnstile" ref={container} />
+			{widgetError && <p className="error">{widgetError}</p>}
+			{error && <p className="error">{error}</p>}
+			<button type="submit" disabled={pending || widgetToken === ''}>
+				{pending ? 'Creating…' : 'Create account'}
+			</button>
+		</form>
+	)
+}
+
 function LoginForm({ onAuthed }: { onAuthed: (a: SelfAccount) => void }) {
 	const [username, setUsername] = useState('')
 	const [password, setPassword] = useState('')
@@ -419,11 +1506,8 @@ function LoginForm({ onAuthed }: { onAuthed: (a: SelfAccount) => void }) {
 			onSubmit={(e) => {
 				e.preventDefault()
 				void run(async () => {
-					const { account } = await api<{ account: SelfAccount }>('/api/login', {
-						username,
-						password,
-					})
-					onAuthed(account)
+					await signIn(username, password)
+					onAuthed(await fetchMe())
 					return ''
 				})
 			}}
@@ -458,21 +1542,31 @@ function LoginForm({ onAuthed }: { onAuthed: (a: SelfAccount) => void }) {
 
 function Dashboard({
 	account,
+	navigate,
 	onChange,
 }: {
 	account: SelfAccount
+	navigate: Navigate
 	onChange: (a: SelfAccount) => void
 }) {
 	// The dashboard sections, shown one at a time via the left tab rail. Admin-only
 	// sections are appended when the session carries an admin role.
 	const sections = [
+		// First, so a player who just signed in lands on what they made rather than on a
+		// settings form they opened the page to avoid.
+		{ id: 'rooms', label: 'My rooms', render: () => <MyRooms navigate={navigate} /> },
+		{
+			id: 'username',
+			label: 'Username',
+			render: () => <UsernameForm account={account} onChange={onChange} />,
+		},
 		{
 			id: 'email',
 			label: 'Email',
 			render: () => <EmailForm account={account} onChange={onChange} />,
 		},
 		{ id: 'password', label: 'Password', render: () => <PasswordForm /> },
-		...(account.isAdmin
+		...(isAdmin()
 			? [
 					{ id: 'maintenance', label: 'Server maintenance', render: () => <MaintenanceForm /> },
 					{ id: 'coach', label: 'Broadcast message', render: () => <CoachMessageForm /> },
@@ -509,6 +1603,107 @@ function Dashboard({
 	)
 }
 
+/**
+ * The rooms the signed-in player owns.
+ *
+ * Read-only on purpose: rooms are made and edited in game, and there is nothing here a
+ * player could change that the game doesn't already own. What the web is better at is
+ * the overview — everything you've made in one place, including the rooms you never
+ * published, which are invisible everywhere else.
+ */
+function MyRooms({ navigate }: { navigate: Navigate }) {
+	const [rooms, setRooms] = useState<OwnedRoom[] | null>(null)
+	const [error, setError] = useState('')
+
+	useEffect(() => {
+		void fetchMyRooms()
+			.then(setRooms)
+			.catch((e) => setError(e instanceof Error ? e.message : String(e)))
+	}, [])
+
+	return (
+		<section className="card">
+			<h2>My rooms</h2>
+			<p className="muted">
+				Every room you&apos;ve made, newest first — unpublished ones included. Your dorm isn&apos;t
+				here: it was made for you rather than by you.
+			</p>
+			{error ? (
+				<p className="error">{error}</p>
+			) : rooms === null ? (
+				<p className="muted">Loading…</p>
+			) : rooms.length === 0 ? (
+				<p className="muted">
+					You haven&apos;t made a room yet. Rooms are created in game — clone one you like, or start
+					from a blank one in the Rec Center.
+				</p>
+			) : (
+				// `where()` THROWS when the config never landed, and a throw in render takes the
+				// page down (see useSlideshow). It can't here: this branch is only reached once
+				// the fetch above resolved, and that fetch went through `where()` itself.
+				<ul className="rooms">
+					{rooms.map((room) => (
+						<RoomCard key={room.RoomId} room={room} imgHost={where().img} navigate={navigate} />
+					))}
+				</ul>
+			)}
+		</section>
+	)
+}
+
+/**
+ * One room in the list: its thumbnail, what it's called in game (`^Name`), and how it's
+ * doing. The whole row links to the room's own page.
+ *
+ * The thumbnail is asked for at 256px wide — one of the img worker's four allowed sizes,
+ * so it's a cached variant rather than the full-size upload. A room with no image of its
+ * own still answers 200 there (the worker serves its fallback), so there's no broken
+ * frame to handle.
+ */
+function RoomCard({
+	room,
+	imgHost,
+	navigate,
+}: {
+	room: OwnedRoom
+	imgHost: string
+	navigate: Navigate
+}) {
+	const created = new Date(room.CreatedAt)
+
+	return (
+		<li className="room">
+			{/* A real `<a href>` (see Link), not a click handler on the row: it has to be
+			    reachable by keyboard, and openable in a new tab like any other link. */}
+			<Link to={`/rooms/${room.RoomId}`} navigate={navigate} className="room-link">
+				<img
+					className="room-thumb"
+					src={`${imgHost}/${room.ImageName}?width=256`}
+					alt=""
+					loading="lazy"
+				/>
+				<div className="room-body">
+					<div className="room-head">
+						{/* The caret is how the game writes a room name, so it reads as the thing you
+						    type to get there rather than as a title someone wrote. */}
+						<span className="room-name">^{room.Name}</span>
+						<VisibilityBadge accessibility={room.Accessibility} />
+					</div>
+					{room.Description && <p className="room-desc">{room.Description}</p>}
+					<p className="room-stats">
+						{room.Stats.VisitCount.toLocaleString()} visit
+						{room.Stats.VisitCount === 1 ? '' : 's'} · {room.Stats.FavoriteCount.toLocaleString()}{' '}
+						favourite
+						{room.Stats.FavoriteCount === 1 ? '' : 's'} · {room.Stats.CheerCount.toLocaleString()}{' '}
+						cheer{room.Stats.CheerCount === 1 ? '' : 's'}
+						{!Number.isNaN(created.getTime()) && ` · made ${created.toLocaleDateString()}`}
+					</p>
+				</div>
+			</Link>
+		</li>
+	)
+}
+
 /** Admin-only: send a coach/system message to every online player. */
 function CoachMessageForm() {
 	const [message, setMessage] = useState('')
@@ -525,9 +1720,7 @@ function CoachMessageForm() {
 				onSubmit={(e) => {
 					e.preventDefault()
 					void run(async () => {
-						const { sent } = await api<{ sent?: number }>('/api/coach-message', {
-							messageContent: message,
-						})
+						const { sent } = await coachMessageAll(message.trim())
 						setMessage('')
 						return `Sent to ${sent ?? 0} online player${sent === 1 ? '' : 's'}.`
 					})
@@ -568,9 +1761,10 @@ function MaintenanceForm() {
 				onSubmit={(e) => {
 					e.preventDefault()
 					void run(async () => {
-						const { connections } = await api<{ connections?: number }>('/api/maintenance', {
-							startsInMinutes: Number(minutes),
-						})
+						// Coerced the way the worker used to: a blank or negative box means "now".
+						const asked = Number(minutes)
+						const startsIn = Number.isFinite(asked) && asked > 0 ? Math.floor(asked) : 0
+						const { delivered: connections } = await broadcastMaintenance(startsIn)
 						return `Notified ${connections ?? 0} connected client${connections === 1 ? '' : 's'}.`
 					})
 				}}
@@ -596,6 +1790,78 @@ function MaintenanceForm() {
 	)
 }
 
+/**
+ * Change the account's username — the name used to sign in, here and in the game.
+ *
+ * Changes are rationed (an account starts with one), so the count is stated up front and
+ * the form locks itself once none are left rather than letting someone spend the attempt
+ * finding out. The server is still the one that decides: an unknown count leaves the form
+ * open, and a name taken since the page loaded is refused upstream.
+ *
+ * The response is the caller's whole self account, re-read after the write, so the
+ * remaining count on screen is the stored one and not a guess.
+ */
+function UsernameForm({
+	account,
+	onChange,
+}: {
+	account: SelfAccount
+	onChange: (a: SelfAccount) => void
+}) {
+	const [username, setUsername] = useState(account.username)
+	const { pending, error, done, run } = useAction()
+
+	const remaining = account.availableUsernameChanges
+	const spent = remaining !== undefined && remaining <= 0
+	// Retyping the current name would be refused upstream anyway ("already taken" is
+	// waived for your own name, but it would still spend a change).
+	const unchanged = username.trim() === account.username
+
+	return (
+		<section className="card">
+			<h2>Username</h2>
+			<p className="muted">
+				What you sign in with, here and in the game — and what other players see you by.
+			</p>
+			<form
+				onSubmit={(e) => {
+					e.preventDefault()
+					void run(async () => {
+						const updated = await changeUsername(username.trim())
+						onChange(updated)
+						setUsername(updated.username)
+						return `You are now @${updated.username}.`
+					})
+				}}
+			>
+				<label>
+					Username
+					<input
+						type="text"
+						value={username}
+						autoComplete="username"
+						disabled={spent}
+						onChange={(e) => setUsername(e.target.value)}
+						required
+					/>
+					<span className="hint">
+						{remaining === undefined
+							? 'Changing your username uses up one of a limited number of changes.'
+							: spent
+								? 'You have no username changes remaining, so this can no longer be changed.'
+								: `You have ${remaining} username change${remaining === 1 ? '' : 's'} remaining — this one is permanent once used.`}
+					</span>
+				</label>
+				{error && <p className="error">{error}</p>}
+				{done && <p className="ok">{done}</p>}
+				<button type="submit" disabled={pending || spent || unchanged}>
+					{pending ? 'Changing…' : 'Change username'}
+				</button>
+			</form>
+		</section>
+	)
+}
+
 function EmailForm({
 	account,
 	onChange,
@@ -613,7 +1879,7 @@ function EmailForm({
 				onSubmit={(e) => {
 					e.preventDefault()
 					void run(async () => {
-						await api('/api/email', { email })
+						await saveEmail(email.trim())
 						onChange({ ...account, email })
 						return 'Email saved.'
 					})
@@ -704,7 +1970,7 @@ function PasswordForm() {
 				onSubmit={(e) => {
 					e.preventDefault()
 					void run(async () => {
-						await api('/api/password', { oldPassword, newPassword })
+						await changePassword(oldPassword, newPassword)
 						setOldPassword('')
 						setNewPassword('')
 						return 'Password changed.'

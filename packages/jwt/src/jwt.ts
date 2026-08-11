@@ -12,8 +12,11 @@ import { sign, verify } from 'hono/jwt'
 
 import { GAME_VERSION } from '@repo/domain'
 
-/** Token lifetime in seconds (mirrored in the `expires_in` response field). */
-export const TOKEN_TTL_SECONDS = 3600
+// Token lifetime in seconds (mirrored in the `expires_in` response field).
+// @todo Allegedly, the game is supposed to refresh tokens every 3600 seconds, but it doesn't.
+// It's possible our refresh_token implementation is broken, but for now we just make the token
+// last a day so the client doesn't have to refresh it.
+export const TOKEN_TTL_SECONDS = 86400
 
 /**
  * Validate an HS256 token and return its `sub` (account id) claim, or `null` when
