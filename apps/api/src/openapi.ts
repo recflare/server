@@ -423,6 +423,86 @@ export const CustomAvatarItemsPage = z.object({
 	TotalResults: z.int(),
 })
 
+/**
+ * One custom-item save — the rebuilt version of a legacy avatar item. This is the
+ * official shape, recorded for documentation: nothing stores custom items yet, so we
+ * never actually emit one of these.
+ */
+export const CustomAvatarItemSave = z.object({
+	customAvatarItemSaveId: z.int().describe('The save’s id'),
+	customAvatarItemId: z.string().describe('Guid of the custom item this save belongs to'),
+	unityAssetId: z.string().describe('Guid of the built Unity asset'),
+	createdAt: z.string().describe('ISO 8601 timestamp'),
+	thumbnailFileName: z.string(),
+	additionalConfiguration: z.string(),
+	unityAsset: z.string(),
+	unityAssetHash: z.string(),
+})
+
+/**
+ * The custom-item saves that replace a set of legacy avatar items, keyed by the legacy
+ * item's `AvatarItemDesc`. Nothing stores custom items yet, so the map is always empty —
+ * the value shape is documented rather than served.
+ */
+export const LegacyAvatarItemSaves = z.object({
+	customAvatarItemSavesByAvatarItemDesc: z.record(z.string(), CustomAvatarItemSave),
+})
+
+/**
+ * `GET /outfits/me` — the outfit envelope. Either the outfit stored in slot 0, served
+ * back exactly as it was saved, or (for a player who has never saved) the brand-new-
+ * account form, where every field that would carry an outfit is null/empty and
+ * `DataVersion` is 9.
+ */
+export const OutfitsMeResponse = z.object({
+	LegacyData: z.object({
+		SelectionsV1: z.string().nullable().describe('Semicolon-delimited legacy descriptors'),
+		SelectionsV2: z.string().nullable().describe('JSON-in-a-string: `{ selections: [...] }`'),
+		FaceFeatures: z.string().nullable().describe('JSON-in-a-string'),
+		SkinColor: z.string().nullable(),
+		HairColor: z.string().nullable(),
+	}),
+	Selections: JsonArray,
+	DataVersion: z.int().describe('9 in the new-account envelope; whatever was saved otherwise'),
+	CustomizationSettings: z
+		.string()
+		.nullable()
+		.describe('JSON-in-a-string: the same outfit in the newer structured form'),
+	ThumbnailFileName: z.string().nullable(),
+	Name: z.string().nullable(),
+	Accessibility: z.int(),
+	Slot: z.int().describe('0 — the outfit being worn'),
+})
+
+/**
+ * `PUT /outfits/me` JSON body — the outfit the client is saving, in the newer envelope.
+ * The heavy fields are JSON-in-a-string, exactly as the client serialises them:
+ * `SelectionsV2` and `CustomizationSettings` are whole documents encoded as strings, and
+ * `FaceFeatures` likewise. Note the two formats overlap: `LegacyData` carries the old
+ * flat descriptors while `CustomizationSettings` carries the same outfit in the new
+ * structured form, and the client sends both. `Selections` arrives empty — the actual
+ * selections are inside those strings.
+ */
+export const OutfitsMeRequest = z.object({
+	DataVersion: z.int().describe('The client’s outfit format version (2 in observed saves)'),
+	LegacyData: z.object({
+		SelectionsV1: z.string().nullable().describe('Semicolon-delimited legacy descriptors'),
+		SelectionsV2: z.string().nullable().describe('JSON-in-a-string: `{ selections: [...] }`'),
+		FaceFeatures: z.string().nullable().describe('JSON-in-a-string'),
+		SkinColor: z.string().nullable(),
+		HairColor: z.string().nullable(),
+	}),
+	CustomizationSettings: z
+		.string()
+		.nullable()
+		.describe('JSON-in-a-string: the same outfit in the newer structured form'),
+	Selections: JsonArray.describe('Empty in observed saves'),
+	Slot: z.int(),
+	Name: z.string().nullable(),
+	Accessibility: z.int(),
+	ThumbnailFileName: z.string().nullable(),
+})
+
 /** The `{ success, value }` envelope `isCreationAllowedForAccount` wraps its answer in. */
 export const SuccessValueEnvelope = z.object({ success: z.boolean(), value: z.null() })
 
@@ -588,13 +668,16 @@ export const PlayerEventsPage = z.object({
 // ---- Moderation ------------------------------------------------------------
 
 /**
- * `GET /api/PlayerReporting/v1/moderationBlockDetails` — always the "not blocked"
- * answer (no ban storage yet). `ReportCategory` is -1 (no category) rather than 0,
- * which is a real category; `Message` is null, not an empty string — the client
- * distinguishes "no message" from a blank one.
+ * `GET|POST /api/PlayerReporting/v1/moderationBlockDetails` — always the "not blocked"
+ * answer (no ban storage yet), mirroring the reference server's stub
+ * `ReturnModerationBlockDetails()`. `ReportCategory` is `Unknown` (-1) rather than 0,
+ * which is a real category, and `Message` is null — the client distinguishes "no
+ * message" from a blank one, so we send null where the reference sends an empty string.
+ * `IsVoiceModAutoban`/`TimeoutStartedAt` are on the DTO but unset by that stub, so
+ * they carry their C# defaults (false / null).
  */
 export const ModerationBlockDetails = z.object({
-	ReportCategory: z.int().describe('-1 = no category (0 is a real one)'),
+	ReportCategory: z.int().describe('-1 = ReportCategory.Unknown (0 is a real category)'),
 	Duration: z.int(),
 	GameSessionId: z.int(),
 	IsBan: z.boolean(),

@@ -108,6 +108,10 @@ function toAccountDto(account: Account) {
 		username: account.username,
 		displayName: account.displayName,
 		profileImage: account.profileImage,
+		// Nothing writes these yet, and rows stored before they existed have neither
+		// key — always emit them as "" rather than letting them go missing.
+		bannerImage: account.bannerImage ?? '',
+		displayEmoji: account.displayEmoji ?? '',
 		isJunior: account.isJunior,
 		platforms: account.platforms,
 		personalPronouns: account.personalPronouns,

@@ -67,6 +67,8 @@ export const AccountDto = z.object({
 	username: z.string(),
 	displayName: z.string(),
 	profileImage: z.string().describe('Avatar object key'),
+	bannerImage: z.string().describe('Profile banner key — always "" (nothing sets it yet)'),
+	displayEmoji: z.string().describe('Emoji beside the display name — always "" (nothing sets it yet)'),
 	isJunior: z.boolean(),
 	platforms: z.int().describe('PlatformType bitmask of linked platforms'),
 	personalPronouns: z.int().describe('Pronoun flags bitmask'),

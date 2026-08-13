@@ -108,6 +108,55 @@ const TOKEN_SCOPES = [
  */
 const BASE_ROLES = ['gameClient']
 
+/**
+ * The claims the Photon auth token carries beyond `sub`/`exp`/`aud`, describing who
+ * (and on what) is connecting. All of them go on the wire as STRINGS, including the
+ * numeric ones — that's how the real token encodes them.
+ */
+export interface PhotonAuthClaims {
+	/** The platform-native id (e.g. a SteamID64) — `rn.platid`. */
+	platformId: string
+	/** PlatformType int (0 = Steam) — `rn.plat`. */
+	platform: number
+	/** DeviceClass int (2 = PC/standalone) — `rn.deviceclass`. */
+	deviceClass: number
+	/** The Photon application the token is for — the `aud` claim. */
+	audience: string
+}
+
+/**
+ * Mint the short-lived HS256 token the client hands to Photon as its custom auth
+ * credential (`photonAuthToken` on `GET /player/connection-info`). The claim set
+ * mirrors the real one — `sub`, `rn.platid`, `rn.plat`, `rn.deviceclass`, `rn.env`,
+ * `exp`, `aud` — rather than being a second copy of the login token: it identifies
+ * the connecting player to the realtime server and nothing else, so none of the
+ * scopes or roles from {@link generateToken} belong on it.
+ *
+ * Signed with the same shared `JWT_SECRET` as every other token here. A real Photon
+ * Cloud application would verify this against a secret configured in its dashboard;
+ * self-hosted, nothing verifies it yet — so treat it as identifying, not authorizing.
+ * `rn.env` is `prod` because that's what the client is built against, regardless of
+ * which environment this worker is running in.
+ */
+export async function generatePhotonAuthToken(
+	accountId: number,
+	claims: PhotonAuthClaims,
+	secret: string
+): Promise<string> {
+	return sign(
+		{
+			sub: String(accountId),
+			'rn.platid': claims.platformId,
+			'rn.plat': String(claims.platform),
+			'rn.deviceclass': String(claims.deviceClass),
+			'rn.env': 'prod',
+			exp: Math.floor(Date.now() / 1000) + TOKEN_TTL_SECONDS,
+			aud: claims.audience,
+		},
+		secret
+	)
+}
+
 export async function generateToken(
 	accountId: string,
 	platformId: string,

@@ -16,7 +16,14 @@ recflare_load_env
 # custom domain via `--domain`. This keeps the real domain out of versioned files
 # — committed wrangler.jsonc has no routes, and the base domain is passed as the
 # DOMAIN var at runtime. Per-app subdomain overrides come from RECFLARE_SUBDOMAINS
-# (a JSON object, e.g. {"playersettings":"settings"}).
+# (a JSON object keyed by default subdomain, e.g. {"playersettings":"settings"}).
+#
+# The whole object also rides along as the SUBDOMAINS var, because the `ns` worker
+# has to advertise the same hosts to the client that we deploy onto here. Keying it
+# by default subdomain is what lets one .env entry do both: a worker's directory
+# name IS its default subdomain, so the lookup below and the one in ns/endpoints.ts
+# read the same key. Entries for services with no worker (e.g. "moderation") are
+# client-side redirects only — nothing here matches them.
 if [ -z "${RECFLARE_DOMAIN:-}" ]; then
 	echo "error: RECFLARE_DOMAIN is not set — export it or add it to .env (see .env.example)" >&2
 	exit 1
@@ -190,6 +197,7 @@ wrangler deploy \
 	--var NAME:"$NAME" \
 	--var SENTRY_RELEASE:"$VERSION" \
 	--var DOMAIN:"$DOMAIN" \
+	--var SUBDOMAINS:"$SUBDOMAINS_JSON" \
 	$EXTRA_VARS \
 	--domain "$HOST" \
 	$MINIFY \

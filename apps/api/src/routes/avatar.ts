@@ -2,9 +2,12 @@ import { Hono } from 'hono'
 import { describeRoute } from 'hono-openapi'
 
 import {
+	CURRENT_OUTFIT_SLOT,
+	getOutfit,
 	inventionDescriptionRejection,
 	inventionNameRejection,
 	inventionTagRejection,
+	setOutfit,
 } from '@repo/domain'
 
 import { authedId, unauthorized } from '../http'
@@ -46,6 +49,9 @@ import {
 	json,
 	JsonArray,
 	jsonBody,
+	LegacyAvatarItemSaves,
+	OutfitsMeRequest,
+	OutfitsMeResponse,
 	pageParams,
 	SaveInventionRequest,
 	SetTagsRequest,
@@ -232,6 +238,141 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 			responses: { 200: json(CustomAvatarItemsPage, 'An empty page') },
 		}),
 		(c) => c.json({ Results: [], TotalResults: 0 })
+	)
+
+	// The client asks which legacy avatar items have been rebuilt as custom items, so it
+	// can render the custom version instead. Nothing stores custom items yet, so nothing
+	// has a save — an empty list means "use the legacy items as-is".
+	.post(
+		'/api/customAvatarItems/GetCustomAvatarItemCurrentSavesForLegacyAvatarItems',
+		describeRoute({
+			tags: ['Avatar'],
+			summary: 'Custom-item saves for legacy avatar items',
+			description:
+				'Given a set of legacy avatar items, the custom-item saves that replace them, keyed ' +
+				'by the legacy item’s `AvatarItemDesc`. Nothing stores custom items yet, so the map ' +
+				'is always empty — which the client reads as “render the legacy items as-is”. The ' +
+				'request body is ignored.\n\n' +
+				'The value shape is the official one, recorded here for documentation; we never ' +
+				'emit one until custom items are stored.',
+			responses: { 200: json(LegacyAvatarItemSaves, 'An empty map') },
+		}),
+		(c) => c.json({ customAvatarItemSavesByAvatarItemDesc: {} })
+	)
+
+	// The newer outfit read, on a bare (un-prefixed) path. Auth-gated. The outfit the
+	// player is wearing is slot 0 of the shared `outfit` table (the same table the `econ`
+	// worker's saved-outfit slots live in); a player who has never saved gets the
+	// brand-new-account envelope instead.
+	.get(
+		'/outfits/me',
+		describeRoute({
+			tags: ['Avatar'],
+			summary: 'The caller’s outfit',
+			description:
+				'The newer outfit read, on a bare un-prefixed path. Served from slot 0 of the shared ' +
+				'`outfit` table — the newer client treats slot 0 as the outfit currently worn — and ' +
+				'handed back exactly as it was saved, since the payload’s heavy fields are the ' +
+				'client’s own JSON-in-a-string documents.\n\n' +
+				'A player who has never saved gets the brand-new-account envelope: all-null ' +
+				'`LegacyData`, no `Selections`, `DataVersion` 9.',
+			security: AUTHED,
+			responses: {
+				200: json(OutfitsMeResponse, 'The stored outfit, or the empty envelope'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const outfit = await getOutfit(c.env.DB, id, CURRENT_OUTFIT_SLOT)
+			if (outfit !== null) return c.json(outfit)
+
+			return c.json({
+				LegacyData: {
+					SelectionsV1: null,
+					SelectionsV2: null,
+					FaceFeatures: null,
+					SkinColor: null,
+					HairColor: null,
+				},
+				Selections: [],
+				DataVersion: 9,
+				CustomizationSettings: null,
+				ThumbnailFileName: null,
+				Name: null,
+				Accessibility: 0,
+				Slot: 0,
+			})
+		}
+	)
+
+	// Saving an outfit through the same bare path — into the slot the body names, which
+	// is slot 0 for the outfit being worn. Stored verbatim: the heavy fields are the
+	// client's own JSON-in-a-string documents, and re-encoding risks changing a payload
+	// it has to parse back. Answers the saved outfit, which is what the client re-renders
+	// from.
+	.put(
+		'/outfits/me',
+		describeRoute({
+			tags: ['Avatar'],
+			summary: 'Save the caller’s outfit',
+			description:
+				'Saves into the shared `outfit` table, in the slot the body names — slot 0 being the ' +
+				'outfit worn, which is what the GET reads. Re-saving a slot overwrites it.\n\n' +
+				'The payload is stored verbatim and answered back: its heavy fields (`SelectionsV2`, ' +
+				'`FaceFeatures`, `CustomizationSettings`) are whole JSON documents encoded as ' +
+				'strings by the client’s own serializer, so nothing here parses or re-encodes them.',
+			security: AUTHED,
+			requestBody: jsonBody(OutfitsMeRequest, 'The outfit to save'),
+			responses: {
+				200: json(OutfitsMeRequest, 'The outfit as stored'),
+				400: json(ErrorResponse, 'Unparseable body'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+			if (body === null) return c.json({ error: 'Invalid request body' }, 400)
+
+			// The client sends `Slot`; a body without one saves the worn outfit.
+			const outfit = {
+				...body,
+				Slot: typeof body.Slot === 'number' ? body.Slot : CURRENT_OUTFIT_SLOT,
+			}
+			await setOutfit(c.env.DB, id, outfit)
+			return c.json(outfit)
+		}
+	)
+
+	// The caller's outfit wardrobe. An empty list for now — the outfits saved through
+	// `PUT /outfits/me` are in the shared `outfit` table already, but which of them
+	// belong in this list (and in what shape) has not been pinned down, so it answers []
+	// rather than guessing.
+	.get(
+		'/outfits/me/saved',
+		describeRoute({
+			tags: ['Avatar'],
+			summary: 'The caller’s saved outfits',
+			description:
+				'The wardrobe behind the newer outfit screen. Empty for now: the outfits saved ' +
+				'through `PUT /outfits/me` are in the shared `outfit` table, but which of them this ' +
+				'list should carry, and in what shape, is not pinned down yet.',
+			security: AUTHED,
+			responses: {
+				200: json(JsonArray, 'An empty list'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+			return c.json([])
+		}
 	)
 
 	// A single invention by id (`?inventionId=…`). Returns the stored RRInvention,

@@ -6,6 +6,12 @@ Each is reached at `https://<subdomain>.<your-domain>`. Services with a worker i
 `apps/` are implemented here; the rest are advertised in the endpoints document
 but not yet backed by a Worker. Not all services are fully implemented.
 
+The subdomains below are the defaults. Any of them can be redirected from `.env` via
+`RECFLARE_SUBDOMAINS`, keyed by the subdomain in this table — which both moves where the
+worker deploys and what `ns` advertises. Pointing a service with no worker at one that has
+one merges them, e.g. `'{"moderation":"api"}'` sends the client's Moderation calls to the
+`api` worker, where the `/api/PlayerReporting/…` routes already live. See `DEPLOYING.md`.
+
 A small `ns` worker itself serves this discovery document at the
 apex/`ns` host and isn't listed within it. Each implemented worker has its own
 `README.md` under `apps/<name>/` documenting its routes.
@@ -34,7 +40,7 @@ apex/`ns` host and isn't listed within it. Each implemented worker has its own
 | Link                  | `link`                  | —                | Not yet implemented                                                       |
 | Lists                 | `lists`                 | —                | Not yet implemented                                                       |
 | Matchmaking           | `match`                 | `match`          | Matchmaking & per-player presence (D1, KV)                                |
-| Moderation            | `moderation`            | —                | Not yet implemented                                                       |
+| Moderation            | `moderation`            | —                | No worker; point it at `api` to serve `/api/PlayerReporting/…`            |
 | Notifications         | `notify`                | `notify`         | Real-time notifications over SignalR/WebSockets (Durable Object)          |
 | PlatformNotifications | `platformnotifications` | —                | Not yet implemented                                                       |
 | PlayerSettings        | `playersettings`        | `playersettings` | Per-player settings (KV)                                                  |

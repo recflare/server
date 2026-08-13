@@ -7,11 +7,13 @@ import {
 	consumeGift,
 	createGift,
 	getGift,
+	getOutfits,
 	getPendingGifts,
 	grantInvention,
 	levelReward,
 	levelsReached,
 	ownsInvention,
+	setOutfit,
 } from '@repo/domain'
 import { intVar, logger, withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
 import { validateAndGetAccountId, validateAndGetRoles } from '@repo/jwt'
@@ -29,6 +31,7 @@ import { NotificationType } from '../../notify/src/notification-types'
 import adCarouselItems from '../static/ad-carousel-items.json'
 import defaultAvatarItems from '../static/default-avatar-items.json'
 import defaultAvatar from '../static/default-avatar.json'
+import defaultBaseAvatarItems from '../static/default-base-avatar-items.json'
 import myProgress from '../static/my-progress.json'
 import weeklyChallenge from '../static/weekly-challenge.json'
 import { getAvatar, setAvatar } from './avatar-db'
@@ -54,9 +57,10 @@ import {
 	grantConsumable,
 } from './consumables-db'
 import { getEquipment, grantEquipment, setEquipmentFavorited } from './equipment-db'
-import { getInventory, grantItem } from './inventory-db'
+import { getInventory, grantItem, toAvatarItemV4 } from './inventory-db'
 import {
 	AUTHED,
+	AvatarItemV4Dto,
 	AvatarV2Dto,
 	BalanceEntry,
 	BuyInventionResponse,
@@ -64,6 +68,9 @@ import {
 	BuyItemResponse,
 	ChallengeProgressRequest,
 	ChallengeProgressResponse,
+	ChecklistCompleteResponse,
+	ChecklistEntry,
+	CompleteChecklistRequest,
 	ConsumeConsumableRequest,
 	ConsumeEnvelope,
 	ConsumeGiftRequest,
@@ -85,11 +92,10 @@ import {
 	UpdateObjectiveRequest,
 	UpdateObjectiveResponse,
 } from './openapi'
-import { getOutfits, setOutfit } from './outfit-db'
 import { claimReward } from './reward-db'
 
 import type { Context } from 'hono'
-import type { GiftContent, Progression, StoredGift, XpGrant } from '@repo/domain'
+import type { GiftContent, Outfit, Progression, StoredGift, XpGrant } from '@repo/domain'
 import type {
 	BalanceResponsePayload,
 	PurchaseBalanceModificationPayload,
@@ -99,7 +105,6 @@ import type { ConsumeResult } from './consumables-db'
 import type { App } from './context'
 import type { Equipment } from './equipment-db'
 import type { AvatarItem } from './inventory-db'
-import type { Outfit } from './outfit-db'
 
 /**
  * Economy Worker. Hosts the avatar/economy endpoints the game client calls on
@@ -1161,6 +1166,22 @@ async function awardChallengeGift(c: Context<App>, accountId: number): Promise<v
 }
 
 /**
+ * The default NUX checklist for a brand-new account. `Objective` is an `ObjectiveType`
+ * ordinal (from the client's `ProgressionManager`) that the client matches its own
+ * progress events against — the names below are what those ordinals mean.
+ */
+const DEFAULT_CHECKLIST = [
+	{ Order: 0, Objective: 38, Count: 1, CreditAmount: 25 }, // SaveOutfitSlot
+	{ Order: 1, Objective: 32, Count: 1, CreditAmount: 25 }, // VisitACustomRoom
+	{ Order: 2, Objective: 2, Count: 1, CreditAmount: 25 }, // AddAFriend
+	{ Order: 3, Objective: 30, Count: 1, CreditAmount: 25 }, // GoToRecCenter
+	{ Order: 4, Objective: 6, Count: 1, CreditAmount: 25 }, // CheerAPlayer
+]
+
+/** The `UpdateResponse` context a checklist reward is reported under. */
+const CHECKLIST_REWARD_CONTEXT = 303
+
+/**
  * A concise `describeRoute` spec for a route that serves an opaque JSON array — either
  * a static catalog served verbatim or an empty-list stub. `auth` adds the bearer
  * requirement + a 401 response.
@@ -1201,11 +1222,12 @@ const app = new Hono<App>({ strict: false })
 		(c) => c.json(defaultAvatarItems)
 	)
 
-	// Default base avatar items — empty stub for now. No auth.
+	// The base items UGC clothing is built on top of — served from bundled static JSON,
+	// separate from the `defaultunlocked` catalog. No auth.
 	.get(
 		'/api/avatar/v1/defaultbaseavataritems',
-		listRoute('Default base avatar items', 'Empty stub for now'),
-		(c) => c.json([])
+		listRoute('Default base avatar items', 'The bundled base items UGC clothing builds on'),
+		(c) => c.json(defaultBaseAvatarItems)
 	)
 
 	// The player's avatar items — the items they've bought (from `buyItem`, stored in
@@ -1219,10 +1241,12 @@ const app = new Hono<App>({ strict: false })
 			description: [
 				'The items the player has bought (from buyItem, in the inventory table) prepended',
 				'to the default catalog. A player who has bought nothing gets just the catalog.',
+				'Both sources are projected into the camelCase v4 DTO — the sibling item endpoints',
+				'(`defaultunlocked`, `defaultbaseavataritems`) serve their records raw instead.',
 			].join(' '),
 			security: AUTHED,
 			responses: {
-				200: json(JsonArray, 'Owned items followed by the default catalog'),
+				200: json(AvatarItemV4Dto.array(), 'Owned items followed by the default catalog'),
 				401: UNAUTHORIZED_RESPONSE,
 			},
 		}),
@@ -1230,7 +1254,7 @@ const app = new Hono<App>({ strict: false })
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
 			const owned = await getInventory(c.env.DB, id)
-			return c.json([...owned, ...defaultAvatarItems])
+			return c.json([...owned, ...defaultAvatarItems].map(toAvatarItemV4))
 		}
 	)
 
@@ -1376,15 +1400,69 @@ const app = new Hono<App>({ strict: false })
 		}
 	)
 
-	// NUX checklist — the client fetches this on the econ host during load. []
-	// with no DB. A 404 here can abort the load orchestration before matchmake.
-	.get(
-		'/api/checklist/v1/current',
-		listRoute('NUX checklist', 'The new-user checklist; [] for now. A 404 can abort load.', true),
+	// NUX checklist — the client fetches this on the econ host during load, on either
+	// version path. A 404 here can abort the load orchestration before matchmake. We
+	// serve the default brand-new-account list to everyone: nothing records per-player
+	// checklist progress yet, so it never shrinks as steps are done.
+	.on(
+		'GET',
+		['/api/checklist/v1/current', '/api/checklist/v2/current'],
+		describeRoute({
+			tags: ['Econ'],
+			summary: 'NUX checklist',
+			description:
+				'The new-user checklist, as the default brand-new-account list — nothing records ' +
+				'per-player progress yet, so the same rows come back however much the player has ' +
+				'done. `Objective` is an `ObjectiveType` ordinal the client matches its own ' +
+				'progress events against. v1 and v2 serve the same list.',
+			security: AUTHED,
+			responses: {
+				200: json(ChecklistEntry.array(), 'The checklist rows, in `Order`'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
 		async (c) => {
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
-			return c.json([])
+			return c.json(DEFAULT_CHECKLIST)
+		}
+	)
+
+	// Mark a checklist row done. [Authorize]. Stubbed: there is no objective-progress
+	// table to record the completion in, and no reward ledger to make the 25-token grant
+	// once-only — without one, re-posting the same row would mint tokens indefinitely, so
+	// we grant nothing and report a change of 0. The envelope is still the balance-update
+	// shape the client parses, so the flow completes instead of erroring.
+	.on(
+		'POST',
+		['/api/checklist/v1/complete', '/api/checklist/v2/complete'],
+		describeRoute({
+			tags: ['Econ'],
+			summary: 'Complete a checklist row (stub)',
+			description:
+				'Marks a NUX checklist row done. Stubbed: nothing records the completion (no ' +
+				'objective-progress table) and nothing is granted — a reward is worth 25 XP and 25 ' +
+				'tokens, but making that once-only needs a ledger we do not have, and without one ' +
+				're-posting the same row would mint tokens indefinitely. The response is still the ' +
+				'balance-update envelope, with `Balance` (the change) 0. v1 and v2 behave alike.',
+			security: AUTHED,
+			requestBody: jsonBody(CompleteChecklistRequest, 'Which row was completed — `{ ItemIndex }`'),
+			responses: {
+				200: json(ChecklistCompleteResponse, 'The balance-update envelope, granting nothing'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+			// The body names the row (`{ ItemIndex: 1 }`, or `Id` as a fallback) — read only
+			// once there is somewhere to record it.
+			return c.json({
+				BalanceUpdates: [{ UpdateResponse: CHECKLIST_REWARD_CONTEXT, Data: [] }],
+				Balance: 0,
+				CurrencyType: CurrencyType.RecCenterTokens,
+				BalanceType: -2,
+			})
 		}
 	)
 

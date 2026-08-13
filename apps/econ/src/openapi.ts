@@ -131,6 +131,56 @@ export const SubscriptionDto = z.object({
 })
 
 /**
+ * One item as `GET /api/avatar/v4/items` serves it — camelCase, unlike the PascalCase
+ * records the sibling item endpoints hand back. `avatarItemId` is 0 and `tagList` empty
+ * for every item we have: neither the default catalog nor a storefront gift-drop carries
+ * them.
+ */
+export const AvatarItemV4Dto = z.object({
+	avatarItemId: z.int(),
+	avatarItemDesc: z.string().describe('The comma-delimited item descriptor, commas and all'),
+	friendlyName: z.string(),
+	tooltip: z.string(),
+	tagList: z.string(),
+	avatarItemType: z.int(),
+	rarity: z.int(),
+	isBaseAvatarItem: z.boolean(),
+})
+
+/**
+ * `POST /api/checklist/v1|v2/complete` JSON body — which checklist row was finished.
+ * The client posts just `{ "ItemIndex": 1 }`; `Id` is the fallback key read when
+ * `ItemIndex` is absent or 0.
+ */
+export const CompleteChecklistRequest = z.object({
+	ItemIndex: z.int().describe('The row’s index — what the client actually sends'),
+	Id: z.int().optional().describe('Fallback row id, read when ItemIndex is absent or 0'),
+})
+
+/**
+ * `POST /api/checklist/v1|v2/complete` — the balance-update envelope, the same shape
+ * buyItem answers with. `Balance` is the CHANGE applied, so a stubbed (ungranted)
+ * completion reports 0. `UpdateResponse` 303 is the checklist-reward context.
+ */
+export const ChecklistCompleteResponse = z.object({
+	BalanceUpdates: z.array(z.object({ UpdateResponse: z.int(), Data: z.array(JsonObject) })),
+	Balance: z.int().describe('The change applied — 0 while completion is stubbed'),
+	CurrencyType: z.int(),
+	BalanceType: z.int().describe('-2 = account-wide'),
+})
+
+/**
+ * One row of the new-user checklist (`GET /api/checklist/v1|v2/current`). `Objective` is
+ * an `ObjectiveType` ordinal the client matches its own progress events against.
+ */
+export const ChecklistEntry = z.object({
+	Order: z.int().describe('Position in the list, from 0'),
+	Objective: z.int().describe('ObjectiveType ordinal, e.g. 38 = SaveOutfitSlot'),
+	Count: z.int().describe('How many times the objective must happen'),
+	CreditAmount: z.int().describe('Tokens awarded on completion'),
+})
+
+/**
  * `POST /api/CampusCard/v1/UpdateAndGetSubscription` — the caller's subscription, or `{}`
  * when they have none (which is everyone without the `developer` role). `{}` rather than a
  * `Subscription: null` envelope: an absent key is how the client reads "not subscribed".

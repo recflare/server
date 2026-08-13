@@ -79,9 +79,16 @@ cp .env.example .env
 
 Edit `.env` and set `RECFLARE_DOMAIN` to your domain (or declare it with `export RECFLARE_DOMAIN=rec.example.com`)
 
-(Optional) - per-app subdomain overrides come from
-`RECFLARE_SUBDOMAINS` (a JSON object, e.g. `'{"playersettings":"settings"}'`). This would be used
-if you wanted to merge two services together e.g. send `datacollection` calls to `api`.
+(Optional) - per-service subdomain overrides come from `RECFLARE_SUBDOMAINS`, a JSON
+object keyed by each service's default subdomain (see `SERVICES.md`), e.g.
+`'{"playersettings":"settings"}'`. A single entry both decides which host `just deploy`
+puts that worker on and which host the `ns` discovery document advertises to the client,
+so the two can't drift apart.
+
+This is also how you merge two services together: `'{"moderation":"api"}'` points the
+client's Moderation calls at the `api` worker (which is where the `/api/PlayerReporting/…`
+routes already live) without deploying anything on `moderation.<domain>`. Redeploy `ns`
+after changing it — `just deploy -F ns`.
 
 **Create the storage resources:**
 

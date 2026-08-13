@@ -41,6 +41,43 @@ export interface AvatarItem extends Record<string, unknown> {
 }
 
 /**
+ * The camelCase DTO `GET /api/avatar/v4/items` serves. Distinct from the PascalCase
+ * `AvatarItem` we store and from what the sibling item endpoints (`defaultunlocked`,
+ * `defaultbaseavataritems`) serve — those hand back their stored/bundled records raw.
+ */
+export interface AvatarItemV4 {
+	avatarItemId: number
+	avatarItemDesc: string
+	friendlyName: string
+	tooltip: string
+	tagList: string
+	avatarItemType: number
+	rarity: number
+	isBaseAvatarItem: boolean
+}
+
+/**
+ * Project a stored or bundled avatar item into the v4 DTO. Neither source carries an
+ * `AvatarItemId`, a `TagList` or an `IsBaseAvatarItem` flag — the storefront gift-drops
+ * we grant from have none and the default catalog has none either — so those default to
+ * 0 / "" / false rather than being invented.
+ */
+export function toAvatarItemV4(item: Record<string, unknown>): AvatarItemV4 {
+	const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+	const num = (v: unknown): number => (typeof v === 'number' ? v : 0)
+	return {
+		avatarItemId: num(item.AvatarItemId),
+		avatarItemDesc: str(item.AvatarItemDesc),
+		friendlyName: str(item.FriendlyName),
+		tooltip: str(item.Tooltip),
+		tagList: str(item.TagList),
+		avatarItemType: num(item.AvatarItemType),
+		rarity: num(item.Rarity),
+		isBaseAvatarItem: item.IsBaseAvatarItem === true,
+	}
+}
+
+/**
  * Grant an item into a player's inventory. Upserts on (account_id, avatar_item_desc):
  * owning an item is boolean, so re-buying it refreshes the stored DTO rather than
  * adding a second copy. The descriptor is stored verbatim, commas included — the client

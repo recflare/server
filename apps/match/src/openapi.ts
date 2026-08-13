@@ -171,6 +171,65 @@ export const AvoidJuniorsRequest = z.object({
 export const ExclusiveLoginResponse = z.object({ errorCode: z.int().describe('Always 0') })
 
 /**
+ * The networking feature flags the client reads off its connection info — verbatim
+ * from the reference server. The client changes how it replicates based on these, so
+ * they are not free to tune. `shouldUseGameServerNetworking` is the load-bearing one:
+ * true points the client at a local game server (127.0.0.1:7777) instead of Photon.
+ */
+export const ConnectionExperiments = z.object({
+	networkTransformSyncInterval: z.number(),
+	shouldUseUnreliableOnChange: z.boolean(),
+	shouldAvoidDiscontinuityRPCs: z.boolean(),
+	shouldAvoidRedundantDiscontinuity: z.boolean(),
+	r2RuntimeStaticBaking: z.boolean(),
+	r2AutoEmbodiment: z.boolean(),
+	r2RuntimeStaticBakingMinShapeThreshold: z.int(),
+	r2UseCheapReplicas: z.boolean(),
+	shouldUseGameServerNetworking: z
+		.boolean()
+		.describe('true connects to a local game server instead of Photon'),
+})
+
+/**
+ * `GET /player/connection-info` — the realtime (Photon) credentials, in a
+ * `{ success, value, error }` envelope. The applications and region are fixed for
+ * recflare; what varies per caller is `photonAuthToken` (minted for them on the spot)
+ * and `photonRoomId`, the Photon room of the instance their presence says they're in
+ * — the same name every other player in that instance is handed. There's no separate
+ * voice server, so both voice fields are null. `photonRegion` matches the one stamped
+ * on every room instance, so the two can't disagree.
+ */
+export const ConnectionInfo = z.object({
+	photonAuthToken: z.string().describe('Short-lived HS256 token identifying the caller to Photon'),
+	photonRealtimeAppId: z.string().describe('Photon Realtime application id'),
+	photonVoiceAppId: z.string().describe('Photon Voice application id'),
+	photonChatAppId: z.string().describe('Photon Chat application id'),
+	photonRegion: z.string().describe('Region id, matching a room instance’s `photonRegion`'),
+	photonRoomId: z.string().describe('The caller’s current instance; empty when they’re in none'),
+	voiceConnectionInfo: z.null().describe('Null — no separate voice server'),
+	voiceServerId: z.null().describe('Null — no separate voice server'),
+	experiments: ConnectionExperiments,
+})
+
+/** `GET /player/connection-info` — the connection info in the client's standard envelope. */
+export const ConnectionInfoResponse = z.object({
+	success: z.literal(true),
+	value: ConnectionInfo,
+	error: z.null(),
+})
+
+/**
+ * One QoS probe target (`GET /player/qos`) — a region the client pings to measure
+ * latency, then reports back through `PUT /player/photonregionpings`. A bare array,
+ * not the `{ success, value, error }` envelope. `id` is the region id the pings are
+ * keyed by; `address` is `host:port`, not a URL.
+ */
+export const QosRegion = z.object({
+	id: z.string().describe('Region id, e.g. `us-east1`'),
+	address: z.string().describe('`host:port` of the probe endpoint'),
+})
+
+/**
  * The session `LoginLock` GUID form field. The client posts it on every presence
  * lifecycle call — `POST /player/login`, `/player/exclusivelogin`, `/player/logout`,
  * and `/player/heartbeat` — so it's always present, not optional. Recorded in presence

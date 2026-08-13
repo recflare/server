@@ -37,7 +37,7 @@ import {
 	subRoomDataBlob,
 } from '@repo/domain'
 import { logger, withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
-import { validateAndGetAccountId } from '@repo/jwt'
+import { generatePhotonAuthToken, validateAndGetAccountId } from '@repo/jwt'
 
 // The account-wide ban lives on a `report` row, whose table the api worker owns; its
 // db module is plain D1 queries with no runtime deps, so it imports cleanly here (the
@@ -53,6 +53,7 @@ import {
 	AUTHED,
 	AvoidJuniorsRequest,
 	AvoidJuniorsResponse,
+	ConnectionInfoResponse,
 	EMPTY_OK,
 	ExclusiveLoginResponse,
 	form,
@@ -65,6 +66,7 @@ import {
 	MatchmakeRoomRequest,
 	NotifyDisconnectRequest,
 	PlayerDto,
+	QosRegion,
 	RoomInstanceDto,
 	RoomInstanceSummaryDto,
 	StatusVisibilityRequest,
@@ -101,6 +103,54 @@ const NULL_CONNECTION_INFO = {
 	voiceServerId: null,
 	experiments: null,
 } as const
+
+/**
+ * The Photon applications the client connects to (`GET /player/connection-info`).
+ * Temporary placeholders — move them to wrangler vars before they need to differ per
+ * environment. `photonRegion` matches the value `roomInstanceFromRoom` stamps on every
+ * instance, so the two can't disagree ('us' resolves to us-east1 for QoS).
+ */
+const PHOTON_APPS = {
+	photonRealtimeAppId: '',
+	photonVoiceAppId: '',
+	photonChatAppId: '',
+	photonRegion: 'us',
+} as const
+
+/**
+ * Networking feature flags the client reads off its connection info. Verbatim from
+ * the reference server — the client changes how it replicates based on these, so they
+ * are not free to tune. The load-bearing one is `shouldUseGameServerNetworking`:
+ * true makes the client connect to a local game server (127.0.0.1:7777) instead of
+ * Photon, which is not what recflare runs.
+ */
+const PHOTON_EXPERIMENTS = {
+	networkTransformSyncInterval: 10.0,
+	shouldUseUnreliableOnChange: false,
+	shouldAvoidDiscontinuityRPCs: true,
+	shouldAvoidRedundantDiscontinuity: false,
+	r2RuntimeStaticBaking: true,
+	r2AutoEmbodiment: true,
+	r2RuntimeStaticBakingMinShapeThreshold: 1,
+	r2UseCheapReplicas: true,
+	shouldUseGameServerNetworking: false,
+} as const
+
+/**
+ * The regions the client probes for latency (`GET /player/qos`), reporting the results
+ * back through `PUT /player/photonregionpings`. Rec Room's own QoS endpoints, served
+ * verbatim: recflare doesn't run probe servers, and the client only uses the timings to
+ * rank regions — a ranking it can't act on here, since `PHOTON_APPS.photonRegion` pins
+ * every session to one region regardless. `address` is `host:port`, not a URL.
+ */
+const QOS_REGIONS = [
+	{ id: 'us-west1', address: '34.169.254.144:50000' },
+	{ id: 'europe-west1', address: '35.205.141.119:50000' },
+	{ id: 'asia-northeast1', address: '35.200.67.228:50000' },
+	{ id: 'us-east1', address: '34.73.244.122:50000' },
+	{ id: 'us-central1', address: '34.69.179.51:50000' },
+	{ id: 'northamerica-northeast1', address: '34.152.4.100:50000' },
+] as const
 
 /**
  * A player's presence as the client reads it (`/player`, `/player/heartbeat`).
@@ -1586,6 +1636,41 @@ const app = new Hono<App>()
 			return c.json({ errorCode: 0, roomInstance: instance })
 		}
 	)
+	// Matchmake with no target. The client posts this when it needs an instance but isn't
+	// going anywhere in particular — at startup, and while sitting in Orientation. It
+	// answers the instance the player is ALREADY in, so it never warps anyone out of the
+	// room they're standing in; only a player with no live presence falls back to their
+	// dorm. Either way presence is re-committed, which refreshes its TTL.
+	.post(
+		'/matchmake/none',
+		describeRoute({
+			tags: ['Navigation'],
+			summary: 'Matchmake with no target',
+			description: [
+				'Answers the instance the caller is already in, rather than sending them anywhere —',
+				'this is what the client posts at startup and while in Orientation, so forcing a',
+				'destination here would warp the player out of the room they are standing in. A',
+				'caller with no live presence (their TTL lapsed, or they have never entered a room)',
+				'falls back to their personal dorm. Re-commits presence either way, refreshing its',
+				'TTL.',
+			].join(' '),
+			security: AUTHED,
+			responses: {
+				200: json(MatchmakeResponse, 'The caller’s current instance, or their dorm'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const presence = await getPresence<RoomInstance>(c.env.DB, id)
+			const current = presence?.roomInstance ?? (await playerDormInstance(c, id))
+			await enterRoom(c, id, current)
+			return c.json({ errorCode: 0, roomInstance: current })
+		}
+	)
+
 	.post(
 		'/matchmake/dorm',
 		describeRoute({
@@ -1611,6 +1696,104 @@ const app = new Hono<App>()
 			await enterRoom(c, id, instance)
 			return c.json({ errorCode: 0, roomInstance: instance })
 		}
+	)
+
+	// The realtime credentials the caller should connect with: a freshly minted Photon
+	// auth token, the Photon applications, and the Photon room they belong in. That last
+	// one comes from the caller's own presence — the instance matchmaking put them in —
+	// so it's the same name every other player in that instance is given. The reference
+	// reads presence and nothing else; we fall back to looking the `roomInstanceId` query
+	// param up when presence has no room (it expires on a TTL, and the client sometimes
+	// asks before matchmaking has landed), and to an empty string when neither resolves.
+	.get(
+		'/player/connection-info',
+		describeRoute({
+			tags: ['Presence'],
+			summary: 'Photon connection info',
+			description: [
+				'The realtime (Photon) credentials the caller should connect with, in a',
+				'`{ success, value, error }` envelope: a freshly minted `photonAuthToken`, the',
+				'Photon application ids, and the `photonRoomId` of the instance the caller is in',
+				'(from their presence, falling back to the `roomInstanceId` query param). There is',
+				'no separate voice server, so the voice fields are null. `experiments` carries the',
+				'client’s networking flags.',
+			].join(' '),
+			security: AUTHED,
+			parameters: [
+				{
+					name: 'roomInstanceId',
+					in: 'query',
+					required: false,
+					description: 'The instance being connected to; used only when presence has no room',
+					schema: { type: 'string' },
+				},
+			],
+			responses: {
+				200: json(ConnectionInfoResponse, 'The Photon credentials, room, and experiment flags'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const presence = await getPresence<RoomInstance>(c.env.DB, id)
+			// Presence first (it's the instance the player is actually in); the query param
+			// only stands in when there's no live presence to read.
+			let photonRoomId = presence?.roomInstance?.photonRoomId ?? ''
+			if (!photonRoomId) {
+				const requested = Number.parseInt(c.req.query('roomInstanceId') ?? '', 10)
+				if (!Number.isNaN(requested)) {
+					photonRoomId = (await getRoomInstance(c.env.DB, requested))?.photonRoomId ?? ''
+				}
+			}
+
+			// Identifies the player to Photon. Signed with the shared JWT secret; the token's
+			// `aud` is the realtime app it's for. Nothing verifies it while Photon is
+			// self-hosted, so it's identifying rather than authorizing.
+			const photonAuthToken = await generatePhotonAuthToken(
+				id,
+				{
+					platformId: (await getAccount(c.env.DB, id))?.platformId ?? '',
+					platform: presence?.platform ?? 0,
+					deviceClass: presence?.deviceClass ?? 0,
+					audience: PHOTON_APPS.photonRealtimeAppId,
+				},
+				await c.env.JWT_SECRET.get()
+			)
+
+			return c.json({
+				success: true,
+				value: {
+					photonAuthToken,
+					...PHOTON_APPS,
+					photonRoomId,
+					voiceConnectionInfo: null,
+					voiceServerId: null,
+					experiments: PHOTON_EXPERIMENTS,
+				},
+				error: null,
+			})
+		}
+	)
+
+	// The regions to probe, which the two ping-report routes below are the other half of.
+	// Unauthenticated: it's a fixed public list, and the client fetches it early. A bare
+	// array — no `{ success, value, error }` envelope.
+	.get(
+		'/player/qos',
+		describeRoute({
+			tags: ['Presence'],
+			summary: 'QoS probe targets',
+			description: [
+				'The regions the client pings to measure latency, reporting the results back through',
+				'`PUT /player/photonregionpings`. Rec Room’s own probe endpoints, served verbatim —',
+				'recflare runs none of its own, and the resulting ranking is unused anyway: every',
+				'session is pinned to the one region `/player/connection-info` hands out.',
+			].join(' '),
+			responses: { 200: json(QosRegion.array(), 'The regions to probe, as `host:port`') },
+		}),
+		(c) => c.json(QOS_REGIONS)
 	)
 
 	// Region ping reports — accept-and-ack (the reference returns Ok()).

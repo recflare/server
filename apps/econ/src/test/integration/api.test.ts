@@ -8,6 +8,7 @@ import {
 	getOwnedInventionIds,
 	getProgression,
 	INVENTORY_INVENTION_SCHEMA_DDL,
+	OUTFIT_SCHEMA_DDL,
 	PROGRESSION_SCHEMA_DDL,
 	RECEIVED_GIFT_SCHEMA_DDL,
 } from '@repo/domain'
@@ -33,7 +34,6 @@ import { CHALLENGE_GIFT_SCHEMA_DDL, CHALLENGE_STATUS_SCHEMA_DDL } from '../../ch
 import { CONSUMABLE_SCHEMA_DDL, grantConsumable } from '../../consumables-db'
 import { EQUIPMENT_SCHEMA_DDL, grantEquipment } from '../../equipment-db'
 import { INVENTORY_SCHEMA_DDL } from '../../inventory-db'
-import { OUTFIT_SCHEMA_DDL } from '../../outfit-db'
 import { REWARD_STATUS_SCHEMA_DDL } from '../../reward-db'
 
 import type { Env } from '../../context'
@@ -195,10 +195,15 @@ describe('econ endpoints', () => {
 		expect(body[0]).toHaveProperty('AvatarItemDesc')
 	})
 
-	test('GET /api/avatar/v1/defaultbaseavataritems is an empty stub (no auth)', async () => {
+	test('GET /api/avatar/v1/defaultbaseavataritems returns the base items (no auth)', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/api/avatar/v1/defaultbaseavataritems`)
 		expect(res.status).toBe(200)
-		expect(await res.json()).toEqual([])
+		const body = (await res.json()) as Array<Record<string, unknown>>
+		expect(body.map((i) => i.AvatarItemId)).toEqual([2184, 2918])
+		// The client keys these off IsBaseAvatarItem, and the trailing comma in the desc
+		// is part of the item descriptor — both are served verbatim.
+		expect(body.every((i) => i.IsBaseAvatarItem === true)).toBe(true)
+		expect(body[0]?.AvatarItemDesc).toBe('c5d70cb4-71dd-4fe4-b719-34fe2073c611,')
 	})
 
 	test('GET /api/avatar/v4/items 401s without a token', async () => {
@@ -206,16 +211,34 @@ describe('econ endpoints', () => {
 		expect(res.status).toBe(401)
 	})
 
-	test('GET /api/avatar/v4/items returns the item catalog with a valid token', async () => {
+	test('GET /api/avatar/v4/items serves the catalog in the camelCase v4 shape', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/api/avatar/v4/items`, {
 			headers: await bearer(),
 		})
 		expect(res.status).toBe(200)
-		const body = (await res.json()) as unknown[]
-		expect(Array.isArray(body)).toBe(true)
+		const body = (await res.json()) as Array<Record<string, unknown>>
 		expect(body.length).toBeGreaterThan(0)
-		expect(body[0]).toHaveProperty('AvatarItemDesc')
-		expect(body[0]).toHaveProperty('FriendlyName')
+		// Every key of the DTO is present on every item, and nothing PascalCase leaks
+		// through from the stored/bundled records.
+		for (const item of body) {
+			expect(Object.keys(item).sort()).toEqual([
+				'avatarItemDesc',
+				'avatarItemId',
+				'avatarItemType',
+				'friendlyName',
+				'isBaseAvatarItem',
+				'rarity',
+				'tagList',
+				'tooltip',
+			])
+		}
+		expect(typeof body[0]?.avatarItemDesc).toBe('string')
+		expect(typeof body[0]?.friendlyName).toBe('string')
+		// The catalog carries no ids, tags or base flag — those default rather than
+		// being invented.
+		expect(body[0]?.avatarItemId).toBe(0)
+		expect(body[0]?.tagList).toBe('')
+		expect(body[0]?.isBaseAvatarItem).toBe(false)
 	})
 
 	test('GET /api/avatar/v2 401s without a token', async () => {
@@ -397,14 +420,53 @@ describe('econ endpoints', () => {
 		expect(body.isCompleted).toBe(false)
 	})
 
-	test('GET /api/checklist/v1/current 401s without a token, returns [] with one', async () => {
-		const anon = await exports.default.fetch(`${ORIGIN}/api/checklist/v1/current`)
-		expect(anon.status).toBe(401)
-		const res = await exports.default.fetch(`${ORIGIN}/api/checklist/v1/current`, {
-			headers: await bearer(),
+	test('GET /api/checklist/v1|v2/current 401s without a token, serves the NUX list with one', async () => {
+		const expected = [
+			{ Order: 0, Objective: 38, Count: 1, CreditAmount: 25 },
+			{ Order: 1, Objective: 32, Count: 1, CreditAmount: 25 },
+			{ Order: 2, Objective: 2, Count: 1, CreditAmount: 25 },
+			{ Order: 3, Objective: 30, Count: 1, CreditAmount: 25 },
+			{ Order: 4, Objective: 6, Count: 1, CreditAmount: 25 },
+		]
+		// Both version paths are live and serve the same list.
+		for (const path of ['/api/checklist/v1/current', '/api/checklist/v2/current']) {
+			const anon = await exports.default.fetch(`${ORIGIN}${path}`)
+			expect(anon.status).toBe(401)
+			const res = await exports.default.fetch(`${ORIGIN}${path}`, { headers: await bearer() })
+			expect(res.status).toBe(200)
+			expect(await res.json()).toEqual(expected)
+		}
+	})
+
+	test('POST /api/checklist/v1|v2/complete 401s without a token, grants nothing with one', async () => {
+		for (const path of ['/api/checklist/v1/complete', '/api/checklist/v2/complete']) {
+			const anon = await exports.default.fetch(`${ORIGIN}${path}`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ ItemIndex: 1 }),
+			})
+			expect(anon.status).toBe(401)
+
+			const res = await exports.default.fetch(`${ORIGIN}${path}`, {
+				method: 'POST',
+				headers: { ...(await bearer('33')), 'Content-Type': 'application/json' },
+				body: JSON.stringify({ ItemIndex: 1 }),
+			})
+			expect(res.status).toBe(200)
+			expect(await res.json()).toEqual({
+				BalanceUpdates: [{ UpdateResponse: 303, Data: [] }],
+				Balance: 0,
+				CurrencyType: 2,
+				BalanceType: -2,
+			})
+		}
+
+		// Stubbed, so completing rows does not move the balance — re-posting cannot farm
+		// tokens, and the checklist still lists every row.
+		const bal = await exports.default.fetch(`${ORIGIN}/api/storefronts/v4/balance/2`, {
+			headers: await bearer('33'),
 		})
-		expect(res.status).toBe(200)
-		expect(await res.json()).toEqual([])
+		expect(await bal.json()).toEqual([{ CurrencyType: 2, Platform: -2, Balance: 10000 }])
 	})
 
 	test('GET /api/itemWishlists/v1/wishlist/me 401s without a token, returns [] with one', async () => {
@@ -816,9 +878,9 @@ describe('econ endpoints', () => {
 		const items = await exports.default.fetch(`${ORIGIN}/api/avatar/v4/items`, {
 			headers: await bearer('20'),
 		})
-		const list = (await items.json()) as Array<{ AvatarItemDesc: string; FriendlyName: string }>
-		expect(list[0].FriendlyName).toBe('Bowtie (White)')
-		expect(list[0].AvatarItemDesc).toBe(gift.AvatarItemDesc)
+		const list = (await items.json()) as Array<{ avatarItemDesc: string; friendlyName: string }>
+		expect(list[0].friendlyName).toBe('Bowtie (White)')
+		expect(list[0].avatarItemDesc).toBe(gift.AvatarItemDesc)
 
 		// And a pending gift box is waiting to be opened.
 		const gifts = await exports.default.fetch(`${ORIGIN}/api/avatar/v2/gifts`, {
@@ -899,8 +961,8 @@ describe('econ endpoints', () => {
 		const items = await exports.default.fetch(`${ORIGIN}/api/avatar/v4/items`, {
 			headers: await bearer('25'),
 		})
-		const list = (await items.json()) as Array<{ FriendlyName: string }>
-		expect(list.every((i) => i.FriendlyName !== 'Supreme Pizza')).toBe(true)
+		const list = (await items.json()) as Array<{ friendlyName: string }>
+		expect(list.every((i) => i.friendlyName !== 'Supreme Pizza')).toBe(true)
 
 		// Buying it again stacks: a second instance, count summed to 2.
 		expect((await buy()).status).toBe(200)
@@ -966,8 +1028,8 @@ describe('econ endpoints', () => {
 		const items = await exports.default.fetch(`${ORIGIN}/api/avatar/v4/items`, {
 			headers: await bearer('31'),
 		})
-		const list = (await items.json()) as Array<{ FriendlyName: string }>
-		expect(list.every((i) => i.FriendlyName !== 'Disc Skin (Coop)')).toBe(true)
+		const list = (await items.json()) as Array<{ friendlyName: string }>
+		expect(list.every((i) => i.friendlyName !== 'Disc Skin (Coop)')).toBe(true)
 
 		expect(first[0].Favorited).toBe(false)
 
@@ -1066,8 +1128,8 @@ describe('econ endpoints', () => {
 		const items = await exports.default.fetch(`${ORIGIN}/api/avatar/v4/items`, {
 			headers: await bearer('23'),
 		})
-		const list = (await items.json()) as Array<{ FriendlyName: string }>
-		expect(list.every((i) => i.FriendlyName !== 'Bowtie (White)')).toBe(true)
+		const list = (await items.json()) as Array<{ friendlyName: string }>
+		expect(list.every((i) => i.friendlyName !== 'Bowtie (White)')).toBe(true)
 	})
 
 	/**
@@ -1263,8 +1325,8 @@ describe('econ endpoints', () => {
 		const items = await exports.default.fetch(`${ORIGIN}/api/avatar/v4/items`, {
 			headers: await bearer('24'),
 		})
-		const list = (await items.json()) as Array<{ FriendlyName: string }>
-		expect(list.some((i) => i.FriendlyName === 'Bowtie (White)')).toBe(true)
+		const list = (await items.json()) as Array<{ friendlyName: string }>
+		expect(list.some((i) => i.friendlyName === 'Bowtie (White)')).toBe(true)
 
 		// Opening it again is a harmless no-op — still 200.
 		const again = await exports.default.fetch(`${ORIGIN}/api/avatar/v2/gifts/consume/`, {
@@ -1670,9 +1732,10 @@ describe('econ endpoints', () => {
 		const items = await exports.default.fetch(`${ORIGIN}/api/avatar/v4/items`, {
 			headers: await bearer('76'),
 		})
-		const owned = (await items.json()) as Array<{ AvatarItemDesc: string }>
+		// v4 serves the camelCase DTO, unlike the PascalCase records on the gift box.
+		const owned = (await items.json()) as Array<{ avatarItemDesc: string }>
 		if ((boxes[0]?.AvatarItemDesc ?? '') !== '') {
-			expect(owned.map((i) => i.AvatarItemDesc)).toContain(boxes[0]?.AvatarItemDesc)
+			expect(owned.map((i) => i.avatarItemDesc)).toContain(boxes[0]?.AvatarItemDesc)
 		}
 
 		// A second box can't roll the same prize: "an item that you don't have" excludes what
@@ -1882,8 +1945,9 @@ describe('econ endpoints', () => {
 		const items = await exports.default.fetch(`${ORIGIN}/api/avatar/v4/items`, {
 			headers: await bearer('82'),
 		})
-		const owned = (await items.json()) as Array<{ AvatarItemDesc: string }>
-		expect(owned.map((i) => i.AvatarItemDesc)).toContain(clothingBox?.AvatarItemDesc)
+		// v4 serves the camelCase DTO, unlike the PascalCase records on the gift box.
+		const owned = (await items.json()) as Array<{ avatarItemDesc: string }>
+		expect(owned.map((i) => i.avatarItemDesc)).toContain(clothingBox?.AvatarItemDesc)
 		expect((await drainFrames()).map((f) => f.notificationType)).toEqual([
 			NotificationType.GiftPackageReceivedImmediate,
 			NotificationType.PlayerProgressionLevelUpdate,
@@ -2028,6 +2092,7 @@ describe('econ endpoints', () => {
 			'GET /api/avatar/v4/items',
 			'GET /api/challenge/v2/getCurrent',
 			'GET /api/checklist/v1/current',
+			'GET /api/checklist/v2/current',
 			'GET /api/consumables/v2/getUnlocked',
 			'GET /api/equipment/v2/getUnlocked',
 			'GET /api/gamerewards/v1/pending',
@@ -2051,6 +2116,8 @@ describe('econ endpoints', () => {
 			'POST /api/avatar/v3/saved/set',
 			'POST /api/avatar/v4/saved/set',
 			'POST /api/challenge/v2/updateProgress',
+			'POST /api/checklist/v1/complete',
+			'POST /api/checklist/v2/complete',
 			'POST /api/consumables/v1/consume',
 			'POST /api/gamerewards/v1/request',
 			'POST /api/objectives/v1/cleargroup',

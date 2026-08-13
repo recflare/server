@@ -29,6 +29,6 @@ const app = new Hono<App>()
 	.notFound(withNotFound())
 
 	// Endpoints document, derived from the deploy-time base domain.
-	.get('/', (c) => c.json(buildEndpoints(c.env.DOMAIN)))
+	.get('/', (c) => c.json(buildEndpoints(c.env.DOMAIN, c.env.SUBDOMAINS)))
 
 export default app

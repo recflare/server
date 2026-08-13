@@ -858,6 +858,25 @@ describe('public endpoints', () => {
 		expect(res.status).toBe(200)
 	})
 
+	test('GET /player/connection-info 401s without a token', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/player/connection-info`)
+		expect(res.status).toBe(401)
+	})
+
+	test('GET /player/qos returns the probe targets', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/player/qos`)
+		expect(res.status).toBe(200)
+		// A bare array, not the { success, value, error } envelope connection-info uses.
+		expect(await res.json()).toEqual([
+			{ id: 'us-west1', address: '34.169.254.144:50000' },
+			{ id: 'europe-west1', address: '35.205.141.119:50000' },
+			{ id: 'asia-northeast1', address: '35.200.67.228:50000' },
+			{ id: 'us-east1', address: '34.73.244.122:50000' },
+			{ id: 'us-central1', address: '34.69.179.51:50000' },
+			{ id: 'northamerica-northeast1', address: '34.152.4.100:50000' },
+		])
+	})
+
 	test('PUT /player/photonregionpings returns 200', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/player/photonregionpings`, { method: 'PUT' })
 		expect(res.status).toBe(200)
@@ -897,6 +916,103 @@ describe('auth-gated endpoints', () => {
 		// A private matchmake (JoinMode 2) gets its own distinct instance.
 		const priv = await matchmake('902', '2')
 		expect(priv.roomInstance.photonRoomId).not.toBe(a.roomInstance.photonRoomId)
+	})
+
+	test('GET /player/connection-info hands back the Photon room the caller matchmade into', async () => {
+		const matchmaked = (await (
+			await exports.default.fetch(`${ORIGIN}/matchmake/room/2`, {
+				method: 'POST',
+				headers: await bearer('960'),
+			})
+		).json()) as { roomInstance: { photonRoomId: string } }
+
+		const res = await exports.default.fetch(`${ORIGIN}/player/connection-info`, {
+			headers: await bearer('960'),
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({
+			success: true,
+			value: {
+				// A signed JWT, not an opaque id — three base64url segments.
+				photonAuthToken: expect.stringMatching(/^[\w-]+\.[\w-]+\.[\w-]+$/),
+				photonRealtimeAppId: '',
+				photonVoiceAppId: '',
+				photonChatAppId: '',
+				// Matches the region every room instance is stamped with.
+				photonRegion: 'us',
+				// The room the client is told to join has to be the one matchmaking placed
+				// them in, or they end up alone in a room of their own.
+				photonRoomId: matchmaked.roomInstance.photonRoomId,
+				voiceConnectionInfo: null,
+				voiceServerId: null,
+				experiments: {
+					networkTransformSyncInterval: 10,
+					shouldUseUnreliableOnChange: false,
+					shouldAvoidDiscontinuityRPCs: true,
+					shouldAvoidRedundantDiscontinuity: false,
+					r2RuntimeStaticBaking: true,
+					r2AutoEmbodiment: true,
+					r2RuntimeStaticBakingMinShapeThreshold: 1,
+					r2UseCheapReplicas: true,
+					// true would send the client to a local game server instead of Photon.
+					shouldUseGameServerNetworking: false,
+				},
+			},
+			error: null,
+		})
+	})
+
+	test('GET /player/connection-info mints a token carrying the caller’s id', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/player/connection-info`, {
+			headers: await bearer('961'),
+		})
+		const body = (await res.json()) as {
+			value: { photonAuthToken: string; photonRealtimeAppId: string }
+		}
+		const claims = JSON.parse(atob(body.value.photonAuthToken.split('.')[1]!)) as {
+			sub: string
+			aud: string
+			exp: number
+			'rn.env': string
+		}
+		expect(claims.sub).toBe('961')
+		// Scoped to the realtime app the same response hands out — a placeholder empty
+		// string until PHOTON_APPS moves to wrangler vars, so assert the two agree rather
+		// than pinning the placeholder itself.
+		expect(claims.aud).toBe(body.value.photonRealtimeAppId)
+		expect(claims.exp).toBeGreaterThan(Math.floor(Date.now() / 1000))
+		// The client is built against prod regardless of which environment we run in.
+		expect(claims['rn.env']).toBe('prod')
+	})
+
+	test('GET /player/connection-info falls back to ?roomInstanceId when presence has no room', async () => {
+		// Player 962 never matchmade, so there's no presence to read the room from; the
+		// param names the instance they're trying to connect to.
+		const instance = await createRoomInstance(env.DB, {
+			roomId: 2,
+			subRoomId: 2,
+			roomInstanceType: 0,
+			photonRoomId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+			maxCapacity: 12,
+			isPrivate: false,
+			ownerAccountId: 962,
+		})
+
+		const res = await exports.default.fetch(
+			`${ORIGIN}/player/connection-info?roomInstanceId=${instance.roomInstanceId}`,
+			{ headers: await bearer('962') }
+		)
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as { value: { photonRoomId: string } }
+		expect(body.value.photonRoomId).toBe('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
+	})
+
+	test('GET /player/connection-info serves an empty photonRoomId when nothing resolves', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/player/connection-info`, {
+			headers: await bearer('963'),
+		})
+		const body = (await res.json()) as { value: { photonRoomId: string } }
+		expect(body.value.photonRoomId).toBe('')
 	})
 
 	test('re-matchmaking into your current room returns a different instance (id must change)', async () => {
@@ -949,6 +1065,45 @@ describe('auth-gated endpoints', () => {
 			roomId: first.roomInstance.roomId,
 			photonRoomId: first.roomInstance.photonRoomId,
 			roomInstanceId: first.roomInstance.roomInstanceId,
+		})
+	})
+
+	test('POST /matchmake/none 401s without a token', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/matchmake/none`, { method: 'POST' })
+		expect(res.status).toBe(401)
+	})
+
+	test('POST /matchmake/none keeps the caller where they are, else falls back to the dorm', async () => {
+		const none = async (sub: string) =>
+			(await (
+				await exports.default.fetch(`${ORIGIN}/matchmake/none`, {
+					method: 'POST',
+					headers: await bearer(sub),
+				})
+			).json()) as { errorCode: number; roomInstance: { roomId: number; roomInstanceId: number } }
+
+		// Account 44 has never entered a room → their personal dorm, and a second call is
+		// idempotent now that presence holds it.
+		const fresh = await none('44')
+		expect(fresh.errorCode).toBe(0)
+		expect(fresh.roomInstance.roomId).toBeGreaterThan(2)
+		expect((await none('44')).roomInstance).toMatchObject({
+			roomId: fresh.roomInstance.roomId,
+			roomInstanceId: fresh.roomInstance.roomInstanceId,
+		})
+
+		// Once in a real room, `none` must NOT warp them out of it — that is the whole
+		// point of the endpoint, since the client posts it while sitting in Orientation.
+		const entered = (await (
+			await exports.default.fetch(`${ORIGIN}/matchmake/room/2`, {
+				method: 'POST',
+				headers: await bearer('44'),
+			})
+		).json()) as { roomInstance: { roomId: number; roomInstanceId: number } }
+		expect(entered.roomInstance.roomId).toBe(2)
+		expect((await none('44')).roomInstance).toMatchObject({
+			roomId: 2,
+			roomInstanceId: entered.roomInstance.roomInstanceId,
 		})
 	})
 
@@ -2019,6 +2174,8 @@ describe('auth-gated endpoints', () => {
 		expect([...documented].sort()).toEqual([
 			'GET /player',
 			'GET /player/avoidjuniors',
+			'GET /player/connection-info',
+			'GET /player/qos',
 			'GET /room/{roomId}/instances',
 			'GET /rooms/requiring/developer',
 			'GET /rooms/requiring/rrplus',
@@ -2027,6 +2184,7 @@ describe('auth-gated endpoints', () => {
 			'POST /matchmake/dorm',
 			'POST /matchmake/event/{eventId}',
 			'POST /matchmake/instance/{instanceId}',
+			'POST /matchmake/none',
 			'POST /matchmake/player/{playerId}',
 			'POST /matchmake/room/{roomId}',
 			'POST /matchmake/room/{roomId}/{subRoomId}',
