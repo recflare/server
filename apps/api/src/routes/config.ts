@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { describeRoute } from 'hono-openapi'
 
-import { GAME_VERSION } from '@repo/domain'
+import { isSupportedGameVersion } from '@repo/domain'
 
 import apiConfigV2 from '../../static/api-config-v2.json'
 import gameConfigsV1All from '../../static/gameconfigs-v1-all.json'
@@ -10,6 +10,7 @@ import {
 	ApiConfigV2,
 	AzureSpeechConfig,
 	BacktraceConfig,
+	IslandedVersions,
 	json,
 	JsonObject,
 	VersionCheck,
@@ -100,17 +101,32 @@ export const configRoutes = new Hono<App>({ strict: false })
 			summary: 'Client version check',
 			description:
 				'Whether the client build is current. Compares the client’s `?v=` build against ' +
-				'our target `GAME_VERSION`: `VersionStatus` is 0 when they match, 1 when the ' +
-				'client is on a different build.',
+				'the builds we serve (`SUPPORTED_GAME_VERSIONS`): `VersionStatus` is 0 when the ' +
+				'client is on one of them, 1 when it is on some other build.',
 			responses: { 200: json(VersionCheck, 'Version status') },
 		}),
 		(c) =>
 			c.json({
-				VersionStatus: c.req.query('v') === GAME_VERSION ? 0 : 1,
+				VersionStatus: isSupportedGameVersion(c.req.query('v')) ? 0 : 1,
 				UpdateNotificationStage: 0,
 				IsVersionIslanded: false,
 				IsCrossPlayDisabled: false,
 			})
+	)
+	// Islanding splits players onto version-specific matchmaking pools. We serve every
+	// supported build from one pool, so the list is empty — the client reads it as
+	// "nobody is islanded" and matchmakes normally.
+	.get(
+		'/api/versioncheck/islandedversions',
+		describeRoute({
+			tags: ['Config'],
+			summary: 'Islanded client builds',
+			description:
+				'The builds that are islanded off into their own matchmaking pool. This server ' +
+				'never islands a build, so the list is always empty.',
+			responses: { 200: json(IslandedVersions, 'Always an empty list') },
+		}),
+		(c) => c.json([])
 	)
 	.get(
 		'/api/gameconfigs/v1/all',

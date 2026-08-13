@@ -434,7 +434,14 @@ const app = new Hono<App>()
 	// id, so the client can offer them on the login screen (and post one back as a
 	// cached_login grant). No linked account → [], and the client falls back to a
 	// fresh login / create_account.
-	.get(
+	//
+	// GET or POST: the 2023 build asks with a GET, the 2025 build (20250424.01) POSTs
+	// the same path with a form body — `deviceId`, `platformAuth` (a JSON blob holding
+	// the platform's session ticket and app id) and `time`. The body is READ BY NOTHING
+	// here; both methods answer the same list off the path params, so a newer client
+	// gets its picker. Verifying that ticket is the eventual point of the POST.
+	.on(
+		['GET', 'POST'],
 		'/cachedlogin/forplatformid/:platform/:id',
 		describeRoute({
 			tags: ['Cached login'],
@@ -449,6 +456,10 @@ const app = new Hono<App>()
 				'APKs: with no Meta SDK they have no real identity to ask about and stall on an',
 				'empty picker. It consults nothing and returns one canned, non-redeemable entry',
 				'with `requirePassword: true`, sending the build to username/password login.',
+				'Older clients GET this; the 20250424.01 build POSTs it with a',
+				'`deviceId` / `platformAuth` / `time` form body attesting the platform session.',
+				'That body is accepted and ignored — both methods answer identically from the',
+				'path params.',
 			].join(' '),
 			parameters: [
 				{

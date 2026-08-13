@@ -145,7 +145,13 @@ export const ApiConfigV2 = JsonObject.describe(
 	'The static client config, plus a ShareBaseUrl templated from the deploy domain'
 )
 
-/** `GET /api/versioncheck/v4` — whether the client's `?v=` build matches GAME_VERSION. */
+/**
+ * `GET /api/versioncheck/islandedversions` — builds islanded onto their own matchmaking
+ * pool. Always empty here.
+ */
+export const IslandedVersions = z.array(z.string())
+
+/** `GET /api/versioncheck/v4` — whether the client's `?v=` build is one we serve. */
 export const VersionCheck = z.object({
 	VersionStatus: z.int().describe('0 = current, 1 = client on a different build'),
 	UpdateNotificationStage: z.int(),

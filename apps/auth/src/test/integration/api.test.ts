@@ -420,6 +420,59 @@ describe('auth worker routes', () => {
 		])
 	})
 
+	// The 20250424.01 build POSTs the picker lookup with a platform-attestation form body
+	// instead of GETting it. Nothing reads that body yet, so both methods must answer the
+	// same list — otherwise the newer client's login screen comes up empty.
+	test('POST /cachedlogin/forplatformid answers exactly what the GET answers', async () => {
+		const steamId = '76561197962463211'
+		await env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
+			.bind(
+				JSON.stringify({
+					accountId: 31381,
+					username: 'SteamPlayer2025',
+					platform: 0,
+					platformId: steamId,
+					lastLoginTime: '2026-08-13T04:21:34.768Z',
+				})
+			)
+			.run()
+		await linkPlatformIdentity(env.DB, 31381, 0, steamId)
+
+		// The body as the live client sends it: device id, the platform session ticket, a
+		// timestamp. All ignored for now.
+		const body = new URLSearchParams({
+			deviceId: '69640e6ae1b54ae5b0ca8eeb4a8872ec6cf8fd88',
+			platformAuth: JSON.stringify({ Ticket: '140000009C5F501B447424FF', AppId: '471710' }),
+			time: '2026-08-13T04:21:34.7684754Z',
+		}).toString()
+		const posted = await exports.default.fetch(`${ORIGIN}/cachedlogin/forplatformid/0/${steamId}`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body,
+		})
+		expect(posted.status).toBe(200)
+		const expected = [
+			{
+				platform: 0,
+				platformId: steamId,
+				accountId: 31381,
+				lastLoginTime: '2026-08-13T04:21:34.768Z',
+				requirePassword: false,
+			},
+		]
+		expect(await posted.json()).toEqual(expected)
+		expect(await cachedLogins(0, steamId)).toEqual(expected)
+	})
+
+	// A POST with no body at all still resolves — the client's body is never consulted.
+	test('POST /cachedlogin/forplatformid/1/1 still returns the canned Oculus entry', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/cachedlogin/forplatformid/1/1`, {
+			method: 'POST',
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toMatchObject([{ accountId: 1, requirePassword: true }])
+	})
+
 	test('one account, a Steam and a Meta identity: both pickers offer it', async () => {
 		// The point of the link table. The same account is reachable from the PC and from
 		// the headset, and each picker reports the identity IT was asked about — that's
@@ -1122,6 +1175,7 @@ describe('auth worker routes', () => {
 			'GET /role/developer/{id}',
 			'GET /role/moderator/{id}',
 			'POST /account/me/changepassword',
+			'POST /cachedlogin/forplatformid/{platform}/{id}',
 			'POST /cachedlogin/forplatformids',
 			'POST /connect/token',
 		])

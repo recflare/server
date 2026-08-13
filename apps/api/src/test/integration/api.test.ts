@@ -19,6 +19,7 @@ import {
 	ROOM_SCHEMA_DDL,
 	seedRoomWithSubRooms,
 	SUBROOM_SCHEMA_DDL,
+	SUPPORTED_GAME_VERSIONS,
 } from '@repo/domain'
 
 import '../../api.app'
@@ -197,9 +198,27 @@ describe('public endpoints', () => {
 		expect(await res.json()).toMatchObject({ VersionStatus: 0 })
 	})
 
+	test('GET /api/versioncheck/v4 reports current for every supported build', async () => {
+		for (const version of SUPPORTED_GAME_VERSIONS) {
+			const res = await exports.default.fetch(`${ORIGIN}/api/versioncheck/v4?v=${version}`)
+			expect(await res.json(), version).toMatchObject({ VersionStatus: 0 })
+		}
+	})
+
 	test('GET /api/versioncheck/v4 flags a mismatched build', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/api/versioncheck/v4?v=19990101`)
 		expect(await res.json()).toMatchObject({ VersionStatus: 1 })
+	})
+
+	test('GET /api/versioncheck/v4 flags a client that sends no build', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/versioncheck/v4`)
+		expect(await res.json()).toMatchObject({ VersionStatus: 1 })
+	})
+
+	test('GET /api/versioncheck/islandedversions is empty', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/versioncheck/islandedversions`)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
 	})
 
 	test('GET /api/relationships/v2/get returns empty array for a player with none', async () => {
@@ -3646,6 +3665,7 @@ describe('openapi', () => {
 			'GET /api/roomkeys/v1/mine',
 			'GET /api/roomkeys/v1/room',
 			'GET /api/rooms/v1/filters',
+			'GET /api/versioncheck/islandedversions',
 			'GET /api/versioncheck/v4',
 			'GET /voice/config',
 			'POST /api/PlayerReporting/v1/deviceId',

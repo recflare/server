@@ -32,6 +32,18 @@ export const PRESENCE_TTL_SECONDS = 900
  */
 export const GAME_VERSION = '20230414'
 
+/**
+ * Client builds this server treats as current. `GAME_VERSION` is the one we report for
+ * ourselves; the rest are additional builds `/api/versioncheck/v4` answers "current"
+ * for, so a player on one of them isn't pushed into an update loop.
+ */
+export const SUPPORTED_GAME_VERSIONS: string[] = [GAME_VERSION, '20250424.01']
+
+/** Whether a client-supplied build (the version check's `?v=`) is one we serve. */
+export function isSupportedGameVersion(version: string | null | undefined): boolean {
+	return version != null && SUPPORTED_GAME_VERSIONS.includes(version)
+}
+
 /** Schema DDL (mirror of migrations/0006_presence.sql). */
 export const PRESENCE_SCHEMA_DDL: string[] = [
 	`CREATE TABLE IF NOT EXISTS presence (
