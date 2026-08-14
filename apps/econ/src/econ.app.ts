@@ -1752,6 +1752,44 @@ const app = new Hono<App>({ strict: false })
 		c.json([])
 	)
 
+	// The room-economy surface the client asks for on entering a room: the room's own
+	// inventory/offers/gift-drop shops and the caller's slice of them. Nothing here is
+	// stored yet, so every one is an empty list — the client reads that as "this room
+	// sells nothing" and renders no shop, where a 404 stalls the room load instead.
+	//
+	// The `/player` and `purchaseCounts` variants are caller-scoped but deliberately
+	// unauthed, matching the `roomConsumable/.../me` stub above: an empty list is the
+	// same answer for every caller, so there's nothing to protect until something
+	// writes here. Gate them when they start returning real data.
+	.get(
+		'/econ/roomInventory/room/:roomId',
+		listRoute('A room’s inventory', 'Empty stub so the client doesn’t 404'),
+		(c) => c.json([])
+	)
+	.get(
+		'/econ/roomInventory/room/:roomId/player',
+		listRoute('The caller’s inventory in a room', 'Empty stub'),
+		(c) => c.json([])
+	)
+	.get(
+		'/econ/roomInventoryItemTags/room/:roomId',
+		listRoute('A room’s inventory item tags', 'Empty stub'),
+		(c) => c.json([])
+	)
+	.get('/econ/roomOffer/room/:roomId', listRoute('A room’s offers', 'Empty stub'), (c) =>
+		c.json([])
+	)
+	.get(
+		'/econ/roomOffer/room/:roomId/purchaseCounts',
+		listRoute('Per-offer purchase counts for a room', 'Empty stub'),
+		(c) => c.json([])
+	)
+	.get(
+		'/econ/roomGiftDropShops/room/:roomId',
+		listRoute('A room’s gift-drop shops', 'Empty stub'),
+		(c) => c.json([])
+	)
+
 	// Unlocked consumables. [Authorize]. The consumables the player has bought (from
 	// `buyItem`, stored in the `consumable` table), grouped by item into the client's
 	// unlocked-consumable DTO. A player who has bought none gets an empty list.

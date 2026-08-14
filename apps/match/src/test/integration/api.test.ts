@@ -935,16 +935,18 @@ describe('auth-gated endpoints', () => {
 			value: {
 				// A signed JWT, not an opaque id — three base64url segments.
 				photonAuthToken: expect.stringMatching(/^[\w-]+\.[\w-]+\.[\w-]+$/),
-				photonRealtimeAppId: '',
-				photonVoiceAppId: '',
-				photonChatAppId: '',
+				photonRealtimeAppId: 'rf-8f322bdb',
+				photonVoiceAppId: 'rf-6b4682e1',
+				photonChatAppId: 'rf-55fae86e',
 				// Matches the region every room instance is stamped with.
 				photonRegion: 'us',
 				// The room the client is told to join has to be the one matchmaking placed
 				// them in, or they end up alone in a room of their own.
 				photonRoomId: matchmaked.roomInstance.photonRoomId,
-				voiceConnectionInfo: null,
-				voiceServerId: null,
+				// Empty strings, not nulls — unlike the presence payload's connection fields,
+				// which stay null (they never carry credentials).
+				voiceConnectionInfo: '',
+				voiceServerId: '',
 				experiments: {
 					networkTransformSyncInterval: 10,
 					shouldUseUnreliableOnChange: false,
@@ -976,9 +978,10 @@ describe('auth-gated endpoints', () => {
 			'rn.env': string
 		}
 		expect(claims.sub).toBe('961')
-		// Scoped to the realtime app the same response hands out — a placeholder empty
-		// string until PHOTON_APPS moves to wrangler vars, so assert the two agree rather
-		// than pinning the placeholder itself.
+		// Scoped to the realtime app the same response hands out. Asserted as agreement
+		// rather than a pinned literal: PHOTON_APPS is hardcoded until it moves to wrangler
+		// vars, and a token minted for a different app than the client is handed is the bug
+		// worth catching here.
 		expect(claims.aud).toBe(body.value.photonRealtimeAppId)
 		expect(claims.exp).toBeGreaterThan(Math.floor(Date.now() / 1000))
 		// The client is built against prod regardless of which environment we run in.

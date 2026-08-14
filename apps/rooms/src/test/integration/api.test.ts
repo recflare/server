@@ -89,6 +89,18 @@ beforeAll(async () => {
 	// Seed each room and split its subrooms into the subroom table (mirrors 0007's backfill).
 	for (const r of importRooms) await seedRoomWithSubRooms(env.DB, r as Record<string, unknown>)
 
+	// Accounts table (owned by the auth worker) — provisioning a dorm reads the username
+	// to name the room. Seed the player `dormroom/me` provisions a fresh dorm for.
+	await env.DB.prepare(
+		`CREATE TABLE IF NOT EXISTS account (
+			data TEXT NOT NULL,
+			account_id INTEGER GENERATED ALWAYS AS (json_extract(data, '$.accountId')) VIRTUAL
+		)`
+	).run()
+	await env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
+		.bind(JSON.stringify({ accountId: 999, username: 'Dormer' }))
+		.run()
+
 	// Relationship table (owned by the api worker) — `visitedby/:playerId` reads it to
 	// check the caller is a friend of the player whose history they're asking for.
 	await env.DB.prepare(
@@ -127,6 +139,14 @@ describe('rooms endpoints', () => {
 		}
 		expect(body).toMatchObject({ RoomId: 1, Name: 'DormRoom', IsDorm: true })
 		expect(body.SubRooms[0].UnitySceneId).toBe('76d98498-60a1-430c-ab76-b54a29b7a163')
+	})
+
+	// Stub. Registered (not 404) matters more than the body: the client asks for this on
+	// room entry, and an unregistered path stalls the load rather than erroring visibly.
+	it('GET /rooms/:id/experience/player returns [] for any room', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/rooms/92/experience/player`)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
 	})
 
 	it('GET /rooms/:id 404s for a room not in D1', async () => {
@@ -179,6 +199,41 @@ describe('rooms endpoints', () => {
 			await SELF.fetch(`${ORIGIN}/rooms/ownedby/me`, { headers: await bearer('999') })
 		).json()) as unknown[]
 		expect(other).toEqual([])
+	})
+
+	it('GET /dormroom/me serves the caller’s own dorm in the room shape', async () => {
+		// No token → 401. Without this the endpoint would hand out (and provision) a dorm
+		// for whichever account a fallback picked.
+		const noAuth = await SELF.fetch(`${ORIGIN}/dormroom/me`)
+		expect(noAuth.status).toBe(401)
+
+		// Account 1 owns the seeded dorm (RoomId 1), served exactly as GET /rooms/1 does —
+		// same DTO, SubRooms re-attached.
+		const res = await SELF.fetch(`${ORIGIN}/dormroom/me`, { headers: await bearer('1') })
+		expect(res.status).toBe(200)
+		const dorm = (await res.json()) as {
+			RoomId: number
+			IsDorm: boolean
+			CreatorAccountId: number
+			SubRooms: Array<{ UnitySceneId: string }>
+		}
+		expect(dorm).toMatchObject({ RoomId: 1, IsDorm: true, CreatorAccountId: 1 })
+		expect(dorm.SubRooms[0].UnitySceneId).toBe('76d98498-60a1-430c-ab76-b54a29b7a163')
+		expect(dorm).toEqual(await (await SELF.fetch(`${ORIGIN}/rooms/1`)).json())
+
+		// A player who has never entered their dorm gets one provisioned rather than a
+		// 404, and it belongs to THEM — not the template dorm they were cloned from.
+		const fresh = (await (
+			await SELF.fetch(`${ORIGIN}/dormroom/me`, { headers: await bearer('999') })
+		).json()) as { RoomId: number; IsDorm: boolean; CreatorAccountId: number }
+		expect(fresh).toMatchObject({ IsDorm: true, CreatorAccountId: 999 })
+		expect(fresh.RoomId).not.toBe(1)
+
+		// Idempotent: the second call is the same dorm, not a second one.
+		const again = (await (
+			await SELF.fetch(`${ORIGIN}/dormroom/me`, { headers: await bearer('999') })
+		).json()) as { RoomId: number }
+		expect(again.RoomId).toBe(fresh.RoomId)
 	})
 
 	// The website's "My rooms" list is a browser calling this worker from another origin,
@@ -580,9 +635,7 @@ describe('rooms endpoints', () => {
 	it('GET /rooms/hot?tag=community serves rooms the Coach account did not create', async () => {
 		type Feed = { Results: Array<{ Name: string }>; TotalResults: number }
 		const feed = async (): Promise<Feed> =>
-			(await (
-				await SELF.fetch(`${ORIGIN}/rooms/hot?tag=community&skip=0&take=100`)
-			).json()) as Feed
+			(await (await SELF.fetch(`${ORIGIN}/rooms/hot?tag=community&skip=0&take=100`)).json()) as Feed
 		const names = async (): Promise<string[]> => (await feed()).Results.map((r) => r.Name)
 
 		// No room carries a `community` tag, and every seeded room belongs to Coach
@@ -2911,6 +2964,7 @@ describe('rooms endpoints', () => {
 			'DELETE /rooms/{roomId}/subrooms/{subRoomId}',
 			'GET /',
 			'GET /XXXfeaturedrooms/current',
+			'GET /dormroom/me',
 			'GET /photon_access_token',
 			'GET /rooms',
 			'GET /rooms/base',
@@ -2926,6 +2980,7 @@ describe('rooms endpoints', () => {
 			'GET /rooms/visitedby/{playerId}',
 			'GET /rooms/{roomId}',
 			'GET /rooms/{roomId}/bans',
+			'GET /rooms/{roomId}/experience/player',
 			'GET /rooms/{roomId}/interactionby/me',
 			'GET /rooms/{roomId}/playerdata/me',
 			'GET /rooms/{roomId}/similar',

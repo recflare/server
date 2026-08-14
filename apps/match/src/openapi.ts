@@ -206,8 +206,8 @@ export const ConnectionInfo = z.object({
 	photonChatAppId: z.string().describe('Photon Chat application id'),
 	photonRegion: z.string().describe('Region id, matching a room instance’s `photonRegion`'),
 	photonRoomId: z.string().describe('The caller’s current instance; empty when they’re in none'),
-	voiceConnectionInfo: z.null().describe('Null — no separate voice server'),
-	voiceServerId: z.null().describe('Null — no separate voice server'),
+	voiceConnectionInfo: z.literal('').describe('Empty — no separate voice server'),
+	voiceServerId: z.literal('').describe('Empty — no separate voice server'),
 	experiments: ConnectionExperiments,
 })
 

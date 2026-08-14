@@ -675,3 +675,11 @@ export const PhotonAccessTokenDto = z.object({
 export const PlayerDataDto = z.object({
 	Data: z.string().describe('Always empty — no per-room player data is stored'),
 })
+
+/**
+ * `GET /rooms/{roomId}/experience/player` — the caller's per-room experience/progression
+ * entries. Stubbed empty; the element shape is unknown until something stores one.
+ */
+export const RoomExperiencePlayer = z
+	.array(z.unknown())
+	.describe('Always empty — no per-room experience is tracked')

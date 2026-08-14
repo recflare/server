@@ -106,14 +106,15 @@ const NULL_CONNECTION_INFO = {
 
 /**
  * The Photon applications the client connects to (`GET /player/connection-info`).
- * Temporary placeholders — move them to wrangler vars before they need to differ per
- * environment. `photonRegion` matches the value `roomInstanceFromRoom` stamps on every
+ * Hardcoded temporarily — move them to wrangler vars before they need to differ per
+ * environment (they are per-deployment ids, not secrets: the client receives all three
+ * in the clear). `photonRegion` matches the value `roomInstanceFromRoom` stamps on every
  * instance, so the two can't disagree ('us' resolves to us-east1 for QoS).
  */
 const PHOTON_APPS = {
-	photonRealtimeAppId: '',
-	photonVoiceAppId: '',
-	photonChatAppId: '',
+	photonRealtimeAppId: 'rf-8f322bdb',
+	photonVoiceAppId: 'rf-6b4682e1',
+	photonChatAppId: 'rf-55fae86e',
 	photonRegion: 'us',
 } as const
 
@@ -1768,8 +1769,12 @@ const app = new Hono<App>()
 					photonAuthToken,
 					...PHOTON_APPS,
 					photonRoomId,
-					voiceConnectionInfo: null,
-					voiceServerId: null,
+					// Empty strings rather than null: there's no separate voice server either
+					// way, and the client's decoder is likelier to accept a missing-value string
+					// than a null on a string field. The presence payload's
+					// NULL_CONNECTION_INFO keeps its nulls — that one never carries credentials.
+					voiceConnectionInfo: '',
+					voiceServerId: '',
 					experiments: PHOTON_EXPERIMENTS,
 				},
 				error: null,

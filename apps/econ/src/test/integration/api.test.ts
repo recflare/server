@@ -635,6 +635,24 @@ describe('econ endpoints', () => {
 		expect(await res.json()).toEqual([])
 	})
 
+	// The room-economy stubs. One table-driven test: they're the same empty-list answer,
+	// and what's worth pinning is that every path the client asks for on room entry is
+	// registered — an unregistered one 404s and stalls the room load.
+	test('the room-economy endpoints all return []', async () => {
+		for (const path of [
+			'/econ/roomInventory/room/92',
+			'/econ/roomInventory/room/92/player',
+			'/econ/roomInventoryItemTags/room/92',
+			'/econ/roomOffer/room/92',
+			'/econ/roomOffer/room/92/purchaseCounts',
+			'/econ/roomGiftDropShops/room/92',
+		]) {
+			const res = await exports.default.fetch(`${ORIGIN}${path}`)
+			expect(res.status, path).toBe(200)
+			expect(await res.json(), path).toEqual([])
+		}
+	})
+
 	test('GET /api/consumables/v2/getUnlocked 401s without a token, returns []', async () => {
 		const anon = await exports.default.fetch(`${ORIGIN}/api/consumables/v2/getUnlocked`)
 		expect(anon.status).toBe(401)
@@ -2110,6 +2128,12 @@ describe('econ endpoints', () => {
 			'GET /api/storefronts/v3/giftdropstore/{id}',
 			'GET /api/storefronts/v4/balance/{currencyType}',
 			'GET /econ/customAvatarItems/v1/owned',
+			'GET /econ/roomGiftDropShops/room/{roomId}',
+			'GET /econ/roomInventory/room/{roomId}',
+			'GET /econ/roomInventory/room/{roomId}/player',
+			'GET /econ/roomInventoryItemTags/room/{roomId}',
+			'GET /econ/roomOffer/room/{roomId}',
+			'GET /econ/roomOffer/room/{roomId}/purchaseCounts',
 			'POST /api/CampusCard/v1/UpdateAndGetSubscription',
 			'POST /api/avatar/v2/gifts/consume',
 			'POST /api/avatar/v2/set',

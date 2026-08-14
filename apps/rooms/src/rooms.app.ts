@@ -19,6 +19,7 @@ import {
 	getFeaturedRooms,
 	getHotRooms,
 	getInteraction,
+	getOrCreateDormRoom,
 	getPresence,
 	getPublicRoomsByCreator,
 	getRecommendedRooms,
@@ -96,6 +97,7 @@ import {
 	RoomBanEnvelope,
 	RoomDto,
 	RoomEnvelope,
+	RoomExperiencePlayer,
 	roomIdParam,
 	RoomLookup,
 	RoomResultEnvelope,
@@ -843,6 +845,31 @@ const app = new Hono<App>()
 			responses: { 200: json(RoomDto.array(), 'The caller’s rooms'), 401: UNAUTHORIZED_RESPONSE },
 		}),
 		ownedRooms
+	)
+
+	// The caller's own dorm, in the same shape `GET /rooms/{roomId}` serves — the client
+	// renders it with the same code path. Gets-or-creates, exactly as entering a dorm
+	// does (`match`), so a player who has never been to their dorm gets one here rather
+	// than a 404; the id is stable from then on.
+	.get(
+		'/dormroom/me',
+		describeRoute({
+			tags: ['My rooms'],
+			summary: 'The caller’s dorm',
+			description: [
+				'The caller’s personal dorm room, as `GET /rooms/{roomId}` would serve it —',
+				'`SubRooms` re-attached, same DTO. The dorm is provisioned on first access (cloned',
+				'from the seeded template dorm), so this returns a room for any authed caller and',
+				'never 404s; calling it repeatedly returns the same dorm.',
+			].join(' '),
+			security: AUTHED,
+			responses: { 200: json(RoomDto, 'The caller’s dorm'), 401: UNAUTHORIZED_RESPONSE },
+		}),
+		async (c) => {
+			const accountId = await authedAccountId(c)
+			if (accountId === null) return unauthorized(c)
+			return c.json(await getOrCreateDormRoom(c.env.DB, accountId))
+		}
 	)
 
 	// Public: the rooms a given account owns that are publicly viewable. No auth —
@@ -2609,6 +2636,24 @@ const app = new Hono<App>()
 			responses: { 200: json(PlayerDataDto, 'An empty data blob') },
 		}),
 		(c) => c.json({ Data: '' })
+	)
+
+	// The caller's per-room experience/progression. Stub → empty list.
+	.get(
+		'/rooms/:roomId{[0-9]+}/experience/player',
+		describeRoute({
+			tags: ['Rooms'],
+			summary: 'The caller’s per-room experience',
+			description: [
+				'Per-room experience/progression for the calling player. Nothing tracks any yet, so',
+				'this is an empty list — which the client reads as “no progress in this room”, where',
+				'a 404 would stall the room load. No auth, matching `playerdata/me`: the answer is',
+				'the same for every caller until something writes here.',
+			].join(' '),
+			parameters: [roomIdParam],
+			responses: { 200: json(RoomExperiencePlayer, 'An empty list') },
+		}),
+		(c) => c.json([])
 	)
 
 	// Single room by id. 404 when the room isn't in D1. Ignores the
