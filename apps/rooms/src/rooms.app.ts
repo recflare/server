@@ -91,6 +91,7 @@ import {
 	PlayerDataDto,
 	playerIdParam,
 	PublishSaveRequest,
+	PublishStateConfigsEnvelope,
 	RestrictionsRequest,
 	RoleRequest,
 	RoomBanEntryDto,
@@ -2680,6 +2681,38 @@ const app = new Hono<App>()
 			const room = await getRoomById(c.env.DB, Number.parseInt(c.req.param('roomId'), 10))
 			return room ? c.json(room) : c.notFound()
 		}
+	)
+
+	// The republish limits, verbatim from the reference server. Fixed values, no auth:
+	// the client reads them to render its publish UI, before any room is in play.
+	.get(
+		'/publishState/configs',
+		describeRoute({
+			tags: ['Rooms'],
+			summary: 'Room republish limits',
+			description: [
+				'The limits the client enforces around republishing a room — how many updates are',
+				'allowed per rolling window, and the cooldown and expiry around them. Fixed values',
+				'from the reference server; nothing here enforces them server-side yet, so this is',
+				'what the client shows and gates its own UI on.',
+				'',
+				'Note the envelope differs from the room mutations’: `error` is null (not `""`) and',
+				'there is an extra `error_id`.',
+			].join(' '),
+			responses: { 200: json(PublishStateConfigsEnvelope, 'The republish limits') },
+		}),
+		(c) =>
+			c.json({
+				value: {
+					UpdateMaxCount: 3,
+					UpdateRollingWindowInDays: 365,
+					UpdateExpirationInDays: 30,
+					UpdateCooldownInDays: 45,
+				},
+				success: true,
+				error_id: null,
+				error: null,
+			})
 	)
 
 	// Photon access token + room permissions the client needs to spawn into a room.

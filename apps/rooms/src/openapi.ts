@@ -683,3 +683,24 @@ export const PlayerDataDto = z.object({
 export const RoomExperiencePlayer = z
 	.array(z.unknown())
 	.describe('Always empty — no per-room experience is tracked')
+
+/**
+ * `GET /publishState/configs` — the limits the client enforces on republishing a room:
+ * how many updates are allowed in the rolling window, and the cooldown/expiry around
+ * them. Served as fixed values from the reference server.
+ *
+ * The envelope is NOT the `{ success, error, value }` one the room mutations use: `error`
+ * is null rather than `""`, and there's an extra `error_id`. Kept as-is — the client
+ * reads both keys.
+ */
+export const PublishStateConfigsEnvelope = z.object({
+	value: z.object({
+		UpdateMaxCount: z.int().describe('Updates allowed per rolling window'),
+		UpdateRollingWindowInDays: z.int().describe('Length of that window, in days'),
+		UpdateExpirationInDays: z.int().describe('Days before an update expires'),
+		UpdateCooldownInDays: z.int().describe('Days between updates'),
+	}),
+	success: z.literal(true),
+	error_id: z.null(),
+	error: z.null(),
+})

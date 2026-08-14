@@ -141,6 +141,25 @@ describe('rooms endpoints', () => {
 		expect(body.SubRooms[0].UnitySceneId).toBe('76d98498-60a1-430c-ab76-b54a29b7a163')
 	})
 
+	// Pinned whole: these are the numbers the client's publish UI counts against, and
+	// `error: null` / `error_id` is a different envelope from the room mutations' — a
+	// "cleanup" that unified the two would break the client silently.
+	it('GET /publishState/configs returns the republish limits', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/publishState/configs`)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({
+			value: {
+				UpdateMaxCount: 3,
+				UpdateRollingWindowInDays: 365,
+				UpdateExpirationInDays: 30,
+				UpdateCooldownInDays: 45,
+			},
+			success: true,
+			error_id: null,
+			error: null,
+		})
+	})
+
 	// Stub. Registered (not 404) matters more than the body: the client asks for this on
 	// room entry, and an unregistered path stalls the load rather than erroring visibly.
 	it('GET /rooms/:id/experience/player returns [] for any room', async () => {
@@ -2966,6 +2985,7 @@ describe('rooms endpoints', () => {
 			'GET /XXXfeaturedrooms/current',
 			'GET /dormroom/me',
 			'GET /photon_access_token',
+			'GET /publishState/configs',
 			'GET /rooms',
 			'GET /rooms/base',
 			'GET /rooms/bulk',
