@@ -704,7 +704,17 @@ const app = new Hono<App>()
 				})
 			}
 
-			if (gatedOnPlatform && proof.status !== 'verified') {
+			// A sideload placeholder rejection is refused everywhere it's GATED (cached_login,
+			// or create_account asserting a platform we can't prove) except one case: a
+			// create_account whose ONLY reason for rejection is the placeholder id itself. That
+			// client has no real platform behind it and never will, so it falls through to the
+			// same platform-less signup a client that asserted no platform at all gets — no
+			// identity is bound, exactly as intended for sideloaded devices.
+			const sideloadCreateAccount =
+				grantType === 'create_account' &&
+				proof.status === 'rejected' &&
+				proof.reason === 'sideload placeholder platform id is never an identity'
+			if (gatedOnPlatform && proof.status !== 'verified' && !sideloadCreateAccount) {
 				if (proof.status === 'unsupported') {
 					return c.json(
 						{
