@@ -19,6 +19,7 @@ import {
 	getInventionVersion,
 	getMyInventions,
 	getTopInventions,
+	ownsAllInventions,
 	parsePermissionLevel,
 	publishInvention,
 	searchInventions,
@@ -80,6 +81,20 @@ async function creatorsInvention(
 		return { response: c.json({ error: 'Not your invention' }, 403) }
 	}
 	return { invention }
+}
+
+/**
+ * The `?id=1&id=2` list the invention batch endpoints take. `id` repeats, and each
+ * value may itself be a comma-separated list; anything non-numeric is dropped.
+ */
+function inventionIdQuery(c: Context<App>): number[] {
+	return (
+		c.req
+			.queries('id')
+			?.flatMap((raw) => raw.split(','))
+			.map((raw) => Number.parseInt(raw.trim(), 10))
+			.filter((id) => !Number.isNaN(id)) ?? []
+	)
 }
 
 // ---- Avatar gifts ----------------------------------------------------------
@@ -276,12 +291,8 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 			responses: { 200: json(InventionDto.array(), 'The inventions the caller may see') },
 		}),
 		async (c) => {
-			const ids = c.req
-				.queries('id')
-				?.flatMap((raw) => raw.split(','))
-				.map((raw) => Number.parseInt(raw.trim(), 10))
-				.filter((id) => !Number.isNaN(id))
-			if (ids === undefined || ids.length === 0) return c.json([])
+			const ids = inventionIdQuery(c)
+			if (ids.length === 0) return c.json([])
 
 			const playerId = await authedId(c)
 			const inventions = await getInventionsByIds(c.env.DB, ids)
@@ -290,6 +301,40 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 					(i) => i.IsPublished || (playerId !== null && i.CreatorPlayerId === playerId)
 				)
 			)
+		}
+	)
+
+	// Whether the caller owns every invention in a lineage (`?id=101&id=102&id=103`) —
+	// the invention plus everything nested inside it, as the client enumerates it. One
+	// bare `true`/`false` for the whole set, not a verdict per id. Auth-gated: the
+	// question is about the caller.
+	.get(
+		'/api/inventions/v1/fulllineageowner',
+		describeRoute({
+			tags: ['Inventions'],
+			summary: 'Does the caller own this whole lineage?',
+			description:
+				'Asked when saving an invention built out of other inventions: may this player use ' +
+				'every piece? The client sends the whole lineage as repeated `id`s, and this ' +
+				'answers a single bare `true`/`false` for the set — false as soon as one is not the ' +
+				'caller’s. An invention is theirs if they created it or acquired it; an id with no ' +
+				'invention behind it is not owned. Price and permission don’t enter into it — a ' +
+				'free invention still has to be picked up, and that writes the same inventory row ' +
+				'a paid one does.\n\n' +
+				'Only the ids asked about are checked — this does not walk `ReferencedInventions` ' +
+				'to widen the lineage, since the client knows what the thing it is holding is ' +
+				'actually made of. No ids at all is `true`: nothing in an empty lineage is unowned.',
+			security: AUTHED,
+			parameters: [intQuery('id', 'Repeatable; each value may be a comma-separated list of ids')],
+			responses: {
+				200: json(BareBoolean, 'Whether the caller owns every invention asked about'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const playerId = await authedId(c)
+			if (playerId === null) return unauthorized(c)
+			return c.json(await ownsAllInventions(c.env.DB, playerId, inventionIdQuery(c)))
 		}
 	)
 
@@ -377,24 +422,26 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 		}
 	)
 
-	// Edit an invention's metadata. A GET that writes — that's what the client sends
-	// (`?inventionId=1&description=my+description`), with the fields to change as
-	// query params. Absent params keep their stored value; `permission` sets what
-	// other players may do with it (a name like `useonly` or the raw number). An
-	// empty `description` clears it, but an empty `name`/`imageName` is ignored
-	// rather than blanking the invention. Publishing and pricing are separate
-	// endpoints. Auth-gated, creator only; answers the save envelope.
-	.get(
+	// Edit an invention's metadata. The fields to change ride as QUERY PARAMS on both
+	// verbs (`?inventionId=1&description=my+description`) — the client sends this as a
+	// GET that writes in some places and as a bodyless POST in others (the permission
+	// picker posts `?inventionId=84&permission=Publish`), so both are registered and
+	// neither reads a body. Absent params keep their stored value; `permission` sets
+	// what other players may do with it. An empty `description` clears it, but an empty
+	// `name`/`imageName` is ignored rather than blanking the invention. Publishing and
+	// pricing are separate endpoints. Auth-gated, creator only; answers the save envelope.
+	.on(
+		['GET', 'POST'],
 		'/api/inventions/v1/update',
 		describeRoute({
 			tags: ['Inventions'],
 			summary: 'Edit an invention’s metadata',
 			description:
-				'A GET that writes — that is what the client sends, with the fields to change as ' +
-				'query params. Absent params keep their stored value. An empty `description` ' +
-				'clears it, but an empty `name`/`imageName` is ignored rather than blanking the ' +
-				'invention. A supplied name/description must satisfy the same rules `v6/save` ' +
-				'enforces. Publishing and pricing are separate endpoints.',
+				'GET or POST — the client sends both, and the fields to change ride as query ' +
+				'params either way; no body is read. Absent params keep their stored value. An ' +
+				'empty `description` clears it, but an empty `name`/`imageName` is ignored rather ' +
+				'than blanking the invention. A supplied name/description must satisfy the same ' +
+				'rules `v6/save` enforces. Publishing and pricing are separate endpoints.',
 			security: AUTHED,
 			parameters: [
 				intQuery('inventionId', 'Invention id; required'),
@@ -402,7 +449,12 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 				stringQuery('description', 'Max 512 chars; present-but-empty clears it'),
 				stringQuery('imageName', 'New thumbnail; empty is ignored'),
 				stringQuery('allowTrial', '`true`/`1` to allow trials'),
-				stringQuery('permission', 'A name like `useonly`, or the raw permission number'),
+				stringQuery(
+					'permission',
+					'What other players get (`GeneralPermission`). The picker sends `UseOnly`, ' +
+						'`EditAndSave` or `Publish`; any ladder name (case- and underscore-insensitive) ' +
+						'or the raw number is accepted'
+				),
 			],
 			responses: {
 				200: json(InventionSaveResult, 'The updated invention, in the save envelope'),

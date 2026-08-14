@@ -14,7 +14,7 @@ export const DISCORD_INVITE = 'https://discord.gg/HhmMAKhrz'
 export const DOWNLOAD_URL = 'https://github.com/djdevin/recflare-client/releases'
 
 /** The stage's "Download for Quest" button: the build's listing on the Meta store. */
-export const QUEST_DOWNLOAD_URL = 'https://www.meta.com/s/22O3QO7ytn'
+export const QUEST_DOWNLOAD_URL = 'https://www.meta.com/s/6lL20Fnhz'
 
 /** The public source repo, linked from the homepage and footer. */
 export const SOURCE_REPO = 'https://github.com/djdevin/recflare'

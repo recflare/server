@@ -16,8 +16,13 @@
 	},
 	"dependencies": {
 		"@repo/hono-helpers": "workspace:*",
+		"@standard-community/standard-json": "0.3.5",
+		"@standard-community/standard-openapi": "0.2.9",
 		"hono": "4.12.27",
-		"workers-tagged-logger": "1.0.1"
+		"hono-openapi": "1.3.1",
+		"openapi-types": "12.1.3",
+		"workers-tagged-logger": "1.0.1",
+		"zod": "4.4.3"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "0.16.20",

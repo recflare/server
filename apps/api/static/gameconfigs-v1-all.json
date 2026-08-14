@@ -33,19 +33,19 @@
 		"EndTime": null,
 		"Key": "AntiHile.DC",
 		"StartTime": null,
-		"Value": "true"
+		"Value": "false"
 	},
 	{
 		"EndTime": null,
 		"Key": "AntiHile.LPD",
 		"StartTime": null,
-		"Value": "true"
+		"Value": "false"
 	},
 	{
 		"EndTime": null,
 		"Key": "AntiHile.QD",
 		"StartTime": null,
-		"Value": "true"
+		"Value": "false"
 	},
 	{
 		"EndTime": null,
@@ -117,7 +117,7 @@
 		"EndTime": null,
 		"Key": "Backtrace.stopTimeUTC",
 		"StartTime": null,
-		"Value": "9999-09-28 23:55"
+		"Value": "2026-06-01 00:00"
 	},
 	{
 		"EndTime": null,

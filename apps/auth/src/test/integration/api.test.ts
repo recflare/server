@@ -515,9 +515,14 @@ describe('auth worker routes', () => {
 		expect(payload.iss).toBe('https://auth.recflare.net')
 		expect(payload.aud).toBe('https://auth.recflare.net')
 		expect(payload.role).toContain('gameClient')
-		// A plain account carries only the base role — no elevated roles.
+		// screenshare is a feature gate, not a grant — every token carries it.
+		expect(payload.role).toContain('screenshare')
+		// A plain adult account carries nothing beyond those — no elevated roles.
 		expect(payload.role).not.toContain('developer')
 		expect(payload.role).not.toContain('moderator')
+		expect(payload.role).not.toContain('junior')
+		// No privileges to carry, so the claim is absent rather than an empty array.
+		expect(payload['rn.privilege']).toBeUndefined()
 		expect(payload.scope).toContain('rn.api')
 	})
 
@@ -535,6 +540,25 @@ describe('auth worker routes', () => {
 			.run()
 		const payload = await tokenFor(`account_id=91&password=${LOGIN_PASSWORD}`)
 		expect(payload.role).toEqual(expect.arrayContaining(['gameClient', 'developer', 'moderator']))
+	})
+
+	test('POST /connect/token stamps the junior role for an isJunior account', async () => {
+		await env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
+			.bind(
+				JSON.stringify({
+					accountId: 92,
+					username: 'JuniorPlayer',
+					passwordHash: await hashPassword(LOGIN_PASSWORD),
+					isJunior: true,
+				})
+			)
+			.run()
+		const payload = await tokenFor(`account_id=92&password=${LOGIN_PASSWORD}`)
+		expect(payload.role).toEqual(expect.arrayContaining(['gameClient', 'screenshare', 'junior']))
+		expect(payload.role).not.toContain('developer')
+		// `rn.privilege` is a claim, not a scope — it sits beside `role`, never in `scope`.
+		expect(payload['rn.privilege']).toEqual(['BanVChat', 'BanRmChat'])
+		expect(payload.scope).not.toContain('rn.privilege')
 	})
 
 	test('POST /connect/token 400s when no account_id is posted (never defaults to 1)', async () => {

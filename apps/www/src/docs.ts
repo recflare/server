@@ -23,6 +23,7 @@ export const DOCUMENTED_SERVICES: ReadonlyArray<{ slug: string; title: string }>
 	{ slug: 'match', title: 'match — matchmaking & presence' },
 	{ slug: 'econ', title: 'econ — avatar & economy' },
 	{ slug: 'clubs', title: 'clubs — clubs & clubhouses' },
+	{ slug: 'commerce', title: 'commerce — store catalog & purchases' },
 	{ slug: 'chat', title: 'chat — threads & messages' },
 	{ slug: 'img', title: 'img — image serving & resizing' },
 	{ slug: 'cdn', title: 'cdn — binary asset delivery' },

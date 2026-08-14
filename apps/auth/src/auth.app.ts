@@ -195,16 +195,33 @@ async function authedId(c: Context<App>): Promise<number | null> {
 }
 
 /**
- * The elevated role names for an account's token `role` claim, derived from its
- * role flags. Base roles (gameClient) are added by generateToken — these are only
- * the operator-granted extras. Order is stable so tokens are deterministic.
+ * The role names beyond `gameClient` for an account's token `role` claim. Base roles
+ * (gameClient) are added by generateToken. `screenshare` rides on EVERY token — the
+ * client gates the screen-share feature on it and nothing grants it per-account, so it
+ * is unconditional (even with no account resolved). The rest are the operator-granted
+ * extras, plus `junior` off the account's own `isJunior` flag. Order is stable so
+ * tokens are deterministic.
  */
-function accountRoles(account: Pick<Account, 'isDeveloper' | 'isModerator'> | null): string[] {
-	if (!account) return []
-	const roles: string[] = []
+function accountRoles(
+	account: Pick<Account, 'isDeveloper' | 'isModerator' | 'isJunior'> | null
+): string[] {
+	const roles = ['screenshare']
+	if (!account) return roles
 	if (account.isDeveloper) roles.push('developer')
 	if (account.isModerator) roles.push('moderator')
+	if (account.isJunior) roles.push('junior')
 	return roles
+}
+
+/**
+ * The account's token `rn.privilege` claim. Despite the scope-shaped name it is a CLAIM,
+ * read out of the same claims dictionary as `role` — it never belongs in `scope`. The
+ * client knows exactly two values, both chat restrictions, and both ride on a junior
+ * account: `BanVChat` (voice) and `BanRmChat` (room chat). Empty for everyone else, which
+ * drops the claim rather than sending a blank one.
+ */
+function accountPrivileges(account: Pick<Account, 'isJunior'> | null): string[] {
+	return account?.isJunior ? ['BanVChat', 'BanRmChat'] : []
 }
 
 /**
@@ -565,7 +582,11 @@ const app = new Hono<App>()
 				'succeeds; it simply links nothing, and the player types their password each launch.',
 				'',
 				'**Roles.** The token embeds a `role` claim from the account, so developer/moderator',
-				'powers refresh on every login and every refresh grant.',
+				'powers refresh on every login and every refresh grant. `junior` rides along for an',
+				'account flagged `isJunior`, and `screenshare` is on every token — it is a feature',
+				'gate the client reads, not a privilege anyone is granted. A junior also carries',
+				'the `rn.privilege` CLAIM (`BanVChat`, `BanRmChat`) — scope-shaped name, but the',
+				'client reads it as a claim beside `role`, and it is absent for everyone else.',
 				'',
 				'**Bans.** Once the grant has resolved an account, a BANNED account is refused a',
 				'token at all (`invalid_grant`) — every grant, including a refresh. A ban is a',
@@ -1000,7 +1021,8 @@ const app = new Hono<App>()
 				platformId,
 				platform,
 				jwtSecret,
-				accountRoles(roleAccount)
+				accountRoles(roleAccount),
+				accountPrivileges(roleAccount)
 			)
 			// Issue a fresh, persisted refresh token (single-use; the client redeems it via
 			// grant_type=refresh_token). A refresh grant thus rotates its token.

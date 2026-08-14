@@ -1760,6 +1760,18 @@ function hotScore(room: Room, stats: Map<number, RoomStats>): number {
 const NEW_TAG = 'new'
 
 /**
+ * The browse screen's "Community" chip posts `tag=community`, another PSEUDO-tag no
+ * room carries. It means "made by a player", which here is every room whose creator
+ * isn't the Coach account — the system account that owns the seeded Rec Room rooms.
+ * Unlike {@link NEW_TAG} it only filters: the page keeps the feed's normal
+ * live-population ordering.
+ */
+const COMMUNITY_TAG = 'community'
+
+/** The system account (`Coach`) that owns the seeded first-party rooms. */
+const COACH_ACCOUNT_ID = 1
+
+/**
  * True if the room is a Rec Room Original. `IsRRO` is the flag the client renders a
  * virtual "RRO" tag from; the auto-derived `rro` tag is checked too so a room that only
  * carries the tag isn't mistaken for player-made.
@@ -1784,7 +1796,8 @@ function createdAt(room: Room): number {
  * skip/take; returns `{ Results, TotalResults }` like search. The dataset is
  * small, so this filters/sorts in memory rather than in SQL.
  *
- * `tag=new` is the one filter that isn't a tag lookup — see {@link NEW_TAG}.
+ * `tag=new` and `tag=community` are the filters that aren't tag lookups — see
+ * {@link NEW_TAG} and {@link COMMUNITY_TAG}.
  */
 export async function getHotRooms(
 	db: D1Database,
@@ -1810,7 +1823,9 @@ export async function getHotRooms(
 		}
 	}
 
-	if (t !== '') {
+	if (t === COMMUNITY_TAG) {
+		rooms = rooms.filter((r) => r.CreatorAccountId !== COACH_ACCOUNT_ID)
+	} else if (t !== '') {
 		const accepted = new Set([t, ...(TAG_ALIASES[t] ?? [])])
 		rooms = rooms.filter((r) => roomHasAnyTag(r, accepted))
 	}

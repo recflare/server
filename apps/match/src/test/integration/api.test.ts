@@ -21,6 +21,7 @@ import {
 	SUBROOM_SCHEMA_DDL,
 } from '@repo/domain'
 
+import { SCHEMA_DDL as EVENTS_SCHEMA_DDL } from '../../../../api/src/events-db'
 import {
 	banFromReport,
 	createReport,
@@ -150,6 +151,49 @@ beforeAll(async () => {
 		insertMember.bind(5, 120, 100),
 	])
 
+	// Player-event tables (owned by the api worker) — matchmake/event reads the event
+	// for its room and the caller's invite row for access.
+	for (const stmt of EVENTS_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	const insertEvent = env.DB.prepare('INSERT OR IGNORE INTO event (data) VALUES (?1)')
+	const event = (id: number, accessibility: number, extra?: Record<string, unknown>) =>
+		JSON.stringify({
+			PlayerEventId: id,
+			CreatorPlayerId: 300,
+			ImageName: null,
+			RoomId: 2,
+			SubRoomId: null,
+			ClubId: null,
+			Name: `Event ${id}`,
+			Description: '',
+			StartTime: '2020-11-29T22:00:00Z',
+			EndTime: '2020-11-29T23:00:00Z',
+			AttendeeCount: 1,
+			State: 0,
+			Accessibility: accessibility,
+			IsMultiInstance: false,
+			SupportMultiInstanceRoomChat: false,
+			DefaultBroadcastPermissions: 0,
+			CanRequestBroadcastPermissions: 0,
+			...extra,
+		})
+	await env.DB.batch([
+		insertEvent.bind(event(8, 0)), // private
+		insertEvent.bind(event(9, 1)), // public
+		insertEvent.bind(event(10, 2)), // unlisted — listings only, still joinable
+		// A private one in the two-subroom room, pinning the SECOND subroom.
+		insertEvent.bind(event(11, 0, { RoomId: 77, SubRoomId: 35 })),
+	])
+	const insertAttendee = env.DB.prepare(
+		`INSERT INTO event_attendee (event_id, player_id, status, responded_at)
+		 VALUES (?1, ?2, ?3, '2020-11-29T21:00:00Z')`
+	)
+	await env.DB.batch([
+		insertAttendee.bind(8, 300, 0), // the creator, Going from create
+		insertAttendee.bind(8, 301, 0), // invited
+		insertAttendee.bind(8, 302, 2), // invited, but declined — still allowed in
+		insertAttendee.bind(11, 301, 0),
+	])
+
 	// Relationship table (owned by the api worker) — matchmake reads it to push a
 	// presence update to the player's friends. Seed friendships for player 9700.
 	await env.DB.prepare(
@@ -277,6 +321,145 @@ describe('public endpoints', () => {
 		expect(res.status).toBe(200)
 		const players = (await res.json()) as Array<{ playerId: number; isOnline: boolean }>
 		expect(players[0]).toMatchObject({ playerId: 1, isOnline: true, appVersion: GAME_VERSION })
+	})
+
+	// The "avoid juniors" preference lives in the playersettings KV map, not in presence.
+	// The body is a BARE boolean — the client reads the whole body as the value.
+	describe('GET /player/avoidjuniors', () => {
+		const settings = async (playerId: number, map: Record<string, string>) =>
+			env.RECFLARE_PLAYER_SETTINGS.put(`player:${playerId}`, JSON.stringify(map))
+
+		const read = async (playerId: number) => {
+			const res = await exports.default.fetch(`${ORIGIN}/player/avoidjuniors`, {
+				headers: await bearer(String(playerId)),
+			})
+			expect(res.status).toBe(200)
+			return res.json()
+		}
+
+		test('reads the stored setting', async () => {
+			await settings(3100, { avoidJuniors: 'True', 'Recroom.OOBE': '77' })
+			expect(await read(3100)).toBe(true)
+
+			await settings(3101, { avoidJuniors: 'False' })
+			expect(await read(3101)).toBe(false)
+		})
+
+		test('the key match ignores casing and separators', async () => {
+			await settings(3102, { AVOID_JUNIORS: '1' })
+			expect(await read(3102)).toBe(true)
+
+			await settings(3103, { avoidjuniors: 'yes' })
+			expect(await read(3103)).toBe(true)
+		})
+
+		// A player who never touched the setting, and one whose value is junk, both read
+		// false — the read gates matchmaking, so it must not fail closed.
+		test('defaults to false when unset or unparseable', async () => {
+			expect(await read(3104)).toBe(false)
+
+			await settings(3105, { 'Recroom.OOBE': '77' })
+			expect(await read(3105)).toBe(false)
+
+			await settings(3106, { avoidJuniors: 'maybe' })
+			expect(await read(3106)).toBe(false)
+		})
+
+		test('is auth-gated', async () => {
+			const res = await exports.default.fetch(`${ORIGIN}/player/avoidjuniors`)
+			expect(res.status).toBe(401)
+		})
+	})
+
+	describe('PUT /player/avoidjuniors', () => {
+		const stored = async (playerId: number) =>
+			env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(`player:${playerId}`, 'json')
+
+		const write = async (playerId: number, body: string) => {
+			const res = await exports.default.fetch(`${ORIGIN}/player/avoidjuniors`, {
+				method: 'PUT',
+				headers: {
+					...(await bearer(String(playerId))),
+					'Content-Type': 'application/x-www-form-urlencoded',
+				},
+				body,
+			})
+			expect(res.status).toBe(200)
+			return res.json()
+		}
+
+		const read = async (playerId: number) => {
+			const res = await exports.default.fetch(`${ORIGIN}/player/avoidjuniors`, {
+				headers: await bearer(String(playerId)),
+			})
+			return res.json()
+		}
+
+		// The body the client posts. The response is the resulting value, and the GET agrees.
+		test('stores the posted preference and answers it', async () => {
+			expect(await write(3200, 'avoidJuniors=True')).toBe(true)
+			expect(await read(3200)).toBe(true)
+
+			expect(await write(3200, 'avoidJuniors=False')).toBe(false)
+			expect(await read(3200)).toBe(false)
+		})
+
+		// The map holds every setting the player has, so the write must not replace it.
+		test('merges into the player’s other settings', async () => {
+			await env.RECFLARE_PLAYER_SETTINGS.put(
+				'player:3201',
+				JSON.stringify({ 'Recroom.OOBE': '77', TUTORIAL_COMPLETE_MASK: '11' })
+			)
+			await write(3201, 'avoidJuniors=True')
+			expect(await stored(3201)).toEqual({
+				'Recroom.OOBE': '77',
+				TUTORIAL_COMPLETE_MASK: '11',
+				avoidJuniors: 'True',
+			})
+		})
+
+		// Whichever spelling the player's map already carries is the one overwritten —
+		// two keys for one preference would make the read depend on their order.
+		test('overwrites an existing key rather than adding a second one', async () => {
+			await env.RECFLARE_PLAYER_SETTINGS.put(
+				'player:3202',
+				JSON.stringify({ AVOID_JUNIORS: 'True' })
+			)
+			expect(await write(3202, 'avoidJuniors=False')).toBe(false)
+			expect(await stored(3202)).toEqual({ AVOID_JUNIORS: 'False' })
+		})
+
+		test('accepts a JSON body', async () => {
+			const res = await exports.default.fetch(`${ORIGIN}/player/avoidjuniors`, {
+				method: 'PUT',
+				headers: {
+					...(await bearer('3203')),
+					'Content-Type': 'application/json',
+				},
+				body: JSON.stringify({ avoidJuniors: true }),
+			})
+			expect(res.status).toBe(200)
+			expect(await res.json()).toBe(true)
+			expect(await read(3203)).toBe(true)
+		})
+
+		// An unreadable body leaves the stored setting alone and answers it — a no-op 200,
+		// not a 400 and not a write of `false`.
+		test('a body with no readable value is a no-op', async () => {
+			await write(3204, 'avoidJuniors=True')
+			expect(await write(3204, 'avoidJuniors=maybe')).toBe(true)
+			expect(await write(3204, '')).toBe(true)
+			expect(await stored(3204)).toEqual({ avoidJuniors: 'True' })
+		})
+
+		test('is auth-gated', async () => {
+			const res = await exports.default.fetch(`${ORIGIN}/player/avoidjuniors`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+				body: 'avoidJuniors=True',
+			})
+			expect(res.status).toBe(401)
+		})
 	})
 
 	test('POST /matchmake/room/:roomId resolves the room scene from D1', async () => {
@@ -512,6 +695,80 @@ describe('public endpoints', () => {
 
 		// Signed out is a 401, not a matchmaking error.
 		expect((await matchmake('/matchmake/club/4')).status).toBe(401)
+	})
+
+	test('POST /matchmake/event/:eventId gates a private event on the invite list', async () => {
+		const matchmake = async (path: string, sub?: string) =>
+			exports.default.fetch(`${ORIGIN}${path}`, {
+				method: 'POST',
+				headers: {
+					...(sub === undefined ? {} : await bearer(sub)),
+					'Content-Type': 'application/x-www-form-urlencoded',
+				},
+				body: 'JoinMode=0',
+			})
+		type Body = {
+			errorCode: number
+			roomInstance: { roomId: number; location: string; roomInstanceId: number } | null
+		}
+		const join = async (path: string, sub?: string) =>
+			(await (await matchmake(path, sub)).json()) as Body
+
+		// An invited player lands in an instance of the event's room (2)...
+		const invited = await join('/matchmake/event/8', '301')
+		expect(invited.errorCode).toBe(0)
+		expect(invited.roomInstance).toMatchObject({ roomId: 2, location: RECCENTER_SCENE })
+
+		// ...recorded as their presence, like any other matchmake.
+		const row = await env.DB.prepare('SELECT data FROM presence WHERE account_id = ?1')
+			.bind(301)
+			.first<{ data: string }>()
+		const presence = JSON.parse(row!.data) as { roomInstance: { roomInstanceId: number } }
+		expect(presence.roomInstance.roomInstanceId).toBe(invited.roomInstance!.roomInstanceId)
+
+		// The creator gets in, and so does someone who was invited and DECLINED — the row
+		// is the invite, whatever the answer.
+		expect((await join('/matchmake/event/8', '300')).errorCode).toBe(0)
+		expect((await join('/matchmake/event/8', '302')).errorCode).toBe(0)
+
+		// A stranger doesn't — and is told why (35 EventIsPrivate), not fobbed off with 20.
+		expect(await join('/matchmake/event/8', '399')).toEqual({
+			errorCode: 35,
+			roomInstance: null,
+		})
+
+		// Public and unlisted are open to anyone: unlisted only keeps an event out of the
+		// listings, it doesn't close it.
+		expect((await join('/matchmake/event/9', '399')).errorCode).toBe(0)
+		expect((await join('/matchmake/event/10', '399')).errorCode).toBe(0)
+
+		// An unknown event is the opaque NoSuchRoom, so ids can't be probed.
+		expect(await join('/matchmake/event/9999', '399')).toEqual({
+			errorCode: 20,
+			roomInstance: null,
+		})
+
+		// Signed out is a 401, not a matchmaking error.
+		expect((await matchmake('/matchmake/event/9')).status).toBe(401)
+	})
+
+	test('POST /matchmake/event/:eventId enters the subroom the event pins', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/matchmake/event/11`, {
+			method: 'POST',
+			headers: { ...(await bearer('301')), 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: 'JoinMode=0',
+		})
+		const body = (await res.json()) as {
+			errorCode: number
+			roomInstance: { roomId: number; subRoomId: number; location: string } | null
+		}
+		// Room 77's SECOND subroom (35), not its first — the event pins the scene.
+		expect(body.errorCode).toBe(0)
+		expect(body.roomInstance).toMatchObject({
+			roomId: 77,
+			subRoomId: 35,
+			location: SECOND_SUBROOM_SCENE,
+		})
 	})
 
 	test('POST /matchmake/room/:roomId returns NoSuchRoom for an unknown room', async () => {
@@ -1761,12 +2018,14 @@ describe('auth-gated endpoints', () => {
 		)
 		expect([...documented].sort()).toEqual([
 			'GET /player',
+			'GET /player/avoidjuniors',
 			'GET /room/{roomId}/instances',
 			'GET /rooms/requiring/developer',
 			'GET /rooms/requiring/rrplus',
 			'POST /invite',
 			'POST /matchmake/club/{clubId}',
 			'POST /matchmake/dorm',
+			'POST /matchmake/event/{eventId}',
 			'POST /matchmake/instance/{instanceId}',
 			'POST /matchmake/player/{playerId}',
 			'POST /matchmake/room/{roomId}',
@@ -1778,6 +2037,7 @@ describe('auth-gated endpoints', () => {
 			'POST /player/notifydisconnect',
 			'POST /roominstance/{id}/markprivate',
 			'POST /roominstance/{id}/reportjoinresult',
+			'PUT /player/avoidjuniors',
 			'PUT /player/gameserverregionpings',
 			'PUT /player/photonregionpings',
 			'PUT /player/statusvisibility',

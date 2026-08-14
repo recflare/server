@@ -302,6 +302,48 @@ export async function getMyInventions(db: D1Database, playerId: number): Promise
 }
 
 /**
+ * Whether a player owns EVERY invention in a list — the `v1/fulllineageowner` check,
+ * which the client runs when saving an invention BUILT OUT OF other inventions: it is
+ * asking whether this player may use each piece. An invention is the player's if they
+ * created it (`CreatorPlayerId`) or acquired it (a row in `inventory_invention`); an id
+ * with no invention row is not owned, so a deleted or made-up id makes the whole answer
+ * false.
+ *
+ * Ownership is the whole test — price and `GeneralPermission` deliberately don't enter
+ * into it. A free invention still has to be picked up before it can be used, and econ's
+ * buyInvention writes the same inventory row for a 0-token acquisition as for a paid
+ * one, so "acquired" already covers "free". Reading permission here as a second way to
+ * qualify would let a player build on an invention they never took.
+ *
+ * The lineage is whatever the CLIENT asks about: it sends the invention plus every
+ * invention nested inside it as repeated `id`s, so this checks exactly the ids given
+ * and does not walk `ReferencedInventions` itself. Walking it here would answer a
+ * different question than the one asked — the client knows which pieces the thing it
+ * is holding is actually made of, and stale references on an old record don't.
+ *
+ * An empty list is owned: no invention in it is unowned. The client never asks that,
+ * but false would read as "you don't own something" with nothing to name.
+ */
+export async function ownsAllInventions(
+	db: D1Database,
+	playerId: number,
+	inventionIds: number[]
+): Promise<boolean> {
+	if (inventionIds.length === 0) return true
+
+	// The client repeats an id when the same invention is nested more than once.
+	const unique = [...new Set(inventionIds)]
+	const [inventions, ownedIds] = await Promise.all([
+		getInventionsByIds(db, unique),
+		getOwnedInventionIds(db, playerId),
+	])
+
+	const bought = new Set(ownedIds)
+	const creators = new Map(inventions.map((i) => [i.InventionId, i.CreatorPlayerId]))
+	return unique.every((id) => creators.get(id) === playerId || (creators.has(id) && bought.has(id)))
+}
+
+/**
  * Invention search — the browse/search list the client shows when picking an
  * invention to spawn. Only published, non-hidden inventions are visible here (a
  * player's own unpublished ones come from `getInventionsByCreator`). `value` is

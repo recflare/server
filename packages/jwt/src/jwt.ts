@@ -113,7 +113,8 @@ export async function generateToken(
 	platformId: string,
 	platform: number,
 	secret: string,
-	extraRoles: string[] = []
+	extraRoles: string[] = [],
+	privileges: string[] = []
 ): Promise<string> {
 	const now = Math.floor(Date.now() / 1000)
 	// The client reads `role`/`scope` (and expects a well-formed iss/aud) to
@@ -135,6 +136,11 @@ export async function generateToken(
 			'rn.ver': GAME_VERSION,
 			'rn.plat': platform,
 			role: [...BASE_ROLES, ...extraRoles],
+			// `rn.privilege` LOOKS like a scope but is a claim: the client reads it out of
+			// the same claims dictionary it reads `role` from, and it never appears in
+			// `scope`. Omitted entirely when empty, so an unrestricted token is byte-for-byte
+			// what it was before privileges existed.
+			...(privileges.length > 0 ? { 'rn.privilege': privileges } : {}),
 			scope: TOKEN_SCOPES,
 			jti: crypto.randomUUID(),
 		},

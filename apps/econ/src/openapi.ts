@@ -105,11 +105,45 @@ export const CustomAvatarItemsResponse = z.object({
 	TotalResults: z.int(),
 })
 
-/** `POST /api/CampusCard/v1/UpdateAndGetSubscription` — both fields null (no subs yet). */
-export const SubscriptionResponse = z.object({
-	subscription: z.null(),
-	platformAccountSubscribedPlayerId: z.null(),
+/**
+ * A Rec Room Plus subscription (the client calls it a `CampusCard`). Nothing here sells one,
+ * so this is the complimentary subscription a `developer` account reports — see
+ * `developerSubscription` in econ.app.ts for why each field reads the way it does.
+ */
+export const SubscriptionDto = z.object({
+	SubscriptionId: z.int().describe('Placeholder — no subscription is stored'),
+	RecNetPlayerId: z.int().describe('The subscribed player: the caller'),
+	PlatformType: z
+		.int()
+		.nullable()
+		.describe(
+			'Which store sold it: -1 All, 0 Steam, 1 Oculus, 2 PlayStation, 3 Xbox, 4 RecNet, ' +
+				'5 IOS, 6 GooglePlay, 7 Standalone, 8 Pico. -1 here — no store did'
+		),
+	PlatformId: z.string().describe('Empty — no store account behind it'),
+	PlatformPurchaseId: z.string().describe('Empty — nothing was purchased'),
+	Level: z.int().describe('0 Gold, 1 Platinum'),
+	Period: z.int().describe('0 Month, 1 Year, 2 ThreeMonth, 3 SixMonth'),
+	ExpirationDate: z.string().describe('ISO 8601 UTC; a year out, recomputed per call'),
+	IsAutoRenewing: z.boolean(),
+	CreatedAt: z.string(),
+	ModifiedAt: z.string(),
 })
+
+/**
+ * `POST /api/CampusCard/v1/UpdateAndGetSubscription` — the caller's subscription, or `{}`
+ * when they have none (which is everyone without the `developer` role). `{}` rather than a
+ * `Subscription: null` envelope: an absent key is how the client reads "not subscribed".
+ */
+export const SubscriptionResponse = z.union([
+	z.object({
+		Subscription: SubscriptionDto,
+		PlatformAccountSubscribedPlayerId: z
+			.null()
+			.describe('The platform account holding the sub, when it is shared. Never set here'),
+	}),
+	z.object({}).describe('`{}` — no subscription'),
+])
 
 /** `POST /api/challenge/v2/updateProgress` — the identifying fields echoed back. */
 export const ChallengeProgressResponse = z.object({
@@ -234,7 +268,7 @@ export const GameRewardRequest = z.object({
 	giftContext: z
 		.string()
 		.optional()
-		.describe('The activity it came from, e.g. `Soccer` — accepted and ignored'),
+		.describe('The activity it came from, e.g. `Soccer` — part of the cooldown key'),
 })
 
 /**

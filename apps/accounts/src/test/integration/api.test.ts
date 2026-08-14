@@ -161,6 +161,9 @@ describe('auth-gated endpoints', () => {
 			personalPronouns: 0,
 			identityFlags: 0,
 			availableUsernameChanges: 1,
+			// An unset email is "", not null — the client reads it as a string, and the
+			// hub frame this DTO also rides drops null values outright.
+			email: '',
 		})
 		// juniorState + parentAccountId must be omitted when null, not emitted as
 		// null, or the client's enum parser throws on `juniorState`. `phone` isn't
