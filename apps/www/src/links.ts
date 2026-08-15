@@ -34,4 +34,4 @@ export const ISSUES_URL = `${SOURCE_REPO}/issues/new`
  * are free and open to anyone in any region — which is what VRC.Privacy.4 asks for. Set
  * it to a real, monitored mailbox and the policy adds it as the preferred contact.
  */
-export const PRIVACY_EMAIL: string = 'privacy@recflare.net'
+export const PRIVACY_EMAIL: string ='

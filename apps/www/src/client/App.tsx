@@ -666,7 +666,7 @@ function NavBar({
 	return (
 		<header className="nav">
 			<Link to="/" navigate={navigate} className="brand">
-				RecFlare
+				Rug Room
 			</Link>
 			<nav className="nav-links">
 				<a href={DISCORD_INVITE} target="_blank" rel="noreferrer">
@@ -892,7 +892,7 @@ function Chevron({ next }: { next?: boolean }) {
 	)
 }
 
-/** What RecFlare is, under the fold, for whoever wants it. */
+/** What Rug Room is, under the fold, for whoever wants it. */
 function About({ slides, error }: { slides: Slide[] | null; error: string }) {
 	// The feed answering is proof the server replied, so the indicator can't claim
 	// the server is up when it isn't.
@@ -901,11 +901,10 @@ function About({ slides, error }: { slides: Slide[] | null; error: string }) {
 	return (
 		<section className="about">
 			<div>
-				<h2 className="about-title">An open source rebuild of the 2023 servers</h2>
+				<h2 className="about-title">Rug Room is a Community Made 2023 revival, soon to be 2025!</h2>
 				<p className="about-lede">
-					A free fan project, made by players who missed it. Aiming to be{' '}
-					<strong>feature-complete</strong> and infinitely scalable —{' '}
-					<strong>architected for the cloud</strong>, no gatekeeping, no basement server.
+					A free fan project, made by players who missed it. Built to be{' '}
+					<strong>feature-complete</strong> and always growing!{' '}
 				</p>
 			</div>
 			<div className="about-side">
