@@ -1,11 +1,8 @@
 /** The community Discord */
 export const DISCORD_INVITE = 'https://discord.gg/m569yWvGEG'
 
-/** Download link */
+/** Where the stage's "Download for PC" button goes. */
 export const DOWNLOAD_URL = 'https://discord.gg/m569yWvGEG'
-
-/** Where the stage's "Download for PC" button goes: the client's release listing. */
-export const DOWNLOAD_URL = 'https://github.com/djdevin/recflare-client/releases'
 
 /** The stage's "Download for Quest" button: the build's listing on the Meta store. */
 export const QUEST_DOWNLOAD_URL = 'https://www.meta.com/s/6lL20Fnhz'
@@ -28,4 +25,4 @@ export const ISSUES_URL = 'https://discord.gg/m569yWvGEG'
  * are free and open to anyone in any region — which is what VRC.Privacy.4 asks for. Set
  * it to a real, monitored mailbox and the policy adds it as the preferred contact.
  */
-export const PRIVACY_EMAIL: string ='
+export const PRIVACY_EMAIL: string = 'fusionthemadman@gmail.com'
