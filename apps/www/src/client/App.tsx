@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Accessibility } from '@repo/domain/src/enums'
+import { GAME_VERSION } from '@repo/domain/src/presence-db'
 
 import { NotificationType } from '../../../notify/src/notification-types'
 import { authFailure, authUnreachable } from '../auth-messages'
@@ -324,6 +325,17 @@ async function fetchMyRooms(): Promise<OwnedRoom[]> {
  * reads back, and so the only one a `DataBlob` key can point into.
  */
 const FILE_TYPE_ROOM_SAVE = '1'
+
+/**
+ * The game build this server targets, as `YYYY-MM-DD` — read from the same `GAME_VERSION`
+ * the auth token and presence carry rather than written out again here, so upgrading the
+ * client moves this line with it instead of leaving a stale date on the upload form.
+ *
+ * It's shown because a scene blob is only loadable by the build that wrote it (or older
+ * ones that understand it): a save taken out of a room built on a later version can fail
+ * outright, and nothing between here and the game says why.
+ */
+const CLIENT_BUILD_DATE = `${GAME_VERSION.slice(0, 4)}-${GAME_VERSION.slice(4, 6)}-${GAME_VERSION.slice(6, 8)}`
 
 /**
  * Upload a scene blob to `storage` and return the key it was stored under — the
@@ -1362,8 +1374,21 @@ function BlobUpload({
 				})
 			}}
 		>
+			{/* Said out loud, on the control itself: this is the newest thing on the site and
+			    the only one that overwrites what players load. Someone about to hand us a file
+			    they can't get back should read that before the file picker, not after. */}
+			<p className="blob-upload-head">
+				<span className="blob-upload-title">Replace scene data</span>
+				<span className="badge beta">Beta</span>
+			</p>
+			<p className="muted blob-upload-caveat">
+				New and lightly tested. Nothing here checks the file — the server stores whatever it
+				is and the game finds out on load. This server runs the {CLIENT_BUILD_DATE} build, so
+				scene data from a room built on anything newer may not load at all. Download the save
+				above and keep it before replacing it.
+			</p>
 			<label className="blob-upload-file">
-				Replace scene data
+				Scene data file
 				<input
 					ref={input}
 					type="file"
