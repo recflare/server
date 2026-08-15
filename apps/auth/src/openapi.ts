@@ -170,6 +170,14 @@ export const TokenRequest = z.object({
 		.optional()
 		.describe('Client-chosen, unverified. Recorded on the account, never trusted'),
 	device_class: z.string().optional().describe('Integer string; defaults to 0'),
+	ver: z
+		.string()
+		.optional()
+		.describe(
+			'The client’s build, e.g. `20250718.01`. Stamped into the token’s `rn.ver` claim and ' +
+				'read back by `match` when it writes presence, so a player reports the build they ' +
+				'are running. Absent (or empty) falls back to the server’s GAME_VERSION'
+		),
 })
 
 /** `POST /account/me/changepassword` form body. */

@@ -34,6 +34,7 @@ import {
 import {
 	AUTHED,
 	BareBoolean,
+	BulkCustomAvatarItemsRequest,
 	CustomAvatarItemsPage,
 	ErrorResponse,
 	form,
@@ -222,6 +223,42 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 			responses: { 200: json(JsonArray, 'An empty list') },
 		}),
 		(c) => c.json([])
+	)
+
+	// A batch lookup of custom avatar items by id. The reference filters a static catalog
+	// down to the posted ids and returns the MATCHES AS A BARE ARRAY — not the
+	// `{ Results, TotalResults }` page its catalog file is written in, and not a 404 for
+	// ids it doesn't hold. Nothing stores custom items here (the reference's own catalog
+	// ships empty too), so every id misses and the array is empty.
+	//
+	// Auth-gated, and the token is checked before anything else, as the reference does.
+	.post(
+		'/api/customAvatarItems/v1/bulk',
+		describeRoute({
+			tags: ['Avatar'],
+			summary: 'Custom avatar items in bulk',
+			description:
+				'Resolves a batch of custom-avatar-item ids to their items: the posted ' +
+				'`customAvatarItemIds` filtered against the catalog, returned as a BARE ARRAY of ' +
+				'the ones that matched. Not the `{ Results, TotalResults }` page the sibling ' +
+				'custom-item reads serve — the reference keeps its catalog in that shape but ' +
+				'answers this route with the filtered array alone.\n\n' +
+				'A miss is not an error: unknown ids are simply absent from the response, and the ' +
+				'client reads the items it got back rather than the ids it asked for. Nothing ' +
+				'stores custom items here, so every id misses and this is always `[]` — which is ' +
+				'why the posted ids are not parsed.',
+			security: AUTHED,
+			requestBody: form(BulkCustomAvatarItemsRequest, 'The custom-avatar-item ids to resolve'),
+			responses: {
+				200: json(JsonArray, 'The matching items — always empty here'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+			return c.json([])
+		}
 	)
 
 	// Custom avatar items created by a given account. No storage yet → an empty

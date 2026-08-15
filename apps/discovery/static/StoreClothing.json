@@ -1,0 +1,106 @@
+[
+  {
+    "id": "StoreItemCarousel_UnifiedAlgorithmicList_New",
+    "sectionType": 4,
+    "sectionSubType": "Items_NewlyReleased",
+    "source": "UnifiedAlgorithmicList",
+    "sourceMetadata": "newitems",
+    "displayMetadata": "{\r\n\t\"DisplayTitle\":\"New\",\r\n    \"itemCount\": 5\r\n}"
+  },
+  {
+    "id": "StoreItemCarousel_UnifiedAlgorithmicList_Headwear",
+    "sectionType": 4,
+    "sectionSubType": "Items_Headwear",
+    "source": "UnifiedAlgorithmicList",
+    "sourceMetadata": "headwearitems",
+    "displayMetadata": "{\r\n    \"DisplayTitle\":\"Headwear\",\r\n    \"categoryDepth\":2,\r\n    \"categoryCarouselType\": 7,\r\n    \"categoryUriNames\": \"HatsItems\",\r\n    \"itemCount\": 5\r\n}"
+  },
+  {
+    "id": "StoreItemCarousel_UnifiedAlgorithmicList_Tops",
+    "sectionType": 4,
+    "sectionSubType": "Items_Tops",
+    "source": "UnifiedAlgorithmicList",
+    "sourceMetadata": "topsitems",
+    "displayMetadata": "{\r\n    \"DisplayTitle\":\"Tops\",\r\n    \"categoryDepth\":2,\r\n    \"categoryCarouselType\": 8,\r\n    \"categoryUriNames\": \"TorsoItems\",\r\n    \"itemCount\": 5\r\n}"
+  },
+  {
+    "id": "StoreItemCarousel_UnifiedAlgorithmicList_Bottoms",
+    "sectionType": 4,
+    "sectionSubType": "Items_Bottoms",
+    "source": "UnifiedAlgorithmicList",
+    "sourceMetadata": "bottomsitems",
+    "displayMetadata": "{\r\n    \"DisplayTitle\":\"Bottoms\",\r\n    \"categoryDepth\":2,\r\n    \"categoryCarouselType\": 17,\r\n    \"categoryUriNames\": \"BottomsItems\",\r\n    \"itemCount\": 5\r\n}"
+  },
+  {
+    "id": "StoreItemCarousel_UnifiedAlgorithmicList_Footwear",
+    "sectionType": 4,
+    "sectionSubType": "Items_Footwear",
+    "source": "UnifiedAlgorithmicList",
+    "sourceMetadata": "footwearitems",
+    "displayMetadata": "{\r\n    \"DisplayTitle\":\"Footwear\",\r\n    \"categoryDepth\":2,\r\n    \"categoryCarouselType\": 18,\r\n    \"categoryUriNames\": \"ShoesItems\",\r\n    \"itemCount\": 5\r\n}"
+  },
+  {
+    "id": "StoreItemCarousel_UnifiedAlgorithmicList_Waist",
+    "sectionType": 4,
+    "sectionSubType": "Items_Waist",
+    "source": "UnifiedAlgorithmicList",
+    "sourceMetadata": "waistitems",
+    "displayMetadata": "{\r\n    \"DisplayTitle\":\"Waist\",\r\n    \"categoryDepth\":2,\r\n    \"categoryCarouselType\": 23,\r\n    \"categoryUriNames\": \"WaistItems\",\r\n    \"itemCount\": 5\r\n}"
+  },
+  {
+    "id": "StoreItemCarousel_UnifiedAlgorithmicList_Hands",
+    "sectionType": 4,
+    "sectionSubType": "Items_Hands",
+    "source": "UnifiedAlgorithmicList",
+    "sourceMetadata": "handsitems",
+    "displayMetadata": "{\r\n    \"DisplayTitle\":\"Hands\",\r\n    \"categoryDepth\":2,\r\n    \"categoryCarouselType\": 10,\r\n    \"categoryUriNames\": \"GlovesItems\",\r\n    \"itemCount\": 5\r\n}"
+  },
+  {
+    "id": "StoreItemCarousel_UnifiedAlgorithmicList_Shoulder",
+    "sectionType": 4,
+    "sectionSubType": "Items_Shoulder",
+    "source": "UnifiedAlgorithmicList",
+    "sourceMetadata": "shoulderitems",
+    "displayMetadata": "{\r\n    \"DisplayTitle\":\"Shoulders & Back\",\r\n    \"categoryDepth\":2,\r\n    \"categoryCarouselType\": 22,\r\n    \"categoryUriNames\": \"ShoulderItems\",\r\n    \"itemCount\": 5\r\n}"
+  },
+  {
+    "id": "StoreItemCarousel_UnifiedAlgorithmicList_Skins",
+    "sectionType": 4,
+    "sectionSubType": "Items_Skins",
+    "source": "UnifiedAlgorithmicList",
+    "sourceMetadata": "skinsitems",
+    "displayMetadata": "{\r\n    \"DisplayTitle\":\"Skins\",\r\n    \"categoryDepth\":2,\r\n    \"categoryCarouselType\": 5,\r\n    \"categoryUriNames\": \"SkinsItems\",\r\n    \"itemCount\": 5\r\n}"
+  },
+  {
+    "id": "StoreItemCarousel_UnifiedAlgorithmicList_Accessories",
+    "sectionType": 4,
+    "sectionSubType": "Items_Accessories",
+    "source": "UnifiedAlgorithmicList",
+    "sourceMetadata": "accessoriesitems",
+    "displayMetadata": "{\r\n\t\"DisplayTitle\":\"Accessories\",\r\n    \"itemCount\": 5\r\n}"
+  },
+  {
+    "id": "StoreItemCarousel_UnifiedAlgorithmicList_Hairstyles",
+    "sectionType": 4,
+    "sectionSubType": "Items_Hairstyles",
+    "source": "UnifiedAlgorithmicList",
+    "sourceMetadata": "hairitems",
+    "displayMetadata": "{\r\n    \"DisplayTitle\":\"Hairstyles\",\r\n    \"categoryDepth\":2,\r\n    \"categoryCarouselType\": 24,\r\n    \"categoryUriNames\": \"HeadHairItems\",\r\n    \"itemCount\": 5\r\n}"
+  },
+  {
+    "id": "StoreItemCarousel_UnifiedAlgorithmicList_FacialHair",
+    "sectionType": 4,
+    "sectionSubType": "Items_FacialHair",
+    "source": "UnifiedAlgorithmicList",
+    "sourceMetadata": "facialhairitems",
+    "displayMetadata": "{\r\n    \"DisplayTitle\":\"Facial Hair\",\r\n    \"categoryDepth\":2,\r\n    \"categoryCarouselType\": 25,\r\n    \"categoryUriNames\": \"FacialHairItems\",\r\n    \"itemCount\": 5\r\n}"
+  },
+  {
+    "id": "CustomAvatarItemCarousel_AlgorithmicList_Trending",
+    "sectionType": 8,
+    "sectionSubType": "CustomAvatarItems_Trending",
+    "source": "AlgorithmicList",
+    "sourceMetadata": "Trending",
+    "displayMetadata": "{\r\n\"DisplayTitle\":\"Trending Custom Shirts\",\r\n    \"itemCount\": 5\r\n}"
+  }
+]

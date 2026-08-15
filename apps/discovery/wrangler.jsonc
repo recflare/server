@@ -1,0 +1,35 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "discovery",
+	"main": "src/discovery.app.ts",
+	"compatibility_date": "2026-06-16",
+	"compatibility_flags": ["nodejs_compat"],
+	// The page layouts in `static/`, uploaded as Workers static assets rather than
+	// bundled into the script. This is what makes `{type}` a real wildcard: the handler
+	// asks the ASSETS binding for `<type>.json`, so dropping a new file in `static/`
+	// publishes a new page source with no code change (a bundled `import` can't do that —
+	// the bundler has to see every path at build time).
+	//
+	// `run_worker_first: true` because these are the WORKER'S data files, not a site:
+	// without it the runtime serves an asset directly whenever the path happens to match
+	// one, which would publish every layout a second time at `/watchhome.json` — a URL
+	// nothing documents and the client never asks for. With it, the Worker sees every
+	// request and the files are reachable only through the binding, i.e. only under
+	// `/sections/pagesource/:type`.
+	"assets": {
+		"binding": "ASSETS",
+		"directory": "./static",
+		"run_worker_first": true
+	},
+	"upload_source_maps": true,
+	"observability": {
+		"logs": {
+			"enabled": true,
+			"head_sampling_rate": 1 // 100%
+		}
+	},
+	"vars": {
+		"ENVIRONMENT": "development", // overridden during deployment
+		"SENTRY_RELEASE": "unknown" // overridden during deployment
+	}
+}

@@ -5,6 +5,7 @@ import { beforeAll, describe, expect, test } from 'vitest'
 import '../../auth.app'
 
 import {
+	GAME_VERSION,
 	getAccountsByDeviceId,
 	hashPassword,
 	PRESENCE_SCHEMA_DDL,
@@ -577,6 +578,25 @@ describe('auth worker routes', () => {
 		// No privileges to carry, so the claim is absent rather than an empty array.
 		expect(payload['rn.privilege']).toBeUndefined()
 		expect(payload.scope).toContain('rn.api')
+	})
+
+	// `rn.ver` is the CLIENT's build, from the `ver` it posts here — presence in `match`
+	// reads it back off the token, so this is what a player is reported as running.
+	test('POST /connect/token stamps the posted ver into rn.ver', async () => {
+		const payload = await tokenFor(`account_id=42&password=${LOGIN_PASSWORD}&ver=20250718.01`)
+		expect(payload['rn.ver']).toBe('20250718.01')
+	})
+
+	// A grant that names no build — a refresh, or a caller that isn't the game — falls
+	// back to the server's GAME_VERSION rather than stamping an empty claim, which would
+	// leave presence carrying an empty version.
+	test('POST /connect/token falls back to GAME_VERSION with no ver', async () => {
+		expect((await tokenFor(`account_id=42&password=${LOGIN_PASSWORD}`))['rn.ver']).toBe(
+			GAME_VERSION
+		)
+		expect((await tokenFor(`account_id=42&password=${LOGIN_PASSWORD}&ver=`))['rn.ver']).toBe(
+			GAME_VERSION
+		)
 	})
 
 	test('POST /connect/token stamps developer/moderator roles into the token', async () => {

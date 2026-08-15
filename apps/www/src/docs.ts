@@ -29,6 +29,8 @@ export const DOCUMENTED_SERVICES: ReadonlyArray<{ slug: string; title: string }>
 	{ slug: 'cdn', title: 'cdn — binary asset delivery' },
 	{ slug: 'storage', title: 'storage — uploads to the CDN bucket' },
 	{ slug: 'playersettings', title: 'playersettings — per-player settings' },
+	{ slug: 'discovery', title: 'discovery — discovery page layouts' },
+	{ slug: 'ai', title: 'ai — game AI access' },
 	{ slug: 'api', title: 'api — everything else' },
 ]
 

@@ -86,6 +86,13 @@ export function keyParam(
 
 // ---- Response schemas ------------------------------------------------------
 
+/**
+ * An opaque JSON document — the config files under `static/config/` are served verbatim
+ * and nothing here interprets them, so modelling their fields would be noise that goes
+ * stale the moment a file is replaced.
+ */
+export const JsonValue = z.record(z.string(), z.unknown())
+
 /** `GET /` — the liveness probe body. */
 export const ServiceStatus = z.object({
 	service: z.literal('cdn'),

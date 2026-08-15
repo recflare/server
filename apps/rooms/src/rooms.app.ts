@@ -73,6 +73,7 @@ import {
 	CloningRequest,
 	CreateSubRoomRequest,
 	DescriptionRequest,
+	DormRoomId,
 	FeaturedRoomGroupDto,
 	FORBIDDEN_RESPONSE,
 	form,
@@ -848,28 +849,33 @@ const app = new Hono<App>()
 		ownedRooms
 	)
 
-	// The caller's own dorm, in the same shape `GET /rooms/{roomId}` serves — the client
-	// renders it with the same code path. Gets-or-creates, exactly as entering a dorm
-	// does (`match`), so a player who has never been to their dorm gets one here rather
-	// than a 404; the id is stable from then on.
+	// The caller's own dorm, as its ID ALONE — a bare JSON number, not the room. The
+	// caller follows up with `GET /rooms/{roomId}` when it wants the room itself.
+	//
+	// Gets-or-creates, exactly as entering a dorm does (`match`): the provisioning is the
+	// point of the call as much as the answer is, so a player who has never been to their
+	// dorm gets one minted here rather than a 404, and the id is stable from then on.
 	.get(
 		'/dormroom/me',
 		describeRoute({
 			tags: ['My rooms'],
-			summary: 'The caller’s dorm',
+			summary: 'The caller’s dorm id',
 			description: [
-				'The caller’s personal dorm room, as `GET /rooms/{roomId}` would serve it —',
-				'`SubRooms` re-attached, same DTO. The dorm is provisioned on first access (cloned',
-				'from the seeded template dorm), so this returns a room for any authed caller and',
-				'never 404s; calling it repeatedly returns the same dorm.',
+				'The `RoomId` of the caller’s personal dorm, as a bare JSON number — NOT the room:',
+				'fetch that from `GET /rooms/{roomId}` with the id this returns.',
+				'',
+				'The dorm is provisioned on first access (cloned from the seeded template dorm), so',
+				'this answers for any authed caller and never 404s, and calling it again returns the',
+				'same id.',
 			].join(' '),
 			security: AUTHED,
-			responses: { 200: json(RoomDto, 'The caller’s dorm'), 401: UNAUTHORIZED_RESPONSE },
+			responses: { 200: json(DormRoomId, 'The caller’s dorm id'), 401: UNAUTHORIZED_RESPONSE },
 		}),
 		async (c) => {
 			const accountId = await authedAccountId(c)
 			if (accountId === null) return unauthorized(c)
-			return c.json(await getOrCreateDormRoom(c.env.DB, accountId))
+			const dorm = await getOrCreateDormRoom(c.env.DB, accountId)
+			return c.json(Number(dorm.RoomId))
 		}
 	)
 

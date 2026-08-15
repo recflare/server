@@ -82,6 +82,31 @@ export async function validateAndGetRoles(
 	}
 }
 
+/**
+ * Validate a request's bearer token and return its `rn.ver` claim — the game build the
+ * caller posted to `/connect/token`, stamped by {@link generateToken}. `null` when the
+ * request carries no valid token, and `null` too when a valid token has no `rn.ver` (an
+ * older token, issued before the claim carried the client's own value): callers fall back
+ * to what they stored or to GAME_VERSION rather than writing an empty version, which
+ * breaks the client's presence handling.
+ */
+export async function validateAndGetVersion(
+	request: Request,
+	secret: string
+): Promise<string | null> {
+	const authHeader = request.headers.get('Authorization')
+	if (!authHeader || !authHeader.toLowerCase().startsWith('bearer ')) return null
+
+	const token = authHeader.slice('bearer '.length)
+	try {
+		const payload = await verify(token, secret, 'HS256') // checks exp/nbf/signature
+		const version = payload['rn.ver']
+		return typeof version === 'string' && version !== '' ? version : null
+	} catch {
+		return null
+	}
+}
+
 /** Scopes stamped onto every token (as a claim array). */
 const TOKEN_SCOPES = [
 	'profile',
@@ -163,7 +188,8 @@ export async function generateToken(
 	platform: number,
 	secret: string,
 	extraRoles: string[] = [],
-	privileges: string[] = []
+	privileges: string[] = [],
+	version: string = GAME_VERSION
 ): Promise<string> {
 	const now = Math.floor(Date.now() / 1000)
 	// The client reads `role`/`scope` (and expects a well-formed iss/aud) to
@@ -182,7 +208,11 @@ export async function generateToken(
 			idp: 'local',
 			platform,
 			platform_id: platformId,
-			'rn.ver': GAME_VERSION,
+			// The CLIENT's build, as it posted it to /connect/token (`ver`) — not this
+			// server's GAME_VERSION, which is only the fallback for a grant that names none
+			// (a refresh, or a caller that isn't the game). Presence reads it back off the
+			// token, so a player's reported version is the build they are actually running.
+			'rn.ver': version,
 			'rn.plat': platform,
 			role: [...BASE_ROLES, ...extraRoles],
 			// `rn.privilege` LOOKS like a scope but is a claim: the client reads it out of

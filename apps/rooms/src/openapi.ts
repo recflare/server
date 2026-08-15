@@ -294,6 +294,13 @@ export const RoomDto = z.object({
 	PublishedAt: z.string(),
 	BecameRRStudioRoomAt: z.string().nullable(),
 	Stats: RoomStatsDto,
+	BoostCount: z
+		.int()
+		.describe('Boosts on the room. Nothing grants boosts here, so always 0 — but present'),
+	CurrentSnapshotId: z
+		.int()
+		.nullable()
+		.describe('The room’s published snapshot. Nothing takes snapshots here, so always null'),
 	RankingContext: z.unknown().nullable(),
 	IsDorm: z.boolean().describe('Auto-provisioned personal room; excluded from every feed'),
 	IsPlacePlay: z.boolean(),
@@ -332,6 +339,13 @@ export const PagedRooms = z.object({
 	Results: z.array(RoomDto),
 	TotalResults: z.int().describe('The full match count, not the page size'),
 })
+
+/**
+ * `GET /dormroom/me` — the dorm's `RoomId` as a BARE JSON number, not a room and not an
+ * envelope around one. The caller follows it with `GET /rooms/{roomId}` when it wants the
+ * room itself, so sending the whole DTO here was a payload nobody read.
+ */
+export const DormRoomId = z.int().describe('The caller’s dorm RoomId')
 
 /**
  * A room lookup result: the room, or `{}` when nothing matched. The by-id/by-name

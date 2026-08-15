@@ -37,7 +37,7 @@ import {
 	subRoomDataBlob,
 } from '@repo/domain'
 import { logger, withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
-import { generatePhotonAuthToken, validateAndGetAccountId } from '@repo/jwt'
+import { generatePhotonAuthToken, validateAndGetAccountId, validateAndGetVersion } from '@repo/jwt'
 
 // The account-wide ban lives on a `report` row, whose table the api worker owns; its
 // db module is plain D1 queries with no runtime deps, so it imports cleanly here (the
@@ -54,6 +54,7 @@ import {
 	AvoidJuniorsRequest,
 	AvoidJuniorsResponse,
 	ConnectionInfoResponse,
+	CorrelationIdRequest,
 	EMPTY_OK,
 	ExclusiveLoginResponse,
 	form,
@@ -112,9 +113,9 @@ const NULL_CONNECTION_INFO = {
  * instance, so the two can't disagree ('us' resolves to us-east1 for QoS).
  */
 const PHOTON_APPS = {
-	photonRealtimeAppId: 'rf-8f322bdb',
-	photonVoiceAppId: 'rf-6b4682e1',
-	photonChatAppId: 'rf-55fae86e',
+	photonRealtimeAppId: '8f322bdb-2b1f-4c27-a232-01436f43d14e',
+	photonVoiceAppId: '6b4682e1-a1a9-4e04-b44a-6db0049a4df3',
+	photonChatAppId: '55fae86e-0459-4f97-bf6c-39c9341da6ef',
 	photonRegion: 'us',
 } as const
 
@@ -159,10 +160,22 @@ const QOS_REGIONS = [
  * stopped heartbeating drops offline — and is deliberately *not* derived from being
  * in a room: you can be online in the lobby with `roomInstance` null. `errorCode` 0
  * is "no error"; it only turns non-zero on a failed matchmake.
+ *
+ * `callerVersion` (the `rn.ver` off the caller's token) may be passed ONLY when the
+ * payload is the caller's own — the batch lookup serves other players, whose build this
+ * caller's token knows nothing about.
  */
-function playerPayload(playerId: number, presence?: Presence | null) {
+function playerPayload(
+	playerId: number,
+	presence?: Presence | null,
+	callerVersion?: string | null
+) {
 	return {
-		appVersion: presence?.appVersion || GAME_VERSION,
+		// The stored row is authoritative — for the caller it was just synced from their
+		// token, and for anyone else the caller's token says nothing. `callerVersion` only
+		// covers the caller having no presence row at all (they aren't in a room yet), where
+		// the alternative is reporting a build nobody is running.
+		appVersion: presence?.appVersion || callerVersion || GAME_VERSION,
 		deviceClass: presence?.deviceClass ?? 0,
 		errorCode: 0,
 		// `getPresence` yields null and the batch map yields undefined — neither is online.
@@ -188,6 +201,24 @@ async function authedId(c: Context<App>): Promise<number | null> {
 /** Results.Unauthorized() equivalent — 401 with empty body. */
 function unauthorized(c: Context<App>) {
 	return c.body(null, 401)
+}
+
+/**
+ * The game build the CALLER is running, from their token's `rn.ver` claim — the `ver`
+ * they posted to `auth`'s `/connect/token`. This is what presence records, so a player
+ * reports the build they are actually on rather than this server's GAME_VERSION.
+ *
+ * `null` when the request carries no valid token, or an older one issued before the claim
+ * carried the client's own value; callers then keep whatever presence already held, and
+ * only fall back to GAME_VERSION when there is nothing at all. Never write an empty
+ * version — the client's presence DTO reads `appVersion` as a string and an empty one
+ * breaks its version handling.
+ *
+ * Only ever used for the caller's OWN presence. Another player's version comes off their
+ * stored row; this token says nothing about them.
+ */
+async function callerVersion(c: Context<App>): Promise<string | null> {
+	return validateAndGetVersion(c.req.raw, await c.env.JWT_SECRET.get())
 }
 
 /**
@@ -357,11 +388,16 @@ function redactInstanceForPresence(instance: RoomInstance) {
  * The SubscriptionUpdatePresence message a friend receives when the player changes rooms:
  * a presence snapshot of who, and the redacted instance they're now in (null when in no
  * room → `isOnline` false). `statusVisibility` is forced to 0 (Everyone) so the player
- * isn't hidden from friends. `appVersion` MUST be a string — the client's presence DTO
- * reads it with a string reader, and a numeric value aborts the whole SignalR frame
- * ("expected String Begin Token"), dropping the room/presence update.
+ * isn't hidden from friends. `appVersion` is the subject's own build (from their presence
+ * row) and MUST be a string — the client's presence DTO reads it with a string reader, and
+ * a numeric value aborts the whole SignalR frame ("expected String Begin Token"), dropping
+ * the room/presence update.
  */
-function presenceUpdateMessage(playerId: number, instance: RoomInstance | null) {
+function presenceUpdateMessage(
+	playerId: number,
+	instance: RoomInstance | null,
+	appVersion?: string | null
+) {
 	return {
 		playerId,
 		statusVisibility: 0,
@@ -369,7 +405,10 @@ function presenceUpdateMessage(playerId: number, instance: RoomInstance | null) 
 		vrMovementMode: 0,
 		roomInstance: instance ? redactInstanceForPresence(instance) : null,
 		isOnline: instance != null,
-		appVersion: GAME_VERSION,
+		// The build the SUBJECT is running, off the presence row their own token wrote —
+		// this frame describes them to their friends, so GAME_VERSION would report this
+		// server's build as theirs.
+		appVersion: appVersion || GAME_VERSION,
 	}
 }
 
@@ -390,7 +429,7 @@ async function notifyFriendsPresence(c: Context<App>, playerId: number): Promise
 		await c.env.RECFLARE_NOTIFICATIONS_HUB.getByName(HUB_INSTANCE).notifyPlayersEphemeral(
 			friendIds,
 			NotificationType.SubscriptionUpdatePresence,
-			presenceUpdateMessage(playerId, presence?.roomInstance ?? null)
+			presenceUpdateMessage(playerId, presence?.roomInstance ?? null, presence?.appVersion)
 		)
 	} catch (err) {
 		logger.error('failed to push SubscriptionUpdatePresence to friends', {
@@ -422,7 +461,10 @@ async function enterRoom(c: Context<App>, id: number, roomInstance: RoomInstance
 		deviceClass: prev?.deviceClass ?? account?.deviceClass ?? 0,
 		vrMovementMode: prev?.vrMovementMode ?? 1,
 		platform: prev?.platform ?? account?.platform ?? 0,
-		appVersion: prev?.appVersion || GAME_VERSION,
+		// The token's build wins over the stored one: the token belongs to the session
+		// making this call, while `prev` can be a row left by an earlier session on an
+		// older build.
+		appVersion: (await callerVersion(c)) ?? prev?.appVersion ?? GAME_VERSION,
 		// Carry the session lock recorded at login forward, so matchmake doesn't wipe it
 		// and the heartbeat can keep verifying against it.
 		loginLock: prev?.loginLock,
@@ -614,6 +656,60 @@ function roomInstanceFromRoom(
 		isInProgress: false,
 		EncryptVoiceChat: false,
 	}
+}
+
+/**
+ * The GUID a matchmake answers with when the request named none. The client's response
+ * DTO reads `correlationId` as a Guid, not a nullable one, so a null (or a missing key)
+ * is a decode failure on a field it checks before anything else — the all-zero
+ * `Guid.Empty` is what an unset Guid serializes as, and it reads as "no correlation".
+ */
+const EMPTY_CORRELATION_ID = '00000000-0000-0000-0000-000000000000'
+
+/**
+ * The `CorrelationId` the client tagged this matchmake with. The client generates one
+ * per matchmake attempt and refuses the session ("Unable to connect to game session")
+ * unless the response carries the same GUID back, so this is echoed on EVERY matchmake
+ * response — the refusals included, since a refusal the client can't correlate is a
+ * matchmake it goes on waiting for.
+ *
+ * Read out of the form body (`CorrelationId=<guid>`, what the client posts), falling
+ * back to a query param for the matchmakes that carry no body, and matched
+ * case-insensitively like the other reverse-engineered fields here. `EMPTY_CORRELATION_ID`
+ * when the request named none — an older client that doesn't send one still gets a
+ * well-formed GUID rather than a null its decoder would choke on.
+ */
+async function readCorrelationId(c: Context<App>): Promise<string> {
+	const body = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>)
+	const key = Object.keys(body).find((k) => k.toLowerCase() === 'correlationid')
+	const posted = key === undefined ? undefined : body[key]
+	if (typeof posted === 'string' && posted) return posted
+
+	const queried = c.req.query('CorrelationId') ?? c.req.query('correlationId')
+	return queried || EMPTY_CORRELATION_ID
+}
+
+/**
+ * A matchmake response: the join-result code, the instance (null on a refusal), and the
+ * request's correlation id echoed back. Every matchmake route answers through here, so
+ * none of them can forget the echo.
+ *
+ * `result` and `errorCode` are the SAME code under two names. The client reads `result`
+ * first; `errorCode` is kept because that's what this server has always sent and what
+ * every other consumer (and this worker's own tests) reads. They must never disagree —
+ * that's why nothing builds this envelope by hand.
+ */
+async function matchmakeResult(
+	c: Context<App>,
+	errorCode: MatchmakingErrorCode | number,
+	roomInstance: RoomInstance | null
+) {
+	return c.json({
+		errorCode,
+		result: errorCode,
+		roomInstance,
+		correlationId: await readCorrelationId(c),
+	})
 }
 
 /** Read the session's `LoginLock` GUID from a form body (undefined when absent/empty). */
@@ -903,7 +999,7 @@ const app = new Hono<App>()
 					bannedAccountId: match.bannedAccountId,
 					path: c.req.path,
 				})
-				return c.json({ errorCode: BANNED_FROM_ROOM, roomInstance: null })
+				return matchmakeResult(c, BANNED_FROM_ROOM, null)
 			}
 		}
 		await next()
@@ -950,7 +1046,7 @@ const app = new Hono<App>()
 							deviceClass: account?.deviceClass ?? 0,
 							vrMovementMode: 1,
 							platform: account?.platform ?? 0,
-							appVersion: GAME_VERSION,
+							appVersion: (await callerVersion(c)) ?? GAME_VERSION,
 							loginLock,
 						})
 					}
@@ -1119,6 +1215,12 @@ const app = new Hono<App>()
 			// yields no lock (parseBody fails and is swallowed).
 			const postedLock = await readLoginLock(c)
 
+			// The build this session is on, off its own token (see callerVersion). The
+			// heartbeat is where a version change shows up first: a player who quit and
+			// relaunched on a new build heartbeats with a new token against the presence row
+			// the old session left behind.
+			const version = await callerVersion(c)
+
 			// Return the player's stored presence (set at login/matchmake), mirroring the
 			// reference server's HeartbeatDB.GetPlayerHeartbeat. No presence → the player
 			// isn't in a room yet, so roomInstance=null / isOnline=false.
@@ -1135,16 +1237,23 @@ const app = new Hono<App>()
 					return c.body(null, 200)
 				}
 
-				// The heartbeat's only side effect is refreshing the TTL, and only once it's
-				// within PRESENCE_REFRESH_THRESHOLD (s) of lapsing — a still player is refreshed
-				// periodically rather than re-written on every beat. `expiresAt` is epoch seconds.
+				// Adopt the token's build when it differs from what the row holds, so the
+				// version friends see follows the player onto their new build rather than
+				// waiting for a re-matchmake.
+				const versionChanged = version !== null && presence.appVersion !== version
+				if (versionChanged) presence.appVersion = version
+
+				// Otherwise the heartbeat's only side effect is refreshing the TTL, and only
+				// once it's within PRESENCE_REFRESH_THRESHOLD (s) of lapsing — a still player is
+				// refreshed periodically rather than re-written on every beat. `expiresAt` is
+				// epoch seconds.
 				const nowSeconds = Math.floor(Date.now() / 1000)
-				if (presence.expiresAt - nowSeconds <= PRESENCE_REFRESH_THRESHOLD) {
+				if (versionChanged || presence.expiresAt - nowSeconds <= PRESENCE_REFRESH_THRESHOLD) {
 					await setPresence(c.env.DB, presence)
 				}
 			}
 
-			return c.json(playerPayload(id, presence))
+			return c.json(playerPayload(id, presence, version))
 		}
 	)
 
@@ -1244,6 +1353,10 @@ const app = new Hono<App>()
 	// Each matchmake persists the resulting instance as the player's presence so the
 	// heartbeat can replay it (keeping client presence in sync).
 	//
+	// Every route here answers through `matchmakeResult`, which stamps the response with
+	// the `result` code and echoes back the request's `CorrelationId` — the client won't
+	// accept a session it can't correlate to the attempt it made.
+	//
 	// Matchmake into a club's clubhouse (`/matchmake/club/{clubId}`). Registered before
 	// the single-segment `/matchmake/:room` route so `club` isn't read as a room name.
 	// Members only: the clubhouse is the club's private space, so a non-member (or
@@ -1287,9 +1400,9 @@ const app = new Hono<App>()
 			// One response for "no such club", "no clubhouse", and "not a member": the
 			// client only needs "you're not going there", and a distinct code for the last
 			// case would tell a non-member which clubs exist and have a clubhouse.
-			if (!club?.clubhouseRoomId) return c.json({ errorCode: NO_SUCH_ROOM, roomInstance: null })
+			if (!club?.clubhouseRoomId) return matchmakeResult(c, NO_SUCH_ROOM, null)
 			if (!(await isClubMember(c.env.DB, clubId, id))) {
-				return c.json({ errorCode: NO_SUCH_ROOM, roomInstance: null })
+				return matchmakeResult(c, NO_SUCH_ROOM, null)
 			}
 
 			const joinMode = await readJoinMode(c)
@@ -1299,9 +1412,9 @@ const app = new Hono<App>()
 				joinMode === 2,
 				id
 			)
-			if (!instance) return c.json({ errorCode, roomInstance: null })
+			if (!instance) return matchmakeResult(c, errorCode, null)
 			await enterRoom(c, id, instance)
-			return c.json({ errorCode: 0, roomInstance: instance })
+			return matchmakeResult(c, 0, instance)
 		}
 	)
 
@@ -1355,7 +1468,7 @@ const app = new Hono<App>()
 			const event = await getEventById(c.env.DB, eventId)
 			// Opaque, like the club path: an unknown event and one the caller can't see
 			// shouldn't be distinguishable by probing ids.
-			if (event === null) return c.json({ errorCode: NO_SUCH_ROOM, roomInstance: null })
+			if (event === null) return matchmakeResult(c, NO_SUCH_ROOM, null)
 
 			const open =
 				event.Accessibility === Accessibility.Public ||
@@ -1369,7 +1482,7 @@ const app = new Hono<App>()
 				(await getEventResponse(c.env.DB, eventId, id)) === null
 			) {
 				logger.info('matchmake refused: not invited to private event', { eventId, id })
-				return c.json({ errorCode: EVENT_IS_PRIVATE, roomInstance: null })
+				return matchmakeResult(c, EVENT_IS_PRIVATE, null)
 			}
 
 			const { joinMode, additionalPlayerIds } = await readMatchmakeBody(c)
@@ -1380,10 +1493,10 @@ const app = new Hono<App>()
 				id,
 				event.SubRoomId ?? undefined
 			)
-			if (!instance) return c.json({ errorCode, roomInstance: null })
+			if (!instance) return matchmakeResult(c, errorCode, null)
 			await enterRoom(c, id, instance)
 			await inviteParty(c, id, additionalPlayerIds, instance)
-			return c.json({ errorCode: 0, roomInstance: instance })
+			return matchmakeResult(c, 0, instance)
 		}
 	)
 
@@ -1410,6 +1523,7 @@ const app = new Hono<App>()
 				'going through the room resolver, so it carries its own ban check.',
 			].join(' '),
 			security: AUTHED,
+			requestBody: form(CorrelationIdRequest, 'The attempt’s CorrelationId'),
 			parameters: [
 				{
 					name: 'playerId',
@@ -1435,26 +1549,26 @@ const app = new Hono<App>()
 			// Friends only, and never yourself — otherwise refuse without leaking whether the
 			// target is even online (same opaque NoSuchRoom the club path uses).
 			if (targetId === id || !(await areFriends(c.env.DB, id, targetId))) {
-				return c.json({ errorCode: NO_SUCH_ROOM, roomInstance: null })
+				return matchmakeResult(c, NO_SUCH_ROOM, null)
 			}
 
 			// The instance the friend is currently in, straight off their presence row.
 			const targetPresence = await getPresence<RoomInstance>(c.env.DB, targetId)
 			const instance = targetPresence?.roomInstance ?? null
-			if (!instance) return c.json({ errorCode: NO_SUCH_ROOM, roomInstance: null })
+			if (!instance) return matchmakeResult(c, NO_SUCH_ROOM, null)
 
 			// This path hands out a Photon room id without going through
 			// resolveRoomInstance, so the room's bans have to be checked here too —
 			// otherwise following a friend in is a way around a ban.
 			if (await isPlayerBannedFromRoom(c.env.DB, instance.roomId, id)) {
 				logger.info('follow refused: player banned from room', { roomId: instance.roomId, id })
-				return c.json({ errorCode: BANNED_FROM_ROOM, roomInstance: null })
+				return matchmakeResult(c, BANNED_FROM_ROOM, null)
 			}
 
 			// Join that same instance (same id + Photon room) and store it as the caller's
 			// presence, so the heartbeat replays it and their own friend fan-out fires.
 			await enterRoom(c, id, instance)
-			return c.json({ errorCode: 0, roomInstance: instance })
+			return matchmakeResult(c, 0, instance)
 		}
 	)
 
@@ -1481,6 +1595,7 @@ const app = new Hono<App>()
 				'when banned.',
 			].join(' '),
 			security: AUTHED,
+			requestBody: form(CorrelationIdRequest, 'The attempt’s CorrelationId'),
 			parameters: [
 				{
 					name: 'instanceId',
@@ -1506,16 +1621,16 @@ const app = new Hono<App>()
 			const stored = await getRoomInstance(c.env.DB, instanceId)
 			// One opaque refusal for "no such instance", "no such room" and "not yours":
 			// a distinct code for the last would confirm which instance ids are live.
-			if (!stored) return c.json({ errorCode: NO_SUCH_ROOM, roomInstance: null })
+			if (!stored) return matchmakeResult(c, NO_SUCH_ROOM, null)
 			const room = await getRoomById(c.env.DB, stored.roomId)
-			if (!room) return c.json({ errorCode: NO_SUCH_ROOM, roomInstance: null })
+			if (!room) return matchmakeResult(c, NO_SUCH_ROOM, null)
 			if (!canManageRoom(room, id)) {
 				logger.info('instance matchmake refused: not the room’s owner', {
 					roomInstanceId: instanceId,
 					roomId: stored.roomId,
 					accountId: id,
 				})
-				return c.json({ errorCode: NO_SUCH_ROOM, roomInstance: null })
+				return matchmakeResult(c, NO_SUCH_ROOM, null)
 			}
 
 			// Like the follow-a-friend path, this hands out a Photon room id without going
@@ -1527,7 +1642,7 @@ const app = new Hono<App>()
 					roomId: stored.roomId,
 					id,
 				})
-				return c.json({ errorCode: BANNED_FROM_ROOM, roomInstance: null })
+				return matchmakeResult(c, BANNED_FROM_ROOM, null)
 			}
 
 			// Rebuild the wire instance from the room (fresh scene + published save) keyed to
@@ -1541,7 +1656,7 @@ const app = new Hono<App>()
 				stored.subRoomId
 			)
 			await enterRoom(c, id, instance)
-			return c.json({ errorCode: 0, roomInstance: instance })
+			return matchmakeResult(c, 0, instance)
 		}
 	)
 
@@ -1590,11 +1705,11 @@ const app = new Hono<App>()
 				id,
 				subRoomId
 			)
-			if (!instance) return c.json({ errorCode, roomInstance: null })
+			if (!instance) return matchmakeResult(c, errorCode, null)
 			await enterRoom(c, id, instance)
 			// Pull the caller's party (AdditionalPlayerIds) into the instance they landed in.
 			await inviteParty(c, id, additionalPlayerIds, instance)
-			return c.json({ errorCode: 0, roomInstance: instance })
+			return matchmakeResult(c, 0, instance)
 		}
 	)
 
@@ -1630,11 +1745,11 @@ const app = new Hono<App>()
 				joinMode === 2,
 				id
 			)
-			if (!instance) return c.json({ errorCode, roomInstance: null })
+			if (!instance) return matchmakeResult(c, errorCode, null)
 			await enterRoom(c, id, instance)
 			// Pull the caller's party (AdditionalPlayerIds) into the instance they landed in.
 			await inviteParty(c, id, additionalPlayerIds, instance)
-			return c.json({ errorCode: 0, roomInstance: instance })
+			return matchmakeResult(c, 0, instance)
 		}
 	)
 	// Matchmake with no target. The client posts this when it needs an instance but isn't
@@ -1656,6 +1771,7 @@ const app = new Hono<App>()
 				'TTL.',
 			].join(' '),
 			security: AUTHED,
+			requestBody: form(CorrelationIdRequest, 'The attempt’s CorrelationId'),
 			responses: {
 				200: json(MatchmakeResponse, 'The caller’s current instance, or their dorm'),
 				401: UNAUTHORIZED_RESPONSE,
@@ -1668,7 +1784,7 @@ const app = new Hono<App>()
 			const presence = await getPresence<RoomInstance>(c.env.DB, id)
 			const current = presence?.roomInstance ?? (await playerDormInstance(c, id))
 			await enterRoom(c, id, current)
-			return c.json({ errorCode: 0, roomInstance: current })
+			return matchmakeResult(c, 0, current)
 		}
 	)
 
@@ -1684,6 +1800,7 @@ const app = new Hono<App>()
 				'account is banned: a ban keeps a player out of their own dorm too.',
 			].join(' '),
 			security: AUTHED,
+			requestBody: form(CorrelationIdRequest, 'The attempt’s CorrelationId'),
 			responses: {
 				200: json(MatchmakeResponse, 'The dorm instance (or a null instance with errorCode 55)'),
 				401: UNAUTHORIZED_RESPONSE,
@@ -1695,7 +1812,7 @@ const app = new Hono<App>()
 
 			const instance = await playerDormInstance(c, id)
 			await enterRoom(c, id, instance)
-			return c.json({ errorCode: 0, roomInstance: instance })
+			return matchmakeResult(c, 0, instance)
 		}
 	)
 

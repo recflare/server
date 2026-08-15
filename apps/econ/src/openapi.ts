@@ -195,6 +195,17 @@ export const SubscriptionResponse = z.union([
 	z.object({}).describe('`{}` — no subscription'),
 ])
 
+/**
+ * `GET /api/CampusCard/v1/SignUpBonus` — the Rec Room Plus sign-up bonus. Fixed values,
+ * not per-account: `RRPlusSignUpBonusId` names the bonus that is running and the two
+ * prices are the token window the free items are drawn from.
+ */
+export const RRPlusSignUpBonus = z.object({
+	RRPlusSignUpBonusId: z.int().describe('Which sign-up bonus is running'),
+	MinFreeItemsPrice: z.int().describe('Lowest token price a free item may have'),
+	MaxFreeItemsPrice: z.int().describe('Highest token price a free item may have'),
+})
+
 /** `POST /api/challenge/v2/updateProgress` — the identifying fields echoed back. */
 export const ChallengeProgressResponse = z.object({
 	ChallengeMapId: z.int(),

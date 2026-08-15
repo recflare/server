@@ -488,6 +488,44 @@ describe('public endpoints', () => {
 		expect(await res.json()).toEqual({ Results: [], TotalResults: 0 })
 	})
 
+	// A BARE ARRAY of the items that matched — not the `{ Results, TotalResults }` page
+	// the sibling custom-item reads serve. Nothing stores custom items, so every id
+	// misses, and a miss is an absent entry rather than an error.
+	test('POST /api/customAvatarItems/v1/bulk returns the matching items as an array', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/customAvatarItems/v1/bulk`, {
+			method: 'POST',
+			headers: {
+				'content-type': 'application/x-www-form-urlencoded',
+				...(await bearer()),
+			},
+			// Repeated form field, as `[FromForm] List<string>` binds it.
+			body: new URLSearchParams([
+				['customAvatarItemIds', 'a'],
+				['customAvatarItemIds', 'b'],
+			]),
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
+	})
+
+	// The ids are never parsed (nothing could match), so a missing body is still a 200
+	// rather than the 400 a body-reading handler would produce.
+	test('POST /api/customAvatarItems/v1/bulk ignores the body', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/customAvatarItems/v1/bulk`, {
+			method: 'POST',
+			headers: await bearer(),
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
+	})
+
+	test('POST /api/customAvatarItems/v1/bulk is auth-gated', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/customAvatarItems/v1/bulk`, {
+			method: 'POST',
+		})
+		expect(res.status).toBe(401)
+	})
+
 	test('POST /api/customAvatarItems/GetCustomAvatarItemCurrentSavesForLegacyAvatarItems returns an empty map', async () => {
 		const res = await exports.default.fetch(
 			`${ORIGIN}/api/customAvatarItems/GetCustomAvatarItemCurrentSavesForLegacyAvatarItems`,
@@ -632,6 +670,12 @@ describe('public endpoints', () => {
 		const cats = await exports.default.fetch(`${ORIGIN}/api/keepsakes/categories`)
 		expect(cats.status).toBe(200)
 		expect(await cats.json()).toEqual({ Results: [], TotalResults: 0 })
+	})
+
+	test('GET /statsigUserProperties returns an empty object', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/statsigUserProperties`)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({})
 	})
 
 	test('GET /voice/config returns an object', async () => {
@@ -1590,6 +1634,17 @@ describe('public endpoints', () => {
 		expect(pure.status).toBe(200)
 		expect(await pure.json()).toEqual({ IsPure: true })
 	})
+})
+
+describe('account', () => {
+	test.each(['email', 'phone', 'anything'])(
+		'GET /iam/me/channels/%s is an empty list',
+		async (type) => {
+			const res = await exports.default.fetch(`${ORIGIN}/iam/me/channels/${type}`)
+			expect(res.status).toBe(200)
+			expect(await res.json()).toEqual([])
+		}
+	)
 })
 
 describe('auth-gated endpoints', () => {
@@ -3816,8 +3871,10 @@ describe('openapi', () => {
 			'GET /api/rooms/v1/filters',
 			'GET /api/versioncheck/islandedversions',
 			'GET /api/versioncheck/v4',
+			'GET /iam/me/channels/{type}',
 			'GET /outfits/me',
 			'GET /outfits/me/saved',
+			'GET /statsigUserProperties',
 			'GET /voice/config',
 			'POST /api/PlayerReporting/v1/deviceId',
 			'POST /api/PlayerReporting/v1/hile',
@@ -3826,6 +3883,7 @@ describe('openapi', () => {
 			'POST /api/PlayerReporting/v3/create',
 			'POST /api/avatar/v2/gifts/generate',
 			'POST /api/customAvatarItems/GetCustomAvatarItemCurrentSavesForLegacyAvatarItems',
+			'POST /api/customAvatarItems/v1/bulk',
 			'POST /api/gamesight/event',
 			'POST /api/images/v1/cheer',
 			'POST /api/images/v4/uploadsaved',

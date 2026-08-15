@@ -1,6 +1,7 @@
 export {
 	validateAndGetAccountId,
 	validateAndGetRoles,
+	validateAndGetVersion,
 	generateToken,
 	generatePhotonAuthToken,
 	TOKEN_TTL_SECONDS,

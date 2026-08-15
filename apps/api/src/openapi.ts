@@ -417,6 +417,17 @@ export const GenerateGiftRequest = z.object({
 	Xp: z.string().optional(),
 })
 
+/**
+ * `POST /api/customAvatarItems/v1/bulk` form body. A repeated form field, not a JSON
+ * array: the reference binds `[FromForm] List<string>`, so the client posts
+ * `customAvatarItemIds=a&customAvatarItemIds=b`.
+ */
+export const BulkCustomAvatarItemsRequest = z.object({
+	customAvatarItemIds: z
+		.array(z.string())
+		.describe('The ids to resolve; repeat the field once per id'),
+})
+
 /** A paginated custom-avatar-item page (no storage yet, so always empty). */
 export const CustomAvatarItemsPage = z.object({
 	Results: JsonArray,

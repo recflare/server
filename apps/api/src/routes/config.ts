@@ -139,6 +139,25 @@ export const configRoutes = new Hono<App>({ strict: false })
 		(c) => c.json(gameConfigsV1All)
 	)
 
+	// The property bag the client would attach to its Statsig user. Analytics are off here
+	// (see the placeholder keys `/api/config/v1/amplitude` serves), so there is nothing to
+	// segment on and the bag is empty — the client reads that as "no overrides" and carries
+	// on, which is why this answers `{}` rather than 404ing.
+	.get(
+		'/statsigUserProperties',
+		describeRoute({
+			tags: ['Config'],
+			summary: 'Statsig user properties',
+			description:
+				'The custom properties the client would attach to its Statsig user for experiment ' +
+				'targeting. This server runs no experiments and collects no analytics, so the bag ' +
+				'is always empty — the client reads `{}` as “no overrides”. Not auth-gated: there ' +
+				'is nothing per-account to leak in an empty object.',
+			responses: { 200: json(JsonObject, 'An empty object') },
+		}),
+		(c) => c.json({})
+	)
+
 	// Voice chat config. The client fetches it to set up voice.
 	// No reference shape, so return an empty object until the client needs fields.
 	.get(

@@ -141,6 +141,17 @@ describe('rooms endpoints', () => {
 		expect(body.SubRooms[0].UnitySceneId).toBe('76d98498-60a1-430c-ab76-b54a29b7a163')
 	})
 
+	// Neither is stored — the seed blobs predate both keys — so they are defaulted on read.
+	// The client's room DTO always carries them, and an ABSENT key is not the same as a
+	// zero/null one to its parser.
+	it('GET /rooms/:id carries BoostCount and CurrentSnapshotId', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/rooms/1`)
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as Record<string, unknown>
+		expect(body).toHaveProperty('BoostCount', 0)
+		expect(body).toHaveProperty('CurrentSnapshotId', null)
+	})
+
 	// Pinned whole: these are the numbers the client's publish UI counts against, and
 	// `error: null` / `error_id` is a different envelope from the room mutations' — a
 	// "cleanup" that unified the two would break the client silently.
@@ -220,39 +231,47 @@ describe('rooms endpoints', () => {
 		expect(other).toEqual([])
 	})
 
-	it('GET /dormroom/me serves the caller’s own dorm in the room shape', async () => {
+	it('GET /dormroom/me serves the caller’s dorm id, not the room', async () => {
 		// No token → 401. Without this the endpoint would hand out (and provision) a dorm
 		// for whichever account a fallback picked.
 		const noAuth = await SELF.fetch(`${ORIGIN}/dormroom/me`)
 		expect(noAuth.status).toBe(401)
 
-		// Account 1 owns the seeded dorm (RoomId 1), served exactly as GET /rooms/1 does —
-		// same DTO, SubRooms re-attached.
+		// Account 1 owns the seeded dorm (RoomId 1). The body is that id ALONE — a bare
+		// JSON number, not the room and not an object wrapping the id.
 		const res = await SELF.fetch(`${ORIGIN}/dormroom/me`, { headers: await bearer('1') })
 		expect(res.status).toBe(200)
-		const dorm = (await res.json()) as {
+		expect(await res.json()).toBe(1)
+
+		// It is the id of a room that really is the caller's dorm — the caller fetches the
+		// room itself from /rooms/{id}.
+		const room = (await (await SELF.fetch(`${ORIGIN}/rooms/1`)).json()) as {
 			RoomId: number
 			IsDorm: boolean
 			CreatorAccountId: number
-			SubRooms: Array<{ UnitySceneId: string }>
 		}
-		expect(dorm).toMatchObject({ RoomId: 1, IsDorm: true, CreatorAccountId: 1 })
-		expect(dorm.SubRooms[0].UnitySceneId).toBe('76d98498-60a1-430c-ab76-b54a29b7a163')
-		expect(dorm).toEqual(await (await SELF.fetch(`${ORIGIN}/rooms/1`)).json())
+		expect(room).toMatchObject({ RoomId: 1, IsDorm: true, CreatorAccountId: 1 })
 
 		// A player who has never entered their dorm gets one provisioned rather than a
-		// 404, and it belongs to THEM — not the template dorm they were cloned from.
+		// 404 — the get-or-create still happens, only the payload shrank. And it belongs
+		// to THEM, not the template dorm they were cloned from.
 		const fresh = (await (
 			await SELF.fetch(`${ORIGIN}/dormroom/me`, { headers: await bearer('999') })
-		).json()) as { RoomId: number; IsDorm: boolean; CreatorAccountId: number }
-		expect(fresh).toMatchObject({ IsDorm: true, CreatorAccountId: 999 })
-		expect(fresh.RoomId).not.toBe(1)
+		).json()) as number
+		expect(typeof fresh).toBe('number')
+		expect(fresh).not.toBe(1)
+
+		const provisioned = (await (await SELF.fetch(`${ORIGIN}/rooms/${fresh}`)).json()) as {
+			IsDorm: boolean
+			CreatorAccountId: number
+		}
+		expect(provisioned).toMatchObject({ IsDorm: true, CreatorAccountId: 999 })
 
 		// Idempotent: the second call is the same dorm, not a second one.
 		const again = (await (
 			await SELF.fetch(`${ORIGIN}/dormroom/me`, { headers: await bearer('999') })
-		).json()) as { RoomId: number }
-		expect(again.RoomId).toBe(fresh.RoomId)
+		).json()) as number
+		expect(again).toBe(fresh)
 	})
 
 	// The website's "My rooms" list is a browser calling this worker from another origin,

@@ -312,6 +312,9 @@ export async function cloneRoom(
 		clonedSubRooms.push(await insertSubRoom(db, newRoomId, { ...sub, CreatorAccountId: accountId }))
 	}
 	cloned.SubRooms = clonedSubRooms
+	// Inherited from the (parsed) source in practice; defaulted here too so a clone is
+	// never the one room shape missing them.
+	attachRoomDtoDefaults(cloned)
 	return cloned
 }
 
@@ -870,12 +873,31 @@ interface RoomRow {
 const ROOM_COLUMNS = 'data, visits'
 
 /**
+ * Two keys on the client's room DTO that nothing here stores, defaulted on every read so
+ * the key is PRESENT rather than absent — the seed blobs and every room written since
+ * predate them, so they can't come from the data:
+ *
+ * - `BoostCount` — how many boosts the room is carrying. No boost feature exists here, so
+ *   it is 0 for every room.
+ * - `CurrentSnapshotId` — the room's published snapshot. Nothing takes snapshots, so it is
+ *   null, which is also what the reference serves for a room that has none.
+ *
+ * Defaulted rather than assigned, so a stored value wins if either is ever really written
+ * (a blob keeps whatever `serializeRoom` last put in it).
+ */
+function attachRoomDtoDefaults(room: Room): void {
+	room.BoostCount ??= 0
+	room.CurrentSnapshotId ??= null
+}
+
+/**
  * Parse a room row: the stored blob with the counters the columns own folded back in.
  * `visits` is a real column, so a room read straight from the DB carries the live count.
  */
 const parseRow = (row: RoomRow): Room => {
 	const room = JSON.parse(row.data) as Room
 	room.Stats = { ...storedStats(room.Stats), VisitCount: row.visits ?? 0 }
+	attachRoomDtoDefaults(room)
 	return room
 }
 
@@ -2066,5 +2088,7 @@ export async function getOrCreateDormRoom(db: D1Database, accountId: number): Pr
 	await db.prepare('INSERT INTO room (data) VALUES (?1)').bind(serializeRoom(room)).run()
 	const subRoom = await insertSubRoom(db, roomId, { ...templateSub, CreatorAccountId: accountId })
 	room.SubRooms = [subRoom]
+	// The template carries these (it was parsed), but a dorm minted without one wouldn't.
+	attachRoomDtoDefaults(room)
 	return room
 }

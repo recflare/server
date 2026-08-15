@@ -646,6 +646,7 @@ describe('econ endpoints', () => {
 			'/econ/roomOffer/room/92',
 			'/econ/roomOffer/room/92/purchaseCounts',
 			'/econ/roomGiftDropShops/room/92',
+			'/api/ugcPurchasables/v1/items/room/92',
 		]) {
 			const res = await exports.default.fetch(`${ORIGIN}${path}`)
 			expect(res.status, path).toBe(200)
@@ -2031,6 +2032,18 @@ describe('econ endpoints', () => {
 			headers,
 		})
 
+	// Fixed values, and no auth: the client reads this while assembling the RR+ page, so a
+	// 401 would only be a way for that load to stall.
+	test('GET /api/CampusCard/v1/SignUpBonus returns the running bonus, unauthenticated', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/CampusCard/v1/SignUpBonus`)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({
+			RRPlusSignUpBonusId: 3,
+			MinFreeItemsPrice: 6000,
+			MaxFreeItemsPrice: 10000,
+		})
+	})
+
 	test('POST /api/CampusCard/v1/UpdateAndGetSubscription gives a developer a Gold year', async () => {
 		const res = await getSubscription(await bearer('205', ['gameClient', 'developer']))
 		expect(res.status).toBe(200)
@@ -2101,6 +2114,7 @@ describe('econ endpoints', () => {
 			)
 		)
 		expect([...documented].sort()).toEqual([
+			'GET /api/CampusCard/v1/SignUpBonus',
 			'GET /api/avatar/v1/defaultbaseavataritems',
 			'GET /api/avatar/v1/defaultunlocked',
 			'GET /api/avatar/v2',
@@ -2127,6 +2141,7 @@ describe('econ endpoints', () => {
 			'GET /api/storefronts/v2/buyInvention',
 			'GET /api/storefronts/v3/giftdropstore/{id}',
 			'GET /api/storefronts/v4/balance/{currencyType}',
+			'GET /api/ugcPurchasables/v1/items/room/{roomId}',
 			'GET /econ/customAvatarItems/v1/owned',
 			'GET /econ/roomGiftDropShops/room/{roomId}',
 			'GET /econ/roomInventory/room/{roomId}',

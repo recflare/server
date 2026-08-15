@@ -85,6 +85,7 @@ import {
 	JsonObject,
 	OpaqueJsonBody,
 	OPTIONAL_AUTHED,
+	RRPlusSignUpBonus,
 	SaveOutfitRequest,
 	SaveOutfitV4Response,
 	SubscriptionResponse,
@@ -1790,6 +1791,16 @@ const app = new Hono<App>({ strict: false })
 		(c) => c.json([])
 	)
 
+	// The UGC items a room sells (the creator-made things on sale inside it). Same empty
+	// stub as the room-economy routes above and asked for on the same room load: nothing
+	// stores room UGC purchasables yet, and an empty list reads as "this room sells
+	// nothing" where a 404 stalls the load.
+	.get(
+		'/api/ugcPurchasables/v1/items/room/:roomId',
+		listRoute('A room’s UGC purchasables', 'Empty stub so the client doesn’t 404'),
+		(c) => c.json([])
+	)
+
 	// Unlocked consumables. [Authorize]. The consumables the player has bought (from
 	// `buyItem`, stored in the `consumable` table), grouped by item into the client's
 	// unlocked-consumable DTO. A player who has bought none gets an empty list.
@@ -2456,6 +2467,34 @@ const app = new Hono<App>({ strict: false })
 	// Room keys for a given room (client calls this on the econ host). [] with no DB.
 	.get('/api/roomkeys/v1/room', listRoute('Room keys for a room', 'Empty for now'), (c) =>
 		c.json([])
+	)
+
+	// The Rec Room Plus sign-up bonus: which bonus is running and the token price window
+	// the free items are drawn from. Fixed numbers, the same for every caller.
+	//
+	// Unauthenticated, like the subscription lookup below and for the same reason: the
+	// client reads this while putting the RR+ page together, nothing in the answer is
+	// per-account, and a 401 would only be a way for that load to stall. (The `api` copy of
+	// this path does validate a token, mirroring the reference server.)
+	.get(
+		'/api/CampusCard/v1/SignUpBonus',
+		describeRoute({
+			tags: ['Econ'],
+			summary: 'Rec Room Plus sign-up bonus',
+			description: [
+				'The bonus a player gets for taking out Rec Room Plus: which bonus is running',
+				'(`RRPlusSignUpBonusId`) and the token price window the free items are picked from.',
+				'Fixed values — nothing here is per-account or stored, so no auth is required and',
+				'every caller gets the same three numbers.',
+			].join(' '),
+			responses: { 200: json(RRPlusSignUpBonus, 'The running sign-up bonus') },
+		}),
+		(c) =>
+			c.json({
+				RRPlusSignUpBonusId: 3,
+				MinFreeItemsPrice: 6000,
+				MaxFreeItemsPrice: 10000,
+			})
 	)
 
 	// Subscription lookup (Rec Room Plus, the client's `CampusCard`). There is no store to

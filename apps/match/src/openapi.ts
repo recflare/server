@@ -140,14 +140,24 @@ export const PlayerDto = z.object({
 })
 
 /**
- * The matchmake result envelope. `errorCode` 0 with a `roomInstance` is success;
- * a non-zero code (e.g. 20 NoSuchRoom) comes with `roomInstance: null`.
+ * The matchmake result envelope. Code 0 with a `roomInstance` is success; a non-zero
+ * code (e.g. 20 NoSuchRoom) comes with `roomInstance: null`.
+ *
+ * `result` and `errorCode` are the same code under two names: `result` is what the
+ * client reads, `errorCode` is what this server has always sent (and what its own tests
+ * read), so both are served and they always agree. `correlationId` echoes the
+ * `CorrelationId` the request was tagged with — without it the client never matches the
+ * response to the attempt and fails with "Unable to connect to game session".
  */
 export const MatchmakeResponse = z.object({
+	result: z.int().describe('The join-result code the client checks first; same as errorCode'),
 	errorCode: z
 		.int()
 		.describe('0 = success; 20 = NoSuchRoom; 55 = banned from the room (the one non-opaque code)'),
 	roomInstance: RoomInstanceDto.nullable(),
+	correlationId: z
+		.string()
+		.describe('Echoes the request’s CorrelationId; all-zero GUID when it sent none'),
 })
 
 /**
@@ -259,10 +269,26 @@ export const NotifyDisconnectRequest = z.object({
 })
 
 /**
+ * The `CorrelationId` every matchmake carries — a GUID the client generates per attempt
+ * and expects back on the response (see `MatchmakeResponse`). Posted in the form body;
+ * the field is matched case-insensitively and a query param is accepted too, for the
+ * matchmakes that post no body at all.
+ *
+ * This is the whole body of the target-less matchmakes (`/matchmake/dorm`,
+ * `/matchmake/none`, `/matchmake/player/:id`, `/matchmake/instance/:id`), which is why
+ * it's a schema of its own; the room matchmakes extend it. Other fields the client sends
+ * (`LoginLock`, `MaxPersistenceVersion`, `VoiceServerVersion`,
+ * `BypassMovementModeRestriction`) are accepted and ignored.
+ */
+export const CorrelationIdRequest = z.object({
+	CorrelationId: z.string().optional().describe('Per-attempt GUID; echoed on the response'),
+})
+
+/**
  * The `JoinMode` form field the matchmake routes read (`2` = a private instance;
  * anything else = public). Posted as a urlencoded/multipart body.
  */
-export const JoinModeRequest = z.object({
+export const JoinModeRequest = CorrelationIdRequest.extend({
 	JoinMode: z.string().optional().describe('"2" requests a private instance'),
 })
 
@@ -270,11 +296,12 @@ export const JoinModeRequest = z.object({
  * The room-matchmake form body (`/matchmake/room/:roomId[/:subRoomId]`). Beyond
  * `JoinMode` the 2023 client posts `AdditionalPlayerIds` — the caller's party — so each
  * of them is invited (a game invite) into the instance the leader lands in. It's a
- * repeated field (one id each, not comma-separated). Other fields the client sends
- * (`LoginLock`, `MaxPersistenceVersion`, `BypassMovementModeRestriction`) are accepted
- * and ignored.
+ * repeated field (one id each, not comma-separated). `CorrelationId` rides along as it
+ * does on every matchmake. Other fields the client sends (`LoginLock`,
+ * `MaxPersistenceVersion`, `VoiceServerVersion`, `BypassMovementModeRestriction`) are
+ * accepted and ignored.
  */
-export const MatchmakeRoomRequest = z.object({
+export const MatchmakeRoomRequest = CorrelationIdRequest.extend({
 	JoinMode: z.string().optional().describe('"2" requests a private instance'),
 	AdditionalPlayerIds: z
 		.string()

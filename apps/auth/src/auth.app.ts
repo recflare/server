@@ -662,6 +662,19 @@ const app = new Hono<App>()
 				typeof body.device_class === 'string' ? Number.parseInt(body.device_class, 10) : NaN
 			const deviceClass = Number.isNaN(deviceClassInt) ? 0 : deviceClassInt
 
+			// The client's own build (`ver`, e.g. `20250718.01`), stamped into the token's
+			// `rn.ver` claim so everything downstream reports the build the player is ACTUALLY
+			// running rather than this server's GAME_VERSION — `match` reads it back off the
+			// token when it writes presence. Unverified like the device fields, and only ever
+			// echoed, never trusted for a decision (the version CHECK is `api`'s
+			// `/api/versioncheck/v4`, against its own list).
+			//
+			// A grant that posts none — a refresh, or a caller that isn't the game — leaves it
+			// undefined and generateToken falls back to GAME_VERSION. An empty string is
+			// treated as absent for the same reason: presence must never carry an empty
+			// version, which breaks the client's handling of it.
+			const version = typeof body.ver === 'string' && body.ver !== '' ? body.ver : undefined
+
 			// The client's real IP, per Cloudflare (the client can't spoof CF-Connecting-IP —
 			// the edge sets it — unlike X-Forwarded-For, which is why we don't read that).
 			// Recorded as the immutable `signupIp` at creation and as `lastLoginIp` on every
@@ -1033,7 +1046,8 @@ const app = new Hono<App>()
 				platform,
 				jwtSecret,
 				accountRoles(roleAccount),
-				accountPrivileges(roleAccount)
+				accountPrivileges(roleAccount),
+				version
 			)
 			// Issue a fresh, persisted refresh token (single-use; the client redeems it via
 			// grant_type=refresh_token). A refresh grant thus rotates its token.
