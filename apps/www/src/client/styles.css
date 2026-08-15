@@ -707,6 +707,13 @@ h2 {
 	border-color: color-mix(in srgb, var(--live) 45%, transparent);
 }
 
+/* Same pill in the accent `.warn` uses, for a control that isn't finished: a beta mark
+   is "worth knowing before you act", like a staged save — not a neutral fact like Private. */
+.badge.beta {
+	color: var(--accent);
+	border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
 .room-desc {
 	margin: 6px 0 0;
 	font-size: 0.875rem;
@@ -887,6 +894,26 @@ h2 {
 
 .blob-upload label {
 	margin-bottom: 10px;
+	font-size: 0.8rem;
+}
+
+.blob-upload-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin: 0 0 4px;
+}
+
+.blob-upload-title {
+	font-family: var(--display);
+	font-weight: 700;
+	font-size: 0.9rem;
+}
+
+/* Tighter than the shared `.muted` paragraph: it's a caveat under a heading, not body
+   copy, and the file picker should still be the first thing the eye lands on. */
+.blob-upload-caveat {
+	margin: 0 0 10px;
 	font-size: 0.8rem;
 }
 
