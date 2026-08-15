@@ -3,22 +3,31 @@
  *
  * Mounts each RecFlare worker inside a single deployable Worker WITHOUT modifying the
  * originals: every app is imported by relative path and bundled by esbuild at build
- * time. Production routing mirrors the split deployment — requests are dispatched on
- * the request's subdomain (`accounts.<domain>` -> the `accounts` app), so the sub-app
- * paths (and therefore the client contract) are untouched.
+ * time. A request selects its service two ways, and the sub-app paths (and therefore the
+ * client contract) are untouched either way.
  *
- * Local dev has no subdomain, so the first path segment selects the service and is
- * stripped before the request is forwarded, e.g.
- *   http://localhost:8787/accounts/           -> accounts app sees /
- *   http://localhost:8787/match/player/login  -> match app sees /player/login
- *   http://localhost:8787/api/api/config/v2   -> api app sees /api/config/v2
+ * By PATH — how this worker is meant to be deployed, at the apex of `DOMAIN`, and the
+ * only way that works in local dev, which has no subdomain. The first path segment names
+ * the service and is stripped before the request is forwarded, e.g.
+ *   https://<domain>/accounts/           -> accounts app sees /
+ *   https://<domain>/match/player/login  -> match app sees /player/login
+ *   https://<domain>/api/api/config/v2   -> api app sees /api/config/v2
+ *
+ * By SUBDOMAIN — `accounts.<domain>` -> the `accounts` app, with the path forwarded
+ * unchanged. That mirrors the split deployment, so a client (or a stray DNS record) still
+ * pointed at the per-service hosts keeps working if they're routed here.
  *
  * A request with no path (just `/`) that selects no service serves the `ns` discovery
  * document, so a bare hit to the facade root returns the service map to bootstrap from.
+ * The document is built in the PATH style (`https://<domain>/rooms`, every service on
+ * this one host) — see ENDPOINT_STYLE below — so deploy this worker at the apex of
+ * `DOMAIN` and point the client at nothing else.
  *
  * NOT mounted here: `www`, `img`, `econ`. Each binds a static `assets` directory and
  * Cloudflare allows only one static-assets binding per Worker. Resolve that (serve
  * their static trees from R2, or keep those three as their own Workers) before adding.
+ * The discovery document still puts them on this host, since a single-service run is the
+ * whole point of this worker — so until they're mounted, their paths 404 here.
  */
 import accounts from '../../accounts/src/accounts.app'
 import api from '../../api/src/api.app'
@@ -67,16 +76,24 @@ const services = {
 
 type ServiceName = keyof typeof services
 
+/**
+ * This worker is one host, so its discovery document has to name one host: every service
+ * is advertised as `https://<domain>/<name>`, never `https://<name>.<domain>`. Handed to
+ * the mounted `ns` app, which defaults to the per-host document the split deployment wants.
+ */
+const ENDPOINT_STYLE = 'path'
+
 function resolve(request: Request): { name: ServiceName; request: Request } | undefined {
 	const url = new URL(request.url)
 
-	// Production: dispatch on the leftmost DNS label — accounts.<domain> -> accounts.
-	// The path is forwarded unchanged so the client contract is identical.
+	// Dispatch on the leftmost DNS label — accounts.<domain> -> accounts. The path is
+	// forwarded unchanged so the client contract is identical to the split deployment.
 	const sub = url.hostname.split('.')[0]
 	if (sub in services) return { name: sub as ServiceName, request }
 
-	// Local dev (no service subdomain): the first path segment selects the service and
-	// is stripped before forwarding — /match/player/login -> match app sees /player/login.
+	// Apex (and local dev): the first path segment selects the service and is stripped
+	// before forwarding — /match/player/login -> match app sees /player/login. This is
+	// what the discovery document advertises; see ENDPOINT_STYLE.
 	const [, first, ...rest] = url.pathname.split('/')
 	if (first !== undefined && first in services) {
 		url.pathname = `/${rest.join('/')}`
@@ -103,11 +120,20 @@ export default {
 				{ status: 404 }
 			)
 		}
+		// `ns` is the one mounted app whose answer depends on this worker's own shape: the
+		// addresses it hands out have to be paths on this host. Passed as a var — the same
+		// way a deploy would — so the app itself stays free of any knowledge of mono.
+		if (resolved.name === 'ns') return ns.fetch(resolved.request, { ...env, ENDPOINT_STYLE }, ctx)
+
 		return services[resolved.name].fetch(resolved.request, env, ctx)
 	},
 
 	// Only `match` runs a cron in the split deployment; this worker owns its presence sweep.
-	scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> | void {
+	scheduled(
+		controller: ScheduledController,
+		env: Env,
+		ctx: ExecutionContext
+	): Promise<void> | void {
 		return matchScheduled(controller, env, ctx)
 	},
 } satisfies ExportedHandler<Env>

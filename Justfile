@@ -71,6 +71,17 @@ preview:
 deploy *args:
   bun turbo deploy "$@"
 
+# Deploy the combined `mono` worker: every service in ONE Worker, routed on the first
+# path segment (https://<domain>/rooms). It's an alternative to the split deployment
+# above — for debugging, or for running the whole server as a single service — so it has
+# its own command and `just deploy` leaves it alone. Put it on the apex of your domain
+# with RECFLARE_SUBDOMAINS='{"mono":"@"}'; see .env.example.
+[group('2. local dev')]
+[positional-arguments]
+[no-cd]
+deploy-mono *args:
+  bun turbo -F mono deploy:mono "$@"
+
 # Apply D1 migrations (rooms + auth own them). Defaults to --remote; pass `-- --local`
 # for the dev db. Scope with -F, e.g. `just migrate -F rooms`.
 [group('2. local dev')]

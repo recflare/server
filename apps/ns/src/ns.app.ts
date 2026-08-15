@@ -28,7 +28,9 @@ const app = new Hono<App>()
 	.onError(withOnError())
 	.notFound(withNotFound())
 
-	// Endpoints document, derived from the deploy-time base domain.
-	.get('/', (c) => c.json(buildEndpoints(c.env.DOMAIN)))
+	// Endpoints document, derived from the deploy-time base domain. ENDPOINT_STYLE is set
+	// only by the combined `mono` worker, to advertise the services on paths of that one
+	// domain rather than on a host each; unset (the split deployment) means subdomains.
+	.get('/', (c) => c.json(buildEndpoints(c.env.DOMAIN, c.env.ENDPOINT_STYLE)))
 
 export default app

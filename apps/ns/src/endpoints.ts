@@ -44,9 +44,25 @@ const SERVICE_SUBDOMAINS = {
 	WWW: 'www',
 } as const
 
+/**
+ * Where the services live, relative to the base domain:
+ *
+ *   `subdomain` — one host each, `https://rooms.<domain>`. The split deployment, and the
+ *   default, since that's what every worker in `apps/` is deployed as.
+ *   `path` — one host, first path segment names the service: `https://<domain>/rooms`.
+ *   Only the combined `mono` worker, which is a single Worker routing on that segment.
+ */
+export type EndpointStyle = 'subdomain' | 'path'
+
 /** Builds the endpoints document for `domain`, e.g. `rec.example.com`. */
-export function buildEndpoints(domain: string): Record<string, string> {
+export function buildEndpoints(
+	domain: string,
+	style: EndpointStyle = 'subdomain'
+): Record<string, string> {
 	return Object.fromEntries(
-		Object.entries(SERVICE_SUBDOMAINS).map(([label, sub]) => [label, `https://${sub}.${domain}`])
+		Object.entries(SERVICE_SUBDOMAINS).map(([label, sub]) => [
+			label,
+			style === 'path' ? `https://${domain}/${sub}` : `https://${sub}.${domain}`,
+		])
 	)
 }

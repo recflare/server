@@ -18,6 +18,20 @@ describe('ns endpoints', () => {
 		expect(body).toEqual(buildEndpoints(TEST_DOMAIN))
 	})
 
+	test('the path style puts every service on the base domain', async () => {
+		const doc = buildEndpoints(TEST_DOMAIN, 'path')
+		expect(doc.Rooms).toBe(`https://${TEST_DOMAIN}/rooms`)
+		expect(doc.Matchmaking).toBe(`https://${TEST_DOMAIN}/match`)
+		expect(doc.Images).toBe(`https://${TEST_DOMAIN}/img`)
+		expect(Object.values(doc).every((url) => url.startsWith(`https://${TEST_DOMAIN}/`))).toBe(true)
+	})
+
+	test('the default style gives every service its own host', async () => {
+		const doc = buildEndpoints(TEST_DOMAIN)
+		expect(doc.Rooms).toBe(`https://rooms.${TEST_DOMAIN}`)
+		expect(doc.Images).toBe(`https://img.${TEST_DOMAIN}`)
+	})
+
 	test('unknown path returns 404', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/nope`)
 		expect(res.status).toBe(404)

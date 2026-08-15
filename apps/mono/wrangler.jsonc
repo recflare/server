@@ -76,6 +76,11 @@
 	"vars": {
 		"NAME": "mono", // logging tag; split workers derive this per-app
 		"ENVIRONMENT": "development", // overridden during deployment
-		"SENTRY_RELEASE": "unknown" // overridden during deployment
+		"SENTRY_RELEASE": "unknown", // overridden during deployment
+		// Base domain the discovery document is built from; replaced with RECFLARE_DOMAIN by
+		// both `just dev` and `just deploy-mono`. It must name the host that actually reaches
+		// this worker, which serves every service it mounts from a path on that ONE host — so
+		// deployed, it belongs on the APEX of that domain (see src/context.ts).
+		"DOMAIN": "rec.example.com"
 	}
 }

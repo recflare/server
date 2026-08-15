@@ -41,6 +41,16 @@
 			"env": ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"],
 			"outputLogs": "new-only"
 		},
+		// The combined `mono` worker's deploy (see apps/mono). Deliberately NOT called
+		// `deploy`: mono is a debugging deployable that runs every service in one Worker,
+		// an ALTERNATIVE to the split set rather than a member of it, so `just deploy`
+		// must not sweep it up. Ship it on demand with `just deploy-mono`.
+		"deploy:mono": {
+			"cache": false,
+			"dependsOn": ["build", "topo"],
+			"env": ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"],
+			"outputLogs": "new-only"
+		},
 		// Apply D1 migrations. Only workers that own migrations define a `migrate`
 		// script, so `turbo migrate` runs just those. No build needed.
 		"migrate": {

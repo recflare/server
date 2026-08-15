@@ -15,6 +15,19 @@ import type { NotificationsHub } from '../../notify/src/notifications-hub'
  * each app's narrower `Env`, so the sub-apps type-check unchanged.
  */
 export type Env = SharedHonoEnv & {
+	/**
+	 * Base domain this worker answers on, e.g. `rec.example.com` — injected from
+	 * `RECFLARE_DOMAIN` by both `run-wrangler-dev` and `run-wrangler-deploy`, with a
+	 * placeholder default in `wrangler.jsonc` for tests and an unconfigured checkout.
+	 *
+	 * Read by the mounted `ns` app to build the service-discovery document — the thing a
+	 * client is pointed at — so it has to name the host that actually reaches this worker:
+	 * the tunnel/LAN hostname when running it locally, and the apex of the domain when
+	 * deployed (`RECFLARE_SUBDOMAINS='{"mono":"@"}'`, `just deploy-mono`). Every service
+	 * mounted here is served from a PATH on that one host, so the document says
+	 * `https://<domain>/rooms` and nothing else would answer there.
+	 */
+	DOMAIN: string
 	// HS256 JWT signing key (shared Secrets Store). Tokens signed by `auth` verify everywhere.
 	JWT_SECRET: SecretsStoreSecret
 	// Meta (Oculus) app secret, from the same store. Read only by `auth`, to validate a

@@ -16,7 +16,9 @@ recflare_load_env
 # custom domain via `--domain`. This keeps the real domain out of versioned files
 # — committed wrangler.jsonc has no routes, and the base domain is passed as the
 # DOMAIN var at runtime. Per-app subdomain overrides come from RECFLARE_SUBDOMAINS
-# (a JSON object, e.g. {"playersettings":"settings"}).
+# (a JSON object, e.g. {"playersettings":"settings"}); an override of "@" (or "")
+# puts the worker on the APEX of the domain instead of a subdomain, which is what
+# the combined `mono` worker wants — it serves every service from a path on one host.
 if [ -z "${RECFLARE_DOMAIN:-}" ]; then
 	echo "error: RECFLARE_DOMAIN is not set — export it or add it to .env (see .env.example)" >&2
 	exit 1
@@ -29,7 +31,10 @@ SUBDOMAINS_JSON=${RECFLARE_SUBDOMAINS:-}
 DIR=$(basename "$PWD")
 # Per-app subdomain override, falling back to the worker's directory name.
 SUBDOMAIN=$(printf '%s' "$SUBDOMAINS_JSON" | jq -r --arg d "$DIR" '.[$d] // $d')
-HOST="$SUBDOMAIN.$DOMAIN"
+case "$SUBDOMAIN" in
+"" | "@") HOST="$DOMAIN" ;;
+*) HOST="$SUBDOMAIN.$DOMAIN" ;;
+esac
 
 # Splice deploy-time resource ids into a generated config. The committed
 # wrangler.jsonc carries "local" placeholders so it needs no per-developer edits;

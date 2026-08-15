@@ -14,6 +14,15 @@ NAME=$(jq -r '.name' package.json)
 recflare_load_env
 EXTRA_VARS=$(recflare_vars)
 
+# The base domain isn't a tuning knob (recflare_vars skips the deploy inputs), so pass it
+# the same way a deploy does. It matters locally for the workers that hand out addresses —
+# `ns`, and the combined `mono` worker, whose discovery document IS the thing you point a
+# client at. Unset, the worker keeps the placeholder default in its wrangler.jsonc; running
+# mono behind a tunnel, set RECFLARE_DOMAIN to the hostname that reaches it and the document
+# it serves names that host instead of a domain nothing here answers on.
+DOMAIN_VAR=""
+[ -z "${RECFLARE_DOMAIN:-}" ] || DOMAIN_VAR="--var DOMAIN:$RECFLARE_DOMAIN"
+
 # Give each worker a stable, unique dev port so `turbo dev` can run them all in
 # parallel without colliding on wrangler's default 8787 (and its 9229 inspector
 # port). The offset is the worker's alphabetical position among its siblings, so
@@ -27,9 +36,11 @@ OFFSET=$(
 PORT=$((8787 + OFFSET - 1))
 INSPECTOR_PORT=$((9229 + OFFSET - 1))
 
-# $EXTRA_VARS is intentionally unquoted — it's a flag list to word-split on.
+# $EXTRA_VARS and $DOMAIN_VAR are intentionally unquoted — they're flag lists to word-split
+# on, and neither a knob value nor a domain contains whitespace.
 exec wrangler dev \
 	--var NAME:"$NAME" \
+	$DOMAIN_VAR \
 	$EXTRA_VARS \
 	--port "$PORT" \
 	--inspector-port "$INSPECTOR_PORT" \
