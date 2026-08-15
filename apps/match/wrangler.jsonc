@@ -15,6 +15,15 @@
 			"database_id": "local"
 		}
 	],
+	// Per-player settings KV, owned by the `playersettings` worker. Read-only here, for
+	// GET /player/avoidjuniors. The "local" id placeholder is replaced with the real id
+	// from RECFLARE_KV at deploy time.
+	"kv_namespaces": [
+		{
+			"binding": "RECFLARE_PLAYER_SETTINGS",
+			"id": "local"
+		}
+	],
 	// Presence sweep. Rows expire on their own TTL (15m) and reads already ignore
 	// expired ones, so this is housekeeping: it purges them, deletes the room
 	// instances left with nobody in them, and recomputes the fullness of the

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Accessibility } from '@repo/domain/src/enums'
+import { GAME_VERSION } from '@repo/domain/src/presence-db'
 
 import { NotificationType } from '../../../notify/src/notification-types'
 import { authFailure, authUnreachable } from '../auth-messages'
@@ -34,6 +35,7 @@ interface Hosts {
 	notify: string
 	rooms: string
 	cdn: string
+	storage: string
 }
 
 /**
@@ -237,6 +239,12 @@ interface CallOptions {
 	form?: Record<string, string>
 	/** A JSON body — what notify's internal endpoints take instead. */
 	json?: unknown
+	/**
+	 * A multipart body — what `storage`'s `/upload` takes, since it carries a file. Passed
+	 * to `fetch` as-is: the browser writes the `content-type` itself, because only it
+	 * knows the boundary it generated.
+	 */
+	multipart?: FormData
 	/** Send the session token. */
 	authed?: boolean
 	/**
@@ -251,13 +259,16 @@ interface CallOptions {
 async function call<T = Record<string, unknown>>(url: string, opts: CallOptions = {}): Promise<T> {
 	const headers: Record<string, string> = {}
 	if (opts.authed && token) headers.authorization = `Bearer ${token}`
-	let body: string | undefined
+	let body: string | FormData | undefined
 	if (opts.form) {
 		headers['content-type'] = 'application/x-www-form-urlencoded'
 		body = new URLSearchParams(opts.form).toString()
 	} else if (opts.json !== undefined) {
 		headers['content-type'] = 'application/json'
 		body = JSON.stringify(opts.json)
+	} else if (opts.multipart) {
+		// Deliberately no content-type: setting one would omit the boundary.
+		body = opts.multipart
 	}
 
 	const res = await fetch(url, {
@@ -306,6 +317,93 @@ async function fetchMyRooms(): Promise<OwnedRoom[]> {
 	if (!Array.isArray(rooms)) return []
 	// ISO-8601 timestamps, so lexical order IS chronological order.
 	return [...rooms].sort((a, b) => (a.CreatedAt < b.CreatedAt ? 1 : -1))
+}
+
+/**
+ * The `UploadFileType` a room's scene data is posted under. `storage` maps this to the
+ * `room/` subfolder of the CDN bucket — the one prefix `cdn`'s `GET /room/:dataBlob`
+ * reads back, and so the only one a `DataBlob` key can point into.
+ */
+const FILE_TYPE_ROOM_SAVE = '1'
+
+/**
+ * The game build this server targets, as `YYYY-MM-DD` — read from the same `GAME_VERSION`
+ * the auth token and presence carry rather than written out again here, so upgrading the
+ * client moves this line with it instead of leaving a stale date on the upload form.
+ *
+ * It's shown because a scene blob is only loadable by the build that wrote it (or older
+ * ones that understand it): a save taken out of a room built on a later version can fail
+ * outright, and nothing between here and the game says why.
+ */
+const CLIENT_BUILD_DATE = `${GAME_VERSION.slice(0, 4)}-${GAME_VERSION.slice(4, 6)}-${GAME_VERSION.slice(6, 8)}`
+
+/**
+ * Upload a scene blob to `storage` and return the key it was stored under — the
+ * `<date>/<uuid>` name every `DataBlob` field holds.
+ *
+ * This is the same two-step the game does: the bytes go to `storage` first, and only its
+ * generated name is handed to `rooms`. Nothing about the file is inspected here — a room
+ * blob is an opaque Unity payload, and the server doesn't parse it either, so the only
+ * honest validation available is whether the game can load it afterwards.
+ */
+async function uploadRoomBlob(file: File): Promise<string> {
+	const form = new FormData()
+	form.set('FileType', FILE_TYPE_ROOM_SAVE)
+	form.set('File', file)
+	const { filename } = await call<{ filename?: string }>(`${where().storage}/upload`, {
+		method: 'POST',
+		multipart: form,
+		authed: true,
+	})
+	if (!filename) throw new Error('The storage worker accepted the file but returned no name.')
+	return filename
+}
+
+/**
+ * The blob's SHA-256, base64 — the encoding this API's hash fields use (an invention's
+ * `BlobHash` comes back the same way). `rooms` only echoes it back on the save, but a
+ * save whose hash doesn't describe its blob is worse than one carrying none.
+ */
+async function blobHash(file: File): Promise<string> {
+	const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', await file.arrayBuffer()))
+	let binary = ''
+	for (const byte of digest) binary += String.fromCharCode(byte)
+	return btoa(binary)
+}
+
+/**
+ * Record a room save against one subroom, pointing it at an already-uploaded blob.
+ *
+ * `AutoPublish` decides whether players see it now or whether it waits on the room's
+ * publish step, exactly as it does for the game — the site doesn't get its own rule.
+ * The envelope answers HTTP 200 either way and puts the refusal in `error`, so success
+ * has to be read from the body rather than the status. `value.room` is the updated room,
+ * which the page re-renders from rather than re-fetching the whole list.
+ */
+async function saveSubRoomBlob(
+	roomId: number,
+	subRoomId: number,
+	input: { filename: string; hash: string; description: string; autoPublish: boolean }
+): Promise<OwnedRoom> {
+	const res = await call<{
+		success?: boolean
+		error?: string | null
+		value?: { room?: OwnedRoom } | null
+	}>(`${where().rooms}/rooms/${roomId}/subrooms/${subRoomId}/data`, {
+		method: 'POST',
+		authed: true,
+		json: {
+			SubRoomData: { Filename: input.filename, Hash: input.hash },
+			Description: input.description,
+			AutoPublish: input.autoPublish,
+		},
+	})
+	if (res.success !== true) {
+		throw new Error(res.error || 'The rooms worker refused the save.')
+	}
+	const room = res.value?.room
+	if (!room) throw new Error('The save was recorded but the room came back empty.')
+	return room
 }
 
 /**
@@ -814,9 +912,10 @@ function About({ slides, error }: { slides: Slide[] | null; error: string }) {
 	return (
 		<section className="about">
 			<div>
-				<h2 className="about-title">An Community Made Rec Room Revival, Made For the Community.</h2>
+				<h2 className="about-title">Rug Room is a Community Made 2023 revival, soon to be 2025!</h2>
 				<p className="about-lede">
-                                    Rug Room is a 2024 build of Rec Room. It is completely free, and will always be free. No microtransactions ever.
+					A free fan project, made by players who missed it. Built to be{' '}
+					<strong>feature-complete</strong> and always growing!{' '}
 				</p>
 			</div>
 			<div className="about-side">
@@ -1018,7 +1117,18 @@ function RoomPage({
 				// they have no business asking.
 				<p className="muted">That isn&apos;t one of your rooms.</p>
 			) : (
-				<RoomDetail room={room} imgHost={where().img} cdnHost={where().cdn} />
+				<RoomDetail
+					room={room}
+					imgHost={where().img}
+					cdnHost={where().cdn}
+					// A save answers with the whole updated room, so swapping it into the list
+					// is enough — no re-fetch, and the other rooms keep their place.
+					onRoomChange={(updated) =>
+						setRooms((current) =>
+							(current ?? []).map((r) => (r.RoomId === updated.RoomId ? updated : r))
+						)
+					}
+				/>
 			)}
 		</main>
 	)
@@ -1036,15 +1146,22 @@ function platformList(room: OwnedRoom): string[] {
 	return on
 }
 
-/** A room's settings and its subrooms. Read-only: rooms are edited in game. */
+/**
+ * A room's settings and its subrooms. Its own fields are read-only — rooms are edited in
+ * game — with one exception: a subroom's scene data can be replaced from here, which is
+ * the one thing the game gives an owner no way to do (it can only save what it just
+ * built, never restore a file they kept).
+ */
 function RoomDetail({
 	room,
 	imgHost,
 	cdnHost,
+	onRoomChange,
 }: {
 	room: OwnedRoom
 	imgHost: string
 	cdnHost: string
+	onRoomChange: (room: OwnedRoom) => void
 }) {
 	const created = new Date(room.CreatedAt)
 	const platforms = platformList(room)
@@ -1111,7 +1228,14 @@ function RoomDetail({
 				) : (
 					<ul className="subrooms">
 						{subRooms.map((sub) => (
-							<SubRoomRow key={sub.SubRoomId} sub={sub} roomName={room.Name} cdnHost={cdnHost} />
+							<SubRoomRow
+								key={sub.SubRoomId}
+								sub={sub}
+								roomId={room.RoomId}
+								roomName={room.Name}
+								cdnHost={cdnHost}
+								onRoomChange={onRoomChange}
+							/>
 						))}
 					</ul>
 				)}
@@ -1123,12 +1247,16 @@ function RoomDetail({
 /** One subroom: what it is, and — the part an owner can't see anywhere else — its save. */
 function SubRoomRow({
 	sub,
+	roomId,
 	roomName,
 	cdnHost,
+	onRoomChange,
 }: {
 	sub: SubRoom
+	roomId: number
 	roomName: string
 	cdnHost: string
+	onRoomChange: (room: OwnedRoom) => void
 }) {
 	const save = sub.CurrentSave ?? null
 	const saved = save ? new Date(save.CreatedAt) : null
@@ -1181,7 +1309,111 @@ function SubRoomRow({
 					cdnHost={cdnHost}
 				/>
 			)}
+			<BlobUpload roomId={roomId} subRoomId={sub.SubRoomId} onRoomChange={onRoomChange} />
 		</li>
+	)
+}
+
+/**
+ * Replace one subroom's scene data with a file from disk.
+ *
+ * The two steps are the game's own: the bytes go to `storage` under the RoomSave type,
+ * and the key it hands back is posted to the subroom's `…/data` route as
+ * `SubRoomData.Filename`. So this is a room save like any other — it lands in the
+ * subroom's history beside the ones the game wrote, and both endpoints are already gated
+ * on the room's creator (or a co-owner), which is why there is no ownership check here:
+ * the page only lists rooms that came back from `ownedby/me` in the first place.
+ *
+ * Publishing is offered rather than assumed. A save normally only STAGES — players keep
+ * loading the last published version until the owner publishes — and quietly making an
+ * uploaded file live would be a bigger step than the game's own save takes. Left on by
+ * default all the same: someone uploading a blob here is restoring a room, and a restore
+ * nobody can see isn't one.
+ */
+function BlobUpload({
+	roomId,
+	subRoomId,
+	onRoomChange,
+}: {
+	roomId: number
+	subRoomId: number
+	onRoomChange: (room: OwnedRoom) => void
+}) {
+	const [file, setFile] = useState<File | null>(null)
+	const [description, setDescription] = useState('')
+	const [publish, setPublish] = useState(true)
+	// The file input is uncontrolled — React can't set its value — so clearing the picked
+	// file after a save takes a handle on the element itself.
+	const input = useRef<HTMLInputElement>(null)
+	const { pending, error, done, run } = useAction()
+
+	return (
+		<form
+			className="blob-upload"
+			onSubmit={(e) => {
+				e.preventDefault()
+				if (!file) return
+				void run(async () => {
+					const [filename, hash] = await Promise.all([uploadRoomBlob(file), blobHash(file)])
+					onRoomChange(
+						await saveSubRoomBlob(roomId, subRoomId, {
+							filename,
+							hash,
+							description: description.trim(),
+							autoPublish: publish,
+						})
+					)
+					setFile(null)
+					setDescription('')
+					if (input.current) input.current.value = ''
+					return publish
+						? 'Uploaded and published — players load this scene now.'
+						: 'Uploaded and staged. Publish it in game to make it live.'
+				})
+			}}
+		>
+			{/* Said out loud, on the control itself: this is the newest thing on the site and
+			    the only one that overwrites what players load. Someone about to hand us a file
+			    they can't get back should read that before the file picker, not after. */}
+			<p className="blob-upload-head">
+				<span className="blob-upload-title">Replace scene data</span>
+				<span className="badge beta">Beta</span>
+			</p>
+			<p className="muted blob-upload-caveat">
+				New and lightly tested. Nothing here checks the file — the server stores whatever it
+				is and the game finds out on load. This server runs the {CLIENT_BUILD_DATE} build, so
+				scene data from a room built on anything newer may not load at all. Download the save
+				above and keep it before replacing it.
+			</p>
+			<label className="blob-upload-file">
+				Scene data file
+				<input
+					ref={input}
+					type="file"
+					onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+					required
+				/>
+			</label>
+			<label className="blob-upload-note">
+				Save comment<span className="optional">optional</span>
+				<input
+					type="text"
+					value={description}
+					placeholder="Uploaded from the website"
+					maxLength={200}
+					onChange={(e) => setDescription(e.target.value)}
+				/>
+			</label>
+			<label className="check">
+				<input type="checkbox" checked={publish} onChange={(e) => setPublish(e.target.checked)} />
+				Publish it straight away
+			</label>
+			{error && <p className="error">{error}</p>}
+			{done && <p className="ok">{done}</p>}
+			<button type="submit" disabled={pending || file === null}>
+				{pending ? 'Uploading…' : 'Upload scene data'}
+			</button>
+		</form>
 	)
 }
 

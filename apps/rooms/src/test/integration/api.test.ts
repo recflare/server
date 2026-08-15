@@ -577,6 +577,56 @@ describe('rooms endpoints', () => {
 		await env.DB.prepare(`DELETE FROM subroom WHERE room_id IN (${ids})`).run()
 	})
 
+	it('GET /rooms/hot?tag=community serves rooms the Coach account did not create', async () => {
+		type Feed = { Results: Array<{ Name: string }>; TotalResults: number }
+		const feed = async (): Promise<Feed> =>
+			(await (
+				await SELF.fetch(`${ORIGIN}/rooms/hot?tag=community&skip=0&take=100`)
+			).json()) as Feed
+		const names = async (): Promise<string[]> => (await feed()).Results.map((r) => r.Name)
+
+		// No room carries a `community` tag, and every seeded room belongs to Coach
+		// (account 1) — so the feed is empty until another account makes something.
+		expect(await feed()).toEqual({ Results: [], TotalResults: 0 })
+
+		const seeded: number[] = []
+		const seed = async (room: Record<string, unknown>) => {
+			seeded.push(Number(room.RoomId))
+			await seedRoomWithSubRooms(env.DB, {
+				Accessibility: 1,
+				IsDorm: false,
+				CreatorAccountId: 2,
+				...room,
+			})
+		}
+
+		await seed({ RoomId: 9101, Name: 'CommunityOne' })
+		await seed({ RoomId: 9102, Name: 'CommunityTwo' })
+		// Coach's own rooms stay out, and so do non-public rooms as everywhere else.
+		await seed({ RoomId: 9103, Name: 'CoachRoom', CreatorAccountId: 1 })
+		await seed({ RoomId: 9104, Name: 'UnlistedCommunityRoom', Accessibility: 2 })
+
+		// Nobody is in any of them and their stats are all zero, so the feed's normal
+		// ordering falls through to RoomId.
+		expect(await names()).toEqual(['CommunityOne', 'CommunityTwo'])
+
+		// Creator, not RRO-ness, is what `community` filters on — unlike `new`, a
+		// player-made room flagged as an RRO still belongs here.
+		await seed({ RoomId: 9105, Name: 'PlayerMadeRRO', IsRRO: true })
+		expect(await names()).toEqual(['CommunityOne', 'CommunityTwo', 'PlayerMadeRRO'])
+
+		// Paging comes off the same order.
+		const page = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/hot?tag=community&skip=1&take=1`)
+		).json()) as Feed
+		expect(page).toMatchObject({ Results: [{ Name: 'CommunityTwo' }], TotalResults: 3 })
+
+		// Leave the shared feeds as they were for the tests that follow.
+		const ids = seeded.join(',')
+		await env.DB.prepare(`DELETE FROM room WHERE room_id IN (${ids})`).run()
+		await env.DB.prepare(`DELETE FROM subroom WHERE room_id IN (${ids})`).run()
+	})
+
 	it('GET /rooms/base returns a bare array of base/template rooms (incl. non-public)', async () => {
 		const res = await SELF.fetch(`${ORIGIN}/rooms/base`)
 		expect(res.status).toBe(200)

@@ -3,14 +3,6 @@ import { describeRoute, openAPIRouteHandler } from 'hono-openapi'
 import { useWorkersLogger } from 'workers-tagged-logger'
 
 import {
-	glyphLength,
-	MAX_CLUB_DESCRIPTION_LENGTH,
-	MAX_CLUB_NAME_LENGTH,
-} from '@repo/domain'
-import { intVar, logger, withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
-import { validateAndGetAccountId } from '@repo/jwt'
-
-import {
 	clearHomeClub,
 	ClubJoinability,
 	ClubMembershipType,
@@ -27,16 +19,22 @@ import {
 	getClubsByMember,
 	getHomeClub,
 	getMembership,
+	glyphLength,
 	joinClub,
 	leaveClub,
 	MAX_ADDITIONAL_IMAGES,
+	MAX_CLUB_DESCRIPTION_LENGTH,
+	MAX_CLUB_NAME_LENGTH,
 	requestToJoinClub,
 	searchClubs,
 	setClubAdditionalImage,
 	setHomeClub,
 	setMemberType,
 	updateClub,
-} from './clubs-db'
+} from '@repo/domain'
+import { intVar, logger, withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
+import { validateAndGetAccountId } from '@repo/jwt'
+
 import {
 	AnnouncementIdEnvelope,
 	AnnouncementRequest,

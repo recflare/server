@@ -1,7 +1,17 @@
 import { Hono } from 'hono'
 import { describeRoute } from 'hono-openapi'
 
-import { getAccountsByIds } from '@repo/domain'
+import {
+	acceptFriendRequest,
+	addFriend,
+	getAccountsByIds,
+	getMutualFriendIds,
+	getRelationshipsForPlayer,
+	MUTUAL_FRIENDS_LIMIT,
+	removeFriend,
+	sendFriendRequest,
+	setRelationshipFlag,
+} from '@repo/domain'
 import { logger } from '@repo/hono-helpers'
 
 // The notification-type ids the hub carries (owned by the `notify` worker). Imported
@@ -24,24 +34,14 @@ import {
 	SuccessErrorEnvelope,
 	UNAUTHORIZED_RESPONSE,
 } from '../openapi'
-import {
-	acceptFriendRequest,
-	addFriend,
-	getMutualFriendIds,
-	getRelationshipsForPlayer,
-	MUTUAL_FRIENDS_LIMIT,
-	removeFriend,
-	sendFriendRequest,
-	setRelationshipFlag,
-} from '../relationships-db'
 
 import type { Context } from 'hono'
-import type { App } from '../context'
 import type {
 	RelationshipChange,
 	RelationshipFlag,
 	RelationshipResponse,
-} from '../relationships-db'
+} from '@repo/domain'
+import type { App } from '../context'
 
 /** The notifications hub is a single global DO instance (see the `notify` worker). */
 const HUB_INSTANCE = 'global'

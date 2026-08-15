@@ -6,9 +6,14 @@
  * normal relational table. Rows are append-only in the sense that nothing rewrites
  * what a player submitted: the table is a log of exactly what was reported.
  *
- * The `api` worker owns this schema/migration (migrations/0004_report.sql and
- * 0009_report_ban.sql, applied under its own `migrations_table` so it doesn't clash
- * with the other workers' migrations that share the database).
+ * The `api` worker owns this schema/migration (migrations/0004_report.sql,
+ * 0009_report_ban.sql and 0011_report_event.sql, applied under its own
+ * `migrations_table` so it doesn't clash with the other workers' migrations that share
+ * the database).
+ *
+ * A reported player EVENT lands here too, rather than in a table of its own: same
+ * fields, same moderation life. Such a row carries `event_id`, and its
+ * `reported_player_id` is the event's creator — see `POST /api/playerevents/v1/report`.
  *
  * A report is also where an ACCOUNT-WIDE ban lives: acting on a report sets `banned`
  * on that same row (see `banFromReport`), so the ban carries the evidence for it. Two
@@ -21,7 +26,10 @@
  * answers "not blocked" unconditionally.
  */
 
-/** Schema DDL (mirror of migrations/0004_report.sql + 0009_report_ban.sql). */
+/**
+ * Schema DDL (mirror of migrations/0004_report.sql + 0009_report_ban.sql +
+ * 0011_report_event.sql).
+ */
 export const SCHEMA_DDL: string[] = [
 	`CREATE TABLE IF NOT EXISTS report (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -35,11 +43,13 @@ export const SCHEMA_DDL: string[] = [
 		room_instance_type TEXT,
 		created_at TEXT NOT NULL,
 		banned INTEGER NOT NULL DEFAULT 0,
-		ban_expires TEXT
+		ban_expires TEXT,
+		event_id INTEGER
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_report_reported ON report (reported_player_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_report_reporter ON report (reporter_player_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_report_banned ON report (reported_player_id) WHERE banned = 1`,
+	`CREATE INDEX IF NOT EXISTS idx_report_event ON report (event_id) WHERE event_id IS NOT NULL`,
 ]
 
 /** A stored report row (snake_case columns, one row per submission). */
@@ -60,6 +70,12 @@ export interface ReportRow {
 	banned: number
 	/** ISO-8601 UTC instant the ban lifts; NULL means it never does. */
 	ban_expires: string | null
+	/**
+	 * The player event this report is against, or NULL for an ordinary player report —
+	 * which is what tells the two kinds apart. See `POST /api/playerevents/v1/report`:
+	 * `reported_player_id` and `room_id` are filled in from the event itself.
+	 */
+	event_id: number | null
 }
 
 /**
@@ -77,6 +93,8 @@ export interface NewReport {
 	heightReported?: number | null
 	roomId?: number | null
 	roomInstanceType?: string | null
+	/** Set only when reporting a player EVENT; absent on an ordinary player report. */
+	eventId?: number | null
 }
 
 /** Record a submitted report, returning the stored row (with its assigned id). */
@@ -85,8 +103,9 @@ export async function createReport(db: D1Database, input: NewReport): Promise<Re
 		.prepare(
 			`INSERT INTO report (
 				reporter_player_id, reported_player_id, report_category, details,
-				height_reporter, height_reported, room_id, room_instance_type, created_at
-			 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+				height_reporter, height_reported, room_id, room_instance_type, created_at,
+				event_id
+			 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
 			 RETURNING *`
 		)
 		.bind(
@@ -98,7 +117,8 @@ export async function createReport(db: D1Database, input: NewReport): Promise<Re
 			input.heightReported ?? null,
 			input.roomId ?? null,
 			input.roomInstanceType ?? null,
-			new Date().toISOString()
+			new Date().toISOString(),
+			input.eventId ?? null
 		)
 		.first<ReportRow>()
 	// RETURNING always yields the inserted row; the non-null assert keeps the caller

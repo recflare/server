@@ -8,17 +8,23 @@ import { logger } from '@repo/hono-helpers'
 import { NotificationType } from '../../../notify/src/notification-types'
 import {
 	createEvent,
+	eventInputRejection,
+	getEventAttendees,
 	getEventById,
+	getEventResponse,
 	getEventsByClubs,
 	getEventsByCreator,
 	getEventsByIds,
+	getEventTags,
 	getLiveEvents,
+	inviteToEvent,
 	isEventResponseType,
-	eventInputRejection,
 	parseEventBody,
 	searchEvents,
 	setEventResponse,
+	toEventListing,
 	toEventNotification,
+	toEventResponse,
 	toEventResult,
 	updateEvent,
 } from '../events-db'
@@ -30,20 +36,28 @@ import {
 	json,
 	jsonBody,
 	pageParams,
+	PlayerEventBulkInviteRequest,
+	PlayerEventDetailsDto,
 	PlayerEventDto,
+	PlayerEventListingDto,
+	PlayerEventReportRequest,
 	PlayerEventRequest,
 	PlayerEventRespondRequest,
+	PlayerEventResponseDto,
 	PlayerEventResultDto,
 	PlayerEventsAll,
 	PlayerEventsPage,
 	stringQuery,
+	SuccessErrorEnvelope,
 	TagFilters,
 	UNAUTHORIZED_RESPONSE,
 } from '../openapi'
+import { createReport } from '../reports-db'
 
 import type { Context } from 'hono'
+import type { PlayerEventResponsePayload } from '../../../notify/src/notification-payloads'
 import type { App } from '../context'
-import type { PlayerEvent } from '../events-db'
+import type { EventAttendeeRow, EventTag, PlayerEvent } from '../events-db'
 
 /** The notifications hub is a single global DO instance (see the `notify` worker). */
 const HUB_INSTANCE = 'global'
@@ -56,18 +70,65 @@ const HUB_INSTANCE = 'global'
  * must not fail the create. Note the frame carries the camelCase
  * {@link toEventNotification} projection, not the PascalCase record the response does.
  */
-async function notifyEventCreated(c: Context<App>, event: PlayerEvent): Promise<void> {
+async function notifyEventCreated(
+	c: Context<App>,
+	event: PlayerEvent,
+	tags: EventTag[]
+): Promise<void> {
 	try {
 		await c.env.RECFLARE_NOTIFICATIONS_HUB.getByName(HUB_INSTANCE).notifyPlayer(
 			event.CreatorPlayerId,
 			NotificationType.PlayerEventCreated,
-			{ ...toEventNotification(event) }
+			{ ...toEventNotification(event, tags) }
 		)
 	} catch (err) {
 		logger.error('failed to push PlayerEventCreated notification', {
 			playerEventId: event.PlayerEventId,
 			error: err instanceof Error ? err.message : String(err),
 		})
+	}
+}
+
+/**
+ * Push a `PlayerEventResponseChanged` (83) to each player a bulk invite just added —
+ * what puts the event on their screen without a refetch, since an invite writes their
+ * response row for them.
+ *
+ * Only the players who actually gained a row are notified: an invite that hit an
+ * existing answer changed nothing, so there is nothing to tell them about.
+ *
+ * The frame carries BOTH nested objects the client's decoder expects. That is not
+ * optional — several of its handlers dereference one level down with no null guard, so
+ * omitting one surfaces as a NullReferenceException in the client rather than a missing
+ * field (see notification-payloads.ts). The event goes in the same camelCase
+ * {@link toEventNotification} projection the `PlayerEventCreated` frame uses, and the
+ * response in the PascalCase {@link toEventResponse} one the RSVP list serves; the
+ * decoder accepts either casing, so the two need not agree.
+ *
+ * Hub failures are logged and swallowed, and one player's failure doesn't stop the
+ * rest: the invites are already stored by the time this runs.
+ */
+async function notifyInvited(
+	c: Context<App>,
+	event: PlayerEvent,
+	added: EventAttendeeRow[]
+): Promise<void> {
+	const hub = c.env.RECFLARE_NOTIFICATIONS_HUB.getByName(HUB_INSTANCE)
+	const PlayerEvent = { ...toEventNotification(event) }
+	for (const row of added) {
+		const payload = {
+			PlayerEvent,
+			PlayerEventResponse: { ...toEventResponse(row) },
+		} satisfies PlayerEventResponsePayload
+		try {
+			await hub.notifyPlayer(row.player_id, NotificationType.PlayerEventResponseChanged, payload)
+		} catch (err) {
+			logger.error('failed to push PlayerEventResponseChanged notification', {
+				playerEventId: event.PlayerEventId,
+				playerId: row.player_id,
+				error: err instanceof Error ? err.message : String(err),
+			})
+		}
 	}
 }
 
@@ -83,6 +144,33 @@ async function notifyEventCreated(c: Context<App>, event: PlayerEvent): Promise<
  * if they're unified.
  */
 export const eventRoutes = new Hono<App>({ strict: false })
+	// The player-events browse feed — everything upcoming or running, soonest first. Same
+	// query `/search` runs with no text, but its own projection: this feed drops `State`
+	// and carries a `BroadcastingRoomInstanceId`, so it goes through `toEventListing`.
+	.get(
+		'/api/playerevents/v1',
+		describeRoute({
+			tags: ['Events'],
+			summary: 'The player-events browse feed',
+			description:
+				'The default feed on the player-events screen: every event that has not finished ' +
+				'yet — upcoming and running — soonest first, paginated via skip/take. A bare ' +
+				'array.\n\n' +
+				'Each entry is the browse LISTING, not the stored record the by-id, bulk and ' +
+				'search reads serve: it drops `State` and carries ' +
+				'`BroadcastingRoomInstanceId` (always null — nothing broadcasts an event yet). ' +
+				'That is the shape observed on this endpoint; keep the two projections apart.',
+			parameters: pageParams(50),
+			responses: { 200: json(PlayerEventListingDto.array(), 'The events that have not ended') },
+		}),
+		async (c) => {
+			const skip = Number.parseInt(c.req.query('skip') ?? '', 10) || 0
+			const take = Number.parseInt(c.req.query('take') ?? '', 10) || 50
+			const events = await searchEvents(c.env.DB, '', skip, take)
+			return c.json(events.map(toEventListing))
+		}
+	)
+
 	.get(
 		'/api/playerevents/v1/all',
 		describeRoute({
@@ -221,13 +309,23 @@ export const eventRoutes = new Hono<App>({ strict: false })
 			tags: ['Events'],
 			summary: 'Search player events',
 			description:
-				'The browse query on the player-events screen. `query` is matched ' +
-				'case-insensitively against the event name and description, term by term; an empty ' +
-				'query browses everything upcoming. Events that have already finished are left ' +
-				'out — a name match on something that ended last month is noise on a browse ' +
-				'screen. Soonest first, paginated via skip/take. A bare array.',
+				'The browse query on the player-events screen, term by term; an empty query ' +
+				'browses everything upcoming. A `#` decides how a term is matched: `#workshops` is ' +
+				'a TAG term, matching only events tagged `workshops` and never the word in a name ' +
+				'or description, which is what the filter chips send; a bare `workshops` is TEXT, ' +
+				'matched case-insensitively against the name and description. Every term must ' +
+				'match and the two kinds combine, so `#workshops trigonometry` is the ' +
+				'workshops-tagged events whose text also mentions trigonometry.\n\n' +
+				'Events that have already finished are left out — a name match on something that ' +
+				'ended last month is noise on a browse screen. Soonest first, paginated via ' +
+				'skip/take. A bare array.',
 			parameters: [
-				stringQuery('query', 'Search text; every term must match the name or description'),
+				stringQuery('query', 'Search terms; `#tag` matches a tag, anything else the text'),
+				stringQuery(
+					'sort',
+					'Accepted and echoed by the client as `StartTime`, which is the only order ' +
+						'served (soonest first); any other value sorts the same way'
+				),
 				...pageParams(50),
 			],
 			responses: { 200: json(PlayerEventDto.array(), 'The matching events') },
@@ -305,6 +403,137 @@ export const eventRoutes = new Hono<App>({ strict: false })
 		}
 	)
 
+	// Report an event. Stored in the `report` table the player reports use — same fields,
+	// same moderation life — with `event_id` set. See migrations/0011_report_event.sql.
+	.post(
+		'/api/playerevents/v1/report',
+		describeRoute({
+			tags: ['Events', 'Moderation'],
+			summary: 'Report a player event',
+			description:
+				'Files a report against an event. Stored as a row in the same `report` table a ' +
+				'player report goes to (`POST /api/PlayerReporting/v3/create`) — it is the same ' +
+				'submission with the same moderation life, and a moderator converts either into a ' +
+				'ban the same way. What marks it as an event report is `event_id`; the row’s ' +
+				'`reported_player_id` is the event’s CREATOR (who a moderator would act against) ' +
+				'and its `room_id` the room the event runs in, both read from the event rather ' +
+				'than sent by the client.\n\n' +
+				'The reporter is the caller (from the bearer token), never a body field. Note this ' +
+				'body is JSON, where the player report’s is form-encoded. `ReportCategory` is ' +
+				'stored verbatim — the enum is not mapped here. Nothing dedupes the rows: ' +
+				'reporting the same event twice files two reports.\n\n' +
+				'Answers the same `{ success, error }` envelope as the player report, `error` ' +
+				'being an empty string rather than null, on the rejected branches too so there is ' +
+				'only one shape to parse.',
+			security: AUTHED,
+			requestBody: jsonBody(PlayerEventReportRequest, 'The report'),
+			responses: {
+				200: json(SuccessErrorEnvelope, '`{ success: true, error: "" }`'),
+				400: json(SuccessErrorEnvelope, 'No usable `PlayerEventId` in the body'),
+				401: UNAUTHORIZED_RESPONSE,
+				404: json(SuccessErrorEnvelope, 'No such event'),
+			},
+		}),
+		async (c) => {
+			const reporterId = await authedId(c)
+			if (reporterId === null) return unauthorized(c)
+
+			const body = await c.req
+				.json<{ PlayerEventId?: unknown; ReportCategory?: unknown; Details?: unknown }>()
+				.catch(() => ({}) as Record<string, unknown>)
+			const eventId = Number(body.PlayerEventId)
+			if (!Number.isInteger(eventId)) {
+				return c.json({ success: false, error: 'PlayerEventId is required' }, 400)
+			}
+
+			// The event supplies the two columns the client doesn't send. An unknown event is
+			// refused rather than filed against nobody: the row's reported player has to be
+			// someone, and a report naming an event that never existed isn't actionable.
+			const event = await getEventById(c.env.DB, eventId)
+			if (event === null) return c.json({ success: false, error: 'No such event' }, 404)
+
+			const category = Number(body.ReportCategory)
+			await createReport(c.env.DB, {
+				reporterPlayerId: reporterId,
+				reportedPlayerId: event.CreatorPlayerId,
+				reportCategory: Number.isInteger(category) ? category : 0,
+				details: typeof body.Details === 'string' ? body.Details : null,
+				roomId: event.RoomId > 0 ? event.RoomId : null,
+				eventId,
+			})
+
+			return c.json({ success: true, error: '' })
+		}
+	)
+
+	// Bulk invite — the "invite friends" button on an event. Adds the invited players to
+	// the same `event_attendee` table an RSVP writes to, as Going.
+	.post(
+		'/api/playerevents/v1/bulkInvite',
+		describeRoute({
+			tags: ['Events'],
+			summary: 'Invite players to an event',
+			description:
+				'Adds the invited players to the event as Going — the same `event_attendee` rows ' +
+				'an RSVP writes, so an invited player shows up in `…/responses` and counts toward ' +
+				'`AttendeeCount` immediately, without having answered.\n\n' +
+				'An invite never overwrites an answer: a player who already responded keeps what ' +
+				'they said, so inviting someone who declined does not flip them back to Going, and ' +
+				're-inviting is a no-op. The caller is skipped (they are already on the list), as ' +
+				'are duplicate ids.\n\n' +
+				'The caller must be on the event themselves — its creator, or a player with a ' +
+				'response row of any kind. Anyone else gets 403: an invite adds attendees, so it ' +
+				'is not something a passer-by can do. Answers the same ' +
+				'`{ Result, TagModifyResult, PlayerEvent }` envelope the other event writes do, ' +
+				'carrying the updated attendee count.',
+			security: AUTHED,
+			requestBody: jsonBody(PlayerEventBulkInviteRequest, 'The event and who to invite'),
+			responses: {
+				200: json(PlayerEventResultDto, 'The event, with its updated attendee count'),
+				400: { description: 'Missing `PlayerEventId` or `InvitedPlayerIds` (empty body)' },
+				401: UNAUTHORIZED_RESPONSE,
+				403: { description: 'The caller is not on the event (empty body)' },
+				404: { description: 'No such event (empty body)' },
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const body = await c.req
+				.json<{ PlayerEventId?: unknown; InvitedPlayerIds?: unknown }>()
+				.catch(() => ({}) as { PlayerEventId?: unknown; InvitedPlayerIds?: unknown })
+			const eventId = Number(body.PlayerEventId)
+			if (!Number.isInteger(eventId) || !Array.isArray(body.InvitedPlayerIds)) {
+				return c.body(null, 400)
+			}
+
+			const event = await getEventById(c.env.DB, eventId)
+			if (event === null) return c.body(null, 404)
+			// On the event themselves, one way or the other. The creator has a Going row from
+			// create, so the response lookup would usually cover them — but it's checked
+			// explicitly so a creator who deleted their own answer can still invite.
+			if (
+				event.CreatorPlayerId !== id &&
+				(await getEventResponse(c.env.DB, eventId, id)) === null
+			) {
+				return c.body(null, 403)
+			}
+
+			// Unusable entries are dropped rather than failing the invite: a client sending one
+			// bad id shouldn't lose the other nine invites.
+			const invited = [
+				...new Set(
+					body.InvitedPlayerIds.map((v) => Number(v)).filter((v) => Number.isInteger(v) && v !== id)
+				),
+			]
+			const result = await inviteToEvent(c.env.DB, eventId, invited)
+			// inviteToEvent only returns null when the row vanished, which the read above rules out.
+			await notifyInvited(c, result!.event, result!.added)
+			return c.json(toEventResult(result!.event))
+		}
+	)
+
 	// Create. The creator comes from the bearer token, never the body — posting someone
 	// else's `CreatorPlayerId` doesn't make it theirs.
 	.post(
@@ -343,7 +572,7 @@ export const eventRoutes = new Hono<App>({ strict: false })
 			// description silently is worse than refusing it.
 			if (eventInputRejection(input) !== null) return c.body(null, 400)
 			const event = await createEvent(c.env.DB, id, input)
-			await notifyEventCreated(c, event)
+			await notifyEventCreated(c, event, input.tags ?? [])
 			return c.json(toEventResult(event))
 		}
 	)
@@ -390,6 +619,29 @@ export const eventRoutes = new Hono<App>({ strict: false })
 		}
 	)
 
+	// An event's guest list — every RSVP row, whatever the answer.
+	.get(
+		'/api/playerevents/v1/:eventId{[0-9]+}/responses',
+		describeRoute({
+			tags: ['Events'],
+			summary: 'An event’s RSVPs',
+			description:
+				'Every answer given to an event, in the order they were given — declines and ' +
+				'maybes included, not just the Going rows `AttendeeCount` counts. One entry per ' +
+				'player: a player who changed their mind has one row carrying the answer that ' +
+				'stands, and `CreatedAt` moves with it.\n\n' +
+				'A bare array, and an unknown event is an empty one rather than a 404 — like the ' +
+				'other list reads here. An event always has at least its creator’s Going row.',
+			parameters: [idParam('eventId', 'Event id')],
+			responses: { 200: json(PlayerEventResponseDto.array(), 'The event’s RSVPs') },
+		}),
+		async (c) => {
+			const eventId = Number.parseInt(c.req.param('eventId'), 10)
+			const attendees = await getEventAttendees(c.env.DB, eventId)
+			return c.json(attendees.map(toEventResponse))
+		}
+	)
+
 	// A single event. Registered last so the literal `/bulk` and `/search` paths above
 	// are matched first; the `[0-9]+` constraint keeps them apart regardless.
 	.get(
@@ -399,15 +651,28 @@ export const eventRoutes = new Hono<App>({ strict: false })
 			summary: 'One player event',
 			description:
 				'A single event by id, served as the bare record — no envelope, unlike the ' +
-				'create/update writes. 404 when there is no such event.',
-			parameters: [idParam('eventId', 'Event id')],
+				'create/update writes. 404 when there is no such event.\n\n' +
+				'`includeDetails=True` adds exactly one field, the lowercase `tags` — that is the ' +
+				'whole of what the flag does. It is always an empty array here: no event tags are ' +
+				'stored (see the tag-filter chips, which are static, and `TagModifyResult`, which ' +
+				'is always null). Without the flag the key is ABSENT rather than empty, since a ' +
+				'caller that didn’t ask for details shouldn’t be told the event has no tags.',
+			parameters: [
+				idParam('eventId', 'Event id'),
+				stringQuery('includeDetails', 'Pass `True` to add the `tags` array'),
+			],
 			responses: {
-				200: json(PlayerEventDto, 'The event'),
+				200: json(PlayerEventDetailsDto, 'The event, with `tags` when details were asked for'),
 				404: { description: 'No such event (empty body)' },
 			},
 		}),
 		async (c) => {
-			const event = await getEventById(c.env.DB, Number.parseInt(c.req.param('eventId'), 10))
-			return event === null ? c.body(null, 404) : c.json(event)
+			const eventId = Number.parseInt(c.req.param('eventId'), 10)
+			const event = await getEventById(c.env.DB, eventId)
+			if (event === null) return c.body(null, 404)
+			// The client sends `True`; accepted case-insensitively, and `1` alongside it.
+			const details = /^(true|1)$/i.test(c.req.query('includeDetails') ?? '')
+			if (!details) return c.json(event)
+			return c.json({ ...event, tags: await getEventTags(c.env.DB, eventId) })
 		}
 	)

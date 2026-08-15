@@ -170,7 +170,7 @@ export function privacyPage(): string {
 	<p class="updated">Last updated ${EFFECTIVE_DATE}</p>
 
 	<p class="lede">
-		Rug Room is a free, always updated, fan-run game. It is not a business, it sells
+		Rug Room is a free, open source, fan-run game server. It is not a business, it sells
 		nothing, and it has no interest in your data beyond making the game work. This page
 		explains exactly what we store, why we store it, and how to make us delete it.
 	</p>
@@ -187,11 +187,17 @@ export function privacyPage(): string {
 
 	<h2>Who runs this</h2>
 	<p>
-		Rug Room is maintained by a volunteer community, and its volunteers do not own, or redistribute any of your data.
+		Rug Room is maintained by a volunteer community, and its source code is public at
+		<a href="${SOURCE_REPO}" target="_blank" rel="noreferrer">github.com/djdevin/recflare</a>.
 		This policy covers the Rug Room game servers and this website. It is a fan project, not
 		affiliated with, endorsed by, or connected to Rec Room Inc.
 	</p>
 	<p>
+		Because the server code is open source, anyone can read exactly how the data described
+		below is handled, and anyone can run their own separate copy of Rug Room. This policy
+		applies only to the servers we operate. If you play on someone else's instance, their
+		operator is responsible for your data, not us.
+	</p>
 
 	<h2>What we collect</h2>
 	<p>

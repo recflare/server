@@ -6,29 +6,31 @@ instances and presence all live in the shared `recflare` D1 database.
 
 ## Routes
 
-| Method | Path                                 | Auth | Description                                      |
-| ------ | ------------------------------------ | ---- | ------------------------------------------------ |
-| POST   | `/player/login`                      |      | Login ack (no-op; must not touch presence)       |
-| POST   | `/player/exclusivelogin`             |      | Exclusive-login ack (no-op) → `{ errorCode: 0 }` |
-| POST   | `/player/logout`                     | ✓\*  | Clear presence (except the Orientation seed)     |
-| POST   | `/player/notifydisconnect`           |      | Disconnect notification (no-op ack)              |
-| GET    | `/player?id=1&id=2,3`                |      | Batch player presence lookup                     |
-| POST   | `/player/heartbeat`                  | ✓    | Presence heartbeat (JSON body)                   |
-| PUT    | `/player/statusvisibility`           | ✓\*  | Set status visibility                            |
-| POST   | `/goto/room/:room`                   | ✓    | Go to a room (`dormroom` → personal dorm)        |
-| POST   | `/matchmake/none`                    |      | Preserve current instance, else dorm             |
-| POST   | `/matchmake/room/:roomId/:subRoomId` | ✓    | Matchmake into a specific subroom                |
-| POST   | `/matchmake/room/:roomId`            | ✓    | Matchmake into a room (default subroom)          |
-| POST   | `/matchmake/:room`                   | ✓    | Matchmake by id or name (`dorm` → personal dorm) |
-| POST   | `/goto/none`                         |      | Go to the dorm                                   |
-| PUT    | `/player/photonregionpings`          |      | Region ping report (no-op ack)                   |
-| PUT    | `/player/gameserverregionpings`      |      | Region ping report (no-op ack)                   |
-| POST   | `/roominstance/:id/reportjoinresult` |      | Report join result (no-op ack)                   |
-| PUT    | `/roominstance/:id/inprogress`       | ✓    | Set the instance's in-progress flag              |
-| GET    | `/room/:roomId/instances`            | ✓    | A room's live instances (owner/co-owner only)    |
-| GET    | `/rooms/requiring/developer`         |      | Rooms requiring a developer → `[]`               |
-| GET    | `/rooms/requiring/rrplus`            |      | Rooms requiring RR+ → `[]`                       |
-| GET    | `/openapi.json`                      |      | Generated OpenAPI 3.1 spec (see below)           |
+| Method | Path                                 | Auth | Description                                           |
+| ------ | ------------------------------------ | ---- | ----------------------------------------------------- |
+| POST   | `/player/login`                      |      | Login ack (no-op; must not touch presence)            |
+| POST   | `/player/exclusivelogin`             |      | Exclusive-login ack (no-op) → `{ errorCode: 0 }`      |
+| POST   | `/player/logout`                     | ✓\*  | Clear presence (except the Orientation seed)          |
+| POST   | `/player/notifydisconnect`           |      | Disconnect notification (no-op ack)                   |
+| GET    | `/player?id=1&id=2,3`                |      | Batch player presence lookup                          |
+| POST   | `/player/heartbeat`                  | ✓    | Presence heartbeat (JSON body)                        |
+| PUT    | `/player/statusvisibility`           | ✓\*  | Set status visibility                                 |
+| GET    | `/player/avoidjuniors`               | ✓    | The player's "avoid juniors" setting → `true`/`false` |
+| PUT    | `/player/avoidjuniors`               | ✓    | Set it (`avoidJuniors=True`) → the resulting value    |
+| POST   | `/goto/room/:room`                   | ✓    | Go to a room (`dormroom` → personal dorm)             |
+| POST   | `/matchmake/none`                    |      | Preserve current instance, else dorm                  |
+| POST   | `/matchmake/room/:roomId/:subRoomId` | ✓    | Matchmake into a specific subroom                     |
+| POST   | `/matchmake/room/:roomId`            | ✓    | Matchmake into a room (default subroom)               |
+| POST   | `/matchmake/:room`                   | ✓    | Matchmake by id or name (`dorm` → personal dorm)      |
+| POST   | `/goto/none`                         |      | Go to the dorm                                        |
+| PUT    | `/player/photonregionpings`          |      | Region ping report (no-op ack)                        |
+| PUT    | `/player/gameserverregionpings`      |      | Region ping report (no-op ack)                        |
+| POST   | `/roominstance/:id/reportjoinresult` |      | Report join result (no-op ack)                        |
+| PUT    | `/roominstance/:id/inprogress`       | ✓    | Set the instance's in-progress flag                   |
+| GET    | `/room/:roomId/instances`            | ✓    | A room's live instances (owner/co-owner only)         |
+| GET    | `/rooms/requiring/developer`         |      | Rooms requiring a developer → `[]`                    |
+| GET    | `/rooms/requiring/rrplus`            |      | Rooms requiring RR+ → `[]`                            |
+| GET    | `/openapi.json`                      |      | Generated OpenAPI 3.1 spec (see below)                |
 
 \* `logout` and `statusvisibility` read the token when present but never 401 — an
 unauthenticated call is a no-op ack. The other ✓ routes return an empty-body 401 when
@@ -115,13 +117,17 @@ substitutes the same as asking by id.
 
 ## Bindings
 
-| Binding      | Type          | Notes                                                        |
-| ------------ | ------------- | ------------------------------------------------------------ |
-| `DB`         | D1            | Shared `recflare` database — rooms, room instances, presence |
-| `JWT_SECRET` | Secrets Store | Shared HS256 signing key (see the `auth` README)             |
+| Binding                    | Type          | Notes                                                        |
+| -------------------------- | ------------- | ------------------------------------------------------------ |
+| `DB`                       | D1            | Shared `recflare` database — rooms, room instances, presence |
+| `JWT_SECRET`               | Secrets Store | Shared HS256 signing key (see the `auth` README)             |
+| `RECFLARE_PLAYER_SETTINGS` | KV            | The `playersettings` map — `/player/avoidjuniors`            |
 
 The `presence` and `room_instance` tables are owned/migrated by the `rooms` worker;
-this worker has no migrations of its own.
+this worker has no migrations of its own. The settings KV is owned by the
+`playersettings` worker; this worker touches exactly one key in it, the "avoid juniors"
+preference, and its write merges (as that worker's own PUT does) so the rest of the
+player's settings survive.
 
 ## Known gaps
 

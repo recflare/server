@@ -23,6 +23,7 @@ export const DOCUMENTED_SERVICES: ReadonlyArray<{ slug: string; title: string }>
 	{ slug: 'match', title: 'match — matchmaking & presence' },
 	{ slug: 'econ', title: 'econ — avatar & economy' },
 	{ slug: 'clubs', title: 'clubs — clubs & clubhouses' },
+	{ slug: 'commerce', title: 'commerce — store catalog & purchases' },
 	{ slug: 'chat', title: 'chat — threads & messages' },
 	{ slug: 'img', title: 'img — image serving & resizing' },
 	{ slug: 'cdn', title: 'cdn — binary asset delivery' },
@@ -43,7 +44,7 @@ const SCALAR_ASSET = '/docs/scalar.standalone.js'
 function overviewSpec(): Record<string, unknown> {
 	const list = DOCUMENTED_SERVICES.map((s) => `- **${s.title}**`).join('\n')
 	const description = [
-		'Aggregated API reference for the **rug-room** private-server backend — a',
+		'Aggregated API reference for the **Rug Room** private-server backend — a',
 		'reimplementation of the Rec Room services the game client talks to.',
 		'',
 		'Use the **dropdown at the top** to switch between services:',
@@ -63,7 +64,7 @@ function overviewSpec(): Record<string, unknown> {
 	].join('\n')
 	return {
 		openapi: '3.1.0',
-		info: { title: 'rug-room API', version: '1.0.0', description },
+		info: { title: 'Rug Room API', version: '1.0.0', description },
 		paths: {},
 	}
 }
@@ -115,7 +116,7 @@ export function docsPage(): string {
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>rug-room API docs</title>
+<title>Rug Room API docs</title>
 </head>
 <body>
 <div id="app"></div>
