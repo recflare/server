@@ -654,6 +654,22 @@ describe('econ endpoints', () => {
 		}
 	})
 
+	test('GET /econ/roomEconConfig/:roomId echoes the room and disables sorting tabs', async () => {
+		const anon = await exports.default.fetch(`${ORIGIN}/econ/roomEconConfig/92`)
+		expect(anon.status).toBe(401)
+
+		const res = await exports.default.fetch(`${ORIGIN}/econ/roomEconConfig/92`, {
+			headers: await bearer(),
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ RoomId: 92, EnableSortingTabs: false })
+
+		const bad = await exports.default.fetch(`${ORIGIN}/econ/roomEconConfig/nope`, {
+			headers: await bearer(),
+		})
+		expect(bad.status).toBe(400)
+	})
+
 	test('GET /api/consumables/v2/getUnlocked 401s without a token, returns []', async () => {
 		const anon = await exports.default.fetch(`${ORIGIN}/api/consumables/v2/getUnlocked`)
 		expect(anon.status).toBe(401)

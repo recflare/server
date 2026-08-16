@@ -99,6 +99,15 @@ export const BalanceEntry = z.object({
 	Balance: z.int(),
 })
 
+/**
+ * `GET /econ/roomEconConfig/:roomId` — a room's economy configuration. Only the
+ * shop's sorting-tabs toggle is configurable, and nothing stores it yet.
+ */
+export const RoomEconConfig = z.object({
+	RoomId: z.int().describe('Echoed back from the path'),
+	EnableSortingTabs: z.boolean().describe('Always false — no per-room config is stored'),
+})
+
 /** `GET /econ/customAvatarItems/v1/owned` — paginated owned custom items. */
 export const CustomAvatarItemsResponse = z.object({
 	Results: JsonArray,

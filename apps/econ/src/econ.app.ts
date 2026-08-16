@@ -85,6 +85,7 @@ import {
 	JsonObject,
 	OpaqueJsonBody,
 	OPTIONAL_AUTHED,
+	RoomEconConfig,
 	RRPlusSignUpBonus,
 	SaveOutfitRequest,
 	SaveOutfitV4Response,
@@ -1789,6 +1790,36 @@ const app = new Hono<App>({ strict: false })
 		'/econ/roomGiftDropShops/room/:roomId',
 		listRoute('A room’s gift-drop shops', 'Empty stub'),
 		(c) => c.json([])
+	)
+
+	// A room's economy config, asked for alongside the room-economy lists above. The only
+	// setting is whether the room's shop UI groups its offers into sorting tabs; nothing
+	// stores per-room config yet, so every room answers false and the client renders one
+	// flat list. [Authorize] — unlike the empty-list stubs above this is a real answer the
+	// client acts on, so it takes the same token the rest of the econ surface does.
+	.get(
+		'/econ/roomEconConfig/:roomId',
+		describeRoute({
+			tags: ['Econ'],
+			summary: 'A room’s economy config',
+			description: [
+				'Whether the room’s shop groups offers into sorting tabs. No per-room config is',
+				'stored, so this is always false; the `RoomId` is echoed from the path.',
+			].join(' '),
+			security: AUTHED,
+			responses: {
+				200: json(RoomEconConfig, 'The room’s economy config'),
+				400: { description: 'Non-numeric roomId (empty body)' },
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+			const roomId = Number.parseInt(c.req.param('roomId'), 10)
+			if (Number.isNaN(roomId)) return c.body(null, 400)
+			return c.json({ RoomId: roomId, EnableSortingTabs: false })
+		}
 	)
 
 	// The UGC items a room sells (the creator-made things on sale inside it). Same empty
