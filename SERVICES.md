@@ -38,7 +38,7 @@ apex/`ns` host and isn't listed within it. Each implemented worker has its own
 | Images                | `img`                   | `img`            | Image storage & signed delivery (R2)                                      |
 | Leaderboard           | `leaderboard`           | —                | Not yet implemented                                                       |
 | Link                  | `link`                  | —                | Not yet implemented                                                       |
-| Lists                 | `lists`                 | —                | Not yet implemented                                                       |
+| Lists                 | `lists`                 | `lists`          | Stub — deploys and answers, no list endpoints yet                         |
 | Matchmaking           | `match`                 | `match`          | Matchmaking & per-player presence (D1, KV)                                |
 | Moderation            | `moderation`            | —                | No worker; point it at `api` to serve `/api/PlayerReporting/…`            |
 | Notifications         | `notify`                | `notify`         | Real-time notifications over SignalR/WebSockets (Durable Object)          |
