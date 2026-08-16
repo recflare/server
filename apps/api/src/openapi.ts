@@ -205,6 +205,17 @@ export const SendMultipleMessagesRequest = z.object({
 	Data: z.string().optional().describe('The message payload; often empty'),
 })
 
+/**
+ * `POST /api/messages/v1/friendOnlineStatus` — how many of the caller's friends are
+ * online, wrapped in the client's `{ success, value }` envelope.
+ */
+export const FriendOnlineCountResponse = z.object({
+	success: z.boolean(),
+	value: z.object({
+		FriendsOnlineCount: z.int().describe('Friends with live presence right now'),
+	}),
+})
+
 /** The `{ Success, Message }` ack the flag toggles answer with. */
 export const AckResponse = z.object({ Success: z.boolean(), Message: z.string() })
 

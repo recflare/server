@@ -15,6 +15,8 @@ import {
 	LEVEL_REWARDS,
 	MAX_LEVEL,
 	OUTFIT_SCHEMA_DDL,
+	PRESENCE_SCHEMA_DDL,
+	PRESENCE_TTL_SECONDS,
 	PROGRESSION_SCHEMA_DDL,
 	RELATIONSHIP_SCHEMA_DDL,
 	ROOM_SCHEMA_DDL,
@@ -108,6 +110,9 @@ beforeAll(async () => {
 
 	// Relationships table (owned by the api worker) — friendship endpoints use it.
 	for (const stmt of RELATIONSHIP_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+
+	// Presence (owned by the rooms worker) — the online-friend count joins onto it.
+	for (const stmt of PRESENCE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 
 	// Outfit table (owned by the econ worker) — /outfits/me reads and writes slot 0.
 	for (const stmt of OUTFIT_SCHEMA_DDL) await env.DB.prepare(stmt).run()
@@ -2755,6 +2760,95 @@ describe('relationships', () => {
 	})
 })
 
+describe('friend online count', () => {
+	// Presence is written by the `match` worker, so it's seeded straight into the table
+	// here. `roomInstance` null is lobby presence — signed in, not in a room.
+	async function setPresence(accountId: number, secondsLeft = PRESENCE_TTL_SECONDS) {
+		await env.DB.prepare('INSERT OR REPLACE INTO presence (data) VALUES (?1)')
+			.bind(
+				JSON.stringify({
+					accountId,
+					roomInstance: null,
+					statusVisibility: 0,
+					deviceClass: 0,
+					vrMovementMode: 0,
+					platform: 0,
+					appVersion: GAME_VERSION,
+					expiresAt: Math.floor(Date.now() / 1000) + secondsLeft,
+				})
+			)
+			.run()
+	}
+
+	async function friendOnlineCount(sub: string): Promise<number> {
+		const res = await exports.default.fetch(`${ORIGIN}/api/messages/v1/friendOnlineStatus`, {
+			method: 'POST',
+			headers: await bearer(sub),
+		})
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as { success: boolean; value: { FriendsOnlineCount: number } }
+		expect(body.success).toBe(true)
+		return body.value.FriendsOnlineCount
+	}
+
+	// Make `a` and `b` friends the way the client does.
+	async function befriend(a: string, b: number) {
+		await exports.default.fetch(`${ORIGIN}/api/relationships/v2/addfriend?id=${b}`, {
+			headers: await bearer(a),
+		})
+	}
+
+	test('POST /api/messages/v1/friendOnlineStatus is auth-gated', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/messages/v1/friendOnlineStatus`, {
+			method: 'POST',
+		})
+		expect(res.status).toBe(401)
+	})
+
+	test('counts only friends who are online, from either side of the row', async () => {
+		// 900 is friends with 901 (as requester) and with 902 (as target).
+		await befriend('900', 901)
+		await befriend('902', 900)
+		// A pending request and a stranger, both online — neither is a friendship.
+		await exports.default.fetch(`${ORIGIN}/api/relationships/v2/sendfriendrequest?id=903`, {
+			headers: await bearer('900'),
+		})
+
+		expect(await friendOnlineCount('900')).toBe(0)
+
+		// Both friends online, plus noise: the caller themselves, the pending request, and
+		// an unrelated player.
+		await setPresence(900)
+		await setPresence(901)
+		await setPresence(902)
+		await setPresence(903)
+		await setPresence(904)
+		expect(await friendOnlineCount('900')).toBe(2)
+
+		// One friend goes offline; the other still counts.
+		await env.DB.prepare('DELETE FROM presence WHERE account_id = ?1').bind(901).run()
+		expect(await friendOnlineCount('900')).toBe(1)
+	})
+
+	test('expired presence does not count, and unfriending drops the count', async () => {
+		await befriend('910', 911)
+		await setPresence(911, -1)
+		expect(await friendOnlineCount('910')).toBe(0)
+
+		await setPresence(911)
+		expect(await friendOnlineCount('910')).toBe(1)
+
+		await exports.default.fetch(`${ORIGIN}/api/relationships/v2/removefriend?id=911`, {
+			headers: await bearer('910'),
+		})
+		expect(await friendOnlineCount('910')).toBe(0)
+	})
+
+	test('a player with no relationships counts zero', async () => {
+		expect(await friendOnlineCount('920')).toBe(0)
+	})
+})
+
 describe('messages', () => {
 	// The notify DO is stubbed to record every notifyPlayer call (see vitest.config).
 	type Sent = {
@@ -3891,6 +3985,7 @@ describe('openapi', () => {
 			'POST /api/inventions/v1/update',
 			'POST /api/inventions/v1/updateprice',
 			'POST /api/inventions/v6/save',
+			'POST /api/messages/v1/friendOnlineStatus',
 			'POST /api/messages/v1/sendMultiple',
 			'POST /api/messages/v2/send',
 			'POST /api/playerReputation/v1/bulk',
