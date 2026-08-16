@@ -12,6 +12,7 @@ import { gameplayRoutes } from './routes/gameplay'
 import { imageRoutes } from './routes/images'
 import { inventoryRoutes } from './routes/inventory'
 import { moderationRoutes } from './routes/moderation'
+import { playerRoutes } from './routes/players'
 import { progressionRoutes } from './routes/progression'
 import { roomRoutes } from './routes/rooms'
 import { socialRoutes } from './routes/social'
@@ -64,6 +65,7 @@ const app = new Hono<App>({ strict: false })
 	.route('/', roomRoutes)
 	.route('/', imageRoutes)
 	.route('/', accountRoutes)
+	.route('/', playerRoutes)
 
 // The generated spec. Documentation only — no request is validated against it (see
 // openapi.ts). `hide: true` keeps this route out of its own output.

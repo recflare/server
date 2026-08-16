@@ -32,6 +32,15 @@
 			"bucket_name": "recflare-cdn"
 		}
 	],
+	// Per-player settings bag, shared with the `playersettings` worker (which owns it
+	// and serves the same map at `/playersettings`). Same binding name and same "local"
+	// id placeholder as that worker's config, so both point at one namespace.
+	"kv_namespaces": [
+		{
+			"binding": "RECFLARE_PLAYER_SETTINGS",
+			"id": "local"
+		}
+	],
 	// Cross-worker binding to the SignalR notifications hub DO (owned/migrated by
 	// the `notify` worker). We only invoke its RPC methods; no migration here.
 	"durable_objects": {

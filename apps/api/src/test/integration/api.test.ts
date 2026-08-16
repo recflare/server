@@ -1647,6 +1647,84 @@ describe('account', () => {
 	)
 })
 
+describe('photo tagging setting', () => {
+	const PATH = `${ORIGIN}/api/players/v1/playerPhotoTaggingSetting`
+
+	const read = async (sub: string) => exports.default.fetch(PATH, { headers: await bearer(sub) })
+
+	const write = async (sub: string, body: unknown) =>
+		exports.default.fetch(PATH, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json', ...(await bearer(sub)) },
+			body: JSON.stringify(body),
+		})
+
+	test('both verbs 401 without a bearer token', async () => {
+		expect((await exports.default.fetch(PATH)).status).toBe(401)
+		const put = await exports.default.fetch(PATH, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ Setting: 1 }),
+		})
+		expect(put.status).toBe(401)
+	})
+
+	test('a player who has never set one reads Anyone (0)', async () => {
+		const res = await read('9001')
+		expect(res.status).toBe(200)
+		expect(await res.json()).toBe(0)
+	})
+
+	test('PUT stores the setting and answers true', async () => {
+		const put = await write('9002', { Setting: 2 })
+		expect(put.status).toBe(200)
+		expect(await put.json()).toBe(true)
+		expect(await (await read('9002')).json()).toBe(2)
+	})
+
+	test('the enum name is accepted alongside the ordinal', async () => {
+		expect(await (await write('9003', { Setting: 'Friends' })).json()).toBe(true)
+		expect(await (await read('9003')).json()).toBe(1)
+	})
+
+	test('an unrecognized setting is a false, and changes nothing', async () => {
+		await write('9004', { Setting: 2 })
+		expect(await (await write('9004', { Setting: 7 })).json()).toBe(false)
+		expect(await (await write('9004', {})).json()).toBe(false)
+		expect(await (await read('9004')).json()).toBe(2)
+	})
+
+	test('the write merges — the player’s other settings survive', async () => {
+		await env.RECFLARE_PLAYER_SETTINGS.put(
+			'player:9005',
+			JSON.stringify({ TUTORIAL_COMPLETE_MASK: '11' })
+		)
+		await write('9005', { Setting: 1 })
+		expect(
+			await env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>('player:9005', 'json')
+		).toEqual({ TUTORIAL_COMPLETE_MASK: '11', PlayerPhotoTaggingSetting: '1' })
+	})
+
+	test('a first write seeds the playersettings defaults alongside it', async () => {
+		await write('9006', { Setting: 2 })
+		const stored = await env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(
+			'player:9006',
+			'json'
+		)
+		expect(stored).toMatchObject({ 'Recroom.OOBE': '77', PlayerPhotoTaggingSetting: '2' })
+	})
+
+	test('a form-urlencoded PUT is accepted too', async () => {
+		const res = await exports.default.fetch(PATH, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...(await bearer('9007')) },
+			body: new URLSearchParams({ Setting: '1' }),
+		})
+		expect(await res.json()).toBe(true)
+		expect(await (await read('9007')).json()).toBe(1)
+	})
+})
+
 describe('auth-gated endpoints', () => {
 	test('401 without a bearer token', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/api/consumables/v2/getUnlocked`)
@@ -3850,6 +3928,7 @@ describe('openapi', () => {
 			'GET /api/playerevents/v1/tagfilters',
 			'GET /api/playerevents/v1/{eventId}',
 			'GET /api/playerevents/v1/{eventId}/responses',
+			'GET /api/players/v1/playerPhotoTaggingSetting',
 			'GET /api/players/v1/progression/{id}',
 			'GET /api/players/v2/progression/bulk',
 			'GET /api/quickPlay/v1/getandclear',
@@ -3917,6 +3996,7 @@ describe('openapi', () => {
 			'POST /api/sanitize/v1',
 			'POST /api/sanitize/v1/isPure',
 			'POST /api/v1/progression/bulk',
+			'PUT /api/players/v1/playerPhotoTaggingSetting',
 			'PUT /outfits/me',
 		])
 

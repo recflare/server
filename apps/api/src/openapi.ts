@@ -254,6 +254,20 @@ export const BulkIdsRequest = z.object({
 	Ids: z.string().describe('Comma-separated account ids, e.g. `1,2,3`'),
 })
 
+// ---- Players ---------------------------------------------------------------
+
+/**
+ * `PlayerPhotoTaggingSetting` — who may tag the player in a photo, as the enum ORDINAL.
+ * The reference serves the number (it registers no `JsonStringEnumConverter`), so this
+ * is a bare integer body, not a name and not an envelope.
+ */
+export const PhotoTaggingSetting = z.int().describe('0 = Anyone, 1 = Friends, 2 = NoOne')
+
+/** The `{ Setting }` JSON body `PUT /api/players/v1/playerPhotoTaggingSetting` takes. */
+export const SetPhotoTaggingSettingRequest = z.object({
+	Setting: PhotoTaggingSetting,
+})
+
 // ---- Inventions ------------------------------------------------------------
 
 /** One version of an invention — carries the blob name the client downloads. */
