@@ -33,6 +33,26 @@ export function intQuery(name: string, description: string): OpenAPIV3_1.Paramet
 	return { name, in: 'query', required: false, description, schema: { type: 'integer' } }
 }
 
+/** An integer path parameter (ids are constrained to `[0-9]+` by the route pattern). */
+export function idParam(name: string, description: string): OpenAPIV3_1.ParameterObject {
+	return { name, in: 'path', required: true, description, schema: { type: 'integer' } }
+}
+
+/**
+ * An `application/json` request body.
+ *
+ * The schema is emitted directly rather than through `resolver()` — zod's `$schema` key
+ * and `additionalProperties: false` are dropped, since the handler reads the fields it
+ * knows and ignores the rest, so a closed object would misreport it as stricter than it is.
+ */
+export function jsonBody(schema: z.ZodType, description: string): OpenAPIV3_1.RequestBodyObject {
+	const { $schema: _$schema, additionalProperties: _extra, ...jsonSchema } = z.toJSONSchema(schema)
+	return {
+		description,
+		content: { 'application/json': { schema: jsonSchema as OpenAPIV3_1.SchemaObject } },
+	}
+}
+
 // ---- Response schemas ------------------------------------------------------
 
 /** `GET /` — the root health check. */
@@ -72,4 +92,72 @@ export const GameAiAccessDenied = z.object({
 	success: z.literal(false),
 	error_id: z.string().describe('Machine-readable reason, e.g. `AI.RoomDoesNotSupportGameAI`'),
 	error: z.string().describe('The message shown to the player'),
+})
+
+/**
+ * The same refusal, plus an explicit `value: null`. The spend summary carries the key
+ * where the access check omits it — the access check answers a yes/no and has nothing to
+ * carry, while this one's payload slot exists and is simply empty. Reproduced as the
+ * reference server sends it; don't unify the two.
+ */
+export const GameAiSpendSummaryDenied = GameAiAccessDenied.extend({
+	value: z.null().describe('The spend summary. Null — there is no Game AI spend to report'),
+})
+
+/**
+ * Maker AI's dollar balances. A FLAT body — no `{ success, error, value }` envelope — and
+ * every figure zero, since nothing here bills for model usage.
+ */
+export const MakerAiBalances = z.object({
+	UsageDollars: z.number().describe('Dollars of model usage spent this period. Always 0'),
+	UsersMaxUsageDollars: z.number().describe('The caller’s usage ceiling. Always 0'),
+	RRPlusUsageDollars: z.number().describe('Usage spent against the RR+ allowance. Always 0'),
+	UsersMaxRRPlusUsageDollars: z.number().describe('The RR+ allowance ceiling. Always 0'),
+	TimeBalanceStatus: z.string().describe('Time-balance bucket state, e.g. `Empty`'),
+	TimeExpiresAt: z
+		.string()
+		.describe('When the time balance lapses. `DateTime.MinValue` — there is none'),
+	UsageBalanceStatus: z.string().describe('Usage-balance bucket state, e.g. `Good`'),
+	UsagePercent: z.number().describe('Share of the usage ceiling consumed. Always 0'),
+	RRPlusUsageBalanceStatus: z.string().describe('RR+ usage bucket state, e.g. `Good`'),
+	RRPlusUsagePercent: z.number().describe('Share of the RR+ allowance consumed. Always 0'),
+})
+
+/** The body the client posts to open a realtime session. Read for documentation only. */
+export const RealtimeSessionCreateBody = z.object({
+	AIType: z
+		.string()
+		.optional()
+		.describe('Which assistant the client is opening a session for, e.g. `Roomie`'),
+})
+
+/**
+ * The realtime-session refusal. `{ success, error, error_id, value }` — note `error_id` is
+ * an empty string rather than a machine-readable code, and `value` (which would carry the
+ * session id and its client secret) is null.
+ */
+export const RealtimeSessionDenied = z.object({
+	success: z.literal(false),
+	error: z.string().describe('The message shown to the player'),
+	error_id: z.string().describe('Empty — the reference server sends no code for this refusal'),
+	value: z.null().describe('The session credentials. Null: no session is created'),
+})
+
+/**
+ * What Roomie knows about the caller: a prose profile it is primed with, and the discrete
+ * facts behind it. Both empty here — nothing observes the player to build them.
+ */
+export const RoomieUserFacts = z.object({
+	UserContext: z.string().describe('A prose profile Roomie is primed with. Empty'),
+	UserFacts: z
+		.array(
+			z.object({
+				Id: z.string().describe('GUID identifying the fact'),
+				CreatedAt: z.string().describe('When the fact was recorded'),
+				Emotion: z.string().describe('Sentiment attached to the fact, e.g. `neutral`'),
+				Predicate: z.string().describe('The relation, e.g. `identifies as`'),
+				Object: z.string().describe('The value the predicate points at'),
+			})
+		)
+		.describe('The recorded facts. Always empty — nothing here observes the player'),
 })

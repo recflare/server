@@ -130,6 +130,124 @@ describe('GET /roomieai/user/access', () => {
 	})
 })
 
+describe('GET /gameai/room/:roomId/spendsummary', () => {
+	// Same refusal as the access check but with an explicit `value: null` — the access
+	// check omits the key. toEqual pins that difference: don't unify the two shapes.
+	it('refuses with a 200 body carrying a null value', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/gameai/room/1234/spendsummary`, {
+			headers: await bearer(),
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ ...REFUSAL, value: null })
+	})
+
+	// Room ids are ulong on the wire, so the largest one has 20 digits and exceeds what a
+	// JS number holds exactly. It's never parsed here, only matched by the route pattern.
+	it.each(['1', '18446744073709551615'])('answers the same for room %s', async (roomId) => {
+		const res = await SELF.fetch(`${ORIGIN}/gameai/room/${roomId}/spendsummary`, {
+			headers: await bearer(),
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ ...REFUSAL, value: null })
+	})
+
+	it('401s without a bearer token', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/gameai/room/1234/spendsummary`)
+		expect(res.status).toBe(401)
+		expect(await res.text()).toBe('')
+	})
+})
+
+describe('GET /roomieai/user/facts', () => {
+	// Nothing observes players here, so Roomie's memory of the caller is empty — and empty
+	// in both halves: no prose profile, no facts behind one.
+	it('reports an empty profile', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/roomieai/user/facts`, { headers: await bearer() })
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ UserContext: '', UserFacts: [] })
+	})
+
+	it('401s without a bearer token', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/roomieai/user/facts`)
+		expect(res.status).toBe(401)
+		expect(await res.text()).toBe('')
+	})
+})
+
+describe('GET /makerai/user/balances', () => {
+	// Zeroed rather than refused: the client renders a usage meter from these, and a server
+	// that bills nothing has spent nothing. A flat body — no envelope.
+	it('reports zeroed balances', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/makerai/user/balances`, { headers: await bearer() })
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({
+			UsageDollars: 0,
+			UsersMaxUsageDollars: 0,
+			RRPlusUsageDollars: 0,
+			UsersMaxRRPlusUsageDollars: 0,
+			// An untouched allowance reports `Good`; the time bucket is `Empty` at
+			// DateTime.MinValue, this server selling no timed access to hold there.
+			TimeBalanceStatus: 'Empty',
+			TimeExpiresAt: '0001-01-01T00:00:00',
+			UsageBalanceStatus: 'Good',
+			UsagePercent: 0,
+			RRPlusUsageBalanceStatus: 'Good',
+			RRPlusUsagePercent: 0,
+		})
+	})
+
+	it('401s without a bearer token', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/makerai/user/balances`)
+		expect(res.status).toBe(401)
+		expect(await res.text()).toBe('')
+	})
+})
+
+describe('POST /realtime-session/create', () => {
+	// The one call whose real answer is a working credential, so the one that can't be
+	// served statically. Note `error_id` is an empty string, not a code, and `value` null.
+	it('refuses to open a session', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/realtime-session/create`, {
+			method: 'POST',
+			headers: { ...(await bearer()), 'Content-Type': 'application/json' },
+			body: JSON.stringify({ AIType: 'Roomie' }),
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({
+			success: false,
+			error: 'Realtime AI sessions are not available on this server',
+			error_id: '',
+			value: null,
+		})
+	})
+
+	// The body is never read, so a missing or malformed one must not 500 — the answer is
+	// the same refusal either way.
+	it.each([
+		['no body', undefined],
+		['an empty body', '{}'],
+		['a malformed body', 'not json'],
+	])('refuses with %s', async (_label, body) => {
+		const res = await SELF.fetch(`${ORIGIN}/realtime-session/create`, {
+			method: 'POST',
+			headers: { ...(await bearer()), 'Content-Type': 'application/json' },
+			body,
+		})
+		expect(res.status).toBe(200)
+		expect((await res.json()) as { success: boolean }).toMatchObject({ success: false })
+	})
+
+	it('401s without a bearer token', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/realtime-session/create`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ AIType: 'Roomie' }),
+		})
+		expect(res.status).toBe(401)
+		expect(await res.text()).toBe('')
+	})
+})
+
 describe('GET /openapi.json', () => {
 	it('documents every route, with no dangling $refs', async () => {
 		const res = await SELF.fetch(`${ORIGIN}/openapi.json`)
@@ -149,8 +267,12 @@ describe('GET /openapi.json', () => {
 		)
 		expect([...documented].sort()).toEqual([
 			'GET /',
+			'GET /gameai/room/{roomId}/spendsummary',
 			'GET /gameai/user/access',
+			'GET /makerai/user/balances',
 			'GET /roomieai/user/access',
+			'GET /roomieai/user/facts',
+			'POST /realtime-session/create',
 		])
 
 		for (const ops of Object.values(spec.paths)) {
