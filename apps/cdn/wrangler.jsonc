@@ -14,7 +14,7 @@
 	// always answers a `bytes=` request with a 206 and a truthful Content-Range.
 	// The cost is that every asset read hits R2; correctness on these blobs is worth it.
 	"cache": {
-		"enabled": false
+		"enabled": true
 	},
 	// The JSON config files in `static/config/`, uploaded as Workers static assets rather
 	// than bundled into the script, so `/config/:name` serves whatever is published there:
