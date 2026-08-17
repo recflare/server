@@ -483,6 +483,37 @@ importers:
         specifier: 4.105.0
         version: 4.105.0(@cloudflare/workers-types@4.20260630.1)
 
+  apps/datacollection:
+    dependencies:
+      '@repo/hono-helpers':
+        specifier: workspace:*
+        version: link:../../packages/hono-helpers
+      hono:
+        specifier: 4.12.27
+        version: 4.12.27
+      workers-tagged-logger:
+        specifier: 1.0.1
+        version: 1.0.1
+    devDependencies:
+      '@cloudflare/vitest-pool-workers':
+        specifier: 0.16.20
+        version: 0.16.20(@cloudflare/workers-types@4.20260630.1)(@vitest/runner@4.1.9)(@vitest/snapshot@4.1.9)(vitest@4.1.9(@opentelemetry/api@1.9.0)(@types/node@26.0.1)(vite@6.4.3(@types/node@26.0.1)(jiti@2.6.1)(lightningcss@1.29.2)(tsx@4.22.4)(yaml@2.9.0)))
+      '@repo/tools':
+        specifier: workspace:*
+        version: link:../../packages/tools
+      '@repo/typescript-config':
+        specifier: workspace:*
+        version: link:../../packages/typescript-config
+      '@types/node':
+        specifier: 26.0.1
+        version: 26.0.1
+      vitest:
+        specifier: 4.1.9
+        version: 4.1.9(@opentelemetry/api@1.9.0)(@types/node@26.0.1)(vite@6.4.3(@types/node@26.0.1)(jiti@2.6.1)(lightningcss@1.29.2)(tsx@4.22.4)(yaml@2.9.0))
+      wrangler:
+        specifier: 4.105.0
+        version: 4.105.0(@cloudflare/workers-types@4.20260630.1)
+
   apps/discovery:
     dependencies:
       '@repo/hono-helpers':
