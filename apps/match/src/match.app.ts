@@ -62,9 +62,12 @@ import {
 	InviteRequest,
 	JoinModeRequest,
 	json,
+	jsonBody,
 	LoginLockRequest,
 	MatchmakeResponse,
 	MatchmakeRoomRequest,
+	MatchmakeRoomV2Request,
+	MatchmakeV2Response,
 	NotifyDisconnectRequest,
 	PlayerDto,
 	QosRegion,
@@ -667,6 +670,56 @@ function roomInstanceFromRoom(
 const EMPTY_CORRELATION_ID = '00000000-0000-0000-0000-000000000000'
 
 /**
+ * Read a matchmake request body as a flat field map, whichever way the client encoded it.
+ *
+ * The 2023 client posts form-urlencoded (`JoinMode=0`, every value a string, arrays sent
+ * as a repeated field). The v2 client posts JSON with real types instead —
+ * `{"JoinMode": 0, "AdditionalPlayerIds": null, "CorrelationId": "…"}` — so a body read
+ * that only knows `parseBody` sees an EMPTY body on every v2 matchmake: no correlation
+ * id echoed (the client then can't match the response to its attempt), no JoinMode, no
+ * party. Both encodings land here as a field map and the readers below coerce per field,
+ * so one set of readers serves both.
+ *
+ * Hono caches the parsed body, so the several readers that call this on one request
+ * parse it once.
+ */
+async function readRequestFields(c: Context<App>): Promise<Record<string, unknown>> {
+	const empty = {} as Record<string, unknown>
+	if ((c.req.header('content-type') ?? '').includes('application/json')) {
+		const parsed: unknown = await c.req.json().catch(() => null)
+		return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+			? (parsed as Record<string, unknown>)
+			: empty
+	}
+	return await c.req.parseBody({ all: true }).catch(() => empty)
+}
+
+/**
+ * Look a field up case-insensitively — the client's casing isn't guaranteed across its
+ * surfaces — taking the first value when the form encoding repeated it.
+ */
+function field(fields: Record<string, unknown>, name: string): unknown {
+	const key = Object.keys(fields).find((k) => k.toLowerCase() === name.toLowerCase())
+	const value = key === undefined ? undefined : fields[key]
+	return Array.isArray(value) ? value[0] : value
+}
+
+/** A field as a non-empty string (JSON sends one directly; form sends everything as one). */
+function fieldString(fields: Record<string, unknown>, name: string): string | undefined {
+	const value = field(fields, name)
+	return typeof value === 'string' && value ? value : undefined
+}
+
+/** A field as an integer — JSON sends a number, form sends its decimal spelling. */
+function fieldInt(fields: Record<string, unknown>, name: string): number | undefined {
+	const value = field(fields, name)
+	if (typeof value === 'number') return Number.isFinite(value) ? Math.trunc(value) : undefined
+	if (typeof value !== 'string') return undefined
+	const parsed = Number.parseInt(value.trim(), 10)
+	return Number.isNaN(parsed) ? undefined : parsed
+}
+
+/**
  * The `CorrelationId` the client tagged this matchmake with. The client generates one
  * per matchmake attempt and refuses the session ("Unable to connect to game session")
  * unless the response carries the same GUID back, so this is echoed on EVERY matchmake
@@ -680,13 +733,49 @@ const EMPTY_CORRELATION_ID = '00000000-0000-0000-0000-000000000000'
  * well-formed GUID rather than a null its decoder would choke on.
  */
 async function readCorrelationId(c: Context<App>): Promise<string> {
-	const body = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>)
-	const key = Object.keys(body).find((k) => k.toLowerCase() === 'correlationid')
-	const posted = key === undefined ? undefined : body[key]
-	if (typeof posted === 'string' && posted) return posted
+	const posted = fieldString(await readRequestFields(c), 'CorrelationId')
+	if (posted !== undefined) return posted
 
 	const queried = c.req.query('CorrelationId') ?? c.req.query('correlationId')
 	return queried || EMPTY_CORRELATION_ID
+}
+
+/**
+ * How the instance is matched into, echoed on every v2 instance. The reference server
+ * sends 0 and this server has no policy to express, so it is a constant — kept as a
+ * named field rather than dropped, because the client's decoder wants the key.
+ */
+const DEFAULT_MATCHMAKING_POLICY = 0
+
+/**
+ * The v2 client's projection of an instance: PascalCase, and a SUBSET of the fields the
+ * older wire shape carries. The reference server's v2 response has no `DataBlob` and no
+ * Photon coordinates (`PhotonRegion`/`PhotonRegionId`/`PhotonRoomId`) at all, and adds
+ * `MatchmakingPolicy`; this mirrors it exactly rather than PascalCasing the v1 object,
+ * because sending fields the reference doesn't send is how you find out the hard way
+ * that the client reads one of them.
+ *
+ * Only the wire shape differs — the instance itself is the same row, so a v1 and a v2
+ * client asking for the same public room land in the same instance.
+ */
+function toV2RoomInstance(instance: RoomInstance) {
+	return {
+		RoomInstanceId: instance.roomInstanceId,
+		RoomId: instance.roomId,
+		SubRoomId: instance.subRoomId,
+		Location: instance.location,
+		EventId: instance.eventId,
+		ClubId: instance.clubId,
+		RoomCode: instance.roomCode,
+		Name: instance.name,
+		MaxCapacity: instance.maxCapacity,
+		IsFull: instance.isFull,
+		IsPrivate: instance.isPrivate,
+		IsInProgress: instance.isInProgress,
+		EncryptVoiceChat: instance.EncryptVoiceChat,
+		RoomInstanceType: instance.roomInstanceType,
+		MatchmakingPolicy: DEFAULT_MATCHMAKING_POLICY,
+	}
 }
 
 /**
@@ -698,60 +787,74 @@ async function readCorrelationId(c: Context<App>): Promise<string> {
  * first; `errorCode` is kept because that's what this server has always sent and what
  * every other consumer (and this worker's own tests) reads. They must never disagree —
  * that's why nothing builds this envelope by hand.
+ *
+ * The `/matchmake/v2/*` routes answer a different envelope — PascalCase `ErrorCode`,
+ * `CorrelationId`, `RoomInstance`, no `result` twin — so the shape is chosen HERE, off
+ * the request path, rather than in the handlers. That keeps the two spellings from
+ * drifting and, more importantly, means everything that answers on a v2 path answers in
+ * v2: the ban gate, a refusal, and the success all go through this one function.
  */
 async function matchmakeResult(
 	c: Context<App>,
 	errorCode: MatchmakingErrorCode | number,
 	roomInstance: RoomInstance | null
 ) {
+	const correlationId = await readCorrelationId(c)
+	if (c.req.path.startsWith('/matchmake/v2/')) {
+		return c.json({
+			ErrorCode: errorCode,
+			CorrelationId: correlationId,
+			RoomInstance: roomInstance === null ? null : toV2RoomInstance(roomInstance),
+		})
+	}
 	return c.json({
 		errorCode,
 		result: errorCode,
 		roomInstance,
-		correlationId: await readCorrelationId(c),
+		correlationId,
 	})
 }
 
-/** Read the session's `LoginLock` GUID from a form body (undefined when absent/empty). */
+/** Read the session's `LoginLock` GUID from the body (undefined when absent/empty). */
 async function readLoginLock(c: Context<App>): Promise<string | undefined> {
-	const body = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>)
-	return typeof body.LoginLock === 'string' && body.LoginLock ? body.LoginLock : undefined
+	return fieldString(await readRequestFields(c), 'LoginLock')
 }
 
-/** Read the `JoinMode` form field (2 = private instance). */
+/** Read the `JoinMode` field (2 = private instance). */
 async function readJoinMode(c: Context<App>): Promise<number> {
-	const body = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>)
-	return typeof body.JoinMode === 'string' ? Number.parseInt(body.JoinMode, 10) || 0 : 0
+	return fieldInt(await readRequestFields(c), 'JoinMode') ?? 0
 }
 
 /**
- * Read the room-matchmake form body once: `JoinMode` (2 = private) plus the party members
- * to pull along (`AdditionalPlayerIds`). The 2023 client posts its party on a room
- * matchmake so they can be invited into the instance the leader lands in;
- * `AdditionalPlayerIds` is a repeated field (one id each, never comma-separated), and
- * ids are parsed defensively, de-duplicated, and non-positive/garbage entries dropped.
- * Parsed with `{ all: true }` in one pass so the repeated fields survive.
+ * Read the room-matchmake body once: `JoinMode` (2 = private) plus the party members to
+ * pull along (`AdditionalPlayerIds`). The 2023 client posts its party on a room matchmake
+ * so they can be invited into the instance the leader lands in; there it's a REPEATED form
+ * field (one id each, never comma-separated), while the v2 client sends a JSON array — or
+ * `null` when the player is alone, which is not an empty array and must not parse as one
+ * bad id. Ids are parsed defensively, de-duplicated, and non-positive/garbage dropped.
  */
 async function readMatchmakeBody(
 	c: Context<App>
 ): Promise<{ joinMode: number; additionalPlayerIds: number[] }> {
-	const body = await c.req.parseBody({ all: true }).catch(() => ({}) as Record<string, unknown>)
-	const firstString = (v: unknown): string | undefined => {
-		const first = Array.isArray(v) ? v[0] : v
-		return typeof first === 'string' ? first : undefined
-	}
-	const joinModeRaw = firstString(body.JoinMode)
-	const joinMode = joinModeRaw === undefined ? 0 : Number.parseInt(joinModeRaw, 10) || 0
+	const body = await readRequestFields(c)
+	const joinMode = fieldInt(body, 'JoinMode') ?? 0
 
 	const key = Object.keys(body).find((k) => k.toLowerCase() === 'additionalplayerids')
-	const raw = key === undefined ? [] : body[key]
-	const values = Array.isArray(raw) ? raw : [raw]
+	const raw = key === undefined ? null : body[key]
+	// Repeated form field or JSON array → the values; a lone value → a one-element list;
+	// null/absent → nothing.
+	const values = Array.isArray(raw) ? raw : raw === null || raw === undefined ? [] : [raw]
 	const additionalPlayerIds = [
 		...new Set(
 			values
-				.filter((v): v is string => typeof v === 'string')
-				.map((s) => Number.parseInt(s.trim(), 10))
-				.filter((n) => !Number.isNaN(n) && n > 0)
+				.map((v) =>
+					typeof v === 'number'
+						? Math.trunc(v)
+						: typeof v === 'string'
+							? Number.parseInt(v.trim(), 10)
+							: Number.NaN
+				)
+				.filter((n) => Number.isFinite(n) && n > 0)
 		),
 	]
 	return { joinMode, additionalPlayerIds }
@@ -924,6 +1027,36 @@ async function resolveRoomInstance(
 		),
 		errorCode: MatchmakingErrorCode.Success,
 	}
+}
+
+/**
+ * The room matchmake, shared by the 2023 client's `/matchmake/room/{roomId}` (plus its
+ * `/{subRoomId}` form) and the newer client's `/matchmake/v2/…` spelling of the same two
+ * routes. The v2 paths behave identically for now — the client sends the same body and
+ * reads the same envelope back — so they are the same handler under a second path rather
+ * than a copy that can drift.
+ *
+ * `subRoomId` is optional: absent, `resolveRoomInstance` falls back to the room's first
+ * subroom (its default entrance).
+ */
+async function matchmakeIntoRoom(c: Context<App>) {
+	const id = await authedId(c)
+	if (id === null) return unauthorized(c)
+	const { joinMode, additionalPlayerIds } = await readMatchmakeBody(c)
+	const rawSubRoomId = c.req.param('subRoomId')
+	const subRoomId = rawSubRoomId === undefined ? undefined : Number.parseInt(rawSubRoomId, 10)
+	const { instance, errorCode } = await resolveRoomInstance(
+		c,
+		c.req.param('roomId') ?? '',
+		joinMode === 2,
+		id,
+		subRoomId
+	)
+	if (!instance) return matchmakeResult(c, errorCode, null)
+	await enterRoom(c, id, instance)
+	// Pull the caller's party (AdditionalPlayerIds) into the instance they landed in.
+	await inviteParty(c, id, additionalPlayerIds, instance)
+	return matchmakeResult(c, 0, instance)
 }
 
 /**
@@ -1693,24 +1826,7 @@ const app = new Hono<App>()
 				401: UNAUTHORIZED_RESPONSE,
 			},
 		}),
-		async (c) => {
-			const id = await authedId(c)
-			if (id === null) return unauthorized(c)
-			const { joinMode, additionalPlayerIds } = await readMatchmakeBody(c)
-			const subRoomId = Number.parseInt(c.req.param('subRoomId'), 10)
-			const { instance, errorCode } = await resolveRoomInstance(
-				c,
-				c.req.param('roomId'),
-				joinMode === 2,
-				id,
-				subRoomId
-			)
-			if (!instance) return matchmakeResult(c, errorCode, null)
-			await enterRoom(c, id, instance)
-			// Pull the caller's party (AdditionalPlayerIds) into the instance they landed in.
-			await inviteParty(c, id, additionalPlayerIds, instance)
-			return matchmakeResult(c, 0, instance)
-		}
+		matchmakeIntoRoom
 	)
 
 	// The 2023 client uses a two-segment matchmake/room/{roomId}. Look the room up
@@ -1735,22 +1851,76 @@ const app = new Hono<App>()
 				401: UNAUTHORIZED_RESPONSE,
 			},
 		}),
-		async (c) => {
-			const id = await authedId(c)
-			if (id === null) return unauthorized(c)
-			const { joinMode, additionalPlayerIds } = await readMatchmakeBody(c)
-			const { instance, errorCode } = await resolveRoomInstance(
-				c,
-				c.req.param('roomId'),
-				joinMode === 2,
-				id
-			)
-			if (!instance) return matchmakeResult(c, errorCode, null)
-			await enterRoom(c, id, instance)
-			// Pull the caller's party (AdditionalPlayerIds) into the instance they landed in.
-			await inviteParty(c, id, additionalPlayerIds, instance)
-			return matchmakeResult(c, 0, instance)
-		}
+		matchmakeIntoRoom
+	)
+
+	// The newer client asks for the same two room matchmakes under a `/v2/` prefix
+	// (`/matchmake/v2/room/{roomId}` and `/matchmake/v2/room/{roomId}/{subRoomId}`). The
+	// MATCHMAKING is the same — same rooms, same instances, same refusals, so a v1 and a
+	// v2 player asking for the same public room stand in the same place — and so these
+	// share the handler. What differs is the wire on both ends: the request is JSON with
+	// real types rather than a urlencoded form, and the response is the PascalCase
+	// envelope (`ErrorCode`/`CorrelationId`/`RoomInstance`, no `result` twin, no Photon
+	// coordinates or DataBlob on the instance, plus `MatchmakingPolicy`). Neither is
+	// handled here: `readRequestFields` takes either encoding and `matchmakeResult` picks
+	// the envelope off the path, so the ban gate's refusal is a v2 refusal too.
+	//
+	// Registered after the unprefixed pair (order is irrelevant to matching: `v2` is a
+	// literal second segment, so nothing else can claim these paths).
+	.post(
+		'/matchmake/v2/room/:roomId/:subRoomId{[0-9]+}',
+		describeRoute({
+			tags: ['Navigation'],
+			summary: 'Matchmake into a specific subroom (v2)',
+			description: [
+				'The newer client’s `/v2/` spelling of the subroom matchmake. Enters the same',
+				'instances as `POST /matchmake/room/{roomId}/{subRoomId}`; the body is JSON and the',
+				'response is the PascalCase v2 envelope.',
+			].join(' '),
+			security: AUTHED,
+			requestBody: jsonBody(MatchmakeRoomV2Request, 'Optional JoinMode and AdditionalPlayerIds'),
+			parameters: [
+				{ name: 'roomId', in: 'path', required: true, schema: { type: 'string' } },
+				{
+					name: 'subRoomId',
+					in: 'path',
+					required: true,
+					description: 'Subroom id (digits only)',
+					schema: { type: 'string', pattern: '^[0-9]+$' },
+				},
+			],
+			responses: {
+				200: json(
+					MatchmakeV2Response,
+					'The instance (or a null RoomInstance with ErrorCode 20 on an unknown room, 55 when banned)'
+				),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		matchmakeIntoRoom
+	)
+	.post(
+		'/matchmake/v2/room/:roomId',
+		describeRoute({
+			tags: ['Navigation'],
+			summary: 'Matchmake into a room (v2, default subroom)',
+			description: [
+				'The newer client’s `/v2/` spelling of the room matchmake. Enters the same instances',
+				'as `POST /matchmake/room/{roomId}`; the body is JSON and the response is the',
+				'PascalCase v2 envelope.',
+			].join(' '),
+			security: AUTHED,
+			requestBody: jsonBody(MatchmakeRoomV2Request, 'Optional JoinMode and AdditionalPlayerIds'),
+			parameters: [{ name: 'roomId', in: 'path', required: true, schema: { type: 'string' } }],
+			responses: {
+				200: json(
+					MatchmakeV2Response,
+					'The instance (or a null RoomInstance with ErrorCode 20 on an unknown room, 55 when banned)'
+				),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		matchmakeIntoRoom
 	)
 	// Matchmake with no target. The client posts this when it needs an instance but isn't
 	// going anywhere in particular — at startup, and while sitting in Orientation. It

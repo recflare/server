@@ -613,6 +613,136 @@ describe('public endpoints', () => {
 		expect(unknown).toMatchObject({ subRoomId: 34, location: RECCENTER_SCENE })
 	})
 
+	test('the /matchmake/v2 routes take a JSON body and answer the PascalCase envelope', async () => {
+		// The newer client posts JSON with real types (JoinMode a number, AdditionalPlayerIds
+		// null when alone) and reads back `ErrorCode`/`CorrelationId`/`RoomInstance`.
+		type V2Instance = {
+			RoomInstanceId: number
+			RoomId: number
+			SubRoomId: number
+			Location: string
+			MaxCapacity: number
+			IsPrivate: boolean
+			RoomInstanceType: number
+			MatchmakingPolicy: number
+		}
+		type V2Body = { ErrorCode: number; CorrelationId: string; RoomInstance: V2Instance | null }
+		const correlationId = 'e3f1a2b3-c4d5-4e6f-8a9b-0c1d2e3f4a5b'
+		const matchmake = async (
+			path: string,
+			player: string,
+			body: Record<string, unknown> = {}
+		): Promise<V2Body> => {
+			const res = await exports.default.fetch(`${ORIGIN}${path}`, {
+				method: 'POST',
+				headers: { ...(await bearer(player)), 'Content-Type': 'application/json' },
+				// The client's real body, verbatim.
+				body: JSON.stringify({
+					AdditionalPlayerIds: null,
+					BypassMovementModeRestriction: false,
+					MaxPersistenceVersion: 12,
+					Ugc1SubVersion: 0,
+					Ugc2SubVersion: 0,
+					VoiceServerVersion: '1.0',
+					LoginLock: EMPTY_CORRELATION_ID,
+					ClientJoinData: null,
+					CorrelationId: correlationId,
+					JoinMode: 0,
+					InviteMode: 0,
+					ShouldKeepPlayerWithParty: true,
+					PlayerScores: null,
+					...body,
+				}),
+			})
+			expect(res.status).toBe(200)
+			return (await res.json()) as V2Body
+		}
+
+		const room = await matchmake('/matchmake/v2/room/2', '8901')
+		expect(room.ErrorCode).toBe(0)
+		// The JSON body's CorrelationId is read and echoed — a form-only body read would
+		// have lost it here and the client would never match the response to its attempt.
+		expect(room.CorrelationId).toBe(correlationId)
+		expect(room.RoomInstance).toMatchObject({
+			RoomId: 2,
+			Location: RECCENTER_SCENE,
+			IsPrivate: false,
+			MatchmakingPolicy: 0,
+		})
+		// The v2 instance is a strict field set: no camelCase twins, no DataBlob, no Photon
+		// coordinates (the reference server sends none).
+		expect(Object.keys(room.RoomInstance!).sort()).toEqual(
+			[
+				'ClubId',
+				'EncryptVoiceChat',
+				'EventId',
+				'IsFull',
+				'IsInProgress',
+				'IsPrivate',
+				'Location',
+				'MaxCapacity',
+				'MatchmakingPolicy',
+				'Name',
+				'RoomCode',
+				'RoomId',
+				'RoomInstanceId',
+				'RoomInstanceType',
+				'SubRoomId',
+			].sort()
+		)
+		// ...and the envelope has no `result`/`roomInstance` camelCase twins either.
+		expect(Object.keys(room).sort()).toEqual(['CorrelationId', 'ErrorCode', 'RoomInstance'])
+
+		// By name, and the subroom form carries the subroom through.
+		expect((await matchmake('/matchmake/v2/room/RecCenter', '8902')).RoomInstance).toMatchObject({
+			RoomId: 2,
+		})
+		expect((await matchmake('/matchmake/v2/room/77/35', '8903')).RoomInstance).toMatchObject({
+			RoomId: 77,
+			SubRoomId: 35,
+			Location: SECOND_SUBROOM_SCENE,
+		})
+
+		// JoinMode is a NUMBER here: 2 still means a private instance.
+		const priv = await matchmake('/matchmake/v2/room/2', '8905', { JoinMode: 2 })
+		expect(priv.RoomInstance).toMatchObject({ IsPrivate: true })
+
+		// A v2 and a v1 player asking for the same public room land in the SAME instance —
+		// only the wire shape differs. Its own room, so the two players it seats don't count
+		// against another test's capacity.
+		await seedRoomWithSubRooms(env.DB, {
+			RoomId: 79,
+			Name: 'V2Room',
+			IsDorm: false,
+			Accessibility: 1,
+			CreatorAccountId: 8907,
+			SubRooms: [{ SubRoomId: 37, UnitySceneId: RECCENTER_SCENE, MaxPlayers: 10 }],
+		} as unknown as Record<string, unknown>)
+		const v1 = await exports.default.fetch(`${ORIGIN}/matchmake/room/79`, {
+			method: 'POST',
+			headers: {
+				...(await bearer('8906')),
+				'Content-Type': 'application/x-www-form-urlencoded',
+			},
+			body: new URLSearchParams({ JoinMode: '0' }).toString(),
+		})
+		const v1Instance = (
+			(await v1.json()) as { roomInstance: { roomInstanceId: number; roomId: number } }
+		).roomInstance
+		expect(v1Instance.roomId).toBe(79)
+		const v2 = await matchmake('/matchmake/v2/room/79', '8907')
+		expect(v2.RoomInstance!.RoomInstanceId).toBe(v1Instance.roomInstanceId)
+
+		// Refusals answer in v2 too, correlation id echoed — including the ban gate, which
+		// answers before any route runs.
+		const unknown = await matchmake('/matchmake/v2/room/99999', '8904')
+		expect(unknown).toEqual({ ErrorCode: 20, CorrelationId: correlationId, RoomInstance: null })
+
+		// Unauthenticated is a 401, not a matchmake refusal.
+		const anon = await exports.default.fetch(`${ORIGIN}/matchmake/v2/room/2`, { method: 'POST' })
+		expect(anon.status).toBe(401)
+	})
+
 	test('matchmaking serves the PUBLISHED save to everyone, creator included', async () => {
 		// The client offers the owner "latest or published" itself, from the
 		// `/subrooms/{id}/saves` list — matchmaking never picks. Serving a staged blob to
@@ -2305,6 +2435,8 @@ describe('auth-gated endpoints', () => {
 			'POST /matchmake/player/{playerId}',
 			'POST /matchmake/room/{roomId}',
 			'POST /matchmake/room/{roomId}/{subRoomId}',
+			'POST /matchmake/v2/room/{roomId}',
+			'POST /matchmake/v2/room/{roomId}/{subRoomId}',
 			'POST /player/exclusivelogin',
 			'POST /player/heartbeat',
 			'POST /player/login',

@@ -309,6 +309,73 @@ export const MatchmakeRoomRequest = CorrelationIdRequest.extend({
 		.describe('Party members to invite into the room; repeated once per id'),
 })
 
+/**
+ * The v2 room-matchmake body (`/matchmake/v2/room/:roomId[/:subRoomId]`). Unlike the 2023
+ * client's urlencoded form, the newer client posts JSON with real types: `JoinMode` is a
+ * number, and `AdditionalPlayerIds` is an array — `null`, not `[]`, when the player is
+ * alone. Only `JoinMode`, `AdditionalPlayerIds` and `CorrelationId` are read; the rest are
+ * accepted and ignored, and are recorded here because they are what the client actually
+ * sends.
+ */
+export const MatchmakeRoomV2Request = z.object({
+	CorrelationId: z.string().optional().describe('Per-attempt GUID; echoed on the response'),
+	JoinMode: z.int().optional().describe('2 requests a private instance'),
+	AdditionalPlayerIds: z
+		.array(z.int())
+		.nullable()
+		.optional()
+		.describe('Party members to invite into the room; null when the player is alone'),
+	InviteMode: z.int().optional(),
+	ShouldKeepPlayerWithParty: z.boolean().optional(),
+	BypassMovementModeRestriction: z.boolean().optional(),
+	MaxPersistenceVersion: z.int().optional(),
+	Ugc1SubVersion: z.int().optional(),
+	Ugc2SubVersion: z.int().optional(),
+	VoiceServerVersion: z.string().optional(),
+	LoginLock: z.string().optional(),
+	ClientJoinData: z.string().nullable().optional(),
+	PlayerScores: z.unknown().optional(),
+})
+
+/**
+ * The v2 client's room instance: PascalCase, and a SUBSET of `RoomInstanceDto`. The
+ * reference server's v2 response carries no `DataBlob` and no Photon coordinates at all,
+ * and adds `MatchmakingPolicy` — this mirrors it field for field. The instance behind it
+ * is the same row a v1 matchmake answers with; only the projection differs.
+ */
+export const RoomInstanceV2Dto = z.object({
+	RoomInstanceId: z.int(),
+	RoomId: z.int(),
+	SubRoomId: z.int(),
+	Location: z.string().describe('SubRoom Unity scene id; empty is rejected by the client'),
+	EventId: z.int(),
+	ClubId: z.int(),
+	RoomCode: z.string(),
+	Name: z.string(),
+	MaxCapacity: z.int(),
+	IsFull: z.boolean(),
+	IsPrivate: z.boolean(),
+	IsInProgress: z.boolean(),
+	EncryptVoiceChat: z.boolean(),
+	RoomInstanceType: RoomInstanceType,
+	MatchmakingPolicy: z.int().describe('Always 0; this server has no policy to express'),
+})
+
+/**
+ * The v2 matchmake envelope. Same codes and the same correlation-id echo as
+ * `MatchmakeResponse`, but PascalCase and with no `result` twin — the v2 client reads
+ * `ErrorCode`. Refusals answer `RoomInstance: null` with a non-zero `ErrorCode`.
+ */
+export const MatchmakeV2Response = z.object({
+	ErrorCode: z
+		.int()
+		.describe('0 = success; 20 = NoSuchRoom; 55 = banned from the room (the one non-opaque code)'),
+	CorrelationId: z
+		.string()
+		.describe('Echoes the request’s CorrelationId; all-zero GUID when it sent none'),
+	RoomInstance: RoomInstanceV2Dto.nullable(),
+})
+
 /** `POST /invite` form body — invite a player into the caller's room instance. */
 export const InviteRequest = z.object({
 	playerId: z.string().describe('The account to invite; a non-zero integer (else 400)'),
