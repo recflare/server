@@ -2042,6 +2042,14 @@ describe('econ endpoints', () => {
 		expect(await res.json()).toEqual([])
 	})
 
+	test('GET /api/subscriptionseasons/v1/seasons/current returns []', async () => {
+		const res = await exports.default.fetch(
+			`${ORIGIN}/api/subscriptionseasons/v1/seasons/current`
+		)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
+	})
+
 	const getSubscription = async (headers: Record<string, string> = {}) =>
 		exports.default.fetch(`${ORIGIN}/api/CampusCard/v1/UpdateAndGetSubscription`, {
 			method: 'POST',
@@ -2157,8 +2165,10 @@ describe('econ endpoints', () => {
 			'GET /api/storefronts/v2/buyInvention',
 			'GET /api/storefronts/v3/giftdropstore/{id}',
 			'GET /api/storefronts/v4/balance/{currencyType}',
+			'GET /api/subscriptionseasons/v1/seasons/current',
 			'GET /api/ugcPurchasables/v1/items/room/{roomId}',
 			'GET /econ/customAvatarItems/v1/owned',
+			'GET /econ/roomEconConfig/{roomId}',
 			'GET /econ/roomGiftDropShops/room/{roomId}',
 			'GET /econ/roomInventory/room/{roomId}',
 			'GET /econ/roomInventory/room/{roomId}/player',

@@ -2566,6 +2566,15 @@ const app = new Hono<App>({ strict: false })
 		}
 	)
 
+	// The subscription seasons running right now (the RR+ seasonal reward tracks). Nothing
+	// here runs a season, so this is an empty-list stub — the client reads it as "no season
+	// in progress" and skips the seasonal UI, where a 404 stalls the RR+ page load.
+	.get(
+		'/api/subscriptionseasons/v1/seasons/current',
+		listRoute('Current subscription seasons', 'Empty stub — no RR+ season is running'),
+		(c) => c.json([])
+	)
+
 // The generated spec. Documentation only — no request is validated against it (see
 // openapi.ts). `hide: true` keeps this route out of its own output.
 app.get(
