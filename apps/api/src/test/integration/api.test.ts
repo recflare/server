@@ -304,6 +304,37 @@ describe('public endpoints', () => {
 		}
 	)
 
+	// A fixed list, in render order — the client shows the buttons in the order they
+	// arrive, so the order is part of the contract, not just the contents.
+	test('GET /api/PlayerReporting/v1/voteToKickReasons serves the reasons in order', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/PlayerReporting/v1/voteToKickReasons`, {
+			headers: await bearer(),
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([
+			{ Reason: 'Discriminatory language', ReportCategory: 102 },
+			{ Reason: 'Discriminatory behavior', ReportCategory: 102 },
+			{ Reason: 'Threats or encouraging suicide', ReportCategory: 102 },
+			{ Reason: 'Toxic behavior', ReportCategory: 102 },
+			{ Reason: 'Sexual behavior in public', ReportCategory: 101 },
+			{ Reason: 'Sexual language in public', ReportCategory: 101 },
+			{ Reason: 'Non-consensual sexual behavior', ReportCategory: 101 },
+			{ Reason: 'Player in walls or floor', ReportCategory: 103 },
+			{ Reason: 'Friendly fire', ReportCategory: 103 },
+			{ Reason: 'Microphone spam', ReportCategory: 103 },
+			{ Reason: 'Abusing bugs or exploits', ReportCategory: 103 },
+			{ Reason: 'Spawn camping', ReportCategory: 103 },
+			{ Reason: 'Inactive in games (AFK)', ReportCategory: 6 },
+			{ Reason: 'Prefab swapping', ReportCategory: 6 },
+			{ Reason: 'Not following game rules', ReportCategory: 6 },
+		])
+	})
+
+	test('GET /api/PlayerReporting/v1/voteToKickReasons is auth-gated', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/PlayerReporting/v1/voteToKickReasons`)
+		expect(res.status).toBe(401)
+	})
+
 	test('POST /api/PlayerReporting/v1/referee says the caller is not one', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/api/PlayerReporting/v1/referee`, {
 			method: 'POST',

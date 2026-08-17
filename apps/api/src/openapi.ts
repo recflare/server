@@ -690,6 +690,17 @@ export const PlayerEventsPage = z.object({
 // ---- Moderation ------------------------------------------------------------
 
 /**
+ * One row of `GET /api/PlayerReporting/v1/voteToKickReasons` — the label the client puts
+ * on a vote-to-kick button, and the report category the kick is filed under if it passes.
+ */
+export const VoteToKickReason = z.object({
+	Reason: z.string().describe('The label shown on the button'),
+	ReportCategory: z
+		.int()
+		.describe('The category the resulting report is filed under: 101, 102, 103 or 6'),
+})
+
+/**
  * `GET|POST /api/PlayerReporting/v1/moderationBlockDetails` — always the "not blocked"
  * answer (no ban storage yet), mirroring the reference server's stub
  * `ReturnModerationBlockDetails()`. `ReportCategory` is `Unknown` (-1) rather than 0,
