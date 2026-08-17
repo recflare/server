@@ -138,6 +138,14 @@ export const BacktraceConfig = z.object({
 })
 
 /**
+ * `GET /statsigUserProperties` — the reference server answers this with a single
+ * `success` carrying its `StatsigEnabled` config value, an INT rather than a bool.
+ */
+export const StatsigUserProperties = z.object({
+	success: z.int().describe('The Statsig-enabled flag, as an int (1)'),
+})
+
+/**
  * `GET /api/config/v2` — the big client config blob (a static asset), with
  * `ShareBaseUrl` derived from the deploy-time base domain.
  */

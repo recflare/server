@@ -524,6 +524,19 @@ describe('public endpoints', () => {
 		expect(await res.json()).toEqual({ Results: [], TotalResults: 0 })
 	})
 
+	// Nothing locks avatar items here, so the array is empty and the posted ids are never
+	// parsed. Unlike the custom-item bulk below, this one takes no token — the reference
+	// answers outright.
+	test('POST /api/avatar/v1/lockeditems/bulk returns [] without auth', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/avatar/v1/lockeditems/bulk`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify(['a', 'b']),
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
+	})
+
 	// A BARE ARRAY of the items that matched — not the `{ Results, TotalResults }` page
 	// the sibling custom-item reads serve. Nothing stores custom items, so every id
 	// misses, and a miss is an absent entry rather than an error.
@@ -708,10 +721,10 @@ describe('public endpoints', () => {
 		expect(await cats.json()).toEqual({ Results: [], TotalResults: 0 })
 	})
 
-	test('GET /statsigUserProperties returns an empty object', async () => {
-		const res = await exports.default.fetch(`${ORIGIN}/statsigUserProperties`)
+	test('POST /statsigUserProperties returns the StatsigEnabled flag', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/statsigUserProperties`, { method: 'POST' })
 		expect(res.status).toBe(200)
-		expect(await res.json()).toEqual({})
+		expect(await res.json()).toEqual({ success: 1 })
 	})
 
 	test('GET /voice/config returns an object', async () => {
@@ -3999,13 +4012,13 @@ describe('openapi', () => {
 			'GET /iam/me/channels/{type}',
 			'GET /outfits/me',
 			'GET /outfits/me/saved',
-			'GET /statsigUserProperties',
 			'GET /voice/config',
 			'POST /api/PlayerReporting/v1/deviceId',
 			'POST /api/PlayerReporting/v1/hile',
 			'POST /api/PlayerReporting/v1/moderationBlockDetails',
 			'POST /api/PlayerReporting/v1/referee',
 			'POST /api/PlayerReporting/v3/create',
+			'POST /api/avatar/v1/lockeditems/bulk',
 			'POST /api/avatar/v2/gifts/generate',
 			'POST /api/customAvatarItems/GetCustomAvatarItemCurrentSavesForLegacyAvatarItems',
 			'POST /api/customAvatarItems/v1/bulk',
@@ -4043,6 +4056,7 @@ describe('openapi', () => {
 			'POST /api/sanitize/v1',
 			'POST /api/sanitize/v1/isPure',
 			'POST /api/v1/progression/bulk',
+			'POST /statsigUserProperties',
 			'PUT /outfits/me',
 		])
 

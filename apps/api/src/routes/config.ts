@@ -13,6 +13,7 @@ import {
 	IslandedVersions,
 	json,
 	JsonObject,
+	StatsigUserProperties,
 	VersionCheck,
 } from '../openapi'
 
@@ -139,23 +140,24 @@ export const configRoutes = new Hono<App>({ strict: false })
 		(c) => c.json(gameConfigsV1All)
 	)
 
-	// The property bag the client would attach to its Statsig user. Analytics are off here
-	// (see the placeholder keys `/api/config/v1/amplitude` serves), so there is nothing to
-	// segment on and the bag is empty — the client reads that as "no overrides" and carries
-	// on, which is why this answers `{}` rather than 404ing.
-	.get(
+	// The property bag the client would attach to its Statsig user. The reference server
+	// doesn't send properties at all here — it answers a lone `success` carrying its
+	// `StatsigEnabled` config value, as an int — so that is what this mirrors. This server
+	// runs no experiments and collects no analytics (see the placeholder keys
+	// `/api/config/v1/amplitude` serves), so the value is fixed and the same for everyone.
+	.post(
 		'/statsigUserProperties',
 		describeRoute({
 			tags: ['Config'],
 			summary: 'Statsig user properties',
 			description:
-				'The custom properties the client would attach to its Statsig user for experiment ' +
-				'targeting. This server runs no experiments and collects no analytics, so the bag ' +
-				'is always empty — the client reads `{}` as “no overrides”. Not auth-gated: there ' +
-				'is nothing per-account to leak in an empty object.',
-			responses: { 200: json(JsonObject, 'An empty object') },
+				'Despite the name, the reference server returns no properties here — just ' +
+				'`success`, its `StatsigEnabled` config value as an int. This server mirrors that ' +
+				'with a fixed `1`; it runs no experiments and collects no analytics, so nothing ' +
+				'here is per-account and it is not auth-gated.',
+			responses: { 200: json(StatsigUserProperties, 'The fixed `StatsigEnabled` flag') },
 		}),
-		(c) => c.json({})
+		(c) => c.json({ success: 1 })
 	)
 
 	// Voice chat config. The client fetches it to set up voice.

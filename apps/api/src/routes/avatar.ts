@@ -163,6 +163,28 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 		}
 	)
 
+	// A batch lookup of LOCKED avatar items — the items the client shows greyed out, so it
+	// posts the ids it wants the locked state for. Nothing here locks avatar items (the
+	// catalogs `econ` serves are all unlocked), so nothing comes back and the client renders
+	// none as locked. Unlike its custom-item sibling above this one is NOT auth-gated: the
+	// reference answers the empty array outright, without validating a token first.
+	.post(
+		'/api/avatar/v1/lockeditems/bulk',
+		describeRoute({
+			tags: ['Avatar'],
+			summary: 'Locked avatar items in bulk',
+			description:
+				'Resolves a batch of avatar-item ids to the ones that are LOCKED for the caller, as ' +
+				'a bare array. Nothing on this server locks avatar items, so it is always `[]` and ' +
+				'the posted ids are not parsed — a miss is not an error, the client simply renders ' +
+				'nothing as locked.\n\n' +
+				'No auth, matching the reference, which returns the empty array without checking a ' +
+				'token — in contrast to `/api/customAvatarItems/v1/bulk`, which validates one first.',
+			responses: { 200: json(JsonArray, 'The locked items — always empty here') },
+		}),
+		(c) => c.json([])
+	)
+
 	// Custom avatar item gates — real Rec Room client endpoints with no backing
 	// implementation yet; we enable them. Flip to `false` to disable the
 	// corresponding flow. `isCreationAllowedForAccount` wraps its answer in the
