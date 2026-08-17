@@ -39,10 +39,23 @@ const app = new Hono<App>()
 	})
 
 	// Bulk curated-list lookup — the client asks for a set of lists by repeating `?id=`.
-	// Nothing curates lists here yet, so this is an empty-list stub: the client reads it as
-	// "no such lists" and renders nothing, where a 404 shows as a failed load instead.
+	// Nothing curates lists here yet, so this serves one canned list: `ItemIds` are strings
+	// (not numbers) and `Description` may be null, but `ImageName` has to be a string — the
+	// client's parser reads it straight into a string field. A 404 shows as a failed load
+	// instead, so an unknown id still answers 200.
 	.get('/curatedlists/bulk', async (c) => {
-		return c.json([])
+		return c.json([
+			{
+				ListId: 17859340,
+				CreatorAccountId: 1,
+				Name: 'My List',
+				Description: null,
+				ImageName: '',
+				Type: 1,
+				ItemIds: ['123', '456'],
+				CreatedAt: '2025-07-18T00:00:00Z',
+			},
+		])
 	})
 
 	// Contextual features — the client posts the context it's in and reads back whether the

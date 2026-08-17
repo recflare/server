@@ -47,10 +47,21 @@ it('response with hello world', async () => {
 	expect(await res.text()).toMatchInlineSnapshot(`"hello, world!"`)
 })
 
-it('serves an empty curated-list bulk lookup', async () => {
+it('serves the canned curated-list bulk lookup', async () => {
 	const res = await SELF.fetch(`${ORIGIN}/curatedlists/bulk?id=17859340`)
 	expect(res.status).toBe(200)
-	expect(await res.json()).toEqual([])
+	expect(await res.json()).toEqual([
+		{
+			ListId: 17859340,
+			CreatorAccountId: 1,
+			Name: 'My List',
+			Description: null,
+			ImageName: '',
+			Type: 1,
+			ItemIds: ['123', '456'],
+			CreatedAt: '2025-07-18T00:00:00Z',
+		},
+	])
 })
 
 it('acknowledges a contextual-features post', async () => {
