@@ -20,6 +20,7 @@ import {
 	json,
 	messageCountParam,
 	NOT_A_MEMBER_RESPONSE,
+	PartyThread,
 	RenameThreadRequest,
 	SendMessageRequest,
 	SendMessageResponse,
@@ -423,6 +424,51 @@ const app = new Hono<App>()
 				chatThread: thread,
 				chatResult: posted === null ? CHAT_INVALID_ARGUMENTS : CHAT_SUCCESS,
 			})
+		}
+	)
+
+	// The party thread (`/thread/party?maxCount=1&mode=0`). STUB: the response shape is
+	// unknown — it hasn't been observed off a live client — so this answers an empty
+	// object, which parses as "no party" rather than failing the client's deserializer the
+	// way a 404 or a bare array would. `maxCount` and `mode` are accepted and ignored.
+	// Replace the body once the real shape is captured.
+	.get(
+		'/thread/party',
+		describeRoute({
+			tags: ['Threads'],
+			summary: 'The caller’s party thread (stub)',
+			description: [
+				'STUB — the response shape has not been observed off a live client, so this answers an',
+				'empty object `{}`, which parses as "no party" rather than failing the client’s',
+				'deserializer the way a 404 or a bare array would. `maxCount` and `mode` are accepted and',
+				'ignored. Replace the body once the real shape is captured.',
+			].join(' '),
+			security: AUTHED,
+			parameters: [
+				{
+					name: 'maxCount',
+					in: 'query',
+					required: false,
+					description: 'Page size the client sends (1). Ignored by the stub',
+					schema: { type: 'integer' },
+				},
+				{
+					name: 'mode',
+					in: 'query',
+					required: false,
+					description: 'Unknown mode selector the client sends (0). Ignored by the stub',
+					schema: { type: 'integer' },
+				},
+			],
+			responses: {
+				200: json(PartyThread, 'Always `{}` — the stub carries no party'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return c.body(null, 401)
+			return c.json({})
 		}
 	)
 

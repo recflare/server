@@ -138,6 +138,13 @@ export const SendMessageResponse = z.object({
 	chatThread: ChatThreadWithMessagesDto.nullable(),
 })
 
+/**
+ * `GET /thread/party` — STUB. The real shape hasn't been observed off a live client, so
+ * the route answers an empty object and this schema says so rather than guessing at
+ * fields. Fill both in together once the real response is captured.
+ */
+export const PartyThread = z.object({}).describe('Stub — always empty; the real shape is unknown')
+
 /** `GET /` — the liveness probe. */
 export const ServiceStatus = z.object({
 	service: z.literal('chat'),

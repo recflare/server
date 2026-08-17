@@ -376,6 +376,23 @@ describe('thread storage', () => {
 	})
 })
 
+// The party thread is a stub until its real shape is observed off a live client; these
+// pin down only what the stub promises — auth, and an object body rather than a 404.
+describe('GET /thread/party', () => {
+	it('answers an empty object', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/thread/party?maxCount=1&mode=0`, {
+			headers: await bearer(883001),
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({})
+	})
+
+	it('401s without a token', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/thread/party?maxCount=1&mode=0`)
+		expect(res.status).toBe(401)
+	})
+})
+
 describe('POST /thread/withmembers', () => {
 	async function withMembers(caller: number, body: string) {
 		return SELF.fetch(`${ORIGIN}/thread/withmembers`, {
@@ -1302,6 +1319,7 @@ describe('openapi', () => {
 			'DELETE /thread/{id}/leave',
 			'GET /',
 			'GET /thread',
+			'GET /thread/party',
 			'GET /thread/{id}',
 			'GET /thread/{id}/message',
 			'POST /thread',
