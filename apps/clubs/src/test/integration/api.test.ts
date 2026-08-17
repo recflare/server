@@ -115,6 +115,14 @@ describe('clubs endpoints', () => {
 		expect(await res.json()).toEqual([])
 	})
 
+	test('GET /announcements/v2/subscription/mine/unread returns []', async () => {
+		const res = await exports.default.fetch(
+			`${ORIGIN}/announcements/v2/subscription/mine/unread?sendAnnouncements=true`
+		)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
+	})
+
 	test('GET /club/mine/member lists the caller’s clubs; signed out is an empty list', async () => {
 		// Signed out is "no clubs", not an error — a 401 here breaks the client's shelf.
 		const anon = await exports.default.fetch(`${ORIGIN}/club/mine/member`)
@@ -1413,6 +1421,7 @@ describe('clubs endpoints', () => {
 			'DELETE /club/{clubId}/clubhouse',
 			'GET /announcements/club/{clubId}',
 			'GET /announcements/v2/mine/unread',
+			'GET /announcements/v2/subscription/mine/unread',
 			'GET /club/categoryTags',
 			'GET /club/home/me',
 			'GET /club/mine/created',
