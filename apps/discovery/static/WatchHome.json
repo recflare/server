@@ -16,14 +16,6 @@
     "displayMetadata": "{\"DisplayTitle\":\"Online Friends\",\"itemCount\":3,\"cardStyle\":\"Horizontal\"}"
   },
   {
-    "id": "Rooms_GameAINewWaysToPlayNoRotation_WatchHome",
-    "sectionType": 0,
-    "sectionSubType": "Rooms_GameAI",
-    "source": "PlaylistById",
-    "sourceMetadata": "640498224290317839",
-    "displayMetadata": "{\"DisplayTitle\":\"New Ways to Play\",\"supportsDedupe\":\"false\",\"numRows\":\"1\",\"sizePerPlatform\":\"\",\"backgroundColor\":\"\",\"horizontalScrollEnabled\":\"false\"}"
-  },
-  {
     "id": "Rooms_ContinuePlaying_WatchHome",
     "sectionType": 0,
     "sectionSubType": "Rooms_ContinuePlaying",
@@ -46,13 +38,5 @@
     "source": "Hot",
     "sourceMetadata": "rro",
     "displayMetadata": "{\"DisplayTitle\":\"Rec Room Originals\",\"supportsDedupe\":\"false\",\"numRows\":\"1\",\"sizePerPlatform\":\"\",\"backgroundColor\":\"\",\"horizontalScrollEnabled\":\"false\"}"
-  },
-  {
-    "id": "StoreItemCarousel_AlgorithmicList_ItemsForYou_WatchHome",
-    "sectionType": 4,
-    "sectionSubType": "Items_ForYou",
-    "source": "UnifiedAlgorithmicList",
-    "sourceMetadata": "itemsforyou",
-    "displayMetadata": "{\"DisplayTitle\":\"Items You May Like\",\"horizontalScrollEnabled\":\"false\"}"
   }
 ]
