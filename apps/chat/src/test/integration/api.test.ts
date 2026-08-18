@@ -393,6 +393,34 @@ describe('GET /thread/party', () => {
 	})
 })
 
+describe('GET /thread/checkCanSendDirectMessageWithPrivacySetting', () => {
+	const path = `${ORIGIN}/thread/checkCanSendDirectMessageWithPrivacySetting`
+
+	it('always allows the DM, as a bare ChatResult integer', async () => {
+		const res = await SELF.fetch(`${path}?receivingPlayerId=205`, {
+			headers: await bearer(884001),
+		})
+		expect(res.status).toBe(200)
+		expect(res.headers.get('content-type')).toContain('application/json')
+		// The whole body is the ChatResult — 0 is Success. NOT a boolean: the client
+		// instantiates its response wrapper with the enum, so `true` would decode as nothing.
+		expect(await res.text()).toBe('0')
+	})
+
+	it('answers the same for any player, and with no player named', async () => {
+		// `receivingPlayerId` is ignored — nothing here stores a privacy setting to refuse on.
+		for (const query of ['?receivingPlayerId=205', '?receivingPlayerId=999999', '']) {
+			const res = await SELF.fetch(`${path}${query}`, { headers: await bearer(884002) })
+			expect(await res.text()).toBe('0')
+		}
+	})
+
+	it('401s without a token', async () => {
+		const res = await SELF.fetch(`${path}?receivingPlayerId=205`)
+		expect(res.status).toBe(401)
+	})
+})
+
 describe('POST /thread/withmembers', () => {
 	async function withMembers(caller: number, body: string) {
 		return SELF.fetch(`${ORIGIN}/thread/withmembers`, {
@@ -777,9 +805,9 @@ describe('ChatMessageReceived push', () => {
 
 		const sent = await hub.getByName('global').takeSent()
 		expect(sent.map((n) => n.playerId).sort((a, b) => a - b)).toEqual([caller, 886002, 886003])
-		expect(
-			sent.every((n) => n.notificationType === NotificationType.ChatMessageReceived)
-		).toBe(true)
+		expect(sent.every((n) => n.notificationType === NotificationType.ChatMessageReceived)).toBe(
+			true
+		)
 		expect(sent[0]!.data).toEqual({
 			chatMessageId: chatThread.latestMessage.chatMessageId,
 			chatThreadId: chatThread.chatThreadId,
@@ -1001,9 +1029,7 @@ describe('POST /thread/:id', () => {
 	it('pushes ChatMessageReceived to every member', async () => {
 		const hub = env.RECFLARE_NOTIFICATIONS_HUB as unknown as {
 			getByName(name: string): {
-				takeSent(): Promise<
-					Array<{ playerId: number; notificationType: NotificationType }>
-				>
+				takeSent(): Promise<Array<{ playerId: number; notificationType: NotificationType }>>
 			}
 		}
 		const caller = 889005
@@ -1013,9 +1039,9 @@ describe('POST /thread/:id', () => {
 		await send(caller, `/thread/${chatThreadId}`)
 		const sent = await hub.getByName('global').takeSent()
 		expect(sent.map((n) => n.playerId).sort((a, b) => a - b)).toEqual([caller, 889006])
-		expect(
-			sent.every((n) => n.notificationType === NotificationType.ChatMessageReceived)
-		).toBe(true)
+		expect(sent.every((n) => n.notificationType === NotificationType.ChatMessageReceived)).toBe(
+			true
+		)
 	})
 
 	it('reports invalid arguments for blank contents without storing anything', async () => {
@@ -1319,6 +1345,7 @@ describe('openapi', () => {
 			'DELETE /thread/{id}/leave',
 			'GET /',
 			'GET /thread',
+			'GET /thread/checkCanSendDirectMessageWithPrivacySetting',
 			'GET /thread/party',
 			'GET /thread/{id}',
 			'GET /thread/{id}/message',

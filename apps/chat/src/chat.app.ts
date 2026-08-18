@@ -86,8 +86,10 @@ async function formMessageCount(c: Context<App>, fallback: number): Promise<numb
 }
 
 /**
- * What a chat action reports back to the client alongside its payload — the reference's
- * ChatResult. Only success and "bad arguments" are reachable here.
+ * What a chat action reports back to the client — the reference's ChatResult, usually
+ * alongside a payload but sometimes (the DM privacy check) as the whole body. Only these
+ * four of the enum's twenty values are reachable here; `ChatResult` in openapi.ts records
+ * the rest, including the 15/16 privacy refusals nothing on this server can answer.
  */
 const CHAT_SUCCESS = 0
 const CHAT_INVALID_ARGUMENTS = 1
@@ -469,6 +471,52 @@ const app = new Hono<App>()
 			const id = await authedId(c)
 			if (id === null) return c.body(null, 401)
 			return c.json({})
+		}
+	)
+
+	// May the caller DM this player? Asked before the client opens a new direct message, so
+	// it can grey the button out rather than let the send fail. Always 0 (Success): nothing
+	// here stores the who-can-message-me privacy setting the name refers to, so there is no
+	// setting to refuse on.
+	//
+	// The body is a bare ChatResult INTEGER — the client instantiates its response wrapper
+	// with the ChatResult enum, not a bool, so `true` decodes as nothing. The refusals this
+	// endpoint would otherwise answer are 15 (blocked by the caller's own privacy setting)
+	// and 16 (blocked by the other player's); everything else in the enum belongs to the
+	// thread actions. It is served numerically: this client build carries no by-name enum
+	// formatter.
+	.get(
+		'/thread/checkCanSendDirectMessageWithPrivacySetting',
+		describeRoute({
+			tags: ['Threads'],
+			summary: 'May the caller DM this player?',
+			description: [
+				'Whether the caller may open a direct message with `receivingPlayerId`, as a bare',
+				'ChatResult integer — 0 (Success) means allowed; a real refusal would be 15 (the',
+				'caller’s own privacy setting) or 16 (the other player’s). Always 0 here: this server',
+				'stores no who-can-message-me privacy setting, so there is nothing to refuse on.',
+				'`receivingPlayerId` is accepted and ignored; the answer is the same for every player,',
+				'and the client asks again for the next one.',
+			].join(' '),
+			security: AUTHED,
+			parameters: [
+				{
+					name: 'receivingPlayerId',
+					in: 'query',
+					required: false,
+					description: 'The player the caller wants to message. Accepted and ignored.',
+					schema: { type: 'integer' },
+				},
+			],
+			responses: {
+				200: json(ChatResult, 'Always 0 (Success) — the DM is allowed'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return c.body(null, 401)
+			return c.json(CHAT_SUCCESS)
 		}
 	)
 
