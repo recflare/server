@@ -29,10 +29,10 @@ export const PAGE_SOURCE_PARAM: OpenAPIV3_1.ParameterObject = {
 	required: true,
 	description: [
 		'The page source — `WatchHome`, `PlayHighlight`, `CommunityBoard`, `PlayMenuTabs`,',
-		'`PlayCategories`, `StoreFeatured`, `StoreClothing`, `StoreConsumables`, `bulk` at the',
-		'time of writing. It names a file in `static/` (`<type>.json`) and is matched exactly,',
-		'case included, so the set is whatever is published rather than anything this worker',
-		'enumerates.',
+		'`PlayCategories`, `StoreCategories`, `StoreFeatured`, `StoreClothing`,',
+		'`StoreConsumables`, `bulk` at the time of writing. It names a file in `static/`',
+		'(`<type>.json`) and is matched exactly, case included, so the set is whatever is',
+		'published rather than anything this worker enumerates.',
 	].join(' '),
 	// Deliberately not an `enum`: the accepted values are the published files, and a spec
 	// that froze today's list would be wrong the moment one is added.
@@ -55,7 +55,14 @@ export const ServiceStatus = z.object({
  */
 export const DiscoverySection = z.object({
 	id: z.string().describe('Unique id of this section on this page, e.g. `Rooms_RRO_WatchHome`'),
-	sectionType: z.int().describe('What the section lists (0 rooms, 1 accounts, 4 store items, …)'),
+	sectionType: z
+		.int()
+		.describe(
+			'What the section lists: 0 RoomsSection · 1 AccountsSection · 2 InventionsSection · ' +
+				'3 ClubsSection · 4 StoreItemsSection · 5 EventsSection · 6 RoomBanner · 7 Top5Section · ' +
+				'8 CustomAvatarItemsSection · 9 AdsSection · 10 SkusSection · 11 RoomCategorySection · ' +
+				'12 RoomCategoryListSection · 13 DiscoverySection'
+		),
 	sectionSubType: z.string().describe('The section’s kind, shared across pages, e.g. `Rooms_RRO`'),
 	source: z.string().describe('The feed that fills the section'),
 	sourceMetadata: z
@@ -74,5 +81,21 @@ export const DiscoverySection = z.object({
 		),
 })
 
-/** `GET /sections/pagesource/{type}` — a page's sections, in the order they are drawn. */
+/**
+ * `GET /sections/pagesource/{type}` — a page's sections, in the order they are drawn.
+ *
+ * The DTO accepts anything (its validator is a no-op), but the STORE page builder is much
+ * stricter and drops a section it doesn't like SILENTLY — no error reaches the client, the
+ * carousel simply isn't there. A section it keeps must have:
+ *
+ * - a non-empty `displayMetadata` that parses, and whose gating (platform, junior account,
+ *   account age) says it's supported;
+ * - `sectionType` 4 (StoreItemsSection → the product carousel) or 13 (DiscoverySection).
+ *   Anything else logs "Unhandled SectionType {0}, skipping";
+ * - for 13 only, a `source` of exactly `CuratedList` or `PageSource`, with `sourceMetadata`
+ *   carrying the argument — a curated-list id, or another page source to recurse into.
+ *
+ * So a store section that renders nothing is worth checking against these before assuming
+ * the feed behind it is empty.
+ */
 export const DiscoverySections = DiscoverySection.array()
