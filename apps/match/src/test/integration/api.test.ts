@@ -1077,10 +1077,13 @@ describe('auth-gated endpoints', () => {
 			value: {
 				// A signed JWT, not an opaque id — three base64url segments.
 				photonAuthToken: expect.stringMatching(/^[\w-]+\.[\w-]+\.[\w-]+$/),
-				photonRealtimeAppId: '8f322bdb-2b1f-4c27-a232-01436f43d14e',
-				photonVoiceAppId: '6b4682e1-a1a9-4e04-b44a-6db0049a4df3',
-				photonChatAppId: '55fae86e-0459-4f97-bf6c-39c9341da6ef',
-				// Matches the region every room instance is stamped with.
+				// Empty until the operator names their own Photon apps — this server ships none,
+				// so there is no id to hand out.
+				photonRealtimeAppId: '',
+				photonVoiceAppId: '',
+				photonChatAppId: '',
+				// Matches the region every room instance is stamped with. This one DOES have a
+				// default: an instance stamped with an empty region can't be connected to.
 				photonRegion: 'us',
 				// The room the client is told to join has to be the one matchmaking placed
 				// them in, or they end up alone in a room of their own.
@@ -1104,6 +1107,61 @@ describe('auth-gated endpoints', () => {
 			},
 			error: null,
 		})
+	})
+
+	test('the Photon apps and region come from the operator’s vars', async () => {
+		// Unset, every value is the shipped default — asserted by the test above. Set, the
+		// vars win, and the region has to reach BOTH the connection info and the instance:
+		// the client authenticates against the app named here and connects to the region on
+		// its instance, so a mismatch is a session it can't join.
+		const original = {
+			realtime: env.PHOTON_REALTIME_APP_ID,
+			voice: env.PHOTON_VOICE_APP_ID,
+			chat: env.PHOTON_CHAT_APP_ID,
+			region: env.PHOTON_REGION,
+		}
+		try {
+			env.PHOTON_REALTIME_APP_ID = '11111111-1111-4111-8111-111111111111'
+			env.PHOTON_VOICE_APP_ID = '22222222-2222-4222-8222-222222222222'
+			env.PHOTON_CHAT_APP_ID = '33333333-3333-4333-8333-333333333333'
+			env.PHOTON_REGION = 'eu'
+
+			const matchmaked = (await (
+				await exports.default.fetch(`${ORIGIN}/matchmake/room/2`, {
+					method: 'POST',
+					headers: await bearer('961'),
+				})
+			).json()) as { roomInstance: { photonRegion: string; photonRegionId: string } }
+			expect(matchmaked.roomInstance).toMatchObject({ photonRegion: 'eu', photonRegionId: 'eu' })
+
+			const res = await exports.default.fetch(`${ORIGIN}/player/connection-info`, {
+				headers: await bearer('961'),
+			})
+			expect((await res.json()) as { value: Record<string, unknown> }).toMatchObject({
+				value: {
+					photonRealtimeAppId: '11111111-1111-4111-8111-111111111111',
+					photonVoiceAppId: '22222222-2222-4222-8222-222222222222',
+					photonChatAppId: '33333333-3333-4333-8333-333333333333',
+					photonRegion: 'eu',
+				},
+			})
+
+			// A whitespace-only var is not a value: the app id reads as unset (empty) rather
+			// than as a blank-but-present id, and the region falls back to its default.
+			env.PHOTON_REALTIME_APP_ID = '   '
+			env.PHOTON_REGION = '  '
+			const blank = await exports.default.fetch(`${ORIGIN}/player/connection-info`, {
+				headers: await bearer('961'),
+			})
+			expect((await blank.json()) as { value: Record<string, unknown> }).toMatchObject({
+				value: { photonRealtimeAppId: '', photonRegion: 'us' },
+			})
+		} finally {
+			env.PHOTON_REALTIME_APP_ID = original.realtime
+			env.PHOTON_VOICE_APP_ID = original.voice
+			env.PHOTON_CHAT_APP_ID = original.chat
+			env.PHOTON_REGION = original.region
+		}
 	})
 
 	test('GET /player/connection-info mints a token carrying the caller’s id', async () => {

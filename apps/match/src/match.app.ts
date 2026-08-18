@@ -109,18 +109,50 @@ const NULL_CONNECTION_INFO = {
 } as const
 
 /**
- * The Photon applications the client connects to (`GET /player/connection-info`).
- * Hardcoded temporarily — move them to wrangler vars before they need to differ per
- * environment (they are per-deployment ids, not secrets: the client receives all three
- * in the clear). `photonRegion` matches the value `roomInstanceFromRoom` stamps on every
- * instance, so the two can't disagree ('us' resolves to us-east1 for QoS).
+ * The Photon region every session runs in, when the operator names none. Unlike the app
+ * ids below this has a real default: it is stamped on every room instance, and an instance
+ * carrying an empty region is one the client can't connect to. `us` resolves to us-east1.
  */
-const PHOTON_APPS = {
-	photonRealtimeAppId: '8f322bdb-2b1f-4c27-a232-01436f43d14e',
-	photonVoiceAppId: '6b4682e1-a1a9-4e04-b44a-6db0049a4df3',
-	photonChatAppId: '55fae86e-0459-4f97-bf6c-39c9341da6ef',
-	photonRegion: 'us',
-} as const
+const DEFAULT_PHOTON_REGION = 'us'
+
+/** A var's value, or the fallback when it is unset, empty, or only whitespace. */
+function varOr(value: string | undefined, fallback: string): string {
+	return typeof value === 'string' && value.trim() !== '' ? value.trim() : fallback
+}
+
+/**
+ * The Photon credentials `GET /player/connection-info` hands out, from the operator's vars.
+ *
+ * The app ids default to EMPTY — this repo ships no Photon application of its own, and
+ * baking somebody else's ids in would silently point every player at an app the operator
+ * doesn't control. A deployment that wants working voice and networking sets all three
+ * (`PHOTON_REALTIME_APP_ID`, `PHOTON_VOICE_APP_ID`, `PHOTON_CHAT_APP_ID`); until then the
+ * client is handed empty ids and connects to nothing, which is the honest answer for a
+ * server with no Photon apps configured. They are not secrets — the client receives all
+ * three in the clear — so they are plain vars rather than Secrets Store entries.
+ *
+ * `photonRegion` is the exception, and is ALSO stamped on every room instance
+ * ({@link instancePhotonRegion}): the two must not disagree, since the client connects to
+ * the region on its instance and authenticates against the app named here. One var feeds
+ * both for that reason.
+ */
+function photonApps(env: Env) {
+	return {
+		photonRealtimeAppId: varOr(env.PHOTON_REALTIME_APP_ID, ''),
+		photonVoiceAppId: varOr(env.PHOTON_VOICE_APP_ID, ''),
+		photonChatAppId: varOr(env.PHOTON_CHAT_APP_ID, ''),
+		photonRegion: instancePhotonRegion(env),
+	}
+}
+
+/**
+ * The Photon region every room instance is stamped with. Pinned to one region for the whole
+ * deployment: the QoS list the client probes ranks regions it can't act on here, since an
+ * instance carries whichever region this says. Defaults to {@link DEFAULT_PHOTON_REGION}.
+ */
+function instancePhotonRegion(env: Env): string {
+	return varOr(env.PHOTON_REGION, DEFAULT_PHOTON_REGION)
+}
 
 /**
  * Networking feature flags the client reads off its connection info. Verbatim from
@@ -145,7 +177,7 @@ const PHOTON_EXPERIMENTS = {
  * The regions the client probes for latency (`GET /player/qos`), reporting the results
  * back through `PUT /player/photonregionpings`. Rec Room's own QoS endpoints, served
  * verbatim: recflare doesn't run probe servers, and the client only uses the timings to
- * rank regions — a ranking it can't act on here, since `PHOTON_APPS.photonRegion` pins
+ * rank regions — a ranking it can't act on here, since `instancePhotonRegion` pins
  * every session to one region regardless. `address` is `host:port`, not a URL.
  */
 const QOS_REGIONS = [
@@ -632,6 +664,7 @@ function instanceFieldsFromRoom(room: Room, subRoomId?: number) {
  * same instance share them).
  */
 function roomInstanceFromRoom(
+	env: Env,
 	room: Room,
 	isPrivate: boolean,
 	instanceId: number,
@@ -639,6 +672,8 @@ function roomInstanceFromRoom(
 	subRoomId?: number
 ) {
 	const f = instanceFieldsFromRoom(room, subRoomId)
+	// The same region the connection info names its Photon apps for — see photonApps.
+	const region = instancePhotonRegion(env)
 	return {
 		roomInstanceId: instanceId,
 		roomId: f.roomId,
@@ -649,8 +684,8 @@ function roomInstanceFromRoom(
 		eventId: 0,
 		clubId: 0,
 		roomCode: '',
-		photonRegion: 'us',
-		photonRegionId: 'us',
+		photonRegion: region,
+		photonRegionId: region,
 		photonRoomId,
 		name: f.name,
 		maxCapacity: f.maxCapacity,
@@ -1019,6 +1054,7 @@ async function resolveRoomInstance(
 	}
 	return {
 		instance: roomInstanceFromRoom(
+			c.env,
 			room,
 			isPrivate,
 			instance.roomInstanceId,
@@ -1085,7 +1121,7 @@ async function playerDormInstance(c: Context<App>, accountId: number): Promise<R
 			roomInstanceType: f.roomInstanceType,
 		})
 	}
-	return roomInstanceFromRoom(room, true, instance.roomInstanceId, instance.photonRoomId)
+	return roomInstanceFromRoom(c.env, room, true, instance.roomInstanceId, instance.photonRoomId)
 }
 
 const app = new Hono<App>()
@@ -1782,6 +1818,7 @@ const app = new Hono<App>()
 			// this instance's own id and Photon room, so the owner lands in exactly the
 			// session they picked rather than a new one alongside it.
 			const instance = roomInstanceFromRoom(
+				c.env,
 				room,
 				stored.isPrivate,
 				stored.roomInstanceId,
@@ -2025,6 +2062,7 @@ const app = new Hono<App>()
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
 
+			const apps = photonApps(c.env)
 			const presence = await getPresence<RoomInstance>(c.env.DB, id)
 			// Presence first (it's the instance the player is actually in); the query param
 			// only stands in when there's no live presence to read.
@@ -2045,7 +2083,7 @@ const app = new Hono<App>()
 					platformId: (await getAccount(c.env.DB, id))?.platformId ?? '',
 					platform: presence?.platform ?? 0,
 					deviceClass: presence?.deviceClass ?? 0,
-					audience: PHOTON_APPS.photonRealtimeAppId,
+					audience: apps.photonRealtimeAppId,
 				},
 				await c.env.JWT_SECRET.get()
 			)
@@ -2054,7 +2092,7 @@ const app = new Hono<App>()
 				success: true,
 				value: {
 					photonAuthToken,
-					...PHOTON_APPS,
+					...apps,
 					photonRoomId,
 					// Empty strings rather than null: there's no separate voice server either
 					// way, and the client's decoder is likelier to accept a missing-value string
