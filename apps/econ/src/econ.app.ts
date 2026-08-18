@@ -81,6 +81,7 @@ import {
 	ErrorResponse,
 	form,
 	GameRewardRequest,
+	InfluencerIdsResponse,
 	json,
 	JsonArray,
 	jsonBody,
@@ -88,6 +89,7 @@ import {
 	MakerAiFreeTrialEligibilityResponse,
 	OpaqueJsonBody,
 	OPTIONAL_AUTHED,
+	ReferralProgressResponse,
 	RoomEconConfig,
 	RRPlusSignUpBonus,
 	SaveOutfitRequest,
@@ -1778,10 +1780,50 @@ const app = new Hono<App>({ strict: false })
 		}
 	)
 
-	// The player's item wishlist. [Authorize]; empty without a DB binding.
+	// The caller's item wishlist. [Authorize]; empty — nothing stores wishlists yet.
 	.get(
 		'/api/itemWishlists/v1/wishlist/me',
 		listRoute('The player’s item wishlist', 'Empty for now', true),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+			return c.json([])
+		}
+	)
+
+	// Another player's item wishlist, by account id — what the client reads to show what
+	// somebody else is hoping for (and to mark items in the store as already wished for).
+	// Empty like `/me`: nothing stores wishlists, so there is nothing to show for anyone.
+	//
+	// Registered AFTER `/me` so that path stays its own route rather than being read as an
+	// account id — the pattern here is digits-only, so it could not swallow `me`, but the
+	// order also says which is the special case.
+	.get(
+		'/api/itemWishlists/v1/wishlist/:accountId{[0-9]+}',
+		describeRoute({
+			tags: ['Econ'],
+			summary: 'Another player’s item wishlist',
+			description: [
+				'The wishlist of the account named in the path, as a bare array. Empty for now —',
+				'nothing on this server stores wishlists, so every player’s is empty, and an empty',
+				'list is what the client renders as “nothing wished for” where a 404 would read as a',
+				'failed load.',
+			].join(' '),
+			security: AUTHED,
+			parameters: [
+				{
+					name: 'accountId',
+					in: 'path',
+					required: true,
+					description: 'The account whose wishlist to read',
+					schema: { type: 'string', pattern: '^[0-9]+$' },
+				},
+			],
+			responses: {
+				200: json(JsonArray, 'That player’s wishlist — empty for now'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
 		async (c) => {
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
@@ -3112,6 +3154,126 @@ const app = new Hono<App>({ strict: false })
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
 			return c.json(false)
+		}
+	)
+
+	// The caller's progress through the refer-a-friend rewards: how many of their referrals
+	// have been verified, and which rewards they have taken from that track.
+	//
+	// Nothing here runs a referral programme, so nobody has referred anybody: the count is 0
+	// and the reward list is empty. That is a real answer rather than a stub — it is what a
+	// player who has referred nobody sees — so the client draws an untouched track, which is
+	// exactly the state this server is in.
+	//
+	// The payload is NESTED under `value`, unlike econ's flat balance bodies.
+	.get(
+		'/api/incentivizedreferrals/progress',
+		describeRoute({
+			tags: ['Econ'],
+			summary: 'The caller’s referral-reward progress',
+			description: [
+				'How many of the caller’s referrals have been verified and which referral rewards they',
+				'have claimed, under a `{ success, value }` envelope. Always 0 and empty — no referral',
+				'programme runs here — which the client renders as an untouched reward track.',
+			].join(' '),
+			security: AUTHED,
+			responses: {
+				200: json(ReferralProgressResponse, 'The caller’s progress — always zero'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+			return c.json({
+				success: true,
+				value: { ReferralsVerifiedCount: 0, PlayerReferralRewards: [] },
+			})
+		}
+	)
+
+	// Everyone in the influencer partner program, by account id — the list the client keeps
+	// so it can badge an influencer wherever they turn up, rather than asking per player.
+	//
+	// Empty: no programme runs here, so there is nobody to list. Note this is the LIST
+	// counterpart of the single-account check below, and the two answer very differently —
+	// that one 404s to say "not an influencer", this one is a 200 carrying an empty list,
+	// because "nobody is" is a complete answer to "who is?".
+	//
+	// `take` is accepted and ignored; there is nothing to page through.
+	.get(
+		'/api/influencerpartnerprogram/influencers',
+		describeRoute({
+			tags: ['Econ'],
+			summary: 'Every influencer in the partner program',
+			description: [
+				'The account ids in the influencer partner program, as `{ InfluencerIds }` — an object',
+				'around the list, not a bare array. Always empty here: no programme runs on this',
+				'server. `take` is accepted and ignored, there being nothing to page.',
+			].join(' '),
+			security: AUTHED,
+			parameters: [
+				{
+					name: 'take',
+					in: 'query',
+					required: false,
+					description: 'How many ids to return. Accepted and ignored.',
+					schema: { type: 'integer' },
+				},
+			],
+			responses: {
+				200: json(InfluencerIdsResponse, 'The influencer ids — always empty'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+			return c.json({ InfluencerIds: [] })
+		}
+	)
+
+	// Whether the caller is in the influencer partner program. NOBODY is: this server runs
+	// no such program, and "not an influencer" is a 404 rather than a body saying so — the
+	// reference answers 404 with an EMPTY body typed `application/json`, which is what the
+	// client branches on. A 200 carrying null or `{}` is a different answer to it.
+	//
+	// Deliberately built by hand rather than through `c.notFound()`: the worker's not-found
+	// handler answers its own body, and this has to be empty with that content type.
+	//
+	// `accountId` is accepted and ignored — the reference binds it and never reads it, the
+	// answer being the same for everyone. The token is still validated first, so an
+	// unauthenticated caller gets 401 rather than the 404.
+	.get(
+		'/api/influencerpartnerprogram/influencer',
+		describeRoute({
+			tags: ['Econ'],
+			summary: 'The caller’s influencer partner program status',
+			description: [
+				'Always 404 with an EMPTY body typed `application/json` — this server runs no partner',
+				'program, and 404 is how the reference says “not an influencer”. `accountId` is',
+				'accepted and ignored; the answer is the same for every caller. Auth is checked first,',
+				'so a missing or invalid token is 401, not 404.',
+			].join(' '),
+			security: AUTHED,
+			parameters: [
+				{
+					name: 'accountId',
+					in: 'query',
+					required: false,
+					description: 'The account being asked about. Accepted and ignored.',
+					schema: { type: 'integer' },
+				},
+			],
+			responses: {
+				404: { description: 'Not in the partner program — always. Empty body' },
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+			return c.body('', 404, { 'Content-Type': 'application/json' })
 		}
 	)
 

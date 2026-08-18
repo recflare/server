@@ -216,6 +216,36 @@ export const RRPlusSignUpBonus = z.object({
 })
 
 /**
+ * `GET /api/influencerpartnerprogram/influencers` — the ids of every influencer in the
+ * partner program, which the client uses to badge them wherever they appear. An object
+ * around the list, not a bare array.
+ */
+export const InfluencerIdsResponse = z.object({
+	InfluencerIds: z
+		.array(z.int())
+		.describe('Account ids in the partner program. Empty — no programme runs here'),
+})
+
+/**
+ * `GET /api/incentivizedreferrals/progress` — how far the caller has got with the
+ * refer-a-friend rewards: how many referrals have been verified, and which rewards they
+ * have taken from that track.
+ *
+ * A `{ success, value }` envelope with the payload nested — not the flat bodies the balance
+ * routes answer with. Nothing here runs a referral programme, so the count is 0 and the
+ * reward list is empty: a player who has referred nobody, which is everybody.
+ */
+export const ReferralProgressResponse = z.object({
+	success: z.boolean(),
+	value: z.object({
+		ReferralsVerifiedCount: z.int().describe('Referrals that have been verified. Always 0'),
+		PlayerReferralRewards: z
+			.array(z.unknown())
+			.describe('Rewards claimed off the referral track. Always empty'),
+	}),
+})
+
+/**
  * `GET /api/makerai/checkfreetrialeligibility` — a BARE JSON boolean (`false`), not an
  * envelope and not a `{ value }` wrapper. The whole body is the answer.
  */

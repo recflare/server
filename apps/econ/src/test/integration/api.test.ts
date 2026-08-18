@@ -479,6 +479,23 @@ describe('econ endpoints', () => {
 		expect(await res.json()).toEqual([])
 	})
 
+	test('GET /api/itemWishlists/v1/wishlist/:accountId 401s without a token, returns []', async () => {
+		const anon = await exports.default.fetch(`${ORIGIN}/api/itemWishlists/v1/wishlist/207`)
+		expect(anon.status).toBe(401)
+
+		const res = await exports.default.fetch(`${ORIGIN}/api/itemWishlists/v1/wishlist/207`, {
+			headers: await bearer(),
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
+
+		// `me` is still its own route, not read as an account id.
+		const mine = await exports.default.fetch(`${ORIGIN}/api/itemWishlists/v1/wishlist/me`, {
+			headers: await bearer(),
+		})
+		expect(mine.status).toBe(200)
+	})
+
 	test('GET /api/avatar/v3/saved 401s without a token, returns [] with one', async () => {
 		const anon = await exports.default.fetch(`${ORIGIN}/api/avatar/v3/saved`)
 		expect(anon.status).toBe(401)
@@ -2407,6 +2424,61 @@ describe('econ endpoints', () => {
 
 	// Fixed values, and no auth: the client reads this while assembling the RR+ page, so a
 	// 401 would only be a way for that load to stall.
+	test('GET /api/incentivizedreferrals/progress reports an untouched referral track', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/incentivizedreferrals/progress`, {
+			headers: await bearer('207'),
+		})
+		expect(res.status).toBe(200)
+		// The payload is nested under `value`, unlike econ's flat balance bodies.
+		expect(await res.json()).toEqual({
+			success: true,
+			value: { ReferralsVerifiedCount: 0, PlayerReferralRewards: [] },
+		})
+	})
+
+	test('GET /api/incentivizedreferrals/progress 401s without a bearer token', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/incentivizedreferrals/progress`)
+		expect(res.status).toBe(401)
+		expect(await res.text()).toBe('')
+	})
+
+	test('GET /api/influencerpartnerprogram/influencers lists nobody', async () => {
+		const res = await exports.default.fetch(
+			`${ORIGIN}/api/influencerpartnerprogram/influencers?take=1000`,
+			{ headers: await bearer('207') }
+		)
+		expect(res.status).toBe(200)
+		// An object around the list, not a bare array. Note this is a 200 while its
+		// single-account sibling below answers 404 — "nobody is" is a complete answer to
+		// "who is?", where "are you?" is answered by the 404 itself.
+		expect(await res.json()).toEqual({ InfluencerIds: [] })
+	})
+
+	test('GET /api/influencerpartnerprogram/influencers 401s without a bearer token', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/influencerpartnerprogram/influencers`)
+		expect(res.status).toBe(401)
+	})
+
+	test('GET /api/influencerpartnerprogram/influencer 404s with an empty JSON body', async () => {
+		const res = await exports.default.fetch(
+			`${ORIGIN}/api/influencerpartnerprogram/influencer?accountId=206`,
+			{ headers: await bearer('206') }
+		)
+		// 404 IS the answer — "not an influencer" — and the body is empty, not `{}` or null,
+		// with the content type the reference sends.
+		expect(res.status).toBe(404)
+		expect(res.headers.get('content-type')).toContain('application/json')
+		expect(await res.text()).toBe('')
+	})
+
+	test('GET /api/influencerpartnerprogram/influencer 401s without a bearer token', async () => {
+		// Auth is checked before the 404, so an unauthenticated caller is told that, not that
+		// they aren't an influencer.
+		const res = await exports.default.fetch(`${ORIGIN}/api/influencerpartnerprogram/influencer`)
+		expect(res.status).toBe(401)
+		expect(await res.text()).toBe('')
+	})
+
 	test('GET /api/makerai/checkfreetrialeligibility answers a bare false', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/api/makerai/checkfreetrialeligibility`, {
 			headers: await bearer('206'),
@@ -2517,7 +2589,11 @@ describe('econ endpoints', () => {
 			'GET /api/consumables/v2/getUnlocked',
 			'GET /api/equipment/v2/getUnlocked',
 			'GET /api/gamerewards/v1/pending',
+			'GET /api/incentivizedreferrals/progress',
+			'GET /api/influencerpartnerprogram/influencer',
+			'GET /api/influencerpartnerprogram/influencers',
 			'GET /api/itemWishlists/v1/wishlist/me',
+			'GET /api/itemWishlists/v1/wishlist/{accountId}',
 			'GET /api/makerai/checkfreetrialeligibility',
 			'GET /api/objectives/v1/cleargroup',
 			'GET /api/objectives/v1/myprogress',
