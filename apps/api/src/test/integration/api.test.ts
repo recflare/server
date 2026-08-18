@@ -2139,6 +2139,68 @@ describe('images', () => {
 		expect(await cheerCount()).toBe(0)
 	})
 
+	test('GET|PUT /api/players/v1/playerPhotoTaggingSetting round-trips the preference', async () => {
+		const path = `${ORIGIN}/api/players/v1/playerPhotoTaggingSetting`
+		const read = async (sub: string) => exports.default.fetch(path, { headers: await bearer(sub) })
+		const write = async (sub: string, body: unknown) =>
+			exports.default.fetch(path, {
+				method: 'PUT',
+				headers: { ...(await bearer(sub)), 'Content-Type': 'application/json' },
+				body: JSON.stringify(body),
+			})
+
+		// Both are auth-gated.
+		expect((await exports.default.fetch(path)).status).toBe(401)
+		expect((await exports.default.fetch(path, { method: 'PUT' })).status).toBe(401)
+
+		// A player who has never set one reads 0 — a bare integer, not an envelope.
+		const initial = await read('710')
+		expect(initial.status).toBe(200)
+		expect(await initial.text()).toBe('0')
+
+		// The PUT answers the stored value, and the GET agrees afterwards.
+		expect(await (await write('710', { Setting: 2 })).text()).toBe('2')
+		expect(await (await read('710')).text()).toBe('2')
+
+		// It's stored under `playerPhotoTaggingSetting` in the player's settings bag...
+		const stored = await env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(
+			'player:710',
+			'json'
+		)
+		expect(stored?.playerPhotoTaggingSetting).toBe('2')
+
+		// ...and the write MERGES: the player's other settings survive it.
+		await env.RECFLARE_PLAYER_SETTINGS.put(
+			'player:711',
+			JSON.stringify({ 'Recroom.OOBE': '77', playerPhotoTaggingSetting: '1' })
+		)
+		expect(await (await read('711')).text()).toBe('1')
+		await write('711', { Setting: 0 })
+		expect(
+			await env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>('player:711', 'json')
+		).toEqual({ 'Recroom.OOBE': '77', playerPhotoTaggingSetting: '0' })
+
+		// The setting is per-player.
+		expect(await (await read('710')).text()).toBe('2')
+
+		// A body with no readable Setting leaves the stored value alone rather than writing 0
+		// — and answers what the player still has.
+		expect(await (await write('710', { Nothing: true })).text()).toBe('2')
+		expect(await (await read('710')).text()).toBe('2')
+
+		// A form body and the lowercase spelling both parse, as does a numeric string.
+		const form = await exports.default.fetch(path, {
+			method: 'PUT',
+			headers: {
+				...(await bearer('710')),
+				'Content-Type': 'application/x-www-form-urlencoded',
+			},
+			body: new URLSearchParams({ setting: '3' }).toString(),
+		})
+		expect(await form.text()).toBe('3')
+		expect(await (await read('710')).text()).toBe('3')
+	})
+
 	test('GET /api/images/v5/cheered/bulk reports per-id cheer state for the caller (auth-gated)', async () => {
 		const img = await createImage(env.DB, { imageName: 'bulkcheer.jpg', playerId: 701 })
 		const other = 999999
@@ -3988,6 +4050,7 @@ describe('openapi', () => {
 			'GET /api/playerevents/v1/tagfilters',
 			'GET /api/playerevents/v1/{eventId}',
 			'GET /api/playerevents/v1/{eventId}/responses',
+			'GET /api/players/v1/playerPhotoTaggingSetting',
 			'GET /api/players/v1/progression/{id}',
 			'GET /api/players/v2/progression/bulk',
 			'GET /api/quickPlay/v1/getandclear',
@@ -4057,6 +4120,7 @@ describe('openapi', () => {
 			'POST /api/sanitize/v1/isPure',
 			'POST /api/v1/progression/bulk',
 			'POST /statsigUserProperties',
+			'PUT /api/players/v1/playerPhotoTaggingSetting',
 			'PUT /outfits/me',
 		])
 

@@ -32,6 +32,8 @@ import {
 	JsonArray,
 	jsonBody,
 	pageParams,
+	PhotoTaggingSettingRequest,
+	PhotoTaggingSettingResponse,
 	SavedImageDto,
 	SlideshowResponse,
 	stringQuery,
@@ -41,6 +43,7 @@ import {
 	UploadImageResponse,
 } from '../openapi'
 
+import type { Context } from 'hono'
 import type { App } from '../context'
 
 /** Bucket folder each SavedImageType is stored under; unknown types fall back to `none`. */
@@ -51,6 +54,83 @@ const typeFolder: Record<number, string> = {
 	[SavedImageType.RoomThumbnail]: 'room',
 	[SavedImageType.ProfileThumbnail]: 'profile',
 	[SavedImageType.InventionThumbnail]: 'invention',
+}
+
+/**
+ * The player-settings key the photo-tagging preference is stored under, in the same
+ * per-player bag the `playersettings` worker owns (`player:<id>` → `{ key: value }`). It
+ * gets its own endpoints rather than being written through `/playersettings` because the
+ * client asks for it by name, but there is no separate store behind it — which is why the
+ * write below merges.
+ *
+ * Unlike the loose matching `match` does for `avoidJuniors`, the spelling is exact: nothing
+ * but these two routes reads or writes this key, so there is no client spelling to guess.
+ */
+const PHOTO_TAGGING_KEY = 'playerPhotoTaggingSetting'
+
+/**
+ * The preference a player has before they have ever set one. The value is an opaque enum
+ * ordinal to this server (see `PhotoTaggingSettingRequest`), and 0 is what an unset .NET
+ * enum reads as — the reference's own default.
+ */
+const PHOTO_TAGGING_DEFAULT = 0
+
+/** The player's settings map, or null when they have none / KV is unreachable. */
+async function getPlayerSettings(
+	env: App['Bindings'],
+	accountId: number
+): Promise<Record<string, string> | null> {
+	return env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(
+		`player:${accountId}`,
+		'json'
+	).catch(() => null)
+}
+
+/** The caller's stored photo-tagging preference, or the default when they have none. */
+async function readPhotoTaggingSetting(env: App['Bindings'], accountId: number): Promise<number> {
+	const stored = await getPlayerSettings(env, accountId)
+	const raw = stored?.[PHOTO_TAGGING_KEY]
+	const parsed = Number.parseInt(String(raw ?? ''), 10)
+	return Number.isNaN(parsed) ? PHOTO_TAGGING_DEFAULT : parsed
+}
+
+/**
+ * Write the preference back into the player's settings map.
+ *
+ * The write MERGES, as the `playersettings` worker's own PUT does: the map holds every
+ * setting the player has (OOBE state, tutorial mask, …), so storing this one on its own
+ * would wipe the rest. Read-modify-write on KV isn't atomic, but the same is true there,
+ * and racing writers here means one player toggling two of their own options at once.
+ */
+async function writePhotoTaggingSetting(
+	env: App['Bindings'],
+	accountId: number,
+	setting: number
+): Promise<void> {
+	const stored = (await getPlayerSettings(env, accountId)) ?? {}
+	await env.RECFLARE_PLAYER_SETTINGS.put(
+		`player:${accountId}`,
+		JSON.stringify({ ...stored, [PHOTO_TAGGING_KEY]: String(setting) })
+	)
+}
+
+/**
+ * The posted `Setting`, out of a JSON body (`{ "Setting": 1 }`, what the client sends) or a
+ * form one. Both casings are accepted, and a numeric string parses — the value is an
+ * integer either way. `undefined` when the body carries nothing readable, which the caller
+ * treats as "leave it alone" rather than as a write of 0.
+ */
+async function readPostedSetting(c: Context<App>): Promise<number | undefined> {
+	const body = (c.req.header('content-type') ?? '').includes('application/json')
+		? ((await c.req.json().catch(() => null)) as Record<string, unknown> | null)
+		: await c.req.parseBody().catch(() => null)
+	if (body === null || typeof body !== 'object' || Array.isArray(body)) return undefined
+
+	const raw = (body as Record<string, unknown>).Setting ?? (body as Record<string, unknown>).setting
+	if (typeof raw === 'number') return Number.isFinite(raw) ? Math.trunc(raw) : undefined
+	if (typeof raw !== 'string') return undefined
+	const parsed = Number.parseInt(raw.trim(), 10)
+	return Number.isNaN(parsed) ? undefined : parsed
 }
 
 // ---- Images ----------------------------------------------------------------
@@ -439,5 +519,71 @@ export const imageRoutes = new Hono<App>({ strict: false })
 			return c.json(
 				ids.map((imageId) => ({ SavedImageId: imageId, IsCheered: cheered.has(imageId) }))
 			)
+		}
+	)
+
+	// Who may tag the caller in photos. The preference lives in the player-settings bag
+	// (`playerPhotoTaggingSetting`), not in a store of its own — these two routes exist
+	// because the client asks for it by name rather than through `/playersettings`.
+	//
+	// A bare JSON integer, not an envelope, and an opaque one: the value is an enum ordinal
+	// the client defines, stored and served back untouched, so it round-trips whatever the
+	// client means by it. A player who has never set one reads 0.
+	.get(
+		'/api/players/v1/playerPhotoTaggingSetting',
+		describeRoute({
+			tags: ['Images'],
+			summary: 'The caller’s photo-tagging preference',
+			description:
+				'Who may tag the caller in photos, as a bare JSON integer (the enum ordinal the ' +
+				'client defines — stored and served back untouched). `0` until the player sets one. ' +
+				'Stored as one key in the player-settings bag the `playersettings` worker owns.',
+			security: AUTHED,
+			responses: {
+				200: json(PhotoTaggingSettingResponse, 'The caller’s setting; 0 if never set'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+			return c.json(await readPhotoTaggingSetting(c.env, id))
+		}
+	)
+
+	// Set the caller's photo-tagging preference. Answers the stored value, as the reference
+	// does — the client re-renders the toggle from the response rather than from what it
+	// sent.
+	//
+	// A body with no readable `Setting` leaves the stored preference ALONE and answers it,
+	// rather than writing the 0 an unbound .NET model would have carried: the value is
+	// opaque here, so a guess is indistinguishable from a real choice once it's stored.
+	.put(
+		'/api/players/v1/playerPhotoTaggingSetting',
+		describeRoute({
+			tags: ['Images'],
+			summary: 'Set the caller’s photo-tagging preference',
+			description:
+				'Stores `Setting` as the caller’s photo-tagging preference and answers the stored ' +
+				'value (a bare integer), which is what the client re-renders the toggle from. The ' +
+				'write merges into the player-settings bag, so the player’s other settings are left ' +
+				'alone. `Setting` is also read from a form body, and from a `setting` spelling; a ' +
+				'body carrying no readable value is a no-op that answers the current setting.',
+			security: AUTHED,
+			requestBody: jsonBody(PhotoTaggingSettingRequest, 'The preference to store'),
+			responses: {
+				200: json(PhotoTaggingSettingResponse, 'The setting the caller now has'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const setting = await readPostedSetting(c)
+			if (setting === undefined) return c.json(await readPhotoTaggingSetting(c.env, id))
+
+			await writePhotoTaggingSetting(c.env, id, setting)
+			return c.json(setting)
 		}
 	)

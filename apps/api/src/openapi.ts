@@ -881,6 +881,25 @@ export const CheerImageRequest = z.object({
 	Cheer: z.boolean().describe('True to cheer, false to un-cheer'),
 })
 
+/**
+ * `PUT /api/players/v1/playerPhotoTaggingSetting` JSON body — who may tag the caller in
+ * photos. The value is an opaque enum ordinal: it is stored and served back untouched, so
+ * whatever the client means by a given number survives a round trip without this server
+ * needing to know the enum.
+ */
+export const PhotoTaggingSettingRequest = z.object({
+	Setting: z.int().describe('The preference’s enum ordinal, stored verbatim'),
+})
+
+/**
+ * `GET|PUT /api/players/v1/playerPhotoTaggingSetting` — a BARE JSON integer, not an
+ * envelope and not a `{ value }` wrapper. Both routes answer the setting the player now
+ * has: the reference's GET and its PUT both `Ok(...)` the stored value.
+ */
+export const PhotoTaggingSettingResponse = z
+	.int()
+	.describe('The caller’s photo-tagging preference; 0 until they set one')
+
 /** The bare `{ success: true }` ack the image writes answer with. */
 export const SuccessResponse = z.object({ success: z.boolean() })
 
