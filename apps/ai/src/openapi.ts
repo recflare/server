@@ -33,6 +33,14 @@ export function intQuery(name: string, description: string): OpenAPIV3_1.Paramet
 	return { name, in: 'query', required: false, description, schema: { type: 'integer' } }
 }
 
+/**
+ * An optional boolean query parameter. The client spells these .NET-style (`False`, not
+ * `false`), which is worth recording even where the value is ignored.
+ */
+export function boolQuery(name: string, description: string): OpenAPIV3_1.ParameterObject {
+	return { name, in: 'query', required: false, description, schema: { type: 'boolean' } }
+}
+
 /** An integer path parameter (ids are constrained to `[0-9]+` by the route pattern). */
 export function idParam(name: string, description: string): OpenAPIV3_1.ParameterObject {
 	return { name, in: 'path', required: true, description, schema: { type: 'integer' } }
@@ -103,6 +111,14 @@ export const GameAiAccessDenied = z.object({
 export const GameAiSpendSummaryDenied = GameAiAccessDenied.extend({
 	value: z.null().describe('The spend summary. Null — there is no Game AI spend to report'),
 })
+
+/**
+ * `GET /makerai/user/access` — a BARE JSON boolean, not an envelope and not a `{ value }`
+ * wrapper. The whole body is the answer.
+ */
+export const MakerAiAccessResponse = z
+	.boolean()
+	.describe('Whether the caller may use Maker AI; always false — no model runs here')
 
 /**
  * Maker AI's dollar balances. A FLAT body — no `{ success, error, value }` envelope — and

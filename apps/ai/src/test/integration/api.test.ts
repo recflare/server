@@ -174,6 +174,39 @@ describe('GET /roomieai/user/facts', () => {
 	})
 })
 
+describe('GET /makerai/user/access', () => {
+	// Always false — nothing here runs a model. The body is the boolean itself, not an
+	// envelope, matching econ's `/api/makerai/checkfreetrialeligibility`.
+	it('refuses access with a bare false', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/makerai/user/access?roomInstanceSpecificCheck=False`, {
+			headers: await bearer(),
+		})
+		expect(res.status).toBe(200)
+		expect(res.headers.get('content-type')).toContain('application/json')
+		expect(await res.text()).toBe('false')
+	})
+
+	it('answers the same without the query param', async () => {
+		// `roomInstanceSpecificCheck` is ignored, so its presence, absence and value change
+		// nothing.
+		const res = await SELF.fetch(`${ORIGIN}/makerai/user/access`, { headers: await bearer() })
+		expect(await res.text()).toBe('false')
+		const trueCheck = await SELF.fetch(
+			`${ORIGIN}/makerai/user/access?roomInstanceSpecificCheck=True`,
+			{
+				headers: await bearer(),
+			}
+		)
+		expect(await trueCheck.text()).toBe('false')
+	})
+
+	it('401s without a bearer token', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/makerai/user/access`)
+		expect(res.status).toBe(401)
+		expect(await res.text()).toBe('')
+	})
+})
+
 describe('GET /makerai/user/balances', () => {
 	// Zeroed rather than refused: the client renders a usage meter from these, and a server
 	// that bills nothing has spent nothing. A flat body — no envelope.
@@ -269,6 +302,7 @@ describe('GET /openapi.json', () => {
 			'GET /',
 			'GET /gameai/room/{roomId}/spendsummary',
 			'GET /gameai/user/access',
+			'GET /makerai/user/access',
 			'GET /makerai/user/balances',
 			'GET /roomieai/user/access',
 			'GET /roomieai/user/facts',

@@ -7,6 +7,7 @@ import { validateAndGetAccountId } from '@repo/jwt'
 
 import {
 	AUTHED,
+	boolQuery,
 	GameAiAccessDenied,
 	GameAiSpendSummaryDenied,
 	HealthResponse,
@@ -14,6 +15,7 @@ import {
 	intQuery,
 	json,
 	jsonBody,
+	MakerAiAccessResponse,
 	MakerAiBalances,
 	RealtimeSessionCreateBody,
 	RealtimeSessionDenied,
@@ -230,6 +232,49 @@ const app = new Hono<App>()
 			if (id === null) return unauthorized(c)
 
 			return c.json({ UserContext: '', UserFacts: [] })
+		}
+	)
+
+	// Whether the caller may use Maker AI at all. Always false: no model runs behind this
+	// worker, so the honest answer is that the feature isn't available — and false is what
+	// leaves the creation UI in its normal state rather than offering a tool that can't
+	// work. (The balances below are still served: the client reads its usage meter
+	// separately, and a server that bills nothing has spent nothing.)
+	//
+	// The body is a BARE JSON `false` — not an envelope, unlike the Game AI refusal and the
+	// Roomie access check on either side of it. `econ`'s
+	// `/api/makerai/checkfreetrialeligibility` answers the same bare shape.
+	.get(
+		'/makerai/user/access',
+		describeRoute({
+			tags: ['Maker AI'],
+			summary: 'May the caller use Maker AI?',
+			description: [
+				'Asked before the client offers Maker AI. Always `false` — no model runs behind this',
+				'worker. The body is a bare JSON boolean, not the `{ success, error, value }` envelope',
+				'the neighbouring checks answer with.',
+				'',
+				'`roomInstanceSpecificCheck` (the client sends .NET’s `False`) is accepted and ignored:',
+				'it asks whether the check is about the instance the player is standing in rather than',
+				'the account, and the answer is the same either way. The token is still validated first.',
+			].join(' '),
+			security: AUTHED,
+			parameters: [
+				boolQuery(
+					'roomInstanceSpecificCheck',
+					'Whether to check the current room instance rather than the account. Ignored.'
+				),
+			],
+			responses: {
+				200: json(MakerAiAccessResponse, 'Always `false`'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			return c.json(false)
 		}
 	)
 
