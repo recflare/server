@@ -6,6 +6,7 @@ import {
 	deleteImage,
 	getCheeredImageIds,
 	getImageByName,
+	getImagesByIds,
 	getImagesByPlayer,
 	getImagesByRoom,
 	getPlayerFeed,
@@ -468,6 +469,44 @@ export const imageRoutes = new Hono<App>({ strict: false })
 			const Images = await getSlideshowImages(c.env.DB, take)
 			const ValidTill = new Date(Date.now() + 2 * 60 * 1000).toISOString()
 			return c.json({ Images, ValidTill })
+		}
+	)
+
+	// Bulk image metadata by id (`?ids=207&ids=106`) — the client resolving a set of photo
+	// ids it already holds. A bare array in REQUEST order, so it can line the records up
+	// with what it asked for; an id with no record (or one that isn't public) is simply
+	// absent, which is why this answers 200 with a short list rather than 404ing the lot.
+	//
+	// Serves the RAW `SavedImage`, like `v6` (metadata by filename) and the room feed — NOT
+	// the `ImagesPlayer` projection the player photo LISTS use. Those are a rendered grid,
+	// where the raw record comes up blank; this is a metadata lookup.
+	//
+	// Public-only, as every image read here is: ids are sequential, so honouring whatever
+	// id is named would hand out private photos to anyone who counts.
+	.get(
+		'/api/images/v5/bulk',
+		describeRoute({
+			tags: ['Images'],
+			summary: 'Image metadata by id, in bulk',
+			description:
+				'The stored `SavedImage` records for the given ids (`?ids=207&ids=106`), as a bare ' +
+				'array in request order. An id with no record, or one that is not public, is absent ' +
+				'from the answer rather than an error — the list can be shorter than the request. ' +
+				'Serves the raw `SavedImage` (as `v6` does), not the `ImagesPlayer` projection the ' +
+				'player photo lists use.',
+			parameters: [
+				intQuery('ids', 'Repeatable; each value may also be a comma-separated list of image ids'),
+			],
+			responses: { 200: json(SavedImageDto.array(), 'The matching records, in request order') },
+		}),
+		async (c) => {
+			const ids =
+				c.req
+					.queries('ids')
+					?.flatMap((raw) => raw.split(','))
+					.map((raw) => Number.parseInt(raw.trim(), 10))
+					.filter((imageId) => !Number.isNaN(imageId)) ?? []
+			return c.json(await getImagesByIds(c.env.DB, ids))
 		}
 	)
 

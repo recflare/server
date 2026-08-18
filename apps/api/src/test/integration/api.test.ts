@@ -2093,6 +2093,52 @@ describe('images', () => {
 		expect(await feed('?take=lots')).toBe(10)
 	})
 
+	test('GET /api/images/v5/bulk resolves image records by id, in request order', async () => {
+		const one = await createImage(env.DB, { imageName: 'bulkone.jpg', playerId: 7101 })
+		const two = await createImage(env.DB, { imageName: 'bulktwo.jpg', playerId: 7102 })
+		// Not public: a bulk lookup must not hand this back, or sequential ids would make
+		// every private photo readable by anyone who counts.
+		const hidden = await createImage(env.DB, {
+			imageName: 'bulkhidden.jpg',
+			playerId: 7103,
+			accessibility: 0,
+		})
+
+		const bulk = async (query: string) =>
+			(await (await exports.default.fetch(`${ORIGIN}/api/images/v5/bulk${query}`)).json()) as Array<
+				Record<string, unknown>
+			>
+
+		// Request order, not id order — the client lines the answers up with what it asked for.
+		const both = await bulk(`?ids=${two.Id}&ids=${one.Id}`)
+		expect(both.map((i) => i.Id)).toEqual([two.Id, one.Id])
+		// The RAW SavedImage: `Id`/`Type`, and TaggedPlayerIds present — not the
+		// SavedImageId/SavedImageType projection the player photo lists serve.
+		expect(both[0]).toMatchObject({
+			Id: two.Id,
+			Type: two.Type,
+			ImageName: 'bulktwo.jpg',
+			PlayerId: 7102,
+			TaggedPlayerIds: [],
+		})
+
+		// An unknown id and a non-public one are absent rather than errors or holes, so the
+		// answer can be shorter than the request.
+		expect((await bulk(`?ids=${one.Id}&ids=999999&ids=${hidden.Id}`)).map((i) => i.Id)).toEqual([
+			one.Id,
+		])
+
+		// No ids at all is an empty array.
+		expect(await bulk('')).toEqual([])
+
+		// More ids than D1 will bind in one query (100) — the lookup has to split.
+		const many = [...Array.from({ length: 130 }, (_, i) => 800000 + i), one.Id, two.Id]
+		expect((await bulk(`?${many.map((id) => `ids=${id}`).join('&')}`)).map((i) => i.Id)).toEqual([
+			one.Id,
+			two.Id,
+		])
+	})
+
 	test('POST /api/images/v1/cheer persists, syncs CheerCount, and the bulk lookup reflects it', async () => {
 		// Seed an image to cheer.
 		// Its own player id: 700's photos are asserted on exactly in the player-list test.
@@ -4058,6 +4104,7 @@ describe('openapi', () => {
 			'GET /api/images/v3/feed/player/{playerId}',
 			'GET /api/images/v4/player/{playerId}',
 			'GET /api/images/v4/room/{roomId}',
+			'GET /api/images/v5/bulk',
 			'GET /api/images/v5/cheered/bulk',
 			'GET /api/images/v5/player/{playerId}',
 			'GET /api/images/v6',

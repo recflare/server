@@ -224,6 +224,40 @@ export async function getSavedImagesByNames(
 	)
 }
 
+/** How many image ids one bulk lookup may bind: D1 caps a query at 100 parameters. */
+const IMAGE_ID_LIMIT = 100
+
+/**
+ * Look up image records by id — the bulk lookup behind `GET /api/images/v5/bulk`.
+ * Returned in REQUEST order, so the caller can line the answers up with what it asked
+ * for; an id with no record, or one that isn't public, is simply absent rather than a
+ * hole in the list.
+ *
+ * Public-only, like every other image read here ({@link getImagesByPlayer},
+ * {@link getImagesByRoom}). Image ids are sequential, so serving whatever an id names
+ * would make a private photo readable by anyone who counts.
+ */
+export async function getImagesByIds(db: D1Database, ids: number[]): Promise<SavedImage[]> {
+	if (ids.length === 0) return []
+
+	const found = new Map<number, SavedImage>()
+	// D1 caps a query at 100 bound parameters, and the client asks about a whole photo
+	// grid at once, so a large request is split rather than failing outright.
+	for (let i = 0; i < ids.length; i += IMAGE_ID_LIMIT) {
+		const page = ids.slice(i, i + IMAGE_ID_LIMIT)
+		const { results } = await db
+			.prepare(`SELECT data FROM image WHERE id IN (${placeholders(page.length)})`)
+			.bind(...page)
+			.all<ImageRow>()
+		for (const row of results) {
+			const image = JSON.parse(row.data) as SavedImage
+			if (image.Accessibility === 1) found.set(image.Id, image)
+		}
+	}
+
+	return ids.map((id) => found.get(id)).filter((image): image is SavedImage => image !== undefined)
+}
+
 /**
  * A minimal SavedImage for an image name with no metadata row — enough for the client
  * to render the picture. Uploads normally write a row first, so this only covers a
