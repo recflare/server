@@ -465,6 +465,46 @@ describe('rooms endpoints', () => {
 		expect(body.Results.some((r) => r.Name === 'RecCenter')).toBe(true)
 	})
 
+	it('GET /rooms/autocomplete_search suggests names and tags as plain strings', async () => {
+		const suggest = async (query: string, extra = '') =>
+			(await (
+				await SELF.fetch(
+					`${ORIGIN}/rooms/autocomplete_search?query=${encodeURIComponent(query)}${extra}`
+				)
+			).json()) as string[]
+
+		// A bare array of STRINGS — not rooms, not an envelope.
+		const rec = await suggest('rec', '&take=4&searchSessionId=abc-123')
+		expect(Array.isArray(rec)).toBe(true)
+		for (const s of rec) expect(typeof s).toBe('string')
+		expect(rec).toContain('RecCenter')
+		expect(rec.length).toBeLessThanOrEqual(4)
+
+		// Every suggestion finds something when submitted — the point of the endpoint.
+		for (const term of rec) {
+			const found = (await (
+				await SELF.fetch(`${ORIGIN}/rooms/search?query=${encodeURIComponent(term)}`)
+			).json()) as { TotalResults: number }
+			expect(found.TotalResults, `"${term}" must find rooms`).toBeGreaterThan(0)
+		}
+
+		// Tags are suggested with their `#`, and a `#` query suggests tags only.
+		const tags = await suggest('#rro')
+		expect(tags).toEqual(['#rro'])
+		expect(tags.every((t) => t.startsWith('#'))).toBe(true)
+
+		// `take` caps the list; an empty query suggests nothing rather than everything.
+		expect((await suggest('e', '&take=2')).length).toBeLessThanOrEqual(2)
+		expect(await suggest('')).toEqual([])
+		expect(await suggest('zzzznothingmatchesthis')).toEqual([])
+
+		// Deterministic: the same query suggests the same things in the same order.
+		expect(await suggest('rec')).toEqual(rec)
+
+		// Dorms are excluded, exactly as they are from search.
+		expect(await suggest('dormroom')).toEqual([])
+	})
+
 	it('GET /rooms/search excludes dorms and respects pagination shape', async () => {
 		const res = await SELF.fetch(`${ORIGIN}/rooms/search?query=dormroom`)
 		expect(res.status).toBe(200)
@@ -3176,6 +3216,7 @@ describe('rooms endpoints', () => {
 			'GET /photon_access_token',
 			'GET /publishState/configs',
 			'GET /rooms',
+			'GET /rooms/autocomplete_search',
 			'GET /rooms/base',
 			'GET /rooms/bulk',
 			'GET /rooms/contributedby/me',

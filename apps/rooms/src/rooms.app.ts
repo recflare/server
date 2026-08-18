@@ -5,6 +5,7 @@ import { useWorkersLogger } from 'workers-tagged-logger'
 import {
 	Accessibility,
 	areFriends,
+	autocompleteRoomSearch,
 	banPlayerFromRoom,
 	canManageRoom,
 	cloneRoom,
@@ -80,6 +81,7 @@ import {
 	form,
 	ImageRequest,
 	InteractionDto,
+	intQuery,
 	json,
 	jsonBody,
 	LoadScreenRequest,
@@ -108,6 +110,7 @@ import {
 	RoomSaveEnvelope,
 	saveIdParam,
 	SaveSubRoomDataRequest,
+	SearchSuggestions,
 	ServiceStatus,
 	stringQuery,
 	SubRoomAccessibilityRequest,
@@ -586,6 +589,9 @@ async function ownedRoomsExcludingDorm(c: Context<App>) {
 	return c.json(rooms.filter((r) => r.IsDorm !== true))
 }
 
+/** Suggestions `/rooms/autocomplete_search` returns when the client names no `take`. */
+const DEFAULT_SUGGESTION_COUNT = 10
+
 /**
  * The XP settings every room reports (`GET /rooms/{roomId}/experience`). Constants because
  * nothing stores them per room and nothing enforces them: the `api` worker's progression
@@ -693,6 +699,51 @@ const app = new Hono<App>()
 			const skip = Number.parseInt(c.req.query('skip') ?? '0', 10) || 0
 			const take = Number.parseInt(c.req.query('take') ?? '30', 10) || 30
 			return c.json(await searchRooms(c.env.DB, query, skip, take))
+		}
+	)
+
+	// Type-ahead for the search box (`?query=r&take=4&searchSessionId=…`). A bare array of
+	// plain STRINGS — suggestions, not rooms and not an envelope.
+	//
+	// Every suggestion is something `/rooms/search` will actually find, so submitting one
+	// can't come back empty: they're drawn from room names (what a plain search term
+	// matches) and room tags (what a `#tag` term matches), over the same public, non-dorm
+	// rooms search considers. Tags come back with their `#` for that reason.
+	//
+	// `searchSessionId` is the client's own correlation id for a typing session — it ties
+	// the keystrokes and the eventual search together in the reference's analytics. Nothing
+	// here records searches, so it is accepted and ignored.
+	.get(
+		'/rooms/autocomplete_search',
+		describeRoute({
+			tags: ['Discovery'],
+			summary: 'Search suggestions for the search box',
+			description: [
+				'Type-ahead suggestions as a bare array of strings — not rooms, not an envelope.',
+				'Drawn from room names and room tags over the public, non-dorm rooms `/rooms/search`',
+				'searches, so every suggestion is one that finds something when submitted; a tag',
+				'suggestion carries its `#` so it searches by tag. A `query` starting with `#`',
+				'suggests tags only. Matches that START with the query come first, then ones that',
+				'merely contain it, alphabetically within each — the same query always suggests the',
+				'same things. `take` caps the list (4 is what the client asks for);',
+				'`searchSessionId` is the client’s analytics correlation id and is ignored.',
+			].join(' '),
+			parameters: [
+				stringQuery('query', 'What the player has typed so far. `#` prefix suggests tags only'),
+				intQuery('take', 'How many suggestions to return (default 10)'),
+				stringQuery('searchSessionId', 'The client’s typing-session id. Accepted and ignored'),
+			],
+			responses: { 200: json(SearchSuggestions, 'The suggestions, best match first') },
+		}),
+		async (c) => {
+			const take = Number.parseInt(c.req.query('take') ?? '', 10)
+			return c.json(
+				await autocompleteRoomSearch(
+					c.env.DB,
+					c.req.query('query') ?? '',
+					Number.isNaN(take) ? DEFAULT_SUGGESTION_COUNT : take
+				)
+			)
 		}
 	)
 

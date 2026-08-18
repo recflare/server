@@ -1793,6 +1793,67 @@ export async function searchRooms(
 }
 
 /**
+ * Search suggestions for the box the player is typing in
+ * (`GET /rooms/autocomplete_search`) — a list of plain STRINGS, not rooms.
+ *
+ * Everything suggested is something the follow-up `/rooms/search` will actually find,
+ * which is the whole point of the endpoint: a suggestion that returns nothing is worse
+ * than no suggestion. So the candidates are drawn from the two things that search matches
+ * — room NAMES for a plain term, and TAGS for a `#tag` term — over the same public,
+ * non-dorm rooms search itself considers. A tag comes back with its `#` so submitting the
+ * suggestion verbatim searches by tag rather than for a room called "horror".
+ *
+ * A query starting with `#` is asking for tags, so only tags are suggested. Otherwise
+ * names come first (the likelier intent), then tags, and within each, matches that START
+ * with the query come before ones that merely contain it. Ties break alphabetically, so
+ * the same query always suggests the same things in the same order.
+ *
+ * Matching is case-insensitive and suggestions are de-duplicated case-insensitively, but
+ * each is returned in its stored casing — search doesn't care, and the player reads these.
+ * The dataset is small, so this filters in memory like {@link searchRooms}.
+ */
+export async function autocompleteRoomSearch(
+	db: D1Database,
+	query: string,
+	take: number
+): Promise<string[]> {
+	const q = query.trim().toLowerCase()
+	if (q === '' || take <= 0) return []
+
+	const { results } = await db.prepare(`SELECT ${ROOM_COLUMNS} FROM room`).all<RoomRow>()
+	const rooms = parseAll(results).filter((r) => r.IsDorm !== true && r.Accessibility === 1)
+
+	const tagQuery = q.startsWith('#')
+	const term = tagQuery ? q.slice(1) : q
+	if (term === '') return []
+
+	// Lowercased suggestion → [rank, the casing to serve it in]. Lower rank sorts first.
+	const found = new Map<string, [number, string]>()
+	const offer = (value: string, rank: number) => {
+		const key = value.toLowerCase()
+		const existing = found.get(key)
+		if (existing === undefined || existing[0] > rank) found.set(key, [rank, value])
+	}
+
+	for (const room of rooms) {
+		if (!tagQuery && typeof room.Name === 'string') {
+			const name = room.Name.toLowerCase()
+			if (name.startsWith(term)) offer(room.Name, 0)
+			else if (name.includes(term)) offer(room.Name, 1)
+		}
+		for (const tag of roomTags(room)) {
+			if (tag.startsWith(term)) offer(`#${tag}`, tagQuery ? 0 : 2)
+			else if (tag.includes(term)) offer(`#${tag}`, tagQuery ? 1 : 3)
+		}
+	}
+
+	return [...found.entries()]
+		.sort(([aKey, [aRank]], [bKey, [bRank]]) => aRank - bRank || aKey.localeCompare(bKey))
+		.slice(0, take)
+		.map(([, [, value]]) => value)
+}
+
+/**
  * Engagement score used to order the hot feed (cheers weigh most, then favorites).
  * Cheers/favorites come from the caller's aggregated {@link getRoomStats} map — ranking
  * happens before hydration, so the room blob's copies are still zero at this point.

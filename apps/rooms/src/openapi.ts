@@ -104,7 +104,7 @@ export function stringQuery(name: string, description: string): OpenAPIV3_1.Para
 }
 
 /** An optional integer query parameter. */
-function intQuery(name: string, description: string): OpenAPIV3_1.ParameterObject {
+export function intQuery(name: string, description: string): OpenAPIV3_1.ParameterObject {
 	return { name, in: 'query', required: false, description, schema: { type: 'integer' } }
 }
 
@@ -339,6 +339,15 @@ export const PagedRooms = z.object({
 	Results: z.array(RoomDto),
 	TotalResults: z.int().describe('The full match count, not the page size'),
 })
+
+/**
+ * `GET /rooms/autocomplete_search` — the search box's suggestions: a bare array of plain
+ * STRINGS, not rooms and not an envelope. Each is a query the player can submit as-is; a
+ * tag suggestion carries its `#` so submitting it searches by tag.
+ */
+export const SearchSuggestions = z
+	.array(z.string())
+	.describe('Suggested search terms, best match first; empty when nothing matches')
 
 /**
  * `GET /rooms/{roomId}/experience` — whether players earn XP in a room and how much of it
