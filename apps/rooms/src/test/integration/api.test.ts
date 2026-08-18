@@ -339,6 +339,80 @@ describe('rooms endpoints', () => {
 		expect(publicList.some((r) => r.Name === 'MyUnpublishedRoom')).toBe(false)
 	})
 
+	it('GET /rooms/contributedby/me lists rooms the caller has a role in, not their own', async () => {
+		const seed = (data: Record<string, unknown>) =>
+			env.DB.prepare('INSERT INTO room (data) VALUES (?1)').bind(JSON.stringify(data)).run()
+
+		// A room somebody else made, where 820 is a co-owner...
+		await seed({
+			RoomId: 30401,
+			Name: 'ContribCoOwner',
+			CreatorAccountId: 821,
+			Accessibility: 1,
+			SubRooms: [],
+			Roles: [
+				{ AccountId: 821, Role: 255 },
+				{ AccountId: 820, Role: 30 },
+			],
+		})
+		// ...one where they're only a host (every tier counts, not just owner-level)...
+		await seed({
+			RoomId: 30402,
+			Name: 'ContribHost',
+			CreatorAccountId: 821,
+			// Unpublished: a contributor works on the room before it goes public, so
+			// accessibility is not filtered here.
+			Accessibility: 0,
+			SubRooms: [],
+			Roles: [{ AccountId: 820, Role: 10 }],
+		})
+		// ...one they created themselves, whose Roles name them as Creator...
+		await seed({
+			RoomId: 30403,
+			Name: 'ContribOwn',
+			CreatorAccountId: 820,
+			Accessibility: 1,
+			SubRooms: [],
+			Roles: [{ AccountId: 820, Role: 255 }],
+		})
+		// ...one they have nothing to do with, and one with no Roles key at all (the older
+		// seeded rooms have none — json_each must drop them, not error).
+		await seed({
+			RoomId: 30404,
+			Name: 'ContribOther',
+			CreatorAccountId: 821,
+			Accessibility: 1,
+			SubRooms: [],
+			Roles: [{ AccountId: 822, Role: 30 }],
+		})
+		await seed({ RoomId: 30405, Name: 'ContribNoRoles', CreatorAccountId: 821, SubRooms: [] })
+
+		const res = await SELF.fetch(`${ORIGIN}/rooms/contributedby/me`, {
+			headers: await bearer('820'),
+		})
+		expect(res.status).toBe(200)
+		const rooms = (await res.json()) as Array<{ RoomId: number; Name: string }>
+		// A bare array of the canonical room DTO — no envelope, no paging wrapper.
+		expect(Array.isArray(rooms)).toBe(true)
+		expect(rooms.map((r) => r.RoomId).sort()).toEqual([30401, 30402])
+		// The caller's OWN room is excluded, or this would just repeat createdby/me.
+		expect(rooms.some((r) => r.RoomId === 30403)).toBe(false)
+		expect(rooms[0]).toMatchObject({ Name: expect.any(String), Accessibility: expect.any(Number) })
+
+		// A player who contributes to nothing gets an empty array, not a 404.
+		const none = await SELF.fetch(`${ORIGIN}/rooms/contributedby/me`, {
+			headers: await bearer('829'),
+		})
+		expect(await none.json()).toEqual([])
+
+		// Auth-scoped: `me` is the token, so no token is a 401.
+		expect((await SELF.fetch(`${ORIGIN}/rooms/contributedby/me`)).status).toBe(401)
+
+		// The DB is shared across this file, and these are the only player-made public rooms
+		// in it — leaving them behind changes what the `new`/`community` room feeds serve.
+		await env.DB.prepare('DELETE FROM room WHERE room_id BETWEEN 30401 AND 30405').run()
+	})
+
 	it('GET /rooms/ownedby/:id returns an account public rooms (no auth)', async () => {
 		const res = await SELF.fetch(`${ORIGIN}/rooms/ownedby/1`)
 		expect(res.status).toBe(200)
@@ -3082,6 +3156,7 @@ describe('rooms endpoints', () => {
 			'GET /rooms',
 			'GET /rooms/base',
 			'GET /rooms/bulk',
+			'GET /rooms/contributedby/me',
 			'GET /rooms/createdby/me',
 			'GET /rooms/favoritedby/me',
 			'GET /rooms/hot',

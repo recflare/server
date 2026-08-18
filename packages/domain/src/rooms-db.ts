@@ -1536,6 +1536,36 @@ export async function countRoomsByCreator(db: D1Database, accountId: number): Pr
 }
 
 /**
+ * Rooms an account CONTRIBUTES to: the ones whose `Roles` name them (Host, Moderator or
+ * CoOwner), minus the ones they created themselves.
+ *
+ * The creator is excluded deliberately. A room's `Roles` carries its creator too, so
+ * without that filter this list would repeat everything `getRoomsByCreator` already
+ * serves — and the client shows "rooms you own" and "rooms you contribute to" as two
+ * separate lists. Every role tier counts here, unlike {@link canManageRoom}'s
+ * owner-or-co-owner gate: this is "somebody gave you a job in their room", not "you may
+ * administer it".
+ *
+ * Roles live inside the room blob rather than in a table of their own, so the match is a
+ * `json_each` over `$.Roles`. A room with no `Roles` key (or a null one) simply yields no
+ * rows there rather than erroring, so it drops out of the list.
+ */
+export async function getContributedRooms(db: D1Database, accountId: number): Promise<Room[]> {
+	const { results } = await db
+		.prepare(
+			`SELECT ${ROOM_COLUMNS} FROM room
+			 WHERE creator_account_id IS NOT ?1
+			   AND EXISTS (
+			     SELECT 1 FROM json_each(room.data, '$.Roles') AS role
+			     WHERE json_extract(role.value, '$.AccountId') = ?1
+			   )`
+		)
+		.bind(accountId)
+		.all<RoomRow>()
+	return hydrateRooms(db, parseAll(results))
+}
+
+/**
  * An account's public, non-dorm rooms — the publicly viewable "rooms owned by
  * <player>" list (excludes private rooms, dorms, and list-excluded rooms).
  */

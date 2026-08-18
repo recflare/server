@@ -15,6 +15,7 @@ import {
 	deleteSubRoom,
 	findSubRoom,
 	getBaseRooms,
+	getContributedRooms,
 	getFavoritedRooms,
 	getFeaturedRooms,
 	getHotRooms,
@@ -885,6 +886,42 @@ const app = new Hono<App>()
 			responses: { 200: json(RoomDto.array(), 'The caller’s rooms'), 401: UNAUTHORIZED_RESPONSE },
 		}),
 		ownedRooms
+	)
+
+	// Rooms the caller CONTRIBUTES to — someone else's rooms that name them in `Roles`
+	// (Host, Moderator or CoOwner). Auth-scoped: `me` resolves from the bearer token, and
+	// there is no query string or body to read.
+	//
+	// Rooms the caller created are excluded: a room's `Roles` carries its creator too, so
+	// without that this would repeat `createdby/me` wholesale, and the client shows the two
+	// as separate lists. Like the other `*by/me` lists it answers a bare array of the
+	// canonical room DTO — no envelope, no paging wrapper — and doesn't filter on
+	// accessibility, since a contributor is working on the room whether or not it's
+	// published.
+	.get(
+		'/rooms/contributedby/me',
+		describeRoute({
+			tags: ['My rooms'],
+			summary: 'Rooms the caller contributes to',
+			description: [
+				'The rooms that name the caller in their `Roles` — Host, Moderator or CoOwner — as a',
+				'bare array of rooms. Rooms the caller CREATED are excluded: those are',
+				'`ownedby/me`/`createdby/me`, and a room’s roles list its creator too, so including',
+				'them would just repeat that list. Every role tier counts, not only the owner-level',
+				'ones, and accessibility is not filtered: a contributor works on the room whether or',
+				'not it is published.',
+			].join(' '),
+			security: AUTHED,
+			responses: {
+				200: json(RoomDto.array(), 'The rooms the caller contributes to (empty when none)'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const accountId = await authedAccountId(c)
+			if (accountId === null) return unauthorized(c)
+			return c.json(await getContributedRooms(c.env.DB, accountId))
+		}
 	)
 
 	// The caller's own dorm, as its ID ALONE — a bare JSON number, not the room. The
