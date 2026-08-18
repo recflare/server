@@ -301,6 +301,46 @@ describe('auth-gated endpoints', () => {
 		expect(((await me.json()) as { profileImage: string }).profileImage).toBe('deadbeef.jpg')
 	})
 
+	test('PUT /account/me/bannerimage persists the banner and pushes the profile update', async () => {
+		type Sent = { playerId: number; notificationType: string | number; data: unknown }
+		const hub = () => env.RECFLARE_NOTIFICATIONS_HUB.getByName('global')
+		await hub().fetch('http://do/', { method: 'DELETE' })
+
+		const key = 'sharecamera/2026-08-18/75c295fd-8f1b-402e-961d-5c277fd56690.jpg'
+		const res = await exports.default.fetch(`${ORIGIN}/account/me/bannerimage`, {
+			...form({ imageName: key }),
+			headers: { ...(await bearer('778')), 'Content-Type': 'application/x-www-form-urlencoded' },
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ success: true })
+
+		// Stored on the account, and served back by both the self and public reads.
+		const me = await exports.default.fetch(`${ORIGIN}/account/me`, { headers: await bearer('778') })
+		expect(((await me.json()) as { bannerImage: string }).bannerImage).toBe(key)
+		const pub = await exports.default.fetch(`${ORIGIN}/account/778`)
+		expect(((await pub.json()) as { bannerImage: string }).bannerImage).toBe(key)
+
+		// And the profile-update notification fired, carrying the new banner — so anyone
+		// looking at the profile redraws it without refetching.
+		const sent = (await (await hub().fetch('http://do/all')).json()) as Sent[]
+		expect(sent.length).toBeGreaterThan(0)
+		expect(sent.every((n) => n.playerId === 778)).toBe(true)
+		expect(sent.map((n) => (n.data as { bannerImage?: string }).bannerImage)).toContain(key)
+	})
+
+	test('PUT /account/me/bannerimage 401s without a token, 400s without an imageName', async () => {
+		const anon = await exports.default.fetch(`${ORIGIN}/account/me/bannerimage`, {
+			...form({ imageName: 'x.jpg' }),
+		})
+		expect(anon.status).toBe(401)
+
+		const empty = await exports.default.fetch(`${ORIGIN}/account/me/bannerimage`, {
+			...form({}),
+			headers: { ...(await bearer('778')), 'Content-Type': 'application/x-www-form-urlencoded' },
+		})
+		expect(empty.status).toBe(400)
+	})
+
 	test('PUT /account/me/identityflags 401s without a token', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/account/me/identityflags`, {
 			...form({ identityFlags: '384' }),
@@ -452,6 +492,7 @@ describe('auth-gated endpoints', () => {
 			'POST /account/create',
 			'POST /account/me/email',
 			'POST /account/me/phone',
+			'PUT /account/me/bannerimage',
 			'PUT /account/me/bio',
 			'PUT /account/me/displayname',
 			'PUT /account/me/identityflags',

@@ -68,7 +68,9 @@ export const AccountDto = z.object({
 	displayName: z.string(),
 	profileImage: z.string().describe('Avatar object key'),
 	bannerImage: z.string().describe('Profile banner key — always "" (nothing sets it yet)'),
-	displayEmoji: z.string().describe('Emoji beside the display name — always "" (nothing sets it yet)'),
+	displayEmoji: z
+		.string()
+		.describe('Emoji beside the display name — always "" (nothing sets it yet)'),
 	isJunior: z.boolean(),
 	platforms: z.int().describe('PlatformType bitmask of linked platforms'),
 	personalPronouns: z.int().describe('Pronoun flags bitmask'),
@@ -158,7 +160,8 @@ export const CreateAccountRequest = z.object({
 
 /** Zod check that defers to the shared name rule, message and all. */
 const nameCheck = (label: string, max: number) =>
-	z.string()
+	z
+		.string()
 		.trim()
 		.superRefine((value, ctx) => {
 			const rejection = nameRejection(value, label, max)
@@ -174,9 +177,7 @@ export const DisplayNameRequest = z.object({
 export const UsernameRequest = z.object({
 	username: nameCheck('username', MAX_USERNAME_LENGTH)
 		.min(1, 'You must enter a username.')
-		.describe(
-			'Trimmed; letters and digits only, max 50. Must be unique and changes must remain'
-		),
+		.describe('Trimmed; letters and digits only, max 50. Must be unique and changes must remain'),
 })
 
 export const EmailRequest = z.object({
@@ -208,4 +209,13 @@ export const BioRequest = z.object({
 
 export const ProfileImageRequest = z.object({
 	imageName: z.string().describe('Avatar object key; empty is rejected (400)'),
+})
+
+/**
+ * `PUT /account/me/bannerimage` form body. The key of an image the player already
+ * uploaded — the client posts a `sharecamera/<date>/<uuid>.jpg` key, i.e. one of their own
+ * photos — so this only names an image, it never carries one.
+ */
+export const BannerImageRequest = z.object({
+	imageName: z.string().describe('Banner object key; empty is rejected (400)'),
 })

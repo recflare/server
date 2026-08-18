@@ -25,6 +25,7 @@ import { validateAndGetAccountId } from '@repo/jwt'
 import { NotificationType } from '../../notify/src/notification-types'
 import {
 	AccountDto,
+	BannerImageRequest,
 	BioRequest,
 	BioResponse,
 	CreateAccountRequest,
@@ -656,6 +657,41 @@ const app = new Hono<App>()
 			if (id === null) return unauthorized(c)
 			const { bio } = c.req.valid('form')
 			const account = await updateAccount(c.env.DB, id, { bio })
+			await pushAccountUpdate(c, account)
+			return c.json({ success: true })
+		}
+	)
+
+	// The profile banner — the wide image behind the header on a player's profile. Same
+	// shape as the avatar below: the body names an image the player has already uploaded
+	// (the client posts one of their own photos, `sharecamera/<date>/<uuid>.jpg`), so this
+	// stores a key and never bytes.
+	//
+	// Broadcasts the AccountUpdate like every other profile mutation here — the banner rides
+	// along in the DTO payload, so anyone looking at the profile redraws it without a refetch.
+	.put(
+		'/account/me/bannerimage',
+		describeRoute({
+			tags: ['Profile'],
+			summary: 'Set profile banner image',
+			description:
+				'Persists the banner object key and broadcasts it in the AccountUpdate payload. The ' +
+				'key names an image the player already uploaded — typically one of their own photos ' +
+				'(`sharecamera/…`) — so nothing is uploaded here.',
+			security: AUTHED,
+			requestBody: form(BannerImageRequest, 'The banner object key'),
+			responses: {
+				200: json(SuccessResponse, 'Updated'),
+				400: { description: 'Empty imageName (empty body)' },
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+			const imageName = await formField(c, 'imageName')
+			if (!imageName) return c.body(null, 400)
+			const account = await updateAccount(c.env.DB, id, { bannerImage: imageName })
 			await pushAccountUpdate(c, account)
 			return c.json({ success: true })
 		}
