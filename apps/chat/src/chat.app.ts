@@ -20,6 +20,7 @@ import {
 	json,
 	messageCountParam,
 	NOT_A_MEMBER_RESPONSE,
+	PartyInviteSettings,
 	PartyThread,
 	RenameThreadRequest,
 	SendMessageRequest,
@@ -95,6 +96,13 @@ const CHAT_SUCCESS = 0
 const CHAT_INVALID_ARGUMENTS = 1
 const CHAT_MEMBERSHIP_NOT_FOUND = 3
 const CHAT_PLAYER_ALREADY_ON_THREAD = 4
+
+/**
+ * How long a party invite link stays usable, in minutes (`GET /settings/partyinvite`).
+ * The reference's value. Nothing here stores invite links, so this is what the client
+ * counts down with rather than a lifetime this server enforces.
+ */
+const PARTY_INVITE_LIFETIME_MINUTES = 60
 
 /** The hub is a single global Durable Object instance, as every worker addresses it. */
 const HUB_INSTANCE = 'global'
@@ -426,6 +434,36 @@ const app = new Hono<App>()
 				chatThread: thread,
 				chatResult: posted === null ? CHAT_INVALID_ARGUMENTS : CHAT_SUCCESS,
 			})
+		}
+	)
+
+	// How long a party invite link lives. Server-side config the client reads to stamp its
+	// own invite links, not per-player state — one hour, which is the reference's value.
+	//
+	// A bare single-key object: `{ InviteLinkLifetimeInMinutes }` and nothing else, no
+	// `{ success, error, value }` envelope. Nothing here expires links (there is no invite
+	// link store), so this is the number the client shows and counts down with rather than
+	// a lifetime this server enforces.
+	.get(
+		'/settings/partyinvite',
+		describeRoute({
+			tags: ['Threads'],
+			summary: 'Party invite settings',
+			description: [
+				'How long a party invite link stays usable, in minutes, as a bare single-key object —',
+				'no envelope. 60 here, the reference’s value. Nothing on this server stores or expires',
+				'invite links, so the client is the only thing that acts on it.',
+			].join(' '),
+			security: AUTHED,
+			responses: {
+				200: json(PartyInviteSettings, 'The invite-link lifetime'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return c.body(null, 401)
+			return c.json({ InviteLinkLifetimeInMinutes: PARTY_INVITE_LIFETIME_MINUTES })
 		}
 	)
 

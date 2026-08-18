@@ -155,6 +155,16 @@ export const SendMessageResponse = z.object({
 })
 
 /**
+ * `GET /settings/partyinvite` — how long a party invite link stays usable, in minutes. A
+ * bare single-key object, not an envelope: the whole body is this one setting.
+ */
+export const PartyInviteSettings = z.object({
+	InviteLinkLifetimeInMinutes: z
+		.int()
+		.describe('Minutes a party invite link stays valid before it lapses'),
+})
+
+/**
  * `GET /thread/party` — STUB. The real shape hasn't been observed off a live client, so
  * the route answers an empty object and this schema says so rather than guessing at
  * fields. Fill both in together once the real response is captured.

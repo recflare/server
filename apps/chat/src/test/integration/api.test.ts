@@ -378,6 +378,22 @@ describe('thread storage', () => {
 
 // The party thread is a stub until its real shape is observed off a live client; these
 // pin down only what the stub promises — auth, and an object body rather than a 404.
+describe('GET /settings/partyinvite', () => {
+	it('answers the invite-link lifetime as a bare single-key object', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/settings/partyinvite`, {
+			headers: await bearer(885001),
+		})
+		expect(res.status).toBe(200)
+		// One key, no `{ success, error, value }` envelope around it.
+		expect(await res.json()).toEqual({ InviteLinkLifetimeInMinutes: 60 })
+	})
+
+	it('401s without a token', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/settings/partyinvite`)
+		expect(res.status).toBe(401)
+	})
+})
+
 describe('GET /thread/party', () => {
 	it('answers an empty object', async () => {
 		const res = await SELF.fetch(`${ORIGIN}/thread/party?maxCount=1&mode=0`, {
@@ -1344,6 +1360,7 @@ describe('openapi', () => {
 		expect([...documented].sort()).toEqual([
 			'DELETE /thread/{id}/leave',
 			'GET /',
+			'GET /settings/partyinvite',
 			'GET /thread',
 			'GET /thread/checkCanSendDirectMessageWithPrivacySetting',
 			'GET /thread/party',
