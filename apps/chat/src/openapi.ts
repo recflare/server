@@ -165,6 +165,26 @@ export const PartyInviteSettings = z.object({
 })
 
 /**
+ * `GET /thread/chatPrivacySetting` — who may start a chat with the caller. camelCase, unlike
+ * the PascalCase thread DTOs, and the two settings are the `ChatPrivacy` enum served
+ * NUMERICALLY (0 Friends · 1 Favorites · 2 NoOne): this client build carries no by-name enum
+ * formatter, so a string would decode as nothing.
+ *
+ * Reported, not enforced. Nothing on this server stores a per-player privacy setting or
+ * checks one — `GET /thread/checkCanSendDirectMessageWithPrivacySetting` allows every DM —
+ * so these are the values the client renders its privacy screen from.
+ */
+export const ChatPrivacySettings = z.object({
+	playerId: z.int().describe('The caller — read from the token, not from the query'),
+	directMessagePrivacySetting: z
+		.int()
+		.describe('Who may DM the caller: 0 Friends · 1 Favorites · 2 NoOne'),
+	groupChatPrivacySetting: z
+		.int()
+		.describe('Who may add the caller to a group chat: 0 Friends · 1 Favorites · 2 NoOne'),
+})
+
+/**
  * `GET /thread/party` — STUB. The real shape hasn't been observed off a live client, so
  * the route answers an empty object and this schema says so rather than guessing at
  * fields. Fill both in together once the real response is captured.

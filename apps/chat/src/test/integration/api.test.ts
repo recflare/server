@@ -409,6 +409,34 @@ describe('GET /thread/party', () => {
 	})
 })
 
+describe('GET /thread/chatPrivacySetting', () => {
+	it('reports Friends for both settings, keyed to the caller', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/thread/chatPrivacySetting`, {
+			headers: await bearer(886001),
+		})
+		expect(res.status).toBe(200)
+		// camelCase, and the enum by NUMBER (0 = Friends) — this build has no by-name enum
+		// formatter, so a string would decode as nothing.
+		expect(await res.json()).toEqual({
+			playerId: 886001,
+			directMessagePrivacySetting: 0,
+			groupChatPrivacySetting: 0,
+		})
+	})
+
+	it('reads playerId off the token, not a query param', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/thread/chatPrivacySetting?playerId=999999`, {
+			headers: await bearer(886002),
+		})
+		expect(((await res.json()) as { playerId: number }).playerId).toBe(886002)
+	})
+
+	it('401s without a token', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/thread/chatPrivacySetting`)
+		expect(res.status).toBe(401)
+	})
+})
+
 describe('GET /thread/checkCanSendDirectMessageWithPrivacySetting', () => {
 	const path = `${ORIGIN}/thread/checkCanSendDirectMessageWithPrivacySetting`
 
@@ -1362,6 +1390,7 @@ describe('openapi', () => {
 			'GET /',
 			'GET /settings/partyinvite',
 			'GET /thread',
+			'GET /thread/chatPrivacySetting',
 			'GET /thread/checkCanSendDirectMessageWithPrivacySetting',
 			'GET /thread/party',
 			'GET /thread/{id}',

@@ -10,6 +10,7 @@ import { getThreadMessages } from './message-db'
 import {
 	AUTHED,
 	ChatMessageDto,
+	ChatPrivacySettings,
 	ChatResult,
 	ChatThreadDto,
 	ChatThreadWithMessagesDto,
@@ -103,6 +104,17 @@ const CHAT_PLAYER_ALREADY_ON_THREAD = 4
  * counts down with rather than a lifetime this server enforces.
  */
 const PARTY_INVITE_LIFETIME_MINUTES = 60
+
+/**
+ * Who may start a chat with a player — the client's `ChatPrivacy` enum, served numerically
+ * like every other enum on this build. `Friends` is what a fresh account reports, and what
+ * every account reports here: nothing stores a per-player setting yet.
+ */
+const ChatPrivacy = {
+	Friends: 0,
+	Favorites: 1,
+	NoOne: 2,
+} as const
 
 /** The hub is a single global Durable Object instance, as every worker addresses it. */
 const HUB_INSTANCE = 'global'
@@ -509,6 +521,45 @@ const app = new Hono<App>()
 			const id = await authedId(c)
 			if (id === null) return c.body(null, 401)
 			return c.json({})
+		}
+	)
+
+	// The caller's chat privacy settings — who may DM them, and who may pull them into a
+	// group chat. Both report `Friends`, which is the reference's default and the safer of
+	// the two directions to be wrong in: it describes a player as more private than the
+	// server actually enforces, rather than less.
+	//
+	// REPORTED, NOT ENFORCED. Nothing here stores a per-player setting or checks one — the
+	// DM check below allows every message regardless — so this is what the client renders on
+	// its privacy screen. Wire the two together if this ever becomes real: a screen that says
+	// "Friends" while anyone can message you is worse than one that says nothing.
+	//
+	// `playerId` comes off the TOKEN, not a query param: the answer is about the caller.
+	.get(
+		'/thread/chatPrivacySetting',
+		describeRoute({
+			tags: ['Threads'],
+			summary: 'The caller’s chat privacy settings',
+			description: [
+				'Who may direct-message the caller and who may add them to a group chat, as the',
+				'`ChatPrivacy` enum by NUMBER (0 Friends · 1 Favorites · 2 NoOne). Both are `Friends`',
+				'here — nothing stores a per-player setting — and nothing enforces them either: the',
+				'DM check allows every message. `playerId` is the caller, read from the token.',
+			].join(' '),
+			security: AUTHED,
+			responses: {
+				200: json(ChatPrivacySettings, 'The caller’s settings — always Friends/Friends'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return c.body(null, 401)
+			return c.json({
+				playerId: id,
+				directMessagePrivacySetting: ChatPrivacy.Friends,
+				groupChatPrivacySetting: ChatPrivacy.Friends,
+			})
 		}
 	)
 
