@@ -1,6 +1,13 @@
 import { adminSecretsStore, env, SELF } from 'cloudflare:test'
 import { beforeAll, expect, it } from 'vitest'
 
+import {
+	PRESENCE_SCHEMA_DDL,
+	ROOM_SCHEMA_DDL,
+	seedRoomWithSubRooms,
+	SUBROOM_SCHEMA_DDL,
+} from '@repo/domain'
+
 import type { Env } from '../../context'
 
 declare module 'cloudflare:test' {
@@ -12,7 +19,37 @@ const ORIGIN = 'https://example.com'
 beforeAll(async () => {
 	// Seed the shared JWT signing key into the local Secrets Store so .get() resolves.
 	await adminSecretsStore(env.JWT_SECRET).create('test-signing-key')
+
+	// The shared room schema (owned by the `rooms` worker) plus a few public rooms — the
+	// HotList row ranks these. Presence is what makes a room "hot", so its table is here too.
+	for (const stmt of ROOM_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	for (const stmt of SUBROOM_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	for (const stmt of PRESENCE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	for (const room of [
+		{ RoomId: 2, Name: 'RecCenter', CreatorAccountId: 1, Accessibility: 1, IsDorm: false },
+		{ RoomId: 3, Name: 'DodgeBall', CreatorAccountId: 1, Accessibility: 1, IsDorm: false },
+		{ RoomId: 4, Name: 'Quietly', CreatorAccountId: 1, Accessibility: 1, IsDorm: false },
+		// Non-public and a dorm: neither belongs in a discovery row.
+		{ RoomId: 5, Name: 'SecretRoom', CreatorAccountId: 1, Accessibility: 0, IsDorm: false },
+		{ RoomId: 6, Name: '@Dorm', CreatorAccountId: 2, Accessibility: 1, IsDorm: true },
+	]) {
+		await seedRoomWithSubRooms(env.DB, { ...room, SubRooms: [] } as Record<string, unknown>)
+	}
 })
+
+/** Put a player in a room, the way the `match` heartbeat would — this is what ranks it. */
+async function putInRoom(accountId: number, roomId: number): Promise<void> {
+	const now = Math.floor(Date.now() / 1000)
+	await env.DB.prepare('INSERT OR REPLACE INTO presence (data) VALUES (?1)')
+		.bind(
+			JSON.stringify({
+				accountId,
+				roomInstance: { roomInstanceId: 1000000 + roomId, roomId, subRoomId: roomId },
+				expiresAt: now + 900,
+			})
+		)
+		.run()
+}
 
 // Mint a token the way the `auth` worker does, signing with the shared test key seeded
 // into the JWT_SECRET store.
@@ -71,14 +108,10 @@ it('serves the canned discovery page from /curatedlists', async () => {
 	expect(res.status).toBe(200)
 	expect(res.headers.get('content-type')).toContain('application/json')
 
-	// The id is a 64-bit integer past Number.MAX_SAFE_INTEGER: assert the raw digits, since
-	// parsing to a JS number would round it (…307326 → …307328) and hide the bug this
-	// endpoint's bigint handling exists to avoid.
 	const text = await res.text()
-	expect(text).toContain('"ListId":624765592684307326,')
-
 	expect(JSON.parse(text)).toMatchObject([
 		{
+			ListId: 1,
 			CreatorAccountId: 1,
 			Name: 'Discovery.PageSource.PlayExplore',
 			Description: null,
@@ -102,13 +135,66 @@ it('serves the canned discovery page from /curatedlists', async () => {
 	])
 })
 
-it('serves the same curated page whatever the query asks for', async () => {
-	// Nothing curates lists here yet, so the filters are ignored rather than answering an
-	// empty array — an empty Play/Explore page is what the client would render otherwise.
-	const filtered = await SELF.fetch(`${ORIGIN}/curatedlists?type=99&name=Nope`)
-	const bare = await SELF.fetch(`${ORIGIN}/curatedlists`)
-	expect(filtered.status).toBe(200)
-	expect(await filtered.text()).toBe(await bare.text())
+it('serves the PlayLibrary page when the query names it', async () => {
+	const res = await SELF.fetch(
+		`${ORIGIN}/curatedlists?creatorAccountId=1&type=5&name=Discovery.PageSource.PlayLibrary`
+	)
+	expect(res.status).toBe(200)
+
+	const text = await res.text()
+	expect(JSON.parse(text)).toMatchObject([
+		{
+			ListId: 2,
+			CreatorAccountId: 1,
+			Name: 'Discovery.PageSource.PlayLibrary',
+			Description: null,
+			ImageName: 'DefaultRoomImage.jpg',
+			Type: 7,
+			Accessibility: 1,
+			CreatedAt: '2025-04-23T18:25:31.5308539Z',
+			ItemIds: [
+				'Rooms_ContinuePlaying_PlayLibrary',
+				'Rooms_SavedForLater_PlayHighlight',
+				'Rooms_Favorites_PlayLibrary',
+				'Rooms_MyRooms_Play',
+			],
+		},
+	])
+
+	// The name is matched case-insensitively, and `type` is not filtered on — the request
+	// above asks for type 5 and gets the type 7 list, as the reference does.
+	const lower = await SELF.fetch(`${ORIGIN}/curatedlists?name=discovery.pagesource.playlibrary`)
+	expect(await lower.text()).toBe(text)
+})
+
+it('gives each curated page a distinct, JS-safe ListId', async () => {
+	// The client caches a list against its ListId, so two pages must never share one — and
+	// an id past Number.MAX_SAFE_INTEGER would round on the way through JSON, which is why
+	// these are small numbers of our own rather than the reference's 64-bit ones.
+	const pages = ['Discovery.PageSource.PlayExplore', 'Discovery.PageSource.PlayLibrary']
+	const ids: number[] = []
+	for (const name of pages) {
+		const [list] = (await (
+			await SELF.fetch(`${ORIGIN}/curatedlists?name=${name}`)
+		).json()) as Array<{ ListId: number }>
+		expect(Number.isSafeInteger(list.ListId)).toBe(true)
+		ids.push(list.ListId)
+	}
+	expect(new Set(ids).size).toBe(ids.length)
+})
+
+it('falls back to the Explore page for a name it has nothing for', async () => {
+	// An empty array renders as an empty Play page, so an unknown page source answers
+	// SOMETHING — which is also what the reference was observed doing for RoomGenreTags.
+	const explore = await (
+		await SELF.fetch(`${ORIGIN}/curatedlists?name=Discovery.PageSource.PlayExplore`)
+	).text()
+
+	for (const query of ['?type=99&name=Nope', '?creatorAccountId=1&type=5&name=RoomGenreTags', '']) {
+		const res = await SELF.fetch(`${ORIGIN}/curatedlists${query}`)
+		expect(res.status).toBe(200)
+		expect(await res.text()).toBe(explore)
+	}
 })
 
 it('serves a discovery row from /algorithmiclists', async () => {
@@ -130,6 +216,39 @@ it('serves a discovery row from /algorithmiclists', async () => {
 			{ Id: '6', Context: null },
 		],
 	})
+})
+
+it('serves the live hot-room ranking for /algorithmiclists/HotList', async () => {
+	// Two players in room 3, one in room 2 — live player count is what ranks the hot feed,
+	// so 3 comes first.
+	await putInRoom(901, 3)
+	await putInRoom(902, 3)
+	await putInRoom(903, 2)
+
+	const res = await SELF.fetch(`${ORIGIN}/algorithmiclists/HotList?type=1`)
+	expect(res.status).toBe(200)
+	const body = (await res.json()) as {
+		Type: number
+		Entities: Array<{ Id: string; Context: null }>
+	}
+	expect(body.Type).toBe(1)
+
+	// Same entity shape as any other row: ids as STRINGS, `Context` null (nothing attributes
+	// a ranking here). Only ids travel — the client resolves each room itself.
+	const ids = body.Entities.map((e) => e.Id)
+	expect(ids.slice(0, 2)).toEqual(['3', '2'])
+	expect(body.Entities.every((e) => e.Context === null)).toBe(true)
+
+	// The empty room is in the feed, just below the busy ones...
+	expect(ids).toContain('4')
+	// ...while the private room and the dorm are not in it at all.
+	expect(ids).not.toContain('5')
+	expect(ids).not.toContain('6')
+
+	// The row key is matched case-insensitively — it reaches us from a curated page's
+	// ItemIds, whose casing is the reference's.
+	const lower = await SELF.fetch(`${ORIGIN}/algorithmiclists/hotlist?type=1`)
+	expect(((await lower.json()) as { Entities: unknown[] }).Entities).toEqual(body.Entities)
 })
 
 it('echoes the requested type and answers an unknown row', async () => {

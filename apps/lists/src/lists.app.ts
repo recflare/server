@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { useWorkersLogger } from 'workers-tagged-logger'
 
+import { getHotRooms } from '@repo/domain'
 import { withNotFound, withOnError } from '@repo/hono-helpers'
 import { validateAndGetAccountId } from '@repo/jwt'
 
@@ -45,18 +46,22 @@ const ListEntityType = {
 const MAX_LIST_ENTITY_TYPE = 255
 
 /**
- * The canned discovery page served by `GET /curatedlists`, verbatim from the reference
- * server. `ItemIds` are discovery row keys (strings), `Description` is null but
- * `ImageName` must be a string, and `CreatedAt` keeps its 7-digit fractional seconds —
- * all as the client's parser expects them.
+ * The canned discovery pages served by `GET /curatedlists`, keyed by the `Name` the client
+ * asks for. `ItemIds` are discovery row keys (strings), `Description` is null but
+ * `ImageName` must be a string, and `CreatedAt` keeps its 7-digit fractional seconds — all
+ * as the client's parser expects them.
+ *
+ * `ListId` is ours to choose and is deliberately SMALL. The reference's ids are 64-bit
+ * (`624765592684307326`), past what a JS number holds exactly, so serving them verbatim
+ * meant carrying them as bigints and hand-writing the JSON to keep the digits — machinery
+ * for an id nothing on this server looks up. What the id has to be is stable and unique
+ * per page: the client caches a list against it, so two pages sharing one id would serve
+ * each other's rows from cache, and changing a page's id would drop its cache. Renumber
+ * only when the page's contents are meant to be re-fetched.
  */
 const CURATED_LISTS = [
 	{
-		// A 64-bit id, held as a bigint on purpose: 624765592684307326 is past
-		// `Number.MAX_SAFE_INTEGER`, so as a JS number it would round on the way out
-		// (…307326 → …307328) and the client would then ask for a list id that never
-		// existed. `serializeWithBigInts` puts the exact digits on the wire.
-		ListId: 624765592684307326n,
+		ListId: 1,
 		CreatorAccountId: 1,
 		Name: 'Discovery.PageSource.PlayExplore',
 		Description: null,
@@ -76,6 +81,25 @@ const CURATED_LISTS = [
 		],
 		Accessibility: 1,
 		CreatedAt: '2025-04-23T18:27:03.2643786Z',
+	},
+	{
+		ListId: 2,
+		CreatorAccountId: 1,
+		Name: 'Discovery.PageSource.PlayLibrary',
+		Description: null,
+		ImageName: 'DefaultRoomImage.jpg',
+		Type: ListEntityType.DiscoverySection,
+		// The library page: what you were playing, saved, favorited and made. Note the
+		// second row is a `PlayHighlight` key rather than a `PlayLibrary` one — that is the
+		// reference's own naming, not a typo to tidy.
+		ItemIds: [
+			'Rooms_ContinuePlaying_PlayLibrary',
+			'Rooms_SavedForLater_PlayHighlight',
+			'Rooms_Favorites_PlayLibrary',
+			'Rooms_MyRooms_Play',
+		],
+		Accessibility: 1,
+		CreatedAt: '2025-04-23T18:25:31.5308539Z',
 	},
 ]
 
@@ -99,6 +123,17 @@ const ALGORITHMIC_LIST_ENTITIES: Array<{ Id: string; Context: string | null }> =
 ].map((Id) => ({ Id, Context: null }))
 
 /**
+ * The row key that serves the LIVE hot-room ranking rather than the canned entities — the
+ * same feed the rooms worker's `/rooms/hot` answers, which is what a "Hot" row on a
+ * discovery page is supposed to show. Matched case-insensitively, since the key reaches us
+ * from a curated page's `ItemIds` and its casing is the reference's, not ours.
+ */
+const HOT_LIST_KEY = 'hotlist'
+
+/** How many rooms the hot row carries. A discovery carousel shows a page, not the world. */
+const HOT_LIST_SIZE = 20
+
+/**
  * The entity type an algorithmic list reports when the query names none. The client always
  * sends `?type=`, and `Rooms` is what it asks for; falling back to `Accounts` (0, the enum's
  * zero value) would have the row resolve room ids against the account service.
@@ -106,21 +141,19 @@ const ALGORITHMIC_LIST_ENTITIES: Array<{ Id: string; Context: string | null }> =
 const DEFAULT_ALGORITHMIC_LIST_TYPE = ListEntityType.Rooms
 
 /**
- * `JSON.stringify` throws on a bigint, and `c.json()` would go through it, so bigints are
- * stringified behind a marker and then unquoted — leaving an unquoted integer literal in
- * the JSON, which is what a 64-bit id has to look like on the wire. The marker starts with
- * a NUL, which `JSON.stringify` always escapes (as the six characters `\u0000`) and which
- * therefore cannot appear literally in the output, so no real string can collide with it.
+ * Each page keyed by its lowercased `Name` — the only thing a request decides is which one
+ * it gets. Each entry is an ARRAY of one list: the endpoint answers a collection, and the
+ * client reads it as such however many entries come back.
  */
-function serializeWithBigInts(value: unknown): string {
-	const json = JSON.stringify(value, (_key, v: unknown) =>
-		typeof v === 'bigint' ? `\u0000bigint:${v}` : v
-	)
-	return json.replaceAll(/"\\u0000bigint:(-?\d+)"/g, '$1')
-}
+const CURATED_LIST_PAGES = new Map(CURATED_LISTS.map((list) => [list.Name.toLowerCase(), [list]]))
 
-/** Serialized once at module load — the payload is static. */
-const CURATED_LISTS_BODY = serializeWithBigInts(CURATED_LISTS)
+/**
+ * What a request that names no page — or names one nothing is captured for — gets: the
+ * Explore page. A 404 or an empty array renders as an empty Play page, so answering with
+ * SOMETHING is the better failure, and it is also what the reference was observed doing
+ * for a `name` this server has no list under.
+ */
+const DEFAULT_CURATED_LIST_PAGE = CURATED_LIST_PAGES.get('discovery.pagesource.playexplore')!
 
 const app = new Hono<App>()
 	.use(
@@ -161,15 +194,21 @@ const app = new Hono<App>()
 	})
 
 	// The curated lists behind a discovery page (`GET /curatedlists`). The client asks with
-	// `?creatorAccountId=&type=&name=`, but nothing curates lists here yet, so the filters
-	// are ignored and the one canned page is served whatever is asked for — the same
-	// stand-in posture as `/curatedlists/bulk` above. A 404 or an empty array shows as an
-	// empty Play/Explore page, so this always answers 200 with the list.
+	// `?creatorAccountId=&type=&name=`, and `name` is the page it wants
+	// (`Discovery.PageSource.PlayExplore`, `…PlayLibrary`): it picks which canned page comes
+	// back, matched case-insensitively. Nothing curates lists here, so the pages are static
+	// captures — the same stand-in posture as `/curatedlists/bulk` above.
+	//
+	// `creatorAccountId` and `type` are accepted and IGNORED, deliberately: the reference was
+	// observed answering a `type=5` request with a `Type` 7 list, so filtering on them would
+	// answer nothing where it answers a page. An unknown `name` falls back to Explore rather
+	// than an empty array, which renders as an empty Play page.
 	//
 	// `ItemIds` are the discovery ROWS the page is built from (algorithm/section keys), not
 	// room ids — the client resolves each one itself.
 	.get('/curatedlists', async (c) => {
-		return c.body(CURATED_LISTS_BODY, 200, { 'Content-Type': 'application/json' })
+		const name = c.req.query('name') ?? ''
+		return c.json(CURATED_LIST_PAGES.get(name.toLowerCase()) ?? DEFAULT_CURATED_LIST_PAGE)
 	})
 
 	// One discovery ROW's contents (`GET /algorithmiclists/:list?type=1`). `:list` is the row
@@ -177,17 +216,31 @@ const app = new Hono<App>()
 	// `Rooms_Battle_AlgoEndpoint_PlayHighlight_TabsTest_Explore`), and the answer is the
 	// ranked entities that fill it, which the client then resolves by id itself.
 	//
-	// Nothing ranks anything here yet, so every row serves the same canned entities — and an
-	// unknown row key gets them too rather than a 404, which the client renders as a row that
-	// failed to load. `Type` is echoed back from the query: it tells the client what the
-	// `Id`s ARE (rooms, players, …), so answering with a type the caller didn't ask for would
-	// have it resolve the ids against the wrong service.
-	.get('/algorithmiclists/:list', (c) => {
+	// `HotList` is ranked for real — the same feed the rooms worker's `/rooms/hot` serves.
+	// Every other row still serves the canned entities, and an unknown row key gets them too
+	// rather than a 404, which the client renders as a row that failed to load. `Type` is
+	// echoed back from the query: it tells the client what the `Id`s ARE (rooms, players, …),
+	// so answering with a type the caller didn't ask for would have it resolve the ids
+	// against the wrong service.
+	.get('/algorithmiclists/:list', async (c) => {
 		// Echoed, but only when it fits the byte the client reads it back into — anything
 		// outside 0–255 can't round-trip, so a nonsense `?type=` gets the default instead of a
 		// number that would break the response on the way in.
 		const type = Number.parseInt(c.req.query('type') ?? '', 10)
 		const echoed = type >= 0 && type <= MAX_LIST_ENTITY_TYPE ? type : DEFAULT_ALGORITHMIC_LIST_TYPE
+
+		// `HotList` is real: it serves the same ranking the rooms worker's `/rooms/hot` feed
+		// does — live player count first, then engagement — so the Hot row on a discovery page
+		// shows the rooms people are actually in. Only the ids travel; the client resolves each
+		// room itself, which is why this reads the ranking and throws the room blobs away.
+		if (c.req.param('list').toLowerCase() === HOT_LIST_KEY) {
+			const { Results } = await getHotRooms(c.env.DB, '', 0, HOT_LIST_SIZE)
+			return c.json({
+				Type: echoed,
+				Entities: Results.map((room) => ({ Id: String(room.RoomId), Context: null })),
+			})
+		}
+
 		return c.json({ Type: echoed, Entities: ALGORITHMIC_LIST_ENTITIES })
 	})
 
