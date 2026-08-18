@@ -413,6 +413,28 @@ describe('rooms endpoints', () => {
 		await env.DB.prepare('DELETE FROM room WHERE room_id BETWEEN 30401 AND 30405').run()
 	})
 
+	it('GET /rooms/:roomId/experience serves the fixed XP settings, no auth', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/rooms/2/experience`)
+		expect(res.status).toBe(200)
+		// A bare two-key object — no `{ success, error, value }` envelope around it. Disabled:
+		// no room awards XP here, and DailyLimit is the cap that would apply if one did.
+		expect(await res.json()).toEqual({ Enabled: false, DailyLimit: 1000 })
+
+		// Nothing is stored per room, so every room answers the same — including one that
+		// doesn't exist, which is never looked up.
+		expect(await (await SELF.fetch(`${ORIGIN}/rooms/77/experience`)).json()).toEqual({
+			Enabled: false,
+			DailyLimit: 1000,
+		})
+		expect(await (await SELF.fetch(`${ORIGIN}/rooms/99999/experience`)).json()).toEqual({
+			Enabled: false,
+			DailyLimit: 1000,
+		})
+
+		// The id is digits-only, like the other room-scoped routes.
+		expect((await SELF.fetch(`${ORIGIN}/rooms/abc/experience`)).status).toBe(404)
+	})
+
 	it('GET /rooms/ownedby/:id returns an account public rooms (no auth)', async () => {
 		const res = await SELF.fetch(`${ORIGIN}/rooms/ownedby/1`)
 		expect(res.status).toBe(200)
@@ -3168,6 +3190,7 @@ describe('rooms endpoints', () => {
 			'GET /rooms/visitedby/{playerId}',
 			'GET /rooms/{roomId}',
 			'GET /rooms/{roomId}/bans',
+			'GET /rooms/{roomId}/experience',
 			'GET /rooms/{roomId}/experience/player',
 			'GET /rooms/{roomId}/interactionby/me',
 			'GET /rooms/{roomId}/playerdata/me',

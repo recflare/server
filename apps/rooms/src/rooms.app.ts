@@ -100,6 +100,7 @@ import {
 	RoomBanEnvelope,
 	RoomDto,
 	RoomEnvelope,
+	RoomExperience,
 	RoomExperiencePlayer,
 	roomIdParam,
 	RoomLookup,
@@ -584,6 +585,19 @@ async function ownedRoomsExcludingDorm(c: Context<App>) {
 	const rooms = await getRoomsByCreator(c.env.DB, accountId)
 	return c.json(rooms.filter((r) => r.IsDorm !== true))
 }
+
+/**
+ * The XP settings every room reports (`GET /rooms/{roomId}/experience`). Constants because
+ * nothing stores them per room and nothing enforces them: the `api` worker's progression
+ * grants XP without a room-scoped daily cap, so these are what the client is told, not a
+ * limit this server applies.
+ *
+ * Disabled, which is the honest answer here — no room awards XP. `DailyLimit` is kept at
+ * the reference's number rather than zeroed: it is the cap that WOULD apply, and the client
+ * reads both keys whatever `Enabled` says.
+ */
+const ROOM_XP_ENABLED = false
+const ROOM_XP_DAILY_LIMIT = 1000
 
 const app = new Hono<App>()
 	.use(
@@ -2787,6 +2801,33 @@ const app = new Hono<App>()
 			responses: { 200: json(PlayerDataDto, 'An empty data blob') },
 		}),
 		(c) => c.json({ Data: '' })
+	)
+
+	// A room's XP settings — whether players earn experience there and how much of it counts
+	// toward their day. Fixed values, the same for every room: progression lives in the `api`
+	// worker and applies no per-room daily cap, so there is nothing room-scoped to read and
+	// nothing here enforces the number. It is what the client displays and meters against.
+	//
+	// A bare two-key object, no `{ success, error, value }` envelope, and no auth — nothing
+	// in the answer is per-player (`experience/player` below is the per-player half). The
+	// room isn't looked up either: the answer would be the same for a room that doesn't
+	// exist, so a lookup would only add a way to fail.
+	.get(
+		'/rooms/:roomId{[0-9]+}/experience',
+		describeRoute({
+			tags: ['Rooms'],
+			summary: 'A room’s XP settings',
+			description: [
+				'Whether players earn XP in the room (`Enabled`) and how much of it counts toward a',
+				'day (`DailyLimit`), as a bare two-key object. Fixed values, and `Enabled` is FALSE —',
+				'no room awards XP here. Progression is the `api` worker’s and applies no per-room',
+				'cap, so nothing is stored per room and nothing enforces the limit; the client is what',
+				'reads it. No auth: the answer is the same for every caller and every room.',
+			].join(' '),
+			parameters: [roomIdParam],
+			responses: { 200: json(RoomExperience, 'The room’s XP settings — always the same') },
+		}),
+		(c) => c.json({ Enabled: ROOM_XP_ENABLED, DailyLimit: ROOM_XP_DAILY_LIMIT })
 	)
 
 	// The caller's per-room experience/progression. Stub → empty list.

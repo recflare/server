@@ -341,6 +341,19 @@ export const PagedRooms = z.object({
 })
 
 /**
+ * `GET /rooms/{roomId}/experience` — whether players earn XP in a room and how much of it
+ * counts in a day. A bare two-key object, no envelope.
+ *
+ * Nothing here meters per-room XP: progression is the `api` worker's, and it applies no
+ * room-scoped daily cap. So this is the config the client reads, not a limit this server
+ * enforces — the same answer for every room.
+ */
+export const RoomExperience = z.object({
+	Enabled: z.boolean().describe('Whether XP is earned in the room at all. Always false here'),
+	DailyLimit: z.int().describe('XP from this room that counts toward a player’s day'),
+})
+
+/**
  * `GET /dormroom/me` — the dorm's `RoomId` as a BARE JSON number, not a room and not an
  * envelope around one. The caller follows it with `GET /rooms/{roomId}` when it wants the
  * room itself, so sending the whole DTO here was a payload nobody read.
