@@ -1498,7 +1498,14 @@ export async function getRoomByName(db: D1Database, name: string): Promise<Room 
 	)
 }
 
-/** Look up multiple rooms by RoomId. */
+/**
+ * Look up multiple rooms by RoomId.
+ *
+ * Every id is bound into one query, so the CALLER must keep the list within D1's cap of 100
+ * bound parameters — `/rooms/bulk` rejects a longer request with a 400 rather than have this
+ * split it, since a client asking about more than a hundred rooms at once is asking the
+ * wrong question.
+ */
 export async function getRoomsByIds(db: D1Database, ids: number[]): Promise<Room[]> {
 	if (ids.length === 0) return []
 	const placeholders = ids.map((_, i) => `?${i + 1}`).join(',')

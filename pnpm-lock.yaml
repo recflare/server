@@ -663,6 +663,9 @@ importers:
 
   apps/lists:
     dependencies:
+      '@repo/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
       '@repo/hono-helpers':
         specifier: workspace:*
         version: link:../../packages/hono-helpers
@@ -900,6 +903,9 @@ importers:
       '@repo/hono-helpers':
         specifier: workspace:*
         version: link:../../packages/hono-helpers
+      '@repo/jwt':
+        specifier: workspace:*
+        version: link:../../packages/jwt
       hono:
         specifier: 4.12.27
         version: 4.12.27

@@ -33,7 +33,7 @@ export interface Account {
 	username: string
 	displayName: string
 	profileImage: string
-	/** Profile banner image key. No route sets it yet, so it's `""` on every account. */
+	/** Profile banner image key, set by `accounts` `PUT /account/me/bannerimage`. `""` until then. */
 	bannerImage: string
 	/** The emoji shown beside the display name. No route sets it yet — always `""`. */
 	displayEmoji: string
