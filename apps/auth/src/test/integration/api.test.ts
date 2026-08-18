@@ -1131,6 +1131,23 @@ describe('auth worker routes', () => {
 		expect(await rotate.json()).toEqual({ success: true })
 	})
 
+	test('GET /privileges/me/restrictions is an empty array for an unrestricted caller', async () => {
+		const token = await accessTokenFor('grant_type=create_account&platform_id=steam-restrict1')
+		const res = await exports.default.fetch(`${ORIGIN}/privileges/me/restrictions`, {
+			headers: { Authorization: `Bearer ${token}` },
+		})
+		expect(res.status).toBe(200)
+		// [] is the normal unrestricted answer — not null, not a 404: the client refills its
+		// list from this and acts on a record being present.
+		expect(await res.text()).toBe('[]')
+	})
+
+	test('GET /privileges/me/restrictions 401s without a token', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/privileges/me/restrictions`)
+		expect(res.status).toBe(401)
+		expect(await res.text()).toBe('')
+	})
+
 	test('GET /role/developer/:id returns a bare false for an un-flagged account', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/role/developer/42`)
 		expect(res.status).toBe(200)
@@ -1192,6 +1209,7 @@ describe('auth worker routes', () => {
 		expect([...documented].sort()).toEqual([
 			'GET /cachedlogin/forplatformid/{platform}/{id}',
 			'GET /eac/challenge',
+			'GET /privileges/me/restrictions',
 			'GET /role/developer/{id}',
 			'GET /role/moderator/{id}',
 			'POST /account/me/changepassword',

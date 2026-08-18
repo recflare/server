@@ -21,7 +21,14 @@ import {
 	updateAccount,
 	verifyPassword,
 } from '@repo/domain'
-import { intVar, logger, withCleanSpec, withDefaultCors, withNotFound, withOnError } from '@repo/hono-helpers'
+import {
+	intVar,
+	logger,
+	withCleanSpec,
+	withDefaultCors,
+	withNotFound,
+	withOnError,
+} from '@repo/hono-helpers'
 import { generateToken, TOKEN_TTL_SECONDS, validateAndGetAccountId } from '@repo/jwt'
 
 // The account-wide ban lives on a `report` row, whose table the api worker owns; its db
@@ -38,6 +45,7 @@ import {
 	OAuthError,
 	PlatformIdsRequest,
 	PlatformType,
+	RestrictionDto,
 	roleLookup,
 	TokenRequest,
 	TokenResponse,
@@ -1107,6 +1115,40 @@ const app = new Hono<App>()
 			const ok = await setPasswordHash(c.env.DB, id, await hashPassword(newPassword))
 			if (!ok) return c.body(null, 404)
 			return c.json({ success: true })
+		}
+	)
+
+	// The moderation restrictions on the caller's account — chat mutes and the like. STUB:
+	// nothing here issues restrictions, so every caller is unrestricted and the list is
+	// empty. An EMPTY ARRAY is the normal unrestricted answer, not null and not a 404: the
+	// client clears and refills its list from this, and acts on a record simply being
+	// present (plus its `EndDate`), so `[]` is a complete answer rather than a placeholder.
+	//
+	// When this is wired up, the display strings are free text — the client matches none of
+	// them — so only `EndDate` and the record's presence need to be right. See
+	// `RestrictionDto`.
+	.get(
+		'/privileges/me/restrictions',
+		describeRoute({
+			tags: ['Account'],
+			summary: 'The caller’s moderation restrictions',
+			description: [
+				'The restrictions in force on the caller’s account (a chat mute, say), as a bare array.',
+				'Always EMPTY here — nothing on this server issues restrictions — and an empty array is',
+				'the normal unrestricted answer, not null. The client refills its list from this and',
+				'acts on a record being present and its `EndDate`; the `Name`/`Description`/',
+				'`DisplayReason` strings are display text it matches nothing against.',
+			].join(' '),
+			security: [{ bearerAuth: [] }],
+			responses: {
+				200: json(RestrictionDto.array(), 'The caller’s restrictions — always empty'),
+				401: { description: 'Missing or invalid bearer token (empty body)' },
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return c.body(null, 401)
+			return c.json([])
 		}
 	)
 
