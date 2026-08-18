@@ -35,6 +35,7 @@ import {
 	getSubRoomSaveById,
 	getSubRoomSaves,
 	getVisitedRooms,
+	isPlayerBannedFromRoom,
 	modifySubRoom,
 	publishSubRoomSave,
 	removeCheer,
@@ -61,7 +62,7 @@ import {
 	withNotFound,
 	withOnError,
 } from '@repo/hono-helpers'
-import { validateAndGetAccountId, validateAndGetRoles } from '@repo/jwt'
+import { validateAndGetAccountId, validateAndGetRoles, validateAndGetVersion } from '@repo/jwt'
 
 // The notification-type ids the hub carries (owned by the `notify` worker). Imported
 // as a value — the enum has no runtime dependencies.
@@ -71,6 +72,7 @@ import {
 	AUTHED,
 	bannedPlayerIdParam,
 	BanRequest,
+	BulkRoomsRequest,
 	CloneRoomRequest,
 	CloningRequest,
 	CreateSubRoomRequest,
@@ -82,6 +84,7 @@ import {
 	ImageRequest,
 	InteractionDto,
 	intQuery,
+	IsBannedEnvelope,
 	json,
 	jsonBody,
 	LoadScreenRequest,
@@ -120,6 +123,7 @@ import {
 	SubRoomSavesNoUnityAssetsPage,
 	SubRoomSavesPage,
 	TagRequest,
+	TooManyLookupIds,
 	UNAUTHORIZED_EMPTY,
 	UNAUTHORIZED_ENVELOPE,
 	UNAUTHORIZED_RESPONSE,
@@ -149,6 +153,20 @@ function firstId(idParam: string): number | undefined {
 }
 
 /** Parse all valid integer ids from a comma-separated `id` query param. */
+/**
+ * How many rooms one bulk lookup may ask about. It is D1's cap on bound parameters, which
+ * `getRoomsByIds` binds one of per id: over it the query fails outright, so the request is
+ * refused with a 400 instead. Splitting the read would work, but a client asking about more
+ * than a hundred rooms in one call has lost track of what it is rendering — better it hears
+ * so than gets served.
+ */
+const MAX_BULK_ROOM_IDS = 100
+
+/** The 400 an over-cap bulk lookup answers, in the bare-string style the other 400 uses. */
+function tooManyIds(c: Context<App>) {
+	return c.json(`At most ${MAX_BULK_ROOM_IDS} room ids may be looked up at once`, 400)
+}
+
 function allIds(idParam: string): number[] {
 	return idParam
 		.split(',')
@@ -290,6 +308,34 @@ async function canReadSaves(
 async function authedAccountId(c: Context<App>): Promise<number | null> {
 	return validateAndGetAccountId(c.req.raw, await c.env.JWT_SECRET.get())
 }
+
+/**
+ * The client build this request's token was minted for (`rn.ver`), or null when there's no
+ * valid token. The claim is the build the CLIENT posted at login, not this server's
+ * GAME_VERSION, so it identifies what the player is actually running.
+ *
+ * It is unverified — a client can claim any build — which is fine for the one thing it is
+ * used for here: keeping a payload away from a build it breaks. Lying about your version to
+ * opt IN to a broken room list only breaks your own client.
+ */
+async function authedGameVersion(c: Context<App>): Promise<string | null> {
+	return validateAndGetVersion(c.req.raw, await c.env.JWT_SECRET.get())
+}
+
+/**
+ * The client builds `GET /featuredrooms/current` will serve a group to.
+ *
+ * Serving it to the 2023 client breaks the OTHER room listings — they start failing with
+ * NREs, apparently because the featured-room load corrupts its room cache — so the route
+ * was parked entirely for a while. It works on the 2025 build, so rather than stay parked
+ * it is gated: a build that isn't on this list gets the 404 it got when the path didn't
+ * exist, which is the state everything was known good in.
+ *
+ * An allow-list rather than a "this build or newer" comparison, deliberately: the thing
+ * being asserted is that a build was CHECKED, and a version string that sorts high (a
+ * debug build, say) must not opt itself in. Add a build here once it's been tried.
+ */
+const FEATURED_ROOMS_VERSIONS: ReadonlySet<string> = new Set(['20250718.01'])
 
 /**
  * Operator-granted elevated roles — the ones the auth worker stamps from an account's
@@ -838,28 +884,48 @@ const app = new Hono<App>()
 	// Featured rooms — a single always-active group whose `Rooms` are a randomly
 	// ordered set of public, non-dorm rooms. No real curation yet, so `current`
 	// just returns a shuffled list of eligible rooms in the featured-group shape.
-	// @todo This is not working. It somehow causes the other room listings to fail
-	// completely with NREs. I think it is the featured room load that is somehow
-	// corrupting the room cache. I tried sending the normal room shape but that
-	// did not seem to work.
+	//
+	// Gated on the caller's BUILD, not just their token: this payload breaks the 2023
+	// client — its other room listings start failing with NREs, apparently because the
+	// featured-room load corrupts the client's room cache — while the 2025 build renders it
+	// fine. So a build on FEATURED_ROOMS_VERSIONS gets the group and every other build gets
+	// a 404, which is exactly what it got while this path was parked and everything worked.
+	//
+	// Auth-gated for the version, really: the build comes off the token's `rn.ver` claim, so
+	// there is nowhere to read it from without one. Nothing in the answer is per-player.
 	.get(
-		'/XXXfeaturedrooms/current',
+		'/featuredrooms/current',
 		describeRoute({
 			tags: ['Discovery'],
-			summary: 'Featured rooms (parked — the path is deliberately broken)',
+			summary: 'Featured rooms',
 			description: [
 				'A single always-active group of featured rooms: a random shuffle of eligible public',
 				'rooms, since there is no editorial curation yet.',
 				'',
-				'**Parked.** The path the client calls is `/featuredrooms/current`; this is registered',
-				'under an `XXX` prefix so the client never reaches it. Serving it made the OTHER room',
-				'listings fail with NREs in the client, apparently by corrupting its room cache —',
-				'sending the normal room shape instead did not help. It stays registered so the shape',
-				'is documented and the route is one rename away once the cause is found.',
+				'Restricted by CLIENT BUILD. Serving this to the 2023 client breaks its other room',
+				'listings (NREs, apparently from the featured-room load corrupting its room cache), so',
+				'only the builds known to render it — `20250718.01` today — get the group; anything',
+				'else gets a 404, the same answer it got while the route was parked. The build is read',
+				'from the token’s `rn.ver` claim, which is why this needs a token at all: nothing in',
+				'the group itself is per-player.',
 			].join('\n'),
-			responses: { 200: json(FeaturedRoomGroupDto, 'The featured-room group') },
+			security: AUTHED,
+			responses: {
+				200: json(FeaturedRoomGroupDto, 'The featured-room group'),
+				401: UNAUTHORIZED_RESPONSE,
+				404: { description: 'The caller’s client build is not one this is served to' },
+			},
 		}),
 		async (c) => {
+			const accountId = await authedAccountId(c)
+			if (accountId === null) return unauthorized(c)
+
+			const version = await authedGameVersion(c)
+			if (version === null || !FEATURED_ROOMS_VERSIONS.has(version)) {
+				logger.info('featured rooms withheld: unsupported client build', { accountId, version })
+				return c.notFound()
+			}
+
 			return c.json(await getFeaturedRooms(c.env.DB))
 		}
 	)
@@ -883,7 +949,10 @@ const app = new Hono<App>()
 			],
 			responses: {
 				200: json(RoomDto.array(), 'The rooms that matched (missing ids are omitted)'),
-				400: json(MissingLookupParam, 'Neither `id` nor `name` was supplied'),
+				400: json(
+					MissingLookupParam,
+					'Neither `id` nor `name` was supplied, or more than 100 ids were'
+				),
 			},
 		}),
 		async (c) => {
@@ -893,10 +962,64 @@ const app = new Hono<App>()
 				return c.json("Either 'id' or 'name' query parameter is required", 400)
 			}
 			if (idParam) {
-				return c.json(await getRoomsByIds(c.env.DB, allIds(idParam)))
+				const ids = allIds(idParam)
+				if (ids.length > MAX_BULK_ROOM_IDS) return tooManyIds(c)
+				return c.json(await getRoomsByIds(c.env.DB, ids))
 			}
 			const room = await getRoomByName(c.env.DB, nameParam ?? '')
 			return c.json(room ? [room] : [])
+		}
+	)
+
+	// The same bulk lookup as a POST, which is the form the client sends: the ids ride in a
+	// form-urlencoded body of repeated `id` fields (`id=888&id=532&…`) rather than a query
+	// string, because it asks for a whole room list at once — 70-odd ids in the wild.
+	//
+	// `excludePrivateRooms=True` drops rooms that are not publicly visible; the client sends
+	// `False`, and absent means False, which is also what the GET does. Note this is a filter
+	// the CALLER asks for, not an access check: a room id is not a secret (the client only
+	// has ids it was already given), and the GET has always answered by id regardless of
+	// accessibility — a player's own unpublished room has to resolve here or it vanishes from
+	// their lists.
+	.post(
+		'/rooms/bulk',
+		describeRoute({
+			tags: ['Rooms'],
+			summary: 'Look up several rooms at once (bulk POST)',
+			description: [
+				'Rooms by id, as a form body of repeated `id` fields — the form the client sends, since',
+				'it asks about a whole room list at once. Ids that aren’t in D1 are simply absent from',
+				'the result rather than an error, so the array can be shorter than the request. At most',
+				'100 ids per call (D1 binds one parameter each); more is a 400.',
+				'',
+				'`excludePrivateRooms=True` drops rooms that are not publicly visible. It is a filter',
+				'the caller asks for, not an access check — like the GET, this answers by id whatever',
+				'the room’s accessibility, which is what makes a player’s own unpublished room resolve.',
+			].join('\n'),
+			requestBody: form(BulkRoomsRequest, 'The room ids, plus the optional filter'),
+			responses: {
+				200: json(RoomDto.array(), 'The rooms that matched (missing ids are omitted)'),
+				400: json(TooManyLookupIds, 'More than 100 ids were asked for'),
+			},
+		}),
+		async (c) => {
+			const body = await c.req.parseBody({ all: true }).catch(() => ({}) as Record<string, unknown>)
+			const field = (name: string): string[] => {
+				const key = Object.keys(body).find((k) => k.toLowerCase() === name.toLowerCase())
+				const value = key === undefined ? [] : body[key]
+				return (Array.isArray(value) ? value : [value]).filter(
+					(v): v is string => typeof v === 'string'
+				)
+			}
+
+			// Repeated fields, and each value may itself be comma-separated — the GET's spelling,
+			// accepted here too so one body shape doesn't have to be guessed at.
+			const ids = field('id').flatMap(allIds)
+			if (ids.length > MAX_BULK_ROOM_IDS) return tooManyIds(c)
+			const rooms = await getRoomsByIds(c.env.DB, ids)
+
+			const excludePrivate = (field('excludePrivateRooms')[0] ?? '').toLowerCase() === 'true'
+			return c.json(excludePrivate ? rooms.filter((r) => r.Accessibility === 1) : rooms)
 		}
 	)
 
@@ -1803,6 +1926,66 @@ const app = new Hono<App>()
 			const roomName = typeof room.Name === 'string' ? room.Name : 'this room'
 			await pushRoomBan(c, ban, roomName, isHostKick)
 			return banEnvelope(c, ban)
+		}
+	)
+
+	// Is this player banned from this room? The client asks before offering someone a room
+	// action, so it can grey it out rather than let the attempt fail.
+	//
+	// The path is the client's, verbatim: `/Room_server/…`, capitalised and underscored,
+	// unlike the `/roomserver/rooms/createdby/me` alias elsewhere. Hono matches
+	// case-sensitively, so it is registered exactly as the client spells it.
+	//
+	// Answers the `{ success, error, error_id, value }` envelope — NOT the room mutations'
+	// `{ success, error, value }`: this one carries `error_id`, and its `error` is null where
+	// theirs is an empty string. `success` is whether the CHECK ran, not the answer; the
+	// answer is `value`.
+	//
+	// Auth-gated but not owner-gated: a player about to interact with someone needs this, and
+	// a ban is not a secret from the person it would stop.
+	.get(
+		'/Room_server/rooms/:roomId{[0-9]+}/bans/:playerId{[0-9]+}/isBanned',
+		describeRoute({
+			tags: ['Room settings'],
+			summary: 'Whether a player is banned from a room',
+			description: [
+				'Whether `playerId` is banned from `roomId`, read from the same `room_ban` rows the',
+				'ban routes write and `match` refuses matchmakes on — so it answers what would',
+				'actually happen, not a stub.',
+				'',
+				'The envelope is `{ success, error, error_id, value }`: `success` says the check ran,',
+				'`value` is the answer. It is NOT the room mutations’ envelope — that one has no',
+				'`error_id` and uses `""` where this uses null.',
+				'',
+				'Auth-gated, but any authenticated caller may ask: a ban is not a secret from the',
+				'player it stops. The path is the client’s own capitalised `/Room_server/` spelling.',
+			].join('\n'),
+			security: AUTHED,
+			parameters: [
+				roomIdParam,
+				{
+					name: 'playerId',
+					in: 'path',
+					required: true,
+					description: 'The account being asked about',
+					schema: { type: 'string', pattern: '^[0-9]+$' },
+				},
+			],
+			responses: {
+				200: json(IsBannedEnvelope, 'Whether that player is banned from that room'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const accountId = await authedAccountId(c)
+			if (accountId === null) return unauthorized(c)
+
+			const banned = await isPlayerBannedFromRoom(
+				c.env.DB,
+				Number.parseInt(c.req.param('roomId'), 10),
+				Number.parseInt(c.req.param('playerId'), 10)
+			)
+			return c.json({ success: true, error: null, error_id: null, value: banned })
 		}
 	)
 

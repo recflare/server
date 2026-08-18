@@ -34,10 +34,22 @@ function b64url(input: ArrayBuffer | string): string {
 }
 // `roles` mints the `role` claim the auth worker stamps from an account's flags; left
 // off, the token carries none — what a plain player's looks like to the role gates.
-async function bearer(sub: string, roles?: string[]): Promise<Record<string, string>> {
+async function bearer(
+	sub: string,
+	roles?: string[],
+	// The client build the token was minted for (`rn.ver`), which is what
+	// `/featuredrooms/current` gates on. Omitted by default, like a token from a grant that
+	// posted no `ver`.
+	version?: string
+): Promise<Record<string, string>> {
 	const now = Math.floor(Date.now() / 1000)
 	const signingInput = `${b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))}.${b64url(
-		JSON.stringify({ sub, exp: now + 3600, ...(roles && { role: roles }) })
+		JSON.stringify({
+			sub,
+			exp: now + 3600,
+			...(roles && { role: roles }),
+			...(version && { 'rn.ver': version }),
+		})
 	)}`
 	const key = await crypto.subtle.importKey(
 		'raw',
@@ -211,6 +223,62 @@ describe('rooms endpoints', () => {
 		const res = await SELF.fetch(`${ORIGIN}/rooms/bulk?name=RecCenter`)
 		const body = (await res.json()) as Array<{ Name: string }>
 		expect(body.map((r) => r.Name)).toEqual(['RecCenter'])
+	})
+
+	it('POST /rooms/bulk takes repeated id fields in a form body', async () => {
+		const post = async (body: string) =>
+			SELF.fetch(`${ORIGIN}/rooms/bulk`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+				body,
+			})
+
+		// The client's form: one `id` per room, plus the filter. An id that isn't in D1 is
+		// simply absent, so the answer can be shorter than the request.
+		const res = await post('id=1&id=2&id=999999&excludePrivateRooms=False')
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as Array<{ RoomId: number; Name: string }>
+		expect(body.map((r) => r.Name).sort()).toEqual(['DormRoom', 'RecCenter'])
+
+		// Comma-separated values inside an `id` work too, as they do on the GET.
+		const commas = (await (await post('id=1,2')).json()) as Array<{ Name: string }>
+		expect(commas.map((r) => r.Name).sort()).toEqual(['DormRoom', 'RecCenter'])
+
+		// `excludePrivateRooms=True` drops the non-public rooms — the dorm here.
+		const publicOnly = (await (await post('id=1&id=2&excludePrivateRooms=True')).json()) as Array<{
+			Name: string
+			Accessibility: number
+		}>
+		expect(publicOnly.map((r) => r.Name)).toEqual(['RecCenter'])
+		expect(publicOnly.every((r) => r.Accessibility === 1)).toBe(true)
+
+		// No ids is an empty array, not a 400 — unlike the GET, which needs an `id` or `name`.
+		expect(await (await post('excludePrivateRooms=False')).json()).toEqual([])
+
+		// D1 binds one parameter per id and caps a query at 100, so a longer list is refused
+		// rather than split — a caller asking about more than a hundred rooms at once has lost
+		// track of what it is rendering.
+		const idList = (n: number) => Array.from({ length: n }, (_, i) => 500000 + i)
+		expect(
+			(
+				await post(
+					idList(100)
+						.map((id) => `id=${id}`)
+						.join('&')
+				)
+			).status
+		).toBe(200)
+		const overCap = await post(
+			idList(101)
+				.map((id) => `id=${id}`)
+				.join('&')
+		)
+		expect(overCap.status).toBe(400)
+		expect(await overCap.json()).toBe('At most 100 room ids may be looked up at once')
+
+		// The GET form has the same cap, counting the ids inside its comma-separated `id`.
+		const overCapGet = await SELF.fetch(`${ORIGIN}/rooms/bulk?id=${idList(101).join(',')}`)
+		expect(overCapGet.status).toBe(400)
 	})
 
 	it('GET /rooms/ownedby/me is auth-gated and scoped to the caller', async () => {
@@ -394,7 +462,7 @@ describe('rooms endpoints', () => {
 		const rooms = (await res.json()) as Array<{ RoomId: number; Name: string }>
 		// A bare array of the canonical room DTO — no envelope, no paging wrapper.
 		expect(Array.isArray(rooms)).toBe(true)
-		expect(rooms.map((r) => r.RoomId).sort()).toEqual([30401, 30402])
+		expect(rooms.map((r) => r.RoomId).sort((a, b) => a - b)).toEqual([30401, 30402])
 		// The caller's OWN room is excluded, or this would just repeat createdby/me.
 		expect(rooms.some((r) => r.RoomId === 30403)).toBe(false)
 		expect(rooms[0]).toMatchObject({ Name: expect.any(String), Accessibility: expect.any(Number) })
@@ -899,13 +967,13 @@ describe('rooms endpoints', () => {
 		expect(body.length).toBeLessThanOrEqual(3)
 	})
 
-	// Skipped: the endpoint is disabled. Serving it broke the client — the other room
-	// listings started failing with NREs, apparently because the featured-room load
-	// corrupts the client's room cache — so the route is registered under an `XXX`
-	// prefix (see rooms.app.ts) and this path 404s. The handler and its test are kept
-	// intact for whenever the cause is found; un-prefix the route to re-enable both.
-	it.skip('GET /featuredrooms/current returns a featured-room group of public rooms', async () => {
-		const res = await SELF.fetch(`${ORIGIN}/featuredrooms/current`)
+	// Served only to the client builds that render it — the 2023 client's other room
+	// listings start failing with NREs when it gets this payload, which is why the route
+	// was parked entirely for a while (see FEATURED_ROOMS_VERSIONS in rooms.app.ts).
+	it('GET /featuredrooms/current serves the group to a supported client build', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/featuredrooms/current`, {
+			headers: await bearer('1', undefined, '20250718.01'),
+		})
 		expect(res.status).toBe(200)
 		const body = (await res.json()) as {
 			FeaturedRoomGroupId: number
@@ -921,6 +989,20 @@ describe('rooms endpoints', () => {
 		expect(body.Rooms.every((r) => typeof r.RoomName === 'string')).toBe(true)
 		// The dorm (RoomId 1) is non-public, so it's never featured.
 		expect(body.Rooms.some((r) => r.RoomId === 1)).toBe(false)
+	})
+
+	it('GET /featuredrooms/current withholds the group from other client builds', async () => {
+		// The 2023 build gets the 404 it got while the route was parked — the state in which
+		// its room listings work. Same for a token with no `rn.ver` at all.
+		for (const version of ['20230414', '20231207', undefined]) {
+			const res = await SELF.fetch(`${ORIGIN}/featuredrooms/current`, {
+				headers: await bearer('1', undefined, version),
+			})
+			expect(res.status, `build ${version}`).toBe(404)
+		}
+
+		// And no token at all is a 401, not a 404: the build is read off the token.
+		expect((await SELF.fetch(`${ORIGIN}/featuredrooms/current`)).status).toBe(401)
 	})
 
 	it('GET /rooms/:id/similar returns { Results, TotalResults } of tag-sharing rooms (excluding self)', async () => {
@@ -1409,6 +1491,46 @@ describe('rooms endpoints', () => {
 		})
 		// Nothing was written by any of the refusals.
 		expect(await bansOf(2)).toHaveLength(2)
+	})
+
+	it('GET /Room_server/rooms/:id/bans/:playerId/isBanned answers the real ban state', async () => {
+		const isBanned = async (roomId: number, playerId: number, sub = '300') =>
+			SELF.fetch(`${ORIGIN}/Room_server/rooms/${roomId}/bans/${playerId}/isBanned`, {
+				headers: await bearer(sub),
+			})
+
+		// Auth-gated, but any authenticated caller may ask — a ban is not a secret from the
+		// player it stops.
+		expect((await SELF.fetch(`${ORIGIN}/Room_server/rooms/2/bans/205/isBanned`)).status).toBe(401)
+
+		// Nobody is banned from room 3.
+		const clean = await isBanned(3, 4242)
+		expect(clean.status).toBe(200)
+		// `success` says the CHECK ran; `value` is the answer. Note `error_id` is present and
+		// `error` is null — not the room mutations' `{ success, error, value }` with `""`.
+		expect(await clean.json()).toEqual({
+			success: true,
+			error: null,
+			error_id: null,
+			value: false,
+		})
+
+		// Ban someone from room 3, and the same call now says so.
+		await env.DB.prepare(
+			'INSERT INTO room_ban (room_id, banned_player_id, ban_mask, banned_by_account_id, created_at)' +
+				" VALUES (?1, ?2, 0, 1, '2026-01-01T00:00:00Z')"
+		)
+			.bind(3, 4242)
+			.run()
+		expect(await (await isBanned(3, 4242)).json()).toMatchObject({ success: true, value: true })
+
+		// The ban is per (room, player): another room and another player are unaffected.
+		expect(await (await isBanned(2, 4242)).json()).toMatchObject({ value: false })
+		expect(await (await isBanned(3, 4243)).json()).toMatchObject({ value: false })
+
+		await env.DB.prepare('DELETE FROM room_ban WHERE room_id = ?1 AND banned_player_id = ?2')
+			.bind(3, 4242)
+			.run()
 	})
 
 	it('POST /rooms/:id/bans kicks the banned player', async () => {
@@ -3211,8 +3333,9 @@ describe('rooms endpoints', () => {
 			'DELETE /rooms/{roomId}/interactionby/me/favorite',
 			'DELETE /rooms/{roomId}/subrooms/{subRoomId}',
 			'GET /',
-			'GET /XXXfeaturedrooms/current',
+			'GET /Room_server/rooms/{roomId}/bans/{playerId}/isBanned',
 			'GET /dormroom/me',
+			'GET /featuredrooms/current',
 			'GET /photon_access_token',
 			'GET /publishState/configs',
 			'GET /rooms',
@@ -3240,6 +3363,7 @@ describe('rooms endpoints', () => {
 			'GET /rooms/{roomId}/subrooms/{subRoomId}/saves/no_unity_assets',
 			'GET /rooms/{roomId}/subrooms/{subRoomId}/saves/{saveId}',
 			'GET /roomserver/rooms/createdby/me',
+			'POST /rooms/bulk',
 			'POST /rooms/{roomId}/bans',
 			'POST /rooms/{roomId}/clone',
 			'POST /rooms/{roomId}/subrooms',

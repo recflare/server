@@ -380,6 +380,25 @@ export const MissingLookupParam = z
 	.string()
 	.describe("`\"Either 'id' or 'name' query parameter is required\"`")
 
+/**
+ * `GET /Room_server/rooms/{roomId}/bans/{playerId}/isBanned` — the ban check's envelope.
+ *
+ * NOT the `{ success, error, value }` the room mutations answer with: this one carries an
+ * `error_id` as well, and its `error` is NULL rather than the empty string those use. Same
+ * distinction the client's other envelopes draw, so don't unify them.
+ */
+export const IsBannedEnvelope = z.object({
+	success: z.literal(true).describe('The check ran; whether the player is banned is `value`'),
+	error: z.string().nullable().describe('Null — the check itself does not fail'),
+	error_id: z.string().nullable().describe('Null. Present as a key, unlike the room envelope'),
+	value: z.boolean().describe('Whether that player is banned from that room'),
+})
+
+/** The bare JSON string the bulk lookups answer when the id list is over the cap. */
+export const TooManyLookupIds = z
+	.string()
+	.describe('`"At most 100 room ids may be looked up at once"`')
+
 // ---- Interaction -----------------------------------------------------------
 
 /**
@@ -539,6 +558,19 @@ export const WarningRequest = z.object({
 /** `PUT /rooms/{roomId}/cloning`. */
 export const CloningRequest = z.object({
 	cloningAllowed: z.string().describe('`True` / `False`'),
+})
+
+/**
+ * `POST /rooms/bulk` form body — the room ids to look up, as a REPEATED `id` field
+ * (`id=888&id=532&…`), one value per id. This is how the client asks for a whole room list
+ * at once (70-odd ids in the wild), which is more than belongs in a query string.
+ */
+export const BulkRoomsRequest = z.object({
+	id: z.string().describe('Repeated once per room id; each value may also be comma-separated'),
+	excludePrivateRooms: z
+		.string()
+		.optional()
+		.describe('`True` drops rooms that are not publicly visible. Default `False`'),
 })
 
 /**
