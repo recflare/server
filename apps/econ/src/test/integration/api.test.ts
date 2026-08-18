@@ -1167,6 +1167,357 @@ describe('econ endpoints', () => {
 		expect(list.every((i) => i.friendlyName !== 'Bowtie (White)')).toBe(true)
 	})
 
+	// ---- POST /api/items/bulkpurchase ------------------------------------------------
+	// The shopping bag: many lines, one storefront, one currency, one debit. Its response is
+	// NOT buyItem's — it is the `{ Success, Error, error_id, Value }` envelope, `Value.Balance`
+	// is the RESULTING total rather than the change, and each `BalanceUpdates` entry carries
+	// its own `UpdateResponse` (0 OK, 2 NotEnoughCredit, 4 NoItemAvailable, 5
+	// CouponNotApplicable, 6 RequestedPriceDoesNotMatch, 7 RequestedAmountNotAllowed).
+
+	/** The shape every bulk-purchase response answers with. */
+	type BulkBody = {
+		Success: boolean
+		Error: string | null
+		error_id: string | null
+		Value: {
+			Balance: number
+			CurrencyType: number
+			Platform: number
+			BalanceUpdates: Array<{
+				UpdateResponse: number
+				Data: {
+					GiftPackage: Record<string, unknown> | null
+					PurchasableItemId: number | null
+					CustomAvatarItem: null
+				}
+			}>
+		} | null
+	}
+
+	/** A bag line, in the shape the client posts one. */
+	const line = (numberId: number, requestedPrice: number, extra: Record<string, unknown> = {}) => ({
+		ItemPurchaseMethodId: { Type: 0, NumberId: numberId, Guid: null },
+		RequestedPrice: requestedPrice,
+		Gift: null,
+		CouponConsumablePlayerMappingId: null,
+		DuplicateItemCount: 1,
+		...extra,
+	})
+
+	const bulkPurchase = async (sub: string, body: Record<string, unknown>) =>
+		exports.default.fetch(`${ORIGIN}/api/items/bulkpurchase`, {
+			method: 'POST',
+			headers: { ...(await bearer(sub)), 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				StorefrontType: 3,
+				CurrencyType: 2,
+				BypassGiftPackages: false,
+				AllowPartialSuccess: true,
+				ShoppingBagId: null,
+				...body,
+			}),
+		})
+
+	/** The `UpdateResponse` of every entry, in request order. */
+	const codes = (body: BulkBody) => body.Value!.BalanceUpdates.map((u) => u.UpdateResponse)
+
+	test('POST /api/items/bulkpurchase 401s without a token', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/items/bulkpurchase`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				PurchaseItemRequests: [line(10, 200)],
+				StorefrontType: 3,
+				CurrencyType: 2,
+			}),
+		})
+		expect(res.status).toBe(401)
+	})
+
+	test('POST /api/items/bulkpurchase debits the bag once and grants every line', async () => {
+		// Account 90: fresh, so its first balance touch grants the 10000 default. Three donuts
+		// (a consumable, 100 each — consumables are the only thing that stacks) and one dress
+		// (an avatar item, 200) — 500 in total.
+		await drainFrames()
+		const res = await bulkPurchase('90', {
+			PurchaseItemRequests: [line(2182, 100, { DuplicateItemCount: 3 }), line(10, 200)],
+			ShoppingBagId: 'bag-1',
+		})
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as BulkBody
+		expect(body.Success).toBe(true)
+		expect(body.Error).toBe(null)
+		expect(body.error_id).toBe(null)
+		const value = body.Value!
+		// `Balance` here is the RESULTING total (10000 - 500), unlike buyItem's change. The
+		// bucket is -2, the one `GET /balance` reports — the reference server's 4
+		// (RecNetPurchased) would read as a second balance the client adds to the real one.
+		expect(value.Balance).toBe(9500)
+		expect(value.CurrencyType).toBe(2)
+		expect(value.Platform).toBe(-2)
+
+		// ONE entry per REQUESTED item — three donuts are one line, so one entry — in order.
+		expect(value.BalanceUpdates).toHaveLength(2)
+		expect(codes(body)).toEqual([0, 0])
+		expect(value.BalanceUpdates.map((u) => u.Data.PurchasableItemId)).toEqual([2182, 10])
+		expect(value.BalanceUpdates.every((u) => u.Data.CustomAvatarItem === null)).toBe(true)
+		// The box each line produced, as `GiftPackage` carries it: 20 keys, the receiver in
+		// `PlayerId`, a self-buy attributed to the "Coach" account (1), and the platform MASK in
+		// `Platform` — the balance bucket is the `BalanceType` beside it.
+		const box = value.BalanceUpdates[0].Data.GiftPackage!
+		expect(Object.keys(box)).toEqual([
+			'Id',
+			'PlayerId',
+			'FromPlayerId',
+			'ConsumableItemDesc',
+			'AvatarItemType',
+			'AvatarItemDesc',
+			'CustomAvatarItemId',
+			'EquipmentPrefabName',
+			'EquipmentModificationGuid',
+			'CurrencyType',
+			'Currency',
+			'Xp',
+			'GiftContext',
+			'GiftRarity',
+			'Message',
+			'Signature',
+			'IsSignatureValid',
+			'Platform',
+			'PlatformsToSpawnOn',
+			'BalanceType',
+		])
+		expect(box.Id).toBeGreaterThan(0)
+		expect(box.PlayerId).toBe(90)
+		expect(box.FromPlayerId).toBe(1)
+		expect(box.ConsumableItemDesc).not.toBe('')
+		expect(box.Platform).toBe(-1)
+		expect(box.BalanceType).toBe(-2)
+		expect(value.BalanceUpdates[1].Data.GiftPackage!.AvatarItemDesc).not.toBe('')
+
+		// ONE frame for the whole bag, setting the account-wide bucket to the resulting total —
+		// the same 9500 the body reports, so the two agree instead of compounding.
+		expect(await drainFrames()).toEqual([
+			{
+				accountId: 90,
+				notificationType: NotificationType.StorefrontBalancePurchase,
+				payload: {
+					BalanceAddType: 1400,
+					Delta: -500,
+					Balance: 9500,
+					Platform: -2,
+					CurrencyType: 2,
+				},
+			},
+		])
+		expect(
+			await getBalance(env.DB, 90, CurrencyType.RecCenterTokens, DEFAULT_STARTING_TOKENS)
+		).toBe(9500)
+
+		// Everything landed: the dress is owned, all three donuts stacked into the one box's
+		// grant, and each LINE left one gift box.
+		const items = await exports.default.fetch(`${ORIGIN}/api/avatar/v4/items`, {
+			headers: await bearer('90'),
+		})
+		const list = (await items.json()) as Array<{ friendlyName: string }>
+		expect(list[0].friendlyName).toBe('Babydoll Dress (Blue)')
+		const unlocked = await exports.default.fetch(`${ORIGIN}/api/consumables/v2/getUnlocked`, {
+			headers: await bearer('90'),
+		})
+		const consumables = (await unlocked.json()) as Array<{ Count: number }>
+		expect(consumables[0].Count).toBe(3)
+		const gifts = await exports.default.fetch(`${ORIGIN}/api/avatar/v2/gifts`, {
+			headers: await bearer('90'),
+		})
+		const pending = (await gifts.json()) as Array<{ Id: number }>
+		expect(pending.map((g) => g.Id)).toEqual(
+			value.BalanceUpdates.map((u) => u.Data.GiftPackage!.Id)
+		)
+	})
+
+	test('POST /api/items/bulkpurchase buys the good lines when partial success is allowed', async () => {
+		// The second line's price no longer matches the catalog (200, not 1). The bag still
+		// succeeds — that entry just comes back non-OK, which is what AllowPartialSuccess means.
+		const res = await bulkPurchase('91', {
+			PurchaseItemRequests: [line(10, 200), line(80, 1)],
+		})
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as BulkBody
+		expect(body.Success).toBe(true)
+		expect(body.Error).toBe(null)
+		expect(body.Value!.Balance).toBe(9800)
+		// 6 = RequestedPriceDoesNotMatch. The failed line still names the item it asked for.
+		expect(codes(body)).toEqual([0, 6])
+		expect(body.Value!.BalanceUpdates[1].Data).toEqual({
+			GiftPackage: null,
+			PurchasableItemId: 80,
+			CustomAvatarItem: null,
+		})
+		expect(
+			await getBalance(env.DB, 91, CurrencyType.RecCenterTokens, DEFAULT_STARTING_TOKENS)
+		).toBe(9800)
+	})
+
+	test('POST /api/items/bulkpurchase charges nothing when a line fails and partial success is off', async () => {
+		await drainFrames()
+		const res = await bulkPurchase('92', {
+			AllowPartialSuccess: false,
+			PurchaseItemRequests: [line(10, 200), line(80, 1)],
+		})
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as BulkBody
+		expect(body.Success).toBe(false)
+		expect(body.Error).toBe('Price has changed')
+		expect(body.Value).toBe(null)
+		// Untouched: no debit, no item, and no frame for a purchase that did not happen.
+		expect(
+			await getBalance(env.DB, 92, CurrencyType.RecCenterTokens, DEFAULT_STARTING_TOKENS)
+		).toBe(10000)
+		const items = await exports.default.fetch(`${ORIGIN}/api/avatar/v4/items`, {
+			headers: await bearer('92'),
+		})
+		const list = (await items.json()) as Array<{ friendlyName: string }>
+		expect(list.every((i) => i.friendlyName !== 'Babydoll Dress (Blue)')).toBe(true)
+		expect(await drainFrames()).toEqual([])
+	})
+
+	test('POST /api/items/bulkpurchase takes the lines that fit, in request order', async () => {
+		// Leave account 93 with 250 tokens: enough for the first 200-token line, not both.
+		await getBalance(env.DB, 93, CurrencyType.RecCenterTokens, DEFAULT_STARTING_TOKENS)
+		expect(
+			await spendCurrency(env.DB, 93, CurrencyType.RecCenterTokens, 9750, DEFAULT_STARTING_TOKENS)
+		).toBe(true)
+		const res = await bulkPurchase('93', {
+			PurchaseItemRequests: [line(10, 200), line(80, 200)],
+		})
+		const body = (await res.json()) as BulkBody
+		expect(body.Success).toBe(true)
+		expect(body.Value!.Balance).toBe(50)
+		// 2 = NotEnoughCredit for the line the balance no longer covered.
+		expect(codes(body)).toEqual([0, 2])
+		expect(body.Value!.BalanceUpdates[1].Data.GiftPackage).toBe(null)
+		expect(
+			await getBalance(env.DB, 93, CurrencyType.RecCenterTokens, DEFAULT_STARTING_TOKENS)
+		).toBe(50)
+	})
+
+	test('POST /api/items/bulkpurchase fails the whole bag it cannot afford when partial success is off', async () => {
+		await getBalance(env.DB, 94, CurrencyType.RecCenterTokens, DEFAULT_STARTING_TOKENS)
+		expect(
+			await spendCurrency(env.DB, 94, CurrencyType.RecCenterTokens, 9750, DEFAULT_STARTING_TOKENS)
+		).toBe(true)
+		const res = await bulkPurchase('94', {
+			AllowPartialSuccess: false,
+			PurchaseItemRequests: [line(10, 200), line(80, 200)],
+		})
+		const body = (await res.json()) as BulkBody
+		// Even the line that would have fitted is refused: all of it or none.
+		expect(body.Success).toBe(false)
+		expect(body.Error).toBe('Insufficient balance')
+		expect(body.Value).toBe(null)
+		expect(
+			await getBalance(env.DB, 94, CurrencyType.RecCenterTokens, DEFAULT_STARTING_TOKENS)
+		).toBe(250)
+	})
+
+	test('POST /api/items/bulkpurchase grants without gift boxes when BypassGiftPackages is set', async () => {
+		const res = await bulkPurchase('95', {
+			BypassGiftPackages: true,
+			PurchaseItemRequests: [line(10, 200)],
+		})
+		const body = (await res.json()) as BulkBody
+		expect(body.Success).toBe(true)
+		expect(body.Value!.Balance).toBe(9800)
+		// No box was created, so there is none to hand back — the capture's null GiftPackage.
+		expect(body.Value!.BalanceUpdates[0]).toEqual({
+			UpdateResponse: 0,
+			Data: { GiftPackage: null, PurchasableItemId: 10, CustomAvatarItem: null },
+		})
+		const gifts = await exports.default.fetch(`${ORIGIN}/api/avatar/v2/gifts`, {
+			headers: await bearer('95'),
+		})
+		expect((await gifts.json()) as unknown[]).toEqual([])
+		// Ownership never depended on the box: the item is owned all the same.
+		const items = await exports.default.fetch(`${ORIGIN}/api/avatar/v4/items`, {
+			headers: await bearer('95'),
+		})
+		const list = (await items.json()) as Array<{ friendlyName: string }>
+		expect(list[0].friendlyName).toBe('Babydoll Dress (Blue)')
+	})
+
+	test('POST /api/items/bulkpurchase reports per line what it cannot sell', async () => {
+		await drainFrames()
+		const res = await bulkPurchase('96', {
+			PurchaseItemRequests: [
+				// A guid-keyed (UGC) item — nothing here sells one, and it has no NumberId to echo.
+				line(0, 200, {
+					ItemPurchaseMethodId: { Type: 1, NumberId: null, Guid: 'a3f1-not-a-catalog-item' },
+				}),
+				// Nothing issues coupons, so a line claiming one is refused rather than charged full
+				// price for a discount it thinks it applied.
+				line(10, 200, { CouponConsumablePlayerMappingId: 4242 }),
+				line(999999, 200),
+				line(10, 200, { DuplicateItemCount: 0 }),
+				// An avatar item is owned once — a second copy would grant nothing and charge for it.
+				line(80, 200, { DuplicateItemCount: 2 }),
+				// The catalog prices this item in RecCenterTokens only.
+				line(2182, 100),
+				// …and one that works, so the bag is a partial success rather than a refusal.
+				line(10, 200),
+			],
+			CurrencyType: 2,
+		})
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as BulkBody
+		expect(body.Success).toBe(true)
+		// 4 NoItemAvailable, 5 CouponNotApplicable, 4 NoItemAvailable, 7/7
+		// RequestedAmountNotAllowed, 0 OK (the donuts do price in tokens), 0 OK.
+		expect(codes(body)).toEqual([4, 5, 4, 7, 7, 0, 0])
+		expect(body.Value!.BalanceUpdates[0].Data.PurchasableItemId).toBe(null)
+		// Only the two OK lines were charged (100 + 200).
+		expect(body.Value!.Balance).toBe(9700)
+		expect(await drainFrames()).toHaveLength(1)
+	})
+
+	test('POST /api/items/bulkpurchase refuses a bag where nothing sells', async () => {
+		const res = await bulkPurchase('97', {
+			CurrencyType: CurrencyType.LaserTagTickets,
+			PurchaseItemRequests: [line(10, 200)],
+		})
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as BulkBody
+		// Nothing was bought, so this is a refusal rather than a bag of non-OK entries.
+		expect(body.Success).toBe(false)
+		expect(body.Error).toBe('Currency type not available for this item')
+		expect(body.Value).toBe(null)
+	})
+
+	test('POST /api/items/bulkpurchase 400s on a request it cannot evaluate', async () => {
+		// Same envelope on a 400, so a client that only parses this shape still reads the error.
+		const empty = await bulkPurchase('98', { PurchaseItemRequests: [] })
+		expect(empty.status).toBe(400)
+		const emptyBody = (await empty.json()) as BulkBody
+		expect(emptyBody).toMatchObject({ Success: false, error_id: null, Value: null })
+		expect(emptyBody.Error).toBe('PurchaseItemRequests must be a non-empty array')
+		// A room-scoped currency is not an account balance we can debit.
+		const roomCurrency = await bulkPurchase('98', {
+			CurrencyType: CurrencyType.RoomCurrency,
+			PurchaseItemRequests: [line(10, 200)],
+		})
+		expect(roomCurrency.status).toBe(400)
+		expect(((await roomCurrency.json()) as BulkBody).Error).toBe('Currency type is not spendable')
+		// Over `Econ.BulkPurchaseCap` (200 copies) — the same cap the client reads from its
+		// game config. Consumables are what can be asked for in that quantity.
+		const over = await bulkPurchase('98', {
+			PurchaseItemRequests: [line(2182, 100, { DuplicateItemCount: 201 })],
+		})
+		expect(over.status).toBe(400)
+		expect(((await over.json()) as BulkBody).Error).toBe('A bulk purchase is capped at 200 items')
+		expect(
+			await getBalance(env.DB, 98, CurrencyType.RecCenterTokens, DEFAULT_STARTING_TOKENS)
+		).toBe(10000)
+	})
+
 	/**
 	 * The StorefrontBalanceUpdate (and other) frames the worker has pushed since the last
 	 * drain, read back off the stub hub in vitest.config.ts. Notification sends are
@@ -2043,9 +2394,7 @@ describe('econ endpoints', () => {
 	})
 
 	test('GET /api/subscriptionseasons/v1/seasons/current returns []', async () => {
-		const res = await exports.default.fetch(
-			`${ORIGIN}/api/subscriptionseasons/v1/seasons/current`
-		)
+		const res = await exports.default.fetch(`${ORIGIN}/api/subscriptionseasons/v1/seasons/current`)
 		expect(res.status).toBe(200)
 		expect(await res.json()).toEqual([])
 	})
@@ -2058,6 +2407,22 @@ describe('econ endpoints', () => {
 
 	// Fixed values, and no auth: the client reads this while assembling the RR+ page, so a
 	// 401 would only be a way for that load to stall.
+	test('GET /api/makerai/checkfreetrialeligibility answers a bare false', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/makerai/checkfreetrialeligibility`, {
+			headers: await bearer('206'),
+		})
+		expect(res.status).toBe(200)
+		expect(res.headers.get('content-type')).toContain('application/json')
+		// The whole body is the boolean — not `{ value: false }`, not an envelope.
+		expect(await res.text()).toBe('false')
+	})
+
+	test('GET /api/makerai/checkfreetrialeligibility 401s without a bearer token', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/makerai/checkfreetrialeligibility`)
+		expect(res.status).toBe(401)
+		expect(await res.text()).toBe('')
+	})
+
 	test('GET /api/CampusCard/v1/SignUpBonus returns the running bonus, unauthenticated', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/api/CampusCard/v1/SignUpBonus`)
 		expect(res.status).toBe(200)
@@ -2153,6 +2518,7 @@ describe('econ endpoints', () => {
 			'GET /api/equipment/v2/getUnlocked',
 			'GET /api/gamerewards/v1/pending',
 			'GET /api/itemWishlists/v1/wishlist/me',
+			'GET /api/makerai/checkfreetrialeligibility',
 			'GET /api/objectives/v1/cleargroup',
 			'GET /api/objectives/v1/myprogress',
 			'GET /api/roomconsumables/v1/roomConsumable/room/{roomId}',
@@ -2185,6 +2551,7 @@ describe('econ endpoints', () => {
 			'POST /api/checklist/v2/complete',
 			'POST /api/consumables/v1/consume',
 			'POST /api/gamerewards/v1/request',
+			'POST /api/items/bulkpurchase',
 			'POST /api/objectives/v1/cleargroup',
 			'POST /api/objectives/v1/updateobjective',
 			'POST /api/storefronts/v2/buyItem',

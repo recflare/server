@@ -63,6 +63,8 @@ import {
 	AvatarItemV4Dto,
 	AvatarV2Dto,
 	BalanceEntry,
+	BulkPurchaseRequest,
+	BulkPurchaseResponse,
 	BuyInventionResponse,
 	BuyItemRequest,
 	BuyItemResponse,
@@ -83,6 +85,7 @@ import {
 	JsonArray,
 	jsonBody,
 	JsonObject,
+	MakerAiFreeTrialEligibilityResponse,
 	OpaqueJsonBody,
 	OPTIONAL_AUTHED,
 	RoomEconConfig,
@@ -482,6 +485,20 @@ interface GiftRequest {
 }
 
 /**
+ * Read a storefront catalog (`sf{type}.json`) from the ASSETS binding. Null when there is
+ * no such storefront.
+ *
+ * Separate from {@link findStoreItem} so a caller resolving SEVERAL items from one
+ * storefront reads (and parses) it once: sf3 alone is over a thousand items, and a bulk
+ * purchase carries up to `BULK_PURCHASE_CAP` lines.
+ */
+async function loadStorefront(c: Context<App>, storefrontType: number): Promise<Storefront | null> {
+	const res = await c.env.ASSETS.fetch(new URL(`/sf${storefrontType}.json`, c.req.url))
+	if (!res.ok) return null
+	return (await res.json()) as Storefront
+}
+
+/**
  * Look up a store item by (storefront type, purchasable item id), reading the catalog
  * from the ASSETS binding (`sf{type}.json`). Returns null when there is no such
  * storefront or no item with that id in it.
@@ -491,9 +508,8 @@ async function findStoreItem(
 	storefrontType: number,
 	purchasableItemId: number
 ): Promise<StoreItem | null> {
-	const res = await c.env.ASSETS.fetch(new URL(`/sf${storefrontType}.json`, c.req.url))
-	if (!res.ok) return null
-	const storefront = (await res.json()) as Storefront
+	const storefront = await loadStorefront(c, storefrontType)
+	if (storefront === null) return null
 	return storefront.StoreItems.find((it) => it.PurchasableItemId === purchasableItemId) ?? null
 }
 
@@ -654,10 +670,8 @@ const ROLL_STOREFRONT_TYPE = 3
 
 /** Every item in the roll catalog, or `[]` if it can't be read (a roll then yields nothing). */
 async function loadRollCatalog(c: Context<App>): Promise<StoreItem[]> {
-	const res = await c.env.ASSETS.fetch(new URL(`/sf${ROLL_STOREFRONT_TYPE}.json`, c.req.url))
-	if (!res.ok) return []
-	const storefront = (await res.json()) as Storefront
-	return storefront.StoreItems
+	const storefront = await loadStorefront(c, ROLL_STOREFRONT_TYPE)
+	return storefront?.StoreItems ?? []
 }
 
 /**
@@ -754,10 +768,29 @@ async function rollQueryDrop(
  * A gift box that was just created, and the drop it ended up holding. The drop is the
  * RESOLVED one — what a query drop rolled, not the box that promised it — so a caller
  * announcing the gift names the item the player actually won.
+ *
+ * `id` is 0 when no box was created (`skipGiftBox`) — the drop was still granted.
  */
 interface GrantedGift {
 	id: number
 	drop: StoreGiftDrop
+}
+
+/** How a drop is handed over: how a query one rolls, plus how it is wrapped. */
+interface GrantOptions extends RollOptions {
+	/**
+	 * How many of the drop to hand over in ONE box — a bulk line's `DuplicateItemCount`.
+	 * Only a consumable stacks, so this multiplies the consumable count and nothing else;
+	 * callers must refuse a count above 1 for anything owned once. Defaults to 1.
+	 */
+	copies?: number
+	/**
+	 * Grant the drop without creating the gift box that renders it — what a bulk purchase's
+	 * `BypassGiftPackages` asks for. Ownership never depended on the box (it is granted here,
+	 * not when the box is opened), so this only skips the "open it" moment; a caller setting
+	 * it is saying its own UI announces the items.
+	 */
+	skipGiftBox?: boolean
 }
 
 /**
@@ -798,7 +831,7 @@ async function grantGiftDrop(
 	accountId: number,
 	drop: StoreGiftDrop,
 	message: string,
-	options: RollOptions = {}
+	options: GrantOptions = {}
 ): Promise<GrantedGift> {
 	let giftDrop = drop
 	if (drop.IsQuery === true) {
@@ -826,7 +859,7 @@ async function grantGiftDrop(
 	}
 	const isConsumable =
 		typeof giftDrop.ConsumableItemDesc === 'string' && giftDrop.ConsumableItemDesc !== ''
-	const consumableCount = isConsumable ? CONSUMABLE_GRANT_COUNT : 0
+	const consumableCount = isConsumable ? CONSUMABLE_GRANT_COUNT * (options.copies ?? 1) : 0
 	// Capture the granted consumable's row id and the player's pre-existing count so the
 	// gift box can carry them — gift-consume fires ConsumableMappingAdded from these.
 	let consumableMappingId = 0
@@ -840,12 +873,289 @@ async function grantGiftDrop(
 			consumableCount
 		)
 	}
+	if (options.skipGiftBox === true) return { id: 0, drop: giftDrop }
 	const { id } = await createGift(
 		db,
 		accountId,
 		toGiftContent(giftDrop, message, consumableCount, consumableMappingId, consumablePreExisting)
 	)
 	return { id, drop: giftDrop }
+}
+
+/**
+ * One `BalanceUpdates[].Data` entry: the gift-drop a player RECEIVED, as both purchase
+ * endpoints report it. `granted.drop` is the resolved drop — the rolled prize for a query
+ * box, not the box that promised it — or a query purchase answers with every item field
+ * empty and the client draws an empty box.
+ *
+ * It carries no FriendlyName or consumable count (the count is a getUnlocked concept; each
+ * box is one instance). `giftContext` is the requesting `Gift` block's, when it named one;
+ * otherwise the drop's own.
+ */
+function toBalanceUpdateData(
+	granted: GrantedGift,
+	fromPlayerId: number,
+	message: string,
+	giftContext: number | null
+): Record<string, unknown> {
+	const drop = granted.drop
+	return {
+		Id: granted.id,
+		FromPlayerId: fromPlayerId,
+		ConsumableItemDesc: drop.ConsumableItemDesc,
+		AvatarItemDesc: drop.AvatarItemDesc,
+		AvatarItemType: drop.AvatarItemType ?? 0,
+		EquipmentPrefabName: drop.EquipmentPrefabName,
+		EquipmentModificationGuid: drop.EquipmentModificationGuid,
+		CurrencyType: drop.CurrencyType,
+		Currency: drop.Currency,
+		Xp: drop.Xp ?? 0,
+		Level: 0,
+		Platform: -1,
+		PlatformsToSpawnOn: -1,
+		BalanceType: ALL_PLATFORMS,
+		GiftContext: giftContext ?? drop.Context,
+		GiftRarity: drop.Rarity,
+		Message: message,
+	}
+}
+
+/**
+ * `Econ.BulkPurchaseCap` — the most copies one bulk purchase may carry. The client reads
+ * the same 200 out of its game config (apps/api/static/gameconfigs-v1-all.json) and caps
+ * the bag with it, so this is the server side of a limit the client already knows; a
+ * request over it is a client that ignored its own config, not a bigger shopping trip.
+ */
+const BULK_PURCHASE_CAP = 200
+
+/**
+ * `UpdateResponse` — the outcome of ONE `BalanceUpdates` entry, from the client's own enum.
+ * This is where a bulk purchase reports per line: the bag answers one entry per REQUESTED
+ * item, and `AllowPartialSuccess` is what lets some of them come back non-OK while the
+ * envelope's `Success` stays true. (buyItem's single `UpdateResponse: 0` is this same OK.)
+ *
+ * The members this server can produce are the ones a catalog purchase can fail on;
+ * `TooManyRequests`, `PlayerNotEligible`, `RequestCannotBeRefunded` and `PlayerNotApproved`
+ * belong to rate limiting, entitlements and refunds, none of which exist here. `AlreadyOwned`
+ * is deliberately unused too: buyItem lets a player re-buy an item they own (the grant
+ * upserts), and one purchase path refusing what the other allows would be worse than either.
+ */
+const UpdateResponse = {
+	OK: 0,
+	TooManyRequests: 1,
+	NotEnoughCredit: 2,
+	AlreadyOwned: 3,
+	NoItemAvailable: 4,
+	CouponNotApplicable: 5,
+	RequestedPriceDoesNotMatch: 6,
+	RequestedAmountNotAllowed: 7,
+	PlayerNotEligible: 8,
+	RequestCannotBeRefunded: 9,
+	PlayerNotApproved: 10,
+} as const
+
+/** The discriminated item id a bulk-purchase line names its item by. */
+interface PurchaseMethodId {
+	Type: number
+	NumberId: number | null
+	Guid: string | null
+}
+
+/** One line of a `POST /api/items/bulkpurchase` body. */
+interface PurchaseItemRequest {
+	ItemPurchaseMethodId?: Partial<PurchaseMethodId> | null
+	RequestedPrice?: number
+	Gift?: GiftRequest | null
+	CouponConsumablePlayerMappingId?: number | null
+	DuplicateItemCount?: number
+}
+
+/**
+ * A line that could not be bought: the `UpdateResponse` its entry carries, and the message
+ * that fills the envelope's single `Error` when the bag as a whole is refused.
+ */
+interface BulkLineFailure {
+	method: PurchaseMethodId
+	code: number
+	error: string
+}
+
+/** A line that resolved to something buyable, with the catalog's own price. */
+interface BulkPurchaseLine {
+	method: PurchaseMethodId
+	item: StoreItem
+	/** The UNIT price from the catalog — `count` copies cost `price * count`. */
+	price: number
+	count: number
+	gift: GiftRequest | null
+}
+
+/**
+ * One `BalanceUpdates[].Data` — what a single requested item turned into. Unlike buyItem's,
+ * it NAMES the purchase rather than describing the drop: the client already has the catalog
+ * entry for `PurchasableItemId`, so the only thing it can't reconstruct is the box.
+ *
+ * `CustomAvatarItem` is the UGC counterpart of `PurchasableItemId`, and both it and
+ * `GiftPackage` are null on a line that didn't sell. Nothing here fills `CustomAvatarItem`:
+ * no catalog we serve sells guid-keyed items.
+ */
+interface BulkPurchaseData {
+	GiftPackage: Record<string, unknown> | null
+	PurchasableItemId: number | null
+	CustomAvatarItem: null
+}
+
+/** `ItemPurchaseMethodId.Type` for a numeric (storefront `PurchasableItemId`) id. */
+const PURCHASE_METHOD_NUMBER_ID = 0
+
+/**
+ * The gift box as `GiftPackage` carries it — the same DTO family as buyItem's
+ * `BalanceUpdates[].Data` entry, but with the four keys that shape doesn't carry
+ * (`PlayerId`, `CustomAvatarItemId`, `Signature`, `IsSignatureValid`) and without its
+ * `Level`. Twenty keys, in the order the client's own member list names them.
+ *
+ * `Platform`/`PlatformsToSpawnOn` are the platform MASK (-1, all) — the balance bucket is
+ * the separate `BalanceType` beside them, unlike the envelope's `Value.Platform`, which IS
+ * a renamed `BalanceType`. `Signature` is null and `IsSignatureValid` false: a box the
+ * server minted was never signed for peer-to-peer transfer.
+ */
+function toGiftPackage(
+	granted: GrantedGift,
+	playerId: number,
+	fromPlayerId: number,
+	message: string,
+	giftContext: number | null
+): Record<string, unknown> {
+	const drop = granted.drop
+	return {
+		Id: granted.id,
+		PlayerId: playerId,
+		FromPlayerId: fromPlayerId,
+		ConsumableItemDesc: drop.ConsumableItemDesc,
+		AvatarItemType: drop.AvatarItemType ?? 0,
+		AvatarItemDesc: drop.AvatarItemDesc,
+		CustomAvatarItemId: null,
+		EquipmentPrefabName: drop.EquipmentPrefabName,
+		EquipmentModificationGuid: drop.EquipmentModificationGuid,
+		CurrencyType: drop.CurrencyType,
+		Currency: drop.Currency,
+		Xp: drop.Xp ?? 0,
+		GiftContext: giftContext ?? drop.Context,
+		GiftRarity: drop.Rarity,
+		Message: message,
+		Signature: null,
+		IsSignatureValid: false,
+		Platform: -1,
+		PlatformsToSpawnOn: -1,
+		BalanceType: ALL_PLATFORMS,
+	}
+}
+
+/**
+ * Normalise the id a line named its item by. A line that sent no id at all still resolves
+ * to something, so this never returns null — the checks in {@link resolveBulkLine} are what
+ * reject it.
+ */
+function toPurchaseMethodId(raw: Partial<PurchaseMethodId> | null | undefined): PurchaseMethodId {
+	const id = typeof raw === 'object' && raw !== null ? raw : {}
+	return {
+		Type: Number.isInteger(id.Type) ? (id.Type as number) : PURCHASE_METHOD_NUMBER_ID,
+		NumberId: Number.isInteger(id.NumberId) ? (id.NumberId as number) : null,
+		Guid: typeof id.Guid === 'string' ? id.Guid : null,
+	}
+}
+
+/**
+ * Resolve one line against the bag's catalog: what it wants, how many, and at what price.
+ * Returns the failure — with the `UpdateResponse` its entry will carry — instead when the
+ * line can't be bought.
+ *
+ * Pure — the catalog is passed in — so the whole bag resolves from ONE storefront read.
+ * The price check is buyItem's, per line: `RequestedPrice` is the UNIT price the client
+ * rendered, and a mismatch means the catalog moved under a stale client rather than that
+ * the player agreed to today's price.
+ */
+function resolveBulkLine(
+	line: PurchaseItemRequest,
+	storefront: Storefront | null,
+	currencyType: number
+): BulkPurchaseLine | BulkLineFailure {
+	const method = toPurchaseMethodId(line.ItemPurchaseMethodId)
+	// Guid-keyed ids name UGC / custom avatar items, which no catalog here sells. Failing the
+	// line (rather than the request) is what lets a bag of ordinary items still go through.
+	if (method.Type !== PURCHASE_METHOD_NUMBER_ID || method.NumberId === null) {
+		return {
+			method,
+			code: UpdateResponse.NoItemAvailable,
+			error: 'Only numeric storefront item ids can be bought',
+		}
+	}
+	// Nothing issues coupons, so a line claiming one would otherwise be charged full price
+	// for a discount it thinks it applied.
+	if (
+		line.CouponConsumablePlayerMappingId !== null &&
+		line.CouponConsumablePlayerMappingId !== undefined
+	) {
+		return {
+			method,
+			code: UpdateResponse.CouponNotApplicable,
+			error: 'Coupons are not supported',
+		}
+	}
+	const count = line.DuplicateItemCount ?? 1
+	if (!Number.isInteger(count) || count < 1) {
+		return {
+			method,
+			code: UpdateResponse.RequestedAmountNotAllowed,
+			error: 'DuplicateItemCount must be a positive integer',
+		}
+	}
+	if (storefront === null) {
+		return { method, code: UpdateResponse.NoItemAvailable, error: 'No such storefront' }
+	}
+	const item = storefront.StoreItems.find((it) => it.PurchasableItemId === method.NumberId)
+	if (item === undefined) {
+		return { method, code: UpdateResponse.NoItemAvailable, error: 'Item not found' }
+	}
+	// Only a consumable stacks. An avatar item or an equipment skin is owned once, so a
+	// second copy would grant nothing while charging for it — and the bag answers ONE entry
+	// (one box) per requested item, which is the same statement from the wire's side.
+	if (count > 1 && item.GiftDrop.ConsumableItemDesc === '') {
+		return {
+			method,
+			code: UpdateResponse.RequestedAmountNotAllowed,
+			error: 'This item can only be bought once per line',
+		}
+	}
+	const price = item.Prices.find((p) => p.CurrencyType === currencyType)
+	if (price === undefined) {
+		return {
+			method,
+			code: UpdateResponse.NoItemAvailable,
+			error: 'Currency type not available for this item',
+		}
+	}
+	if (!Number.isInteger(line.RequestedPrice)) {
+		return {
+			method,
+			code: UpdateResponse.RequestedPriceDoesNotMatch,
+			error: 'RequestedPrice is required',
+		}
+	}
+	if (line.RequestedPrice !== price.Price) {
+		return {
+			method,
+			code: UpdateResponse.RequestedPriceDoesNotMatch,
+			error: 'Price has changed',
+		}
+	}
+	const gift = typeof line.Gift === 'object' && line.Gift !== null ? line.Gift : null
+	return { method, item, price: price.Price, count, gift }
+}
+
+/** Whether a resolved line is buyable or is already a failure. */
+function isBulkLine(resolved: BulkPurchaseLine | BulkLineFailure): resolved is BulkPurchaseLine {
+	return 'item' in resolved
 }
 
 /**
@@ -2081,12 +2391,7 @@ const app = new Hono<App>({ strict: false })
 			// `granted.drop` is what the roll landed on — the response has to describe THAT, not
 			// the box, or a query purchase answers with every item field empty and the client
 			// draws an empty box.
-			const { id: giftId, drop: granted } = await grantGiftDrop(
-				c,
-				receiverId,
-				item.GiftDrop,
-				message
-			)
+			const granted = await grantGiftDrop(c, receiverId, item.GiftDrop, message)
 
 			// Push the spend to the buyer (`id` — the caller is who was charged) so their client
 			// updates without waiting for a `GET /balance` re-fetch. StorefrontBalancePurchase
@@ -2098,42 +2403,247 @@ const app = new Hono<App>({ strict: false })
 
 			// The response mirrors a captured real buyItem: `Balance` is the change applied (the
 			// negated price), not the resulting balance (the client reads its new total from
-			// `GET /balance/:type`); `BalanceType` is -2 (account-wide, all platforms). The Data
-			// entry is the gift-drop the client RECEIVED — the rolled item for a query box, the
-			// bought drop otherwise — and it carries no FriendlyName or consumable count (the
-			// count is a getUnlocked concept; each box is one instance).
+			// `GET /balance/:type`); `BalanceType` is -2 (account-wide, all platforms).
 			return c.json({
 				BalanceUpdates: [
 					{
 						UpdateResponse: 0,
 						Data: [
-							{
-								Id: giftId,
-								FromPlayerId: fromPlayerId,
-								ConsumableItemDesc: granted.ConsumableItemDesc,
-								AvatarItemDesc: granted.AvatarItemDesc,
-								AvatarItemType: granted.AvatarItemType ?? 0,
-								EquipmentPrefabName: granted.EquipmentPrefabName,
-								EquipmentModificationGuid: granted.EquipmentModificationGuid,
-								CurrencyType: granted.CurrencyType,
-								Currency: granted.Currency,
-								Xp: granted.Xp ?? 0,
-								Level: 0,
-								Platform: -1,
-								PlatformsToSpawnOn: -1,
-								BalanceType: ALL_PLATFORMS,
-								GiftContext: Number.isInteger(gift?.GiftContext)
-									? (gift?.GiftContext as number)
-									: granted.Context,
-								GiftRarity: granted.Rarity,
-								Message: message,
-							},
+							toBalanceUpdateData(
+								granted,
+								fromPlayerId,
+								message,
+								Number.isInteger(gift?.GiftContext) ? (gift?.GiftContext as number) : null
+							),
 						],
 					},
 				],
 				Balance: -price.Price,
 				CurrencyType: currencyType,
 				BalanceType: ALL_PLATFORMS,
+			})
+		}
+	)
+
+	// Check out a whole shopping bag. [Authorize]. The client posts every line it has in the
+	// bag — an item id, `DuplicateItemCount` copies, the unit price it rendered and an
+	// optional Gift — plus the ONE storefront and the ONE currency they all share.
+	//
+	// The whole bag is debited in ONE `spendCurrency` call. Charging line by line would let a
+	// bag half-succeed on a race with another spend, and would push a balance frame per line.
+	//
+	// The response is NOT buyItem's envelope. It is `{ Success, Error, error_id, Value }`
+	// (`error_id` lowercase — the client renames that one member; the other three are
+	// PascalCase), and `Value` is a BalanceUpdateResponse: the RESULTING `{ Balance,
+	// CurrencyType, Platform }` — `Platform` there being a renamed `BalanceType`, i.e. the
+	// bucket, not a store — plus ONE `BalanceUpdates` entry per REQUESTED item.
+	//
+	// Per-line reporting is that entry's `UpdateResponse`: a line that didn't sell comes back
+	// non-OK with a null `GiftPackage`, and `AllowPartialSuccess` is what lets those sit
+	// beside successful ones while `Success` stays true. Without it, one bad line refuses the
+	// whole bag — `Success: false`, the reason in `Error`, a null `Value`, nothing charged.
+	.post(
+		'/api/items/bulkpurchase',
+		describeRoute({
+			tags: ['Storefront'],
+			summary: 'Buy a bag of storefront items',
+			description: [
+				'Resolves every line against the bag’s storefront catalog (one read for the whole',
+				'bag), confirms each line’s `RequestedPrice` still matches, debits the total in ONE',
+				'atomic spend, grants what sold, and answers the `{ Success, Error, error_id, Value }`',
+				'envelope. `Value.Balance` is the RESULTING total (not buyItem’s change) in the',
+				'`Platform` bucket named beside it, and `BalanceUpdates` carries one entry per',
+				'REQUESTED item, each with its own `UpdateResponse`. `AllowPartialSuccess` lets some',
+				'of those be non-OK while `Success` stays true; without it a single bad line refuses',
+				'the bag and nothing is charged.',
+			].join(' '),
+			security: AUTHED,
+			requestBody: jsonBody(BulkPurchaseRequest, 'The bag: its lines, storefront and currency'),
+			responses: {
+				200: json(BulkPurchaseResponse, 'The bag’s result, or `Success: false` if nothing sold'),
+				400: json(BulkPurchaseResponse, 'A request that could not be evaluated at all'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			// Every refusal answers the same envelope, so a client that only knows how to parse
+			// this shape never has to special-case one. A null `Value` is legal here (the client's
+			// validator only cascades into a non-null one), and it is the honest answer: nothing
+			// was bought, so there is no balance to report and nothing to render.
+			const refuse = (error: string, status: 200 | 400 = 200) =>
+				c.json({ Success: false, Error: error, error_id: null, Value: null }, status)
+
+			const body = (await c.req.json().catch(() => null)) as {
+				PurchaseItemRequests?: PurchaseItemRequest[]
+				StorefrontType?: number
+				CurrencyType?: number
+				BypassGiftPackages?: boolean
+				AllowPartialSuccess?: boolean
+				ShoppingBagId?: string | number | null
+			} | null
+			if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+				return refuse('Invalid request body', 400)
+			}
+			const lines = body.PurchaseItemRequests
+			if (!Array.isArray(lines) || lines.length === 0) {
+				return refuse('PurchaseItemRequests must be a non-empty array', 400)
+			}
+			const storefrontType = body.StorefrontType
+			const currencyType = body.CurrencyType
+			if (!Number.isInteger(storefrontType) || !Number.isInteger(currencyType)) {
+				return refuse('StorefrontType and CurrencyType are required', 400)
+			}
+			// The bag's currency must be an account balance we can debit, exactly as buyItem's.
+			if (!isSpendable(currencyType as number)) {
+				return refuse('Currency type is not spendable', 400)
+			}
+			const allowPartial = body.AllowPartialSuccess === true
+			const skipGiftBox = body.BypassGiftPackages === true
+
+			// One catalog read for the bag; every line resolves against it in memory.
+			const storefront = await loadStorefront(c, storefrontType as number)
+			const resolved = lines.map((line) =>
+				resolveBulkLine(line, storefront, currencyType as number)
+			)
+			const buyable = resolved.filter(isBulkLine)
+
+			const copies = buyable.reduce((n, line) => n + line.count, 0)
+			if (copies > BULK_PURCHASE_CAP) {
+				return refuse(`A bulk purchase is capped at ${BULK_PURCHASE_CAP} items`, 400)
+			}
+			// All-or-nothing: one unbuyable line stops the bag before anything is charged, and the
+			// client is told why by the first thing that was wrong with it.
+			const firstFailure = resolved.find((line): line is BulkLineFailure => !isBulkLine(line))
+			if (!allowPartial && firstFailure !== undefined) return refuse(firstFailure.error)
+
+			// Decide what the balance covers BEFORE spending: lines are taken in request order
+			// while they fit, so a bag that overruns still buys the items the player put in first.
+			// The read is only for choosing; the single spend below is what actually settles, and
+			// its `amount >= ?` guard is what makes that safe against a concurrent spend.
+			const startingTokens = intVar(c.env.STARTING_TOKENS, DEFAULT_STARTING_TOKENS)
+			const balance = await getBalance(c.env.DB, id, currencyType as number, startingTokens)
+			const affordable: BulkPurchaseLine[] = []
+			let total = 0
+			for (const line of buyable) {
+				const cost = line.price * line.count
+				if (total + cost > balance) continue
+				total += cost
+				affordable.push(line)
+			}
+			const bought = new Set(affordable)
+			// Without partial success an unaffordable line fails the whole bag — including the
+			// lines that would have fitted, since the player asked for all of it or none.
+			if (!allowPartial && affordable.length !== buyable.length) {
+				return refuse('Insufficient balance')
+			}
+			// Nothing sold at all: there is no purchase to report, so this is a refusal rather
+			// than a `Success: true` bag full of non-OK entries.
+			if (affordable.length === 0) {
+				return refuse(firstFailure?.error ?? 'Insufficient balance')
+			}
+
+			// One atomic debit for the whole bag. A false return means another request spent the
+			// tokens between the read above and here, so nothing is granted and nothing changed.
+			if (
+				total > 0 &&
+				!(await spendCurrency(c.env.DB, id, currencyType as number, total, startingTokens))
+			) {
+				return refuse('Insufficient balance')
+			}
+
+			// A query drop (a loot box) rolls against sf3, the big catalog. Read it ONCE for the
+			// whole bag and only when a line actually holds one — a bag of ordinary items should
+			// not pull a thousand-item catalog in to grant them.
+			const rollCatalog = affordable.some((line) => line.item.GiftDrop.IsQuery === true)
+				? await loadRollCatalog(c)
+				: undefined
+
+			// Grant what sold, keeping each line's box so the entry built below can carry it.
+			const packages = new Map<BulkPurchaseLine, Record<string, unknown> | null>()
+			for (const line of affordable) {
+				// Same routing as buyItem: a Gift block sends the item (and its box) to another
+				// player while the caller pays, a named gift shows the sender, and a self-buy or an
+				// anonymous gift is attributed to the "Coach" system account.
+				const gift = line.gift
+				const receiverId = Number.isInteger(gift?.ToPlayerId) ? (gift?.ToPlayerId as number) : id
+				const fromPlayerId = gift !== null && gift.Anonymous !== true ? id : COACH_ACCOUNT_ID
+				const message = typeof gift?.Message === 'string' ? gift.Message : 'A gift for you <3'
+				// One box per requested item, holding all `count` copies — the wire has one
+				// `GiftPackage` per entry, and only a consumable can be asked for more than once
+				// (`resolveBulkLine` refuses a bigger count on anything owned once).
+				const granted = await grantGiftDrop(c, receiverId, line.item.GiftDrop, message, {
+					rollCatalog,
+					skipGiftBox,
+					copies: line.count,
+				})
+				packages.set(
+					line,
+					// Null under `BypassGiftPackages`, which is the flag asking for exactly that —
+					// the item is granted either way.
+					skipGiftBox
+						? null
+						: toGiftPackage(
+								granted,
+								receiverId,
+								fromPlayerId,
+								message,
+								Number.isInteger(gift?.GiftContext) ? (gift?.GiftContext as number) : null
+							)
+				)
+			}
+
+			// One entry per REQUESTED item, in request order — the failures included, which is
+			// where a partial bag says what it left behind.
+			const updates = resolved.map((line) => {
+				if (!isBulkLine(line)) {
+					return {
+						UpdateResponse: line.code,
+						Data: {
+							GiftPackage: null,
+							PurchasableItemId: line.method.NumberId,
+							CustomAvatarItem: null,
+						} satisfies BulkPurchaseData,
+					}
+				}
+				return {
+					UpdateResponse: bought.has(line) ? UpdateResponse.OK : UpdateResponse.NotEnoughCredit,
+					Data: {
+						GiftPackage: packages.get(line) ?? null,
+						PurchasableItemId: line.method.NumberId,
+						CustomAvatarItem: null,
+					} satisfies BulkPurchaseData,
+				}
+			})
+
+			// One frame for the whole bag, not one per line: it SETS the account-wide bucket to the
+			// resulting total read back from D1, so it agrees with the `Value.Balance` below and
+			// with a `GET /balance` re-fetch instead of compounding — see the frame rule above
+			// pushBalanceUpdate. Nothing moved on a free bag, so nothing is sent and the balance
+			// read for the affordability check above still stands.
+			let newBalance = balance
+			if (total > 0) {
+				newBalance = await getBalance(c.env.DB, id, currencyType as number, startingTokens)
+				await pushBalancePurchase(c, id, currencyType as number, -total, newBalance)
+			}
+			return c.json({
+				Success: true,
+				Error: null,
+				error_id: null,
+				Value: {
+					// The RESULTING total, unlike buyItem's change — and the bucket it belongs to.
+					// `Platform` here is the client's `BalanceType` under a [DataMember] rename. A
+					// capture from the reference server says 4 (RecNetPurchased) because it kept a
+					// wallet per store; this server keeps ONE account-wide bucket, and the client SUMS
+					// its buckets, so naming any other platform invents a second balance beside the
+					// real one. See the frame rule above pushBalanceUpdate.
+					Balance: newBalance,
+					CurrencyType: currencyType,
+					Platform: ALL_PLATFORMS,
+					BalanceUpdates: updates,
+				},
 			})
 		}
 	)
@@ -2573,6 +3083,36 @@ const app = new Hono<App>({ strict: false })
 		'/api/subscriptionseasons/v1/seasons/current',
 		listRoute('Current subscription seasons', 'Empty stub — no RR+ season is running'),
 		(c) => c.json([])
+	)
+
+	// Whether the caller can start a Maker AI free trial. Always false, mirroring the
+	// reference server: nothing here runs trials, and false is the answer that leaves the
+	// client's creation UI in its normal state rather than offering a trial that can't
+	// start. The body is a BARE JSON `false` — not an envelope, not `{ value: false }`.
+	//
+	// Auth-gated (401 on a missing or invalid token) even though the answer is the same for
+	// everyone, because the reference validates the token before answering and eligibility
+	// is a per-account question the moment anything does run trials.
+	.get(
+		'/api/makerai/checkfreetrialeligibility',
+		describeRoute({
+			tags: ['Econ'],
+			summary: 'Maker AI free-trial eligibility',
+			description: [
+				'Whether the caller can start a Maker AI free trial. Always `false` — nothing here',
+				'runs trials. The body is a bare JSON boolean, not an envelope.',
+			].join(' '),
+			security: AUTHED,
+			responses: {
+				200: json(MakerAiFreeTrialEligibilityResponse, 'Always `false`'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+			return c.json(false)
+		}
 	)
 
 // The generated spec. Documentation only — no request is validated against it (see

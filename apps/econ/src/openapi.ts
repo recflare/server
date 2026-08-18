@@ -215,6 +215,14 @@ export const RRPlusSignUpBonus = z.object({
 	MaxFreeItemsPrice: z.int().describe('Highest token price a free item may have'),
 })
 
+/**
+ * `GET /api/makerai/checkfreetrialeligibility` — a BARE JSON boolean (`false`), not an
+ * envelope and not a `{ value }` wrapper. The whole body is the answer.
+ */
+export const MakerAiFreeTrialEligibilityResponse = z
+	.boolean()
+	.describe('Whether the caller can start a Maker AI free trial; always false')
+
 /** `POST /api/challenge/v2/updateProgress` — the identifying fields echoed back. */
 export const ChallengeProgressResponse = z.object({
 	ChallengeMapId: z.int(),
@@ -255,6 +263,73 @@ export const BuyItemResponse = z.object({
 })
 
 /**
+ * How a bulk-purchase line names its item. A discriminated id: the client buys both
+ * catalog items (a storefront `PurchasableItemId`, under `NumberId`, `Type` 0) and
+ * guid-keyed ones (UGC / custom avatar items). Only the numeric form resolves here —
+ * nothing sells guid-keyed items yet, so a `Guid` id fails its line.
+ */
+export const ItemPurchaseMethodId = z.object({
+	Type: z.int().describe('0 = NumberId. Anything else names a guid-keyed item we can’t sell'),
+	NumberId: z.int().nullable().optional().describe('The storefront PurchasableItemId'),
+	Guid: z.string().nullable().optional().describe('The guid-keyed item id; always null here'),
+})
+
+/**
+ * `POST /api/items/bulkpurchase` — the whole bag's result.
+ *
+ * NOT buyItem's envelope. The wrapper is `{ Success, Error, error_id, Value }` — `error_id`
+ * lowercase because the client renames that one member, the other three PascalCase — and
+ * `Value` is a BalanceUpdateResponse: the RESULTING `{ Balance, CurrencyType, Platform }`
+ * (buyItem reports the change instead) plus one `BalanceUpdates` entry per REQUESTED item.
+ * `Value` is null whenever nothing was bought; the client's validator only cascades into a
+ * non-null one, so that parses.
+ *
+ * Per-line reporting is each entry's `UpdateResponse`. `AllowPartialSuccess` is what lets
+ * some of them come back non-OK while `Success` stays true.
+ */
+export const BulkPurchaseResponse = z.object({
+	Success: z.boolean().describe('False only when the bag bought nothing at all'),
+	Error: z.string().nullable().describe('Why nothing was bought; null on success'),
+	error_id: z.string().nullable().describe('Always null — no error-id catalog here'),
+	Value: z
+		.object({
+			Balance: z.int().describe('The RESULTING total in the bucket below, NOT buyItem’s change'),
+			CurrencyType: z.int(),
+			Platform: z
+				.int()
+				.describe(
+					'The balance bucket — the client’s `BalanceType` under a [DataMember] rename. -2, ' +
+						'account-wide: the reference server said 4 (RecNetPurchased) because it kept a ' +
+						'wallet per store; this one keeps a single bucket, and the client SUMS its buckets'
+				),
+			BalanceUpdates: z
+				.array(
+					z.object({
+						UpdateResponse: z
+							.int()
+							.describe(
+								'This line’s outcome: 0 OK, 1 TooManyRequests, 2 NotEnoughCredit, ' +
+									'3 AlreadyOwned, 4 NoItemAvailable, 5 CouponNotApplicable, ' +
+									'6 RequestedPriceDoesNotMatch, 7 RequestedAmountNotAllowed, ' +
+									'8 PlayerNotEligible, 9 RequestCannotBeRefunded, 10 PlayerNotApproved'
+							),
+						Data: z.object({
+							GiftPackage: JsonObject.nullable().describe(
+								'The box created for this line (20 keys). Null on a line that didn’t sell, ' +
+									'and under `BypassGiftPackages` — the item is granted either way'
+							),
+							PurchasableItemId: z.int().nullable().describe('The catalog item this line named'),
+							CustomAvatarItem: z.null().describe('The UGC counterpart; never sold here'),
+						}),
+					})
+				)
+				.describe('One entry per REQUESTED item, in request order — failures included'),
+		})
+		.nullable()
+		.describe('Null when nothing was bought'),
+})
+
+/**
  * `GET /api/storefronts/v2/buyInvention` — the purchase result. Two envelopes side by
  * side: the balance update (shaped like buyItem's, except `Balance` is the RESULTING
  * total, not the change, and `Data` is a single invention rather than a gift-drop list)
@@ -286,21 +361,66 @@ export const ErrorResponse = z.object({ error: z.string() })
 
 // ---- Request schemas -------------------------------------------------------
 
+/**
+ * The `Gift` block both purchase bodies carry — present when buying an item for another
+ * player. The caller is still the one debited.
+ */
+export const GiftBlock = z
+	.object({
+		ToPlayerId: z.int().optional(),
+		Anonymous: z.boolean().optional(),
+		Message: z.string().optional(),
+		GiftContext: z.int().optional(),
+	})
+	.describe('Present when buying for another player; the caller still pays')
+
 /** `POST /api/storefronts/v2/buyItem` JSON body. */
 export const BuyItemRequest = z.object({
 	StorefrontType: z.int().describe('Which storefront catalog (sf{N}.json)'),
 	PurchasableItemId: z.int(),
 	CurrencyType: z.int().describe('Must be a spendable account currency'),
 	RequestedPrice: z.int().describe('The price the client rendered; a mismatch is 409'),
-	Gift: z
-		.object({
-			ToPlayerId: z.int().optional(),
-			Anonymous: z.boolean().optional(),
-			Message: z.string().optional(),
-			GiftContext: z.int().optional(),
-		})
+	Gift: GiftBlock.optional(),
+})
+
+/**
+ * `POST /api/items/bulkpurchase` JSON body — the shopping bag, checked out in one call.
+ * `StorefrontType` and `CurrencyType` are the bag's, not per line: every line is bought
+ * from one catalog with one currency.
+ */
+export const BulkPurchaseRequest = z.object({
+	PurchaseItemRequests: z
+		.array(
+			z.object({
+				ItemPurchaseMethodId,
+				RequestedPrice: z
+					.int()
+					.describe('The UNIT price the client rendered; a mismatch fails the line'),
+				Gift: GiftBlock.nullable().optional(),
+				CouponConsumablePlayerMappingId: z
+					.int()
+					.nullable()
+					.optional()
+					.describe('Unsupported — nothing issues coupons, so a non-null one fails the line'),
+				DuplicateItemCount: z.int().optional().describe('Copies of this item; defaults to 1'),
+			})
+		)
+		.describe('One line per item in the bag; at most Econ.BulkPurchaseCap (200) copies in total'),
+	StorefrontType: z.int().describe('Which storefront catalog (sf{N}.json) every line comes from'),
+	CurrencyType: z.int().describe('Must be a spendable account currency'),
+	BypassGiftPackages: z
+		.boolean()
 		.optional()
-		.describe('Present when buying for another player; the caller still pays'),
+		.describe('Grant the items without wrapping them in gift boxes'),
+	AllowPartialSuccess: z
+		.boolean()
+		.optional()
+		.describe('Buy the lines that work and report the rest; false is all-or-nothing'),
+	ShoppingBagId: z
+		.union([z.string(), z.int()])
+		.nullable()
+		.optional()
+		.describe('The client’s bag id, echoed back untouched'),
 })
 
 /** `POST /api/consumables/v1/consume` JSON body. */

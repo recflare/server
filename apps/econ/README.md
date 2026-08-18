@@ -42,6 +42,7 @@ missing/invalid). `~` = optional auth: served to anyone, personalised for a vali
 | GET      | `/api/storefronts/v4/balance/:currencyType`          | ✓    | Currency balance                        |
 | GET      | `/api/storefronts/v3/giftdropstore/:id`              |      | Gift-drop storefront catalog            |
 | POST     | `/api/storefronts/v2/buyItem`                        | ✓    | Buy a storefront item                   |
+| POST     | `/api/items/bulkpurchase`                            | ✓    | Buy a bag of storefront items           |
 | GET      | `/api/storefronts/v1/adcarouselitems`                |      | Ad-carousel items (static)              |
 | GET      | `/api/challenge/v2/getCurrent`                       | ~    | Weekly rotation + the caller's progress |
 | POST     | `/api/challenge/v2/updateProgress`                   | ✓    | Report challenge progress               |
@@ -86,6 +87,85 @@ Two things are easy to get wrong:
 
 A `Gift` block routes the item (and box) to another player, but the caller always pays.
 A self-buy or anonymous gift is attributed to the "Coach" system account (id 1).
+
+### The shopping bag (`POST /api/items/bulkpurchase`)
+
+The same purchase, many items at once. The client posts every line in the bag — an item id,
+`DuplicateItemCount` copies, the unit `RequestedPrice` it rendered, an optional `Gift` — plus
+the one `StorefrontType` and one `CurrencyType` they all share.
+
+**The response is not buyItem's.** It is `{ Success, Error, error_id, Value }` — `error_id`
+lowercase because the client renames that one member, the other three PascalCase — wrapping a
+BalanceUpdateResponse:
+
+```jsonc
+{
+  "Success": true,
+  "Error": null,
+  "error_id": null,
+  "Value": {
+    "Balance": 9500, // the RESULTING total, not buyItem's change
+    "CurrencyType": 2,
+    "Platform": -2, // the bucket that total belongs to — a renamed BalanceType
+    "BalanceUpdates": [
+      // one entry per REQUESTED item, in request order
+      {
+        "UpdateResponse": 0,
+        "Data": { "GiftPackage": { … }, "PurchasableItemId": 2182, "CustomAvatarItem": null },
+      },
+    ],
+  },
+}
+```
+
+What is deliberate here:
+
+- **`Value.Balance` is the resulting total**, unlike buyItem's change — `{ Balance,
+CurrencyType, Platform }` is the BalanceResponse triple a `StorefrontBalance*` frame also
+  carries, and the one frame this pushes reports the identical number, so body and frame
+  agree instead of compounding.
+- **`Platform` is `-2`, not the capture's `4`.** It is the client's `BalanceType` under a
+  `[DataMember]` rename — the bucket, not a store. The reference server said `RecNetPurchased`
+  because it kept a wallet per store; this server keeps ONE account-wide bucket and the client
+  SUMS its buckets, so naming any other platform invents a second balance beside the real one
+  — the bug that showed a player 34,100 tokens.
+- **One entry per REQUESTED item, and `UpdateResponse` is where it reports.** A line that
+  didn't sell comes back non-OK with a null `GiftPackage`, and `AllowPartialSuccess` is what
+  lets those sit beside successful ones while `Success` stays true. Codes: 0 OK,
+  1 TooManyRequests, 2 NotEnoughCredit, 3 AlreadyOwned, 4 NoItemAvailable,
+  5 CouponNotApplicable, 6 RequestedPriceDoesNotMatch, 7 RequestedAmountNotAllowed,
+  8 PlayerNotEligible, 9 RequestCannotBeRefunded, 10 PlayerNotApproved. This server can
+  produce 0/2/4/5/6/7; the rest are rate limiting, entitlements and refunds, none of which
+  exist here. `AlreadyOwned` is left unused on purpose — buyItem lets a player re-buy what
+  they own, and one purchase path refusing what the other allows would be worse than either.
+- **One entry per item means one box per item.** So `DuplicateItemCount` above 1 is only
+  allowed for a consumable (they stack, and the count rides on the one box);
+  anything owned once is refused with `RequestedAmountNotAllowed` rather than charged twice
+  for a grant that would collapse into itself.
+- **One catalog read and one debit for the whole bag.** Lines resolve in memory against a
+  single `sf{N}.json` read (sf3 is 1161 items; the cap is 200 copies), and the total is spent
+  in ONE atomic `spendCurrency`. Charging line by line would let a bag half-succeed against a
+  concurrent spend and would push a balance frame per line.
+- **Nothing sold ⇒ a refusal, not an empty success.** `Success: false`, the first failure's
+  reason in `Error`, and a null `Value` — legal here, since the client's validator only
+  cascades into a non-null one (unlike the matchmaking DTO, which throws on a null payload).
+  Without `AllowPartialSuccess`, one bad line refuses the bag the same way and nothing is
+  charged. `400` is reserved for a request that can't be evaluated at all (no lines, a
+  non-spendable currency, more than `Econ.BulkPurchaseCap` — the same 200 the client reads
+  from its game config), and even those answer the envelope.
+- **`GiftPackage` is its own 20-key DTO**, not the stored box: buyItem's `Data` entry plus
+  `PlayerId` / `CustomAvatarItemId` / `Signature` / `IsSignatureValid`, minus its `Level`.
+  Its `Platform`/`PlatformsToSpawnOn` are the platform MASK (-1) — the balance bucket is the
+  `BalanceType` beside them, which is the opposite arrangement from `Value.Platform` above.
+  `Signature` is null and `IsSignatureValid` false: a box the server minted was never signed
+  for peer-to-peer transfer.
+- **`BypassGiftPackages` skips the boxes, not the grant.** Ownership never depended on the
+  box, so the items are granted either way; `GiftPackage` is then null — exactly what the
+  captured response shows.
+- **Guid-keyed ids and coupons are refused.** `ItemPurchaseMethodId` is a discriminated id
+  (`Type` 0 = a storefront `PurchasableItemId` in `NumberId`; a `Guid` names a UGC item no
+  catalog here sells, and `Data.PurchasableItemId` is null for it), and nothing issues the
+  coupon a `CouponConsumablePlayerMappingId` would spend.
 
 ## Query drops — the loot boxes (`IsQuery`)
 
