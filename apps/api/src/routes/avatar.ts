@@ -51,6 +51,7 @@ import {
 	JsonArray,
 	jsonBody,
 	LegacyAvatarItemSaves,
+	OutfitSaveResponse,
 	OutfitsMeRequest,
 	OutfitsMeResponse,
 	pageParams,
@@ -370,8 +371,11 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 	// Saving an outfit through the same bare path — into the slot the body names, which
 	// is slot 0 for the outfit being worn. Stored verbatim: the heavy fields are the
 	// client's own JSON-in-a-string documents, and re-encoding risks changing a payload
-	// it has to parse back. Answers the saved outfit, which is what the client re-renders
-	// from.
+	// it has to parse back.
+	//
+	// Answers the bare `{ Success, Error, error_id }` envelope — no `Value` key, and NOT the
+	// outfit that was just saved: the client keeps what it sent and only reads whether the
+	// save worked.
 	.put(
 		'/outfits/me',
 		describeRoute({
@@ -380,13 +384,16 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 			description:
 				'Saves into the shared `outfit` table, in the slot the body names — slot 0 being the ' +
 				'outfit worn, which is what the GET reads. Re-saving a slot overwrites it.\n\n' +
-				'The payload is stored verbatim and answered back: its heavy fields (`SelectionsV2`, ' +
-				'`FaceFeatures`, `CustomizationSettings`) are whole JSON documents encoded as ' +
-				'strings by the client’s own serializer, so nothing here parses or re-encodes them.',
+				'The payload is stored verbatim: its heavy fields (`SelectionsV2`, `FaceFeatures`, ' +
+				'`CustomizationSettings`) are whole JSON documents encoded as strings by the ' +
+				'client’s own serializer, so nothing here parses or re-encodes them.\n\n' +
+				'The response is the base envelope with no `Value` key — three keys, and the outfit ' +
+				'is not echoed back. The mixed casing (`Success`/`Error` but `error_id`) is the ' +
+				'reference’s, not a typo.',
 			security: AUTHED,
 			requestBody: jsonBody(OutfitsMeRequest, 'The outfit to save'),
 			responses: {
-				200: json(OutfitsMeRequest, 'The outfit as stored'),
+				200: json(OutfitSaveResponse, 'Saved — `{ Success: true, Error: null, error_id: null }`'),
 				400: json(ErrorResponse, 'Unparseable body'),
 				401: UNAUTHORIZED_RESPONSE,
 			},
@@ -404,7 +411,7 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 				Slot: typeof body.Slot === 'number' ? body.Slot : CURRENT_OUTFIT_SLOT,
 			}
 			await setOutfit(c.env.DB, id, outfit)
-			return c.json(outfit)
+			return c.json({ Success: true, Error: null, error_id: null })
 		}
 	)
 

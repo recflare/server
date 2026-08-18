@@ -533,6 +533,21 @@ export const OutfitsMeRequest = z.object({
 	ThumbnailFileName: z.string().nullable(),
 })
 
+/**
+ * `PUT /outfits/me` — the base envelope, with NO `Value` key: three keys and that is the
+ * whole body. The save answers only whether it worked; the client keeps the outfit it just
+ * sent rather than re-rendering from a response, so nothing here echoes the outfit back.
+ *
+ * Note the mixed casing — `Success` and `Error` are PascalCase, `error_id` is snake_case.
+ * That is what the reference sends, and the client's decoder matches on the exact names, so
+ * do not "tidy" it into one convention.
+ */
+export const OutfitSaveResponse = z.object({
+	Success: z.boolean(),
+	Error: z.string().nullable().describe('Null on success'),
+	error_id: z.string().nullable().describe('Null on success. snake_case, unlike its siblings'),
+})
+
 /** The `{ success, value }` envelope `isCreationAllowedForAccount` wraps its answer in. */
 export const SuccessValueEnvelope = z.object({ success: z.boolean(), value: z.null() })
 

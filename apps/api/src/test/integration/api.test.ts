@@ -646,7 +646,9 @@ describe('public endpoints', () => {
 			body: JSON.stringify(outfit),
 		})
 		expect(res.status).toBe(200)
-		expect(await res.json()).toEqual(outfit)
+		// The save answers the base envelope — three keys, no `Value`, and NOT the outfit
+		// just sent. Note the mixed casing: `Success`/`Error` but `error_id`.
+		expect(await res.json()).toEqual({ Success: true, Error: null, error_id: null })
 
 		// The read serves it back byte-for-byte — the JSON-in-a-string fields are still
 		// strings, not re-encoded objects.
