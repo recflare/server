@@ -110,6 +110,40 @@ describe('cdn endpoints', () => {
 		expect(new Uint8Array(await res.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3, 4]))
 	})
 
+	// Every file this worker hands back carries the same 30-day Cache-Control — the R2
+	// blobs, the configs served through the ASSETS binding, and the bundled tip data.
+	test('every served file carries the 30-day Cache-Control', async () => {
+		const CACHE_CONTROL = `public, max-age=${86400 * 30}`
+		await env.CDN_ASSETS.put('room/2026-02-03/cached', new Uint8Array([1, 2, 3]))
+
+		for (const path of [
+			'/room/2026-02-03/cached',
+			'/config/RRPlusConfig_v3.json',
+			'/config/LoadingScreenTipData',
+		]) {
+			const res = await exports.default.fetch(`${ORIGIN}${path}`)
+			expect(res.status, path).toBe(200)
+			expect(res.headers.get('cache-control'), path).toBe(CACHE_CONTROL)
+		}
+
+		// A ranged read is still a served file, and a 304 has to carry it too — otherwise a
+		// revalidation would answer "no change" with no instruction on how long that holds.
+		const ranged = await exports.default.fetch(`${ORIGIN}/room/2026-02-03/cached`, {
+			headers: { Range: 'bytes=0-1' },
+		})
+		expect(ranged.status).toBe(206)
+		expect(ranged.headers.get('cache-control')).toBe(CACHE_CONTROL)
+
+		const etag = (await exports.default.fetch(`${ORIGIN}/room/2026-02-03/cached`)).headers.get(
+			'etag'
+		)
+		const revalidated = await exports.default.fetch(`${ORIGIN}/room/2026-02-03/cached`, {
+			headers: { 'If-None-Match': etag ?? '' },
+		})
+		expect(revalidated.status).toBe(304)
+		expect(revalidated.headers.get('cache-control')).toBe(CACHE_CONTROL)
+	})
+
 	test('GET /sigs/:sigName honors a Range request with 206', async () => {
 		await env.CDN_ASSETS.put('sigs/ranged', new Uint8Array([10, 11, 12, 13, 14, 15]))
 		const res = await exports.default.fetch(`${ORIGIN}/sigs/ranged`, {

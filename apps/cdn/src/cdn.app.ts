@@ -72,7 +72,7 @@ async function serveAsset(c: Context<App>, key: string) {
 	headers.set('etag', object.httpEtag)
 	headers.set('content-type', 'application/octet-stream')
 	headers.set('accept-ranges', 'bytes')
-	headers.set('cache-control', 'public, max-age=3600')
+	headers.set('cache-control', CACHE_CONTROL)
 
 	// Precondition matched (If-None-Match) → R2 returns no body.
 	if (!('body' in object)) return new Response(null, { status: 304, headers })
@@ -88,6 +88,18 @@ async function serveAsset(c: Context<App>, key: string) {
 
 	return new Response(object.body, { headers })
 }
+
+/**
+ * Cache-Control on every file this worker serves — 30 days (86400 × 30). These are big,
+ * rarely-changing blobs fetched by key: a room scene, an invention, a signature blob. The
+ * keys are content-addressed or date-foldered UUIDs, so a changed asset arrives under a
+ * NEW key rather than replacing one that is already cached.
+ *
+ * Not `immutable`, unlike `img`: the same rule covers `/config/`, whose files ARE
+ * republished under their existing names, and telling a browser never to revalidate those
+ * would pin a stale config for the whole window.
+ */
+const CACHE_CONTROL = `public, max-age=${86400 * 30}`
 
 /**
  * What may reach the ASSETS binding as a config filename: one path segment, no slashes,
@@ -122,7 +134,15 @@ async function serveConfig(c: Context<App>, name: string): Promise<Response | nu
 		const res = await c.env.ASSETS.fetch(
 			new Request(new URL(`/config/${candidate}`, c.req.url), c.req.raw)
 		)
-		if (res.ok || res.status === 304) return res
+		// Rebuilt rather than returned as-is, only to stamp our own Cache-Control over the
+		// asset server's: everything else — the body, the status, the content type, the etag
+		// a conditional GET matched on — is carried across untouched. A 304 has no body to
+		// carry, and `Response` refuses one for that status.
+		if (res.ok || res.status === 304) {
+			const headers = new Headers(res.headers)
+			headers.set('cache-control', CACHE_CONTROL)
+			return new Response(res.status === 304 ? null : res.body, { status: res.status, headers })
+		}
 	}
 	return null
 }
@@ -176,7 +196,7 @@ const app = new Hono<App>()
 			].join(' '),
 			responses: { 200: json(LoadingScreenTip.array(), 'The bundled tips') },
 		}),
-		(c) => c.json(loadingScreenTipData)
+		(c) => c.json(loadingScreenTipData, 200, { 'Cache-Control': CACHE_CONTROL })
 	)
 
 	// Everything else under `/config/`, served from `static/config/` by filename — JSON and

@@ -19,11 +19,12 @@ const FALLBACK_ASSET_PATH = '/DefaultProfileImage.jpg'
 const CDN_IMAGE_PREFIX = 'image/'
 
 /**
- * Cache-Control for served images. Uploaded images are immutable once written,
- * so cache for a year and mark `immutable` so browsers never revalidate. A new
- * image simply uses a new key.
+ * Cache-Control for served images — 30 days (86400 × 30), matching what `cdn` serves its
+ * blobs with. `immutable` rides along because an uploaded image never changes under its
+ * key: a new image simply uses a new one, so there is nothing for a browser to revalidate
+ * inside the window.
  */
-const CACHE_CONTROL = 'public, max-age=31536000, immutable'
+const CACHE_CONTROL = `public, max-age=${86400 * 30}, immutable`
 
 /**
  * Allowed output dimensions. Restricting resizes to a small fixed set caps the
