@@ -15,6 +15,7 @@ import {
 	setImageCheer,
 	SLIDESHOW_LIMIT,
 	SLIDESHOW_MAX_LIMIT,
+	toImageMetadata,
 	toImagesPlayer,
 } from '@repo/domain'
 
@@ -28,6 +29,7 @@ import {
 	ErrorResponse,
 	form,
 	idParam,
+	ImageMetadataDto,
 	ImagesPlayerDto,
 	intQuery,
 	json,
@@ -518,11 +520,15 @@ export const imageRoutes = new Hono<App>({ strict: false })
 			tags: ['Images'],
 			summary: 'Image metadata by filename',
 			description:
-				'The stored `SavedImage` record for a bucket key. 404s when the object exists but ' +
-				'has no metadata row.',
+				'An image’s metadata for a bucket key. 404s when the object exists but has no ' +
+				'metadata row.\n\n' +
+				'Its own projection: renamed like the player lists (`SavedImageId`/`SavedImageType`, ' +
+				'no `TaggedPlayerIds`) but carrying `ClubId`, and with nothing nullable — `RoomId`, ' +
+				'`PlayerEventId` and `ClubId` read 0 where the row holds null, `Description` reads ' +
+				'`""`. Three shapes of one row; keep them straight.',
 			parameters: [stringQuery('name', 'The image name (bucket key); required')],
 			responses: {
-				200: json(SavedImageDto, 'The image record'),
+				200: json(ImageMetadataDto, 'The image’s metadata'),
 				400: json(ErrorResponse, 'No name given'),
 				404: { description: 'No metadata for that name' },
 			},
@@ -531,7 +537,7 @@ export const imageRoutes = new Hono<App>({ strict: false })
 			const name = c.req.query('name') ?? ''
 			if (name === '') return c.json({ error: 'name is required' }, 400)
 			const image = await getImageByName(c.env.DB, name)
-			return image ? c.json(image) : c.notFound()
+			return image ? c.json(toImageMetadata(image)) : c.notFound()
 		}
 	)
 

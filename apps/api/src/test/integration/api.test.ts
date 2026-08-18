@@ -2048,10 +2048,11 @@ describe('images', () => {
 		// A metadata row was created, and it's readable by name via /api/images/v6.
 		const meta = (await (
 			await exports.default.fetch(`${ORIGIN}/api/images/v6?name=${ImageName}`)
-		).json()) as { ImageName: string; PlayerId: number; Id: number; CheerCount: number }
+		).json()) as { ImageName: string; PlayerId: number; SavedImageId: number; CheerCount: number }
 		expect(meta.ImageName).toBe(ImageName)
 		expect(meta.PlayerId).toBe(42)
-		expect(typeof meta.Id).toBe('number')
+		// `SavedImageId`, not `Id` — v6 renames like the player lists do.
+		expect(typeof meta.SavedImageId).toBe('number')
 		expect(meta.CheerCount).toBe(0)
 	})
 
@@ -2358,6 +2359,32 @@ describe('images', () => {
 		expect(entries.filter((e) => e.IsCheered)).toHaveLength(1)
 	})
 
+	test('GET /api/images/v6 serves the metadata projection, nothing nullable', async () => {
+		const img = await createImage(env.DB, {
+			imageName: 'v6shape.jpg',
+			playerId: 7301,
+			// No room, no event, no description: all three are null on the row.
+		})
+		const res = await exports.default.fetch(`${ORIGIN}/api/images/v6?name=v6shape.jpg`)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({
+			SavedImageId: img.Id,
+			ImageName: 'v6shape.jpg',
+			PlayerId: 7301,
+			// Nulls on the row come out as 0 / "" — the client's DTO has no null to put there.
+			RoomId: 0,
+			PlayerEventId: 0,
+			ClubId: 0,
+			Description: '',
+			Accessibility: 1,
+			AccessibilityLocked: false,
+			SavedImageType: 1,
+			CreatedAt: img.CreatedAt,
+			CheerCount: 0,
+			CommentCount: 0,
+		})
+	})
+
 	test('GET /api/images/v6 400s without a name and 404s for an unknown one', async () => {
 		expect((await exports.default.fetch(`${ORIGIN}/api/images/v6`)).status).toBe(400)
 		expect(
@@ -2389,18 +2416,35 @@ describe('images', () => {
 		const meta = (await (
 			await exports.default.fetch(`${ORIGIN}/api/images/v6?name=${ImageName}`)
 		).json()) as {
-			Type: number
+			SavedImageType: number
 			RoomId: number
 			Accessibility: number
+			PlayerEventId: number
+			ClubId: number
+			Description: string
+		}
+		expect(meta.SavedImageType).toBe(1)
+		expect(meta.RoomId).toBe(777)
+		expect(meta.Accessibility).toBe(2)
+		// v6 carries no TaggedPlayerIds — the upload still records them, which the stored row
+		// below proves. Nothing on this projection is nullable: a "none" event reads 0, not
+		// null, and the club (which nothing here sets) reads 0 too.
+		expect(meta).not.toHaveProperty('TaggedPlayerIds')
+		expect(meta.PlayerEventId).toBe(0)
+		expect(meta.ClubId).toBe(0)
+		expect(meta.Description).toBe('')
+
+		// The tagged players and the null event id, as actually stored.
+		const row = await env.DB.prepare('SELECT data FROM image WHERE image_name = ?1')
+			.bind(ImageName)
+			.first<{ data: string }>()
+		const stored = JSON.parse(row!.data) as {
 			TaggedPlayerIds: number[]
 			PlayerEventId: number | null
 		}
-		expect(meta.Type).toBe(1)
-		expect(meta.RoomId).toBe(777)
-		expect(meta.Accessibility).toBe(2)
-		expect(meta.TaggedPlayerIds).toEqual([5, 6])
-		// playerEventId 0 means "none" → stored as null.
-		expect(meta.PlayerEventId).toBeNull()
+		expect(stored.TaggedPlayerIds).toEqual([5, 6])
+		// playerEventId 0 means "none" → stored as null, and serialized back out as 0.
+		expect(stored.PlayerEventId).toBeNull()
 	})
 
 	test('POST /api/images/v4/uploadsaved records a profile thumbnail on the account', async () => {

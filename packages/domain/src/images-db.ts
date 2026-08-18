@@ -356,6 +356,55 @@ export async function getImagesByPlayer(
 }
 
 /**
+ * An image's metadata as `GET /api/images/v6` serves it — the by-name lookup's shape.
+ *
+ * A THIRD projection of the same row, and deliberately not either of the other two: it
+ * renames like `ImagesPlayer` (`Id` → `SavedImageId`, `Type` → `SavedImageType`, no
+ * `TaggedPlayerIds`) but adds `ClubId`, and its numbers and strings are never null —
+ * `RoomId`, `PlayerEventId` and `ClubId` come out as 0 and `Description` as `""` where the
+ * row holds null. The reference's DTO declares them non-nullable, so a null is a decode
+ * failure rather than "none".
+ *
+ * `ClubId` is always 0: nothing here associates an image with a club.
+ */
+export interface ImageMetadata {
+	SavedImageId: number
+	ImageName: string
+	PlayerId: number
+	RoomId: number
+	PlayerEventId: number
+	ClubId: number
+	Description: string
+	Accessibility: number
+	AccessibilityLocked: boolean
+	SavedImageType: number
+	CreatedAt: string
+	CheerCount: number
+	CommentCount: number
+}
+
+/** Project a stored image into the {@link ImageMetadata} shape `/api/images/v6` answers. */
+export function toImageMetadata(img: SavedImage): ImageMetadata {
+	return {
+		SavedImageId: img.Id,
+		ImageName: img.ImageName,
+		PlayerId: img.PlayerId,
+		// Null means "not taken in a room" / "no event"; the client's DTO has no null to put
+		// there, and 0 is the id it treats as none.
+		RoomId: img.RoomId ?? 0,
+		PlayerEventId: img.PlayerEventId ?? 0,
+		ClubId: 0,
+		Description: img.Description ?? '',
+		Accessibility: img.Accessibility,
+		AccessibilityLocked: img.AccessibilityLocked,
+		SavedImageType: img.Type,
+		CreatedAt: img.CreatedAt,
+		CheerCount: img.CheerCount,
+		CommentCount: img.CommentCount,
+	}
+}
+
+/**
  * The client-facing projection of a saved image for the player photo lists (the
  * reference's `ImagesPlayer`). Same data as the stored record, but the id and type
  * are renamed — `Id` → `SavedImageId`, `Type` → `SavedImageType` — and the tagged

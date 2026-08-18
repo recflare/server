@@ -833,6 +833,29 @@ export const SavedImageDto = z.object({
 })
 
 /**
+ * `GET /api/images/v6` — an image's metadata by bucket key. A third projection of the same
+ * row: renamed like `ImagesPlayer` (`SavedImageId`/`SavedImageType`, no `TaggedPlayerIds`)
+ * but carrying `ClubId`, and with no nullable fields — `RoomId`, `PlayerEventId` and
+ * `ClubId` are 0 where the row holds null, `Description` is `""`. Don't unify it with the
+ * other two.
+ */
+export const ImageMetadataDto = z.object({
+	SavedImageId: z.int(),
+	ImageName: z.string().describe('The bucket key the img worker serves it back by'),
+	PlayerId: z.int(),
+	RoomId: z.int().describe('0 when the photo was not taken in a room'),
+	PlayerEventId: z.int().describe('0 when it belongs to no event'),
+	ClubId: z.int().describe('Always 0 — nothing here associates an image with a club'),
+	Description: z.string().describe('Empty string, never null'),
+	Accessibility: z.int(),
+	AccessibilityLocked: z.boolean(),
+	SavedImageType: z.int().describe('1 = share camera, 3 = room, 4 = profile, …'),
+	CreatedAt: z.string(),
+	CheerCount: z.int(),
+	CommentCount: z.int(),
+})
+
+/**
  * The client's `ImagesPlayer` projection — the same record with `Id` → `SavedImageId`,
  * `Type` → `SavedImageType` and no `TaggedPlayerIds`. The player photo lists and feed
  * MUST serve this: the raw SavedImage renders blank thumbnails.
