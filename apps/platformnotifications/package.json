@@ -16,6 +16,7 @@
 	},
 	"dependencies": {
 		"@repo/hono-helpers": "workspace:*",
+		"@repo/jwt": "workspace:*",
 		"hono": "4.12.27",
 		"workers-tagged-logger": "1.0.1"
 	},
