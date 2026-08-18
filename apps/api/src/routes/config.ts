@@ -142,7 +142,7 @@ export const configRoutes = new Hono<App>({ strict: false })
 
 	// The property bag the client would attach to its Statsig user. The reference server
 	// doesn't send properties at all here — it answers a lone `success` carrying its
-	// `StatsigEnabled` config value, as an int — so that is what this mirrors. This server
+	// `StatsigEnabled` config value, as a bool — so that is what this mirrors. This server
 	// runs no experiments and collects no analytics (see the placeholder keys
 	// `/api/config/v1/amplitude` serves), so the value is fixed and the same for everyone.
 	.post(
@@ -152,12 +152,12 @@ export const configRoutes = new Hono<App>({ strict: false })
 			summary: 'Statsig user properties',
 			description:
 				'Despite the name, the reference server returns no properties here — just ' +
-				'`success`, its `StatsigEnabled` config value as an int. This server mirrors that ' +
-				'with a fixed `1`; it runs no experiments and collects no analytics, so nothing ' +
+				'`success`, its `StatsigEnabled` config value as a bool. This server mirrors that ' +
+				'with a fixed `true`; it runs no experiments and collects no analytics, so nothing ' +
 				'here is per-account and it is not auth-gated.',
 			responses: { 200: json(StatsigUserProperties, 'The fixed `StatsigEnabled` flag') },
 		}),
-		(c) => c.json({ success: 1 })
+		(c) => c.json({ success: true })
 	)
 
 	// Voice chat config. The client fetches it to set up voice.

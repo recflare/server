@@ -139,10 +139,10 @@ export const BacktraceConfig = z.object({
 
 /**
  * `GET /statsigUserProperties` — the reference server answers this with a single
- * `success` carrying its `StatsigEnabled` config value, an INT rather than a bool.
+ * `success` carrying its `StatsigEnabled` config value, a BOOL rather than an int.
  */
 export const StatsigUserProperties = z.object({
-	success: z.int().describe('The Statsig-enabled flag, as an int (1)'),
+	success: z.boolean().describe('The Statsig-enabled flag (true)'),
 })
 
 /**

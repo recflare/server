@@ -927,6 +927,33 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 		}
 	)
 
+	// Inventions by particular creators (`?id=207&id=…`) — what the client fills a creator's
+	// shelf, and the "from creators you follow" row, from.
+	//
+	// STUB: an empty list for now. It is the honest answer rather than a placeholder, since
+	// the client reads it as "this creator has published nothing" and renders an empty
+	// shelf, where a 404 would read as a row that failed to load. When it becomes real it is
+	// a filter on the invention table's creator column, the same feed shape as `toptoday`
+	// and `featured` above — `id` is repeatable, and `skip`/`take` page it.
+	.get(
+		'/api/inventions/v1/fromcreators',
+		describeRoute({
+			tags: ['Inventions'],
+			summary: 'Inventions by particular creators (stub)',
+			description:
+				'The published inventions of the accounts named by `id` (repeatable), newest first — ' +
+				'a creator’s shelf, and the "from creators you follow" row. STUB: always an empty ' +
+				'array for now, which the client renders as "nothing published" rather than as a ' +
+				'failed load. `id`, `skip` and `take` are accepted and, for the moment, ignored.',
+			parameters: [
+				intQuery('id', 'Creator account id; repeatable. Accepted and ignored by the stub'),
+				...pageParams(100),
+			],
+			responses: { 200: json(InventionDto.array(), 'Empty — nothing is served here yet') },
+		}),
+		(c) => c.json([])
+	)
+
 	// Invention search/browse: published inventions matching `value` (matched against
 	// name + description; absent → browse everything published), newest first.
 	// Paginated via skip/take (take defaults to 100). Returns a bare array.

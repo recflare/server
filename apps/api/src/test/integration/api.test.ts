@@ -699,6 +699,14 @@ describe('public endpoints', () => {
 		expect(res.status).toBe(400)
 	})
 
+	test('GET /api/progressionEvents/active is an empty list (no auth)', async () => {
+		// The client reads an empty list as "no event running" and skips the event UI; a 404
+		// would stall its load instead.
+		const res = await exports.default.fetch(`${ORIGIN}/api/progressionEvents/active`)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
+	})
+
 	test('GET /api/rooms/v1/filters returns an object with filter arrays', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/api/rooms/v1/filters`)
 		expect(res.status).toBe(200)
@@ -726,7 +734,7 @@ describe('public endpoints', () => {
 	test('POST /statsigUserProperties returns the StatsigEnabled flag', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/statsigUserProperties`, { method: 'POST' })
 		expect(res.status).toBe(200)
-		expect(await res.json()).toEqual({ success: 1 })
+		expect(await res.json()).toEqual({ success: true })
 	})
 
 	test('GET /voice/config returns an object', async () => {
@@ -1582,6 +1590,26 @@ describe('public endpoints', () => {
 		expect(
 			(await updateprice({ InventionId: Invention.InventionId, Price: 10 }, '9999')).status
 		).toBe(403)
+	})
+
+	test('GET /api/inventions/v1/fromcreators is an empty feed for now', async () => {
+		// A stub: the client renders an empty array as "this creator has published nothing",
+		// where a 404 would read as a row that failed to load.
+		const res = await exports.default.fetch(
+			`${ORIGIN}/api/inventions/v1/fromcreators?id=207&skip=0&take=100`
+		)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
+
+		// The params are accepted and ignored, including a repeated `id` and none at all.
+		expect(
+			await (
+				await exports.default.fetch(`${ORIGIN}/api/inventions/v1/fromcreators?id=1&id=2`)
+			).json()
+		).toEqual([])
+		expect(
+			await (await exports.default.fetch(`${ORIGIN}/api/inventions/v1/fromcreators`)).json()
+		).toEqual([])
 	})
 
 	test('GET /api/inventions/v1/toptoday + v1/featured serve the invention feeds', async () => {
@@ -4111,6 +4139,7 @@ describe('openapi', () => {
 			'GET /api/inventions/v1',
 			'GET /api/inventions/v1/details',
 			'GET /api/inventions/v1/featured',
+			'GET /api/inventions/v1/fromcreators',
 			'GET /api/inventions/v1/fulllineageowner',
 			'GET /api/inventions/v1/personaldetails/{inventionId}',
 			'GET /api/inventions/v1/room',
@@ -4142,6 +4171,7 @@ describe('openapi', () => {
 			'GET /api/players/v1/playerPhotoTaggingSetting',
 			'GET /api/players/v1/progression/{id}',
 			'GET /api/players/v2/progression/bulk',
+			'GET /api/progressionEvents/active',
 			'GET /api/quickPlay/v1/getandclear',
 			'GET /api/referee/files',
 			'GET /api/relationships/mutualfriends',
