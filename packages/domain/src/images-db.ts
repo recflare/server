@@ -163,6 +163,9 @@ export async function setImageCheer(
 	await syncImageCheerCount(db, savedImageId)
 }
 
+/** How many image ids one cheer lookup may bind: D1's 100-parameter cap, less the player id. */
+const CHEER_ID_LIMIT = 99
+
 /**
  * Which of the given saved-image ids the player has cheered — the set of cheered
  * ids (a subset of `ids`). Backs the bulk `cheered` lookup. Empty input → empty set.
@@ -172,16 +175,23 @@ export async function getCheeredImageIds(
 	playerId: number,
 	ids: number[]
 ): Promise<Set<number>> {
-	if (ids.length === 0) return new Set()
-	const inList = ids.map((_, i) => `?${i + 2}`).join(',')
-	const { results } = await db
-		.prepare(
-			`SELECT saved_image_id AS id FROM image_interaction
+	const cheered = new Set<number>()
+	// D1 caps a query at 100 bound parameters and the player id takes one of them, so a
+	// photo grid asking about more images than that is split across queries rather than
+	// failing the whole read. The client really does send a page of ~100 at a time.
+	for (let i = 0; i < ids.length; i += CHEER_ID_LIMIT) {
+		const page = ids.slice(i, i + CHEER_ID_LIMIT)
+		const inList = page.map((_, n) => `?${n + 2}`).join(',')
+		const { results } = await db
+			.prepare(
+				`SELECT saved_image_id AS id FROM image_interaction
 			 WHERE player_id = ?1 AND cheered = 1 AND saved_image_id IN (${inList})`
-		)
-		.bind(playerId, ...ids)
-		.all<{ id: number }>()
-	return new Set(results.map((r) => r.id))
+			)
+			.bind(playerId, ...page)
+			.all<{ id: number }>()
+		for (const row of results) cheered.add(row.id)
+	}
+	return cheered
 }
 
 /** Look up an image record by its ImageName (the R2 key / filename), or null. */
