@@ -134,6 +134,15 @@ const HOT_LIST_KEY = 'hotlist'
 const HOT_LIST_SIZE = 20
 
 /**
+ * The feed the hot row is drawn from: `community`, which is the hot ranking with the rooms
+ * the Coach account (id 1) created dropped. Those are this server's stock/seeded rooms, and
+ * a "Hot" row that is mostly Rec Center is a row about the server rather than about what
+ * players are doing. The pseudo-tag is the rooms worker's own — see `getHotRooms` — so the
+ * definition of "community" stays in one place.
+ */
+const HOT_LIST_FEED = 'community'
+
+/**
  * The entity type an algorithmic list reports when the query names none. The client always
  * sends `?type=`, and `Rooms` is what it asks for; falling back to `Accounts` (0, the enum's
  * zero value) would have the row resolve room ids against the account service.
@@ -231,10 +240,11 @@ const app = new Hono<App>()
 
 		// `HotList` is real: it serves the same ranking the rooms worker's `/rooms/hot` feed
 		// does — live player count first, then engagement — so the Hot row on a discovery page
-		// shows the rooms people are actually in. Only the ids travel; the client resolves each
-		// room itself, which is why this reads the ranking and throws the room blobs away.
+		// shows the rooms people are actually in, minus the Coach account's stock rooms (see
+		// HOT_LIST_FEED). Only the ids travel; the client resolves each room itself, which is
+		// why this reads the ranking and throws the room blobs away.
 		if (c.req.param('list').toLowerCase() === HOT_LIST_KEY) {
-			const { Results } = await getHotRooms(c.env.DB, '', 0, HOT_LIST_SIZE)
+			const { Results } = await getHotRooms(c.env.DB, HOT_LIST_FEED, 0, HOT_LIST_SIZE)
 			return c.json({
 				Type: echoed,
 				Entities: Results.map((room) => ({ Id: String(room.RoomId), Context: null })),

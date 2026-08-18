@@ -26,12 +26,14 @@ beforeAll(async () => {
 	for (const stmt of SUBROOM_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of PRESENCE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const room of [
+		// Account 1 is the Coach — its rooms are this server's stock ones, which the hot row
+		// leaves out.
 		{ RoomId: 2, Name: 'RecCenter', CreatorAccountId: 1, Accessibility: 1, IsDorm: false },
-		{ RoomId: 3, Name: 'DodgeBall', CreatorAccountId: 1, Accessibility: 1, IsDorm: false },
-		{ RoomId: 4, Name: 'Quietly', CreatorAccountId: 1, Accessibility: 1, IsDorm: false },
+		{ RoomId: 3, Name: 'DodgeBall', CreatorAccountId: 500, Accessibility: 1, IsDorm: false },
+		{ RoomId: 4, Name: 'Quietly', CreatorAccountId: 501, Accessibility: 1, IsDorm: false },
 		// Non-public and a dorm: neither belongs in a discovery row.
-		{ RoomId: 5, Name: 'SecretRoom', CreatorAccountId: 1, Accessibility: 0, IsDorm: false },
-		{ RoomId: 6, Name: '@Dorm', CreatorAccountId: 2, Accessibility: 1, IsDorm: true },
+		{ RoomId: 5, Name: 'SecretRoom', CreatorAccountId: 500, Accessibility: 0, IsDorm: false },
+		{ RoomId: 6, Name: '@Dorm', CreatorAccountId: 502, Accessibility: 1, IsDorm: true },
 	]) {
 		await seedRoomWithSubRooms(env.DB, { ...room, SubRooms: [] } as Record<string, unknown>)
 	}
@@ -219,11 +221,15 @@ it('serves a discovery row from /algorithmiclists', async () => {
 })
 
 it('serves the live hot-room ranking for /algorithmiclists/HotList', async () => {
-	// Two players in room 3, one in room 2 — live player count is what ranks the hot feed,
-	// so 3 comes first.
+	// Two players in room 3, one in room 4 — live player count is what ranks the hot feed,
+	// so 3 comes first. Room 2 is busiest of all and still must not appear: the Coach
+	// account made it.
 	await putInRoom(901, 3)
 	await putInRoom(902, 3)
-	await putInRoom(903, 2)
+	await putInRoom(903, 4)
+	await putInRoom(904, 2)
+	await putInRoom(905, 2)
+	await putInRoom(906, 2)
 
 	const res = await SELF.fetch(`${ORIGIN}/algorithmiclists/HotList?type=1`)
 	expect(res.status).toBe(200)
@@ -236,12 +242,14 @@ it('serves the live hot-room ranking for /algorithmiclists/HotList', async () =>
 	// Same entity shape as any other row: ids as STRINGS, `Context` null (nothing attributes
 	// a ranking here). Only ids travel — the client resolves each room itself.
 	const ids = body.Entities.map((e) => e.Id)
-	expect(ids.slice(0, 2)).toEqual(['3', '2'])
+	expect(ids.slice(0, 2)).toEqual(['3', '4'])
 	expect(body.Entities.every((e) => e.Context === null)).toBe(true)
 
-	// The empty room is in the feed, just below the busy ones...
-	expect(ids).toContain('4')
-	// ...while the private room and the dorm are not in it at all.
+	// Room 2 has the most players in it and is still absent: it was created by account 1,
+	// the Coach, whose stock rooms the hot row leaves out — a "Hot" row full of Rec Center
+	// is a row about the server rather than about what players are doing.
+	expect(ids).not.toContain('2')
+	// The private room and the dorm are not in it either.
 	expect(ids).not.toContain('5')
 	expect(ids).not.toContain('6')
 
