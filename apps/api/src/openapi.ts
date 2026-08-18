@@ -890,6 +890,15 @@ export const UploadImageResponse = z.object({
 /** `DELETE /api/images/v1/deletesaved` JSON body. */
 export const DeleteImageRequest = z.object({ ImageName: z.string() })
 
+/**
+ * `POST /api/images/v5/cheered/bulk` form body — the saved-image ids to report cheer state
+ * for, as a REPEATED `id` field (`id=651&id=570&…`), one value per id. The client sends a
+ * whole photo-grid page this way, around a hundred ids at a time.
+ */
+export const CheeredBulkRequest = z.object({
+	id: z.string().describe('Repeated once per image id; each value may also be comma-separated'),
+})
+
 /** `POST /api/images/v1/cheer` JSON body. */
 export const CheerImageRequest = z.object({
 	SavedImageId: z.int(),

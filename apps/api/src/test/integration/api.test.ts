@@ -2242,6 +2242,46 @@ describe('images', () => {
 			headers: await bearer('42'),
 		})
 		expect(await empty.json()).toEqual([])
+
+		// The client POSTs the ids as a form body of repeated `id` fields — a photo grid asks
+		// about a whole page at once, far more than belongs in a URL. Same answer as the GET.
+		const posted = await exports.default.fetch(`${ORIGIN}/api/images/v5/cheered/bulk`, {
+			method: 'POST',
+			headers: {
+				...(await bearer('42')),
+				'Content-Type': 'application/x-www-form-urlencoded',
+			},
+			body: `id=${img.Id}&id=${other}`,
+		})
+		expect(posted.status).toBe(200)
+		expect(await posted.json()).toEqual([
+			{ SavedImageId: img.Id, IsCheered: true },
+			{ SavedImageId: other, IsCheered: false },
+		])
+		expect(
+			(await exports.default.fetch(`${ORIGIN}/api/images/v5/cheered/bulk`, { method: 'POST' }))
+				.status
+		).toBe(401)
+
+		// A full page of ids: D1 caps a query at 100 bound parameters and the player id takes
+		// one, so the lookup has to split rather than fail — the client really does send ~100.
+		const page = [img.Id, ...Array.from({ length: 120 }, (_, i) => 900000 + i)]
+		const fullPage = await exports.default.fetch(`${ORIGIN}/api/images/v5/cheered/bulk`, {
+			method: 'POST',
+			headers: {
+				...(await bearer('42')),
+				'Content-Type': 'application/x-www-form-urlencoded',
+			},
+			body: page.map((imageId) => `id=${imageId}`).join('&'),
+		})
+		expect(fullPage.status).toBe(200)
+		const entries = (await fullPage.json()) as Array<{ SavedImageId: number; IsCheered: boolean }>
+		// One entry per requested id, in request order, and the cheer still resolves from the
+		// far side of the split.
+		expect(entries).toHaveLength(page.length)
+		expect(entries.map((e) => e.SavedImageId)).toEqual(page)
+		expect(entries[0]).toEqual({ SavedImageId: img.Id, IsCheered: true })
+		expect(entries.filter((e) => e.IsCheered)).toHaveLength(1)
 	})
 
 	test('GET /api/images/v6 400s without a name and 404s for an unknown one', async () => {
@@ -4090,6 +4130,7 @@ describe('openapi', () => {
 			'POST /api/gamesight/event',
 			'POST /api/images/v1/cheer',
 			'POST /api/images/v4/uploadsaved',
+			'POST /api/images/v5/cheered/bulk',
 			'POST /api/inventions/v1/settags',
 			'POST /api/inventions/v1/update',
 			'POST /api/inventions/v1/updateprice',

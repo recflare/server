@@ -20,6 +20,7 @@ import {
 import { authedId, unauthorized } from '../http'
 import {
 	AUTHED,
+	CheeredBulkRequest,
 	CheeredEntry,
 	CheerImageRequest,
 	DeleteImageRequest,
@@ -131,6 +132,46 @@ async function readPostedSetting(c: Context<App>): Promise<number | undefined> {
 	if (typeof raw !== 'string') return undefined
 	const parsed = Number.parseInt(raw.trim(), 10)
 	return Number.isNaN(parsed) ? undefined : parsed
+}
+
+/**
+ * The saved-image ids a cheer lookup is asking about, from wherever the client put them.
+ *
+ * The client POSTs them as a form body of repeated `id` fields — a photo grid asks about a
+ * whole page at once, ~100 ids, which is more than it wants to hang off a URL — and the
+ * same repeated-field spelling also works as a query string, which is how the GET form of
+ * this route takes them. Both are read, so one handler serves either.
+ *
+ * Each value may itself be a comma-separated list, and unparseable entries are dropped
+ * rather than failing the request: a stray id must not cost the caller the rest of the page.
+ */
+async function cheerLookupIds(c: Context<App>): Promise<number[]> {
+	const raw = [...(c.req.queries('id') ?? [])]
+	if (c.req.method !== 'GET') {
+		const body = await c.req.parseBody({ all: true }).catch(() => ({}) as Record<string, unknown>)
+		const key = Object.keys(body).find((k) => k.toLowerCase() === 'id')
+		const posted = key === undefined ? [] : body[key]
+		for (const value of Array.isArray(posted) ? posted : [posted]) {
+			if (typeof value === 'string') raw.push(value)
+		}
+	}
+	return raw
+		.flatMap((value) => value.split(','))
+		.map((value) => Number.parseInt(value.trim(), 10))
+		.filter((imageId) => !Number.isNaN(imageId))
+}
+
+/**
+ * One `{ SavedImageId, IsCheered }` per requested id, in request order — the shared
+ * handler behind both the GET and the POST form of the bulk cheer lookup. The cheer state
+ * is the CALLER's, so two players asking about the same photo get different answers.
+ */
+async function cheerLookup(c: Context<App>) {
+	const id = await authedId(c)
+	if (id === null) return unauthorized(c)
+	const ids = await cheerLookupIds(c)
+	const cheered = await getCheeredImageIds(c.env.DB, id, ids)
+	return c.json(ids.map((imageId) => ({ SavedImageId: imageId, IsCheered: cheered.has(imageId) })))
 }
 
 // ---- Images ----------------------------------------------------------------
@@ -489,6 +530,10 @@ export const imageRoutes = new Hono<App>({ strict: false })
 	// Whether the caller has cheered each of the given saved-image ids (`?id=55&id=54`,
 	// and each `id` may itself be a comma-separated list). Auth-gated. Returns one
 	// `{ SavedImageId, IsCheered }` per requested id, in order.
+	//
+	// The client actually POSTs this (see below); the GET form is kept because it is the
+	// same lookup and costs one line, and a URL of ids is the easier thing to hand a
+	// browser or a curl.
 	.get(
 		'/api/images/v5/cheered/bulk',
 		describeRoute({
@@ -506,20 +551,32 @@ export const imageRoutes = new Hono<App>({ strict: false })
 				401: UNAUTHORIZED_RESPONSE,
 			},
 		}),
-		async (c) => {
-			const id = await authedId(c)
-			if (id === null) return unauthorized(c)
-			const ids =
-				c.req
-					.queries('id')
-					?.flatMap((raw) => raw.split(','))
-					.map((raw) => Number.parseInt(raw.trim(), 10))
-					.filter((imageId) => !Number.isNaN(imageId)) ?? []
-			const cheered = await getCheeredImageIds(c.env.DB, id, ids)
-			return c.json(
-				ids.map((imageId) => ({ SavedImageId: imageId, IsCheered: cheered.has(imageId) }))
-			)
-		}
+		cheerLookup
+	)
+
+	// The same lookup as a POST, which is the form the client sends: the ids ride in a
+	// form-urlencoded body of repeated `id` fields (`id=651&id=570&…`) rather than the query
+	// string, because a photo grid asks about a full page at once — around a hundred ids,
+	// more than belongs in a URL. Same auth, same answer, same order.
+	.post(
+		'/api/images/v5/cheered/bulk',
+		describeRoute({
+			tags: ['Images'],
+			summary: 'Which photos the caller has cheered (bulk POST)',
+			description:
+				'One `{ SavedImageId, IsCheered }` per requested id, in request order — the client ' +
+				'fills in the cheer buttons on a photo grid from this. The ids are a form body of ' +
+				'repeated `id` fields (`id=651&id=570&…`), which is how the client sends a page of ' +
+				'~100 at once; the query string is read too, so the GET form of this path answers ' +
+				'identically.',
+			security: AUTHED,
+			requestBody: form(CheeredBulkRequest, 'The image ids, as repeated `id` fields'),
+			responses: {
+				200: json(CheeredEntry.array(), 'One entry per requested id, in order'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		cheerLookup
 	)
 
 	// Who may tag the caller in photos. The preference lives in the player-settings bag
