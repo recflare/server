@@ -112,6 +112,7 @@ import {
 	SubRoomDataSaveResponseDto,
 	subRoomIdParam,
 	SubRoomPermissionsRequest,
+	SubRoomSavesNoUnityAssetsPage,
 	SubRoomSavesPage,
 	TagRequest,
 	UNAUTHORIZED_EMPTY,
@@ -514,6 +515,43 @@ function toSaveResponse(save: Record<string, unknown>) {
 		savedOnDeviceClass: num(save.SavedOnDeviceClass) ?? 0,
 		description: str(save.Description),
 		createdAt: str(save.CreatedAt) ?? '',
+	}
+}
+
+/**
+ * A save row with its Unity-asset payloads left out — what `…/saves/no_unity_assets`
+ * lists. PascalCase like the rows `…/saves` serves, minus the two hydrated asset arrays
+ * (`UnitySubAssets`, `ReferencedUnityAssets`) and `Tags`, keeping only the asset
+ * IDENTIFIERS. The point of the variant is weight: those arrays are the heavy part of a
+ * save row, and a history list doesn't render them.
+ *
+ * `UnityAssetId` is the one field that differs rather than disappearing — always present
+ * and null when the save carried none, where the full row omits the key entirely.
+ *
+ * Built key by key rather than by deleting from the stored save: a save is stored as an
+ * opaque blob, so a future field would otherwise leak into this projection unannounced.
+ */
+function toSaveWithoutUnityAssets(save: Record<string, unknown>) {
+	const str = (v: unknown) => (typeof v === 'string' ? v : null)
+	const num = (v: unknown) => (typeof v === 'number' ? v : null)
+	return {
+		SubRoomDataSaveId: num(save.SubRoomDataSaveId),
+		SubRoomId: num(save.SubRoomId),
+		UnityAssetId: str(save.UnityAssetId),
+		ReferencedUnityAssetIds: Array.isArray(save.ReferencedUnityAssetIds)
+			? save.ReferencedUnityAssetIds
+			: [],
+		DataBlob: str(save.DataBlob) ?? '',
+		DataBlobHash: str(save.DataBlobHash),
+		PersistenceVersion: num(save.PersistenceVersion) ?? 0,
+		OMVersion: num(save.OMVersion) ?? 0,
+		SavedByAccountId: num(save.SavedByAccountId),
+		SavedOnPlatform: num(save.SavedOnPlatform) ?? 0,
+		SavedOnDeviceClass: num(save.SavedOnDeviceClass) ?? 0,
+		Description: str(save.Description) ?? '',
+		ModerationState: num(save.ModerationState) ?? 0,
+		CreatedAt: str(save.CreatedAt) ?? '',
+		UgcSubVersion: num(save.UgcSubVersion) ?? 0,
 	}
 }
 
@@ -2021,6 +2059,75 @@ const app = new Hono<App>()
 			const page = saves.slice(from, Number.isNaN(take) || take < 0 ? undefined : from + take)
 
 			return c.json({ Results: page, TotalResults: saves.length, TotalCount: saves.length })
+		}
+	)
+
+	// The same history list, with the Unity-asset payloads left out. The rows are the
+	// `…/saves` rows minus `UnitySubAssets`/`ReferencedUnityAssets`/`Tags` — the heavy part
+	// of a save row, which a history list never renders — keeping the asset IDENTIFIERS.
+	//
+	// It answers a BARE paged wrapper: no `{ success, error, value }` envelope, unlike the
+	// room mutations next door. Same gate, same paging and the same empty page for an
+	// unknown room/subroom as `…/saves`, so the two can be swapped for one another.
+	//
+	// The `:saveId` detail route below is digit-constrained, so `no_unity_assets` can never
+	// be read as a save id whichever order these are declared in.
+	.get(
+		'/rooms/:roomId{[0-9]+}/subrooms/:subRoomId{[0-9]+}/saves/no_unity_assets',
+		describeRoute({
+			tags: ['Subrooms'],
+			summary: 'A subroom’s saves, without their Unity-asset payloads',
+			description: [
+				'The same page as `…/saves`, newest first, carrying the lighter rows: no',
+				'`UnitySubAssets`, no `ReferencedUnityAssets`, no `Tags` — only the asset ids. A BARE',
+				'paged wrapper, with no `{ success, error, value }` envelope around it.',
+				'',
+				'Gated exactly like `…/saves`, and for the same reason: the list includes STAGED',
+				'saves that were never published, so it is the room’s creator or anyone whose live',
+				'presence puts them in the room, and anyone else is a 403.',
+				'',
+				'`TotalResults` and `TotalCount` carry the same number — the client’s paged DTO and',
+				'the reference disagree on the name, so both are emitted.',
+			].join(' '),
+			security: AUTHED,
+			parameters: [
+				roomIdParam,
+				subRoomIdParam,
+				stringQuery('skip', 'How many saves to skip (default 0)'),
+				stringQuery('take', 'How many saves to return (default all)'),
+			],
+			responses: {
+				200: json(SubRoomSavesNoUnityAssetsPage, 'The subroom’s saves, newest first'),
+				401: UNAUTHORIZED_RESPONSE,
+				403: FORBIDDEN_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const accountId = await authedAccountId(c)
+			if (accountId === null) return unauthorized(c)
+
+			const roomId = Number.parseInt(c.req.param('roomId'), 10)
+			const subRoomId = Number.parseInt(c.req.param('subRoomId'), 10)
+			// Scoped through the room so a subroom id from another room can't read its saves.
+			const room = await getRoomById(c.env.DB, roomId)
+			if (!room || !findSubRoom(room, subRoomId)) {
+				return c.json({ Results: [], TotalResults: 0, TotalCount: 0 })
+			}
+			if (!(await canReadSaves(c, room, roomId, accountId))) return c.body(null, 403)
+			const saves = await getSubRoomSaves(c.env.DB, subRoomId)
+
+			const skip = Number.parseInt(c.req.query('skip') ?? '', 10)
+			const take = Number.parseInt(c.req.query('take') ?? '', 10)
+			const from = Number.isNaN(skip) || skip < 0 ? 0 : skip
+			const page = saves.slice(from, Number.isNaN(take) || take < 0 ? undefined : from + take)
+
+			// `TotalResults` counts the whole history, not the page — that is what the client
+			// pages against.
+			return c.json({
+				Results: page.map(toSaveWithoutUnityAssets),
+				TotalResults: saves.length,
+				TotalCount: saves.length,
+			})
 		}
 	)
 

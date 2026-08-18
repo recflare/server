@@ -640,14 +640,51 @@ export const SaveSubRoomDataRequest = z.object({
 })
 
 /**
- * `GET /rooms/{roomId}/subrooms/{subRoomId}/saves` — the room-history page. We keep no
- * save history (a save overwrites the subroom's blob inline), so it's always empty.
+ * `GET /rooms/{roomId}/subrooms/{subRoomId}/saves` — the room-history page. Every save
+ * appends a `subroom_save` row rather than overwriting, so this is the subroom's full
+ * history, newest first, paged by `skip`/`take`.
  */
 export const SubRoomSavesPage = z.object({
-	Results: z
-		.array(SubRoomDataSaveDto)
-		.describe('At most one — the current save; we keep no history'),
-	TotalResults: z.int(),
+	Results: z.array(SubRoomDataSaveDto).describe('The page of saves, newest first'),
+	TotalResults: z.int().describe('The whole history’s size, not the page’s'),
+	TotalCount: z.int().describe('Same value as `TotalResults` — the two references disagree'),
+})
+
+/**
+ * One save as `GET …/subrooms/{subRoomId}/saves/no_unity_assets` lists it: the same
+ * PascalCase row as {@link SubRoomDataSaveDto} with the Unity-asset payloads left out —
+ * no `UnitySubAssets`, no `ReferencedUnityAssets`, no `Tags` — keeping only the asset
+ * IDENTIFIERS (`UnityAssetId`, `ReferencedUnityAssetIds`).
+ *
+ * The one field that differs rather than disappearing is `UnityAssetId`: always present
+ * here, null when the save carried none, where the full row emits it only when it did.
+ */
+export const SubRoomDataSaveNoUnityAssetsDto = z.object({
+	SubRoomDataSaveId: z.int(),
+	SubRoomId: z.int(),
+	UnityAssetId: z.string().nullable().describe('Null unless the save carried one'),
+	ReferencedUnityAssetIds: z.array(z.string()).describe('Always empty — we record none'),
+	DataBlob: z.string().describe('The scene-data key the client downloads from the CDN'),
+	DataBlobHash: z.string().nullable(),
+	PersistenceVersion: z.int(),
+	OMVersion: z.int(),
+	SavedByAccountId: z.int().nullable(),
+	SavedOnPlatform: z.int().describe('0 — the save request carries no platform'),
+	SavedOnDeviceClass: z.int().describe('0 — the save request carries no device class'),
+	Description: z.string().describe('The save comment; empty string when none'),
+	ModerationState: z.int(),
+	CreatedAt: z.string(),
+	UgcSubVersion: z.int(),
+})
+
+/**
+ * `GET /rooms/{roomId}/subrooms/{subRoomId}/saves/no_unity_assets` — the same history page
+ * as {@link SubRoomSavesPage}, carrying the lighter rows. A BARE paged wrapper: no
+ * `{ success, error, value }` envelope around it, unlike the room mutations.
+ */
+export const SubRoomSavesNoUnityAssetsPage = z.object({
+	Results: z.array(SubRoomDataSaveNoUnityAssetsDto).describe('The page of saves, newest first'),
+	TotalResults: z.int().describe('The whole history’s size, not the page’s'),
 	TotalCount: z.int().describe('Same value as `TotalResults` — the two references disagree'),
 })
 

@@ -2917,6 +2917,80 @@ describe('rooms endpoints', () => {
 		await clearPresence(999)
 	})
 
+	it('GET /rooms/:id/subrooms/:sid/saves/no_unity_assets lists the same history, lighter', async () => {
+		const get = async (path: string, sub?: string) =>
+			SELF.fetch(`${ORIGIN}${path}`, sub === undefined ? {} : { headers: await bearer(sub) })
+		const light = '/rooms/2/subrooms/2/saves/no_unity_assets'
+
+		const res = await get(light, '1')
+		expect(res.status).toBe(200)
+		const page = (await res.json()) as {
+			Results: Array<Record<string, unknown>>
+			TotalResults: number
+			TotalCount: number
+		}
+		// The same history the full list serves — same rows, same order, same counts.
+		const full = (await (await get('/rooms/2/subrooms/2/saves', '1')).json()) as {
+			Results: Array<{ SubRoomDataSaveId: number; DataBlob: string }>
+			TotalResults: number
+		}
+		expect(page.TotalResults).toBe(full.TotalResults)
+		expect(page.TotalCount).toBe(page.TotalResults)
+		expect(page.Results.map((r) => r.SubRoomDataSaveId)).toEqual(
+			full.Results.map((r) => r.SubRoomDataSaveId)
+		)
+
+		// The lighter row: the Unity-asset PAYLOADS are gone (and `Tags` with them), the asset
+		// IDs stay, and `UnityAssetId` is present-and-null rather than omitted.
+		const row = page.Results[0]!
+		expect(Object.keys(row)).toEqual([
+			'SubRoomDataSaveId',
+			'SubRoomId',
+			'UnityAssetId',
+			'ReferencedUnityAssetIds',
+			'DataBlob',
+			'DataBlobHash',
+			'PersistenceVersion',
+			'OMVersion',
+			'SavedByAccountId',
+			'SavedOnPlatform',
+			'SavedOnDeviceClass',
+			'Description',
+			'ModerationState',
+			'CreatedAt',
+			'UgcSubVersion',
+		])
+		expect(row.UnityAssetId).toBe(null)
+		expect(row.ReferencedUnityAssetIds).toEqual([])
+		expect(row.SubRoomId).toBe(2)
+		expect(row.DataBlob).toBe(full.Results[0]!.DataBlob)
+
+		// skip/take page it the same way.
+		const paged = (await (await get(`${light}?skip=1&take=1`, '1')).json()) as {
+			Results: Array<{ SubRoomDataSaveId: number }>
+			TotalResults: number
+		}
+		expect(paged.Results).toHaveLength(1)
+		expect(paged.Results[0]!.SubRoomDataSaveId).toBe(full.Results[1]!.SubRoomDataSaveId)
+		expect(paged.TotalResults).toBe(full.TotalResults)
+
+		// A never-saved subroom pages empty rather than 404ing, as the full list does.
+		expect(await (await get('/rooms/3/subrooms/3/saves/no_unity_assets', '1')).json()).toEqual({
+			Results: [],
+			TotalResults: 0,
+			TotalCount: 0,
+		})
+
+		// Same gate as the list it mirrors — it exposes the same unpublished saves.
+		expect((await get(light)).status).toBe(401)
+		expect((await get(light, '999')).status).toBe(403)
+		expect((await get(light, '2')).status).toBe(403)
+		await putInRoom(999, 2)
+		expect((await get(light, '999')).status).toBe(200)
+		await clearPresence(999)
+		expect((await get(light, '999')).status).toBe(403)
+	})
+
 	it('GET /rooms/:id/subrooms/:sid/saves/:saveId is the detail behind a history row', async () => {
 		const get = async (path: string, sub?: string) =>
 			SELF.fetch(`${ORIGIN}${path}`, sub === undefined ? {} : { headers: await bearer(sub) })
@@ -3024,6 +3098,7 @@ describe('rooms endpoints', () => {
 			'GET /rooms/{roomId}/playerdata/me',
 			'GET /rooms/{roomId}/similar',
 			'GET /rooms/{roomId}/subrooms/{subRoomId}/saves',
+			'GET /rooms/{roomId}/subrooms/{subRoomId}/saves/no_unity_assets',
 			'GET /rooms/{roomId}/subrooms/{subRoomId}/saves/{saveId}',
 			'GET /roomserver/rooms/createdby/me',
 			'POST /rooms/{roomId}/bans',
