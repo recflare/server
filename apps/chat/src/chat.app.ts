@@ -10,6 +10,7 @@ import { getThreadMessages } from './message-db'
 import {
 	AUTHED,
 	ChatMessageDto,
+	ChatPrivacySettingRequest,
 	ChatPrivacySettings,
 	ChatResult,
 	ChatThreadDto,
@@ -50,7 +51,7 @@ import {
 } from './thread-db'
 
 import type { Context } from 'hono'
-import type { App } from './context'
+import type { App, Env } from './context'
 import type { ChatMessage } from './message-db'
 
 /**
@@ -108,13 +109,102 @@ const PARTY_INVITE_LIFETIME_MINUTES = 60
 /**
  * Who may start a chat with a player — the client's `ChatPrivacy` enum, served numerically
  * like every other enum on this build. `Friends` is what a fresh account reports, and what
- * every account reports here: nothing stores a per-player setting yet.
+ * a player who has never touched their privacy screen reads back here.
+ *
+ * The PUT spells the same enum by NAME (`directMessagePrivacySetting=Favorites`); only the
+ * GET is numeric. Both directions go through `parseChatPrivacy`, which takes either.
  */
 const ChatPrivacy = {
 	Friends: 0,
 	Favorites: 1,
 	NoOne: 2,
 } as const
+
+type ChatPrivacyValue = (typeof ChatPrivacy)[keyof typeof ChatPrivacy]
+
+/** The enum member names, indexed by ordinal — what a stored setting holds. */
+const CHAT_PRIVACY_NAMES = ['Friends', 'Favorites', 'NoOne'] as const
+
+/**
+ * The keys the two settings live under in the player's `playersettings` map. Chat has no
+ * table of its own for them: they belong with the player's other toggles, and the settings
+ * bag is already read and written per player.
+ */
+const DM_PRIVACY_KEY = 'directMessagePrivacySetting'
+const GROUP_PRIVACY_KEY = 'groupChatPrivacySetting'
+
+/**
+ * A `ChatPrivacy` out of whatever was stored or posted — the member name as the client
+ * sends it (case-insensitively), or the ordinal as the GET serves it, since a value that
+ * made a round trip through the settings bag could be spelled either way.
+ *
+ * `undefined` for anything unrecognized, which the read and the write treat differently: a
+ * stored value that won't parse falls back to the default, but a posted one that won't
+ * parse is a field worth leaving alone rather than a write of `Friends`.
+ */
+function parseChatPrivacy(value: string | undefined): ChatPrivacyValue | undefined {
+	const raw = (value ?? '').trim()
+	if (raw === '') return undefined
+
+	const byName = CHAT_PRIVACY_NAMES.findIndex((n) => n.toLowerCase() === raw.toLowerCase())
+	if (byName !== -1) return byName as ChatPrivacyValue
+
+	const ordinal = Number.parseInt(raw, 10)
+	return ordinal >= 0 && ordinal < CHAT_PRIVACY_NAMES.length
+		? (ordinal as ChatPrivacyValue)
+		: undefined
+}
+
+/** The player's settings map from the KV the `playersettings` worker owns. */
+async function getPlayerSettings(
+	env: Env,
+	accountId: number
+): Promise<Record<string, string> | null> {
+	return env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(
+		`player:${accountId}`,
+		'json'
+	).catch(() => null)
+}
+
+/**
+ * A player's two chat privacy settings. Absent settings, an absent key and an unparseable
+ * value all read `Friends` — the reference's default, and the safer of the two directions
+ * to be wrong in: it describes a player as more private than this server enforces, rather
+ * than less.
+ */
+async function readChatPrivacy(
+	env: Env,
+	accountId: number
+): Promise<{
+	directMessagePrivacySetting: ChatPrivacyValue
+	groupChatPrivacySetting: ChatPrivacyValue
+}> {
+	const stored = (await getPlayerSettings(env, accountId)) ?? {}
+	return {
+		directMessagePrivacySetting: parseChatPrivacy(stored[DM_PRIVACY_KEY]) ?? ChatPrivacy.Friends,
+		groupChatPrivacySetting: parseChatPrivacy(stored[GROUP_PRIVACY_KEY]) ?? ChatPrivacy.Friends,
+	}
+}
+
+/**
+ * Write the posted setting(s) back into the player's settings map.
+ *
+ * The write MERGES, exactly as the `playersettings` worker's own PUT does: the map holds
+ * every setting the player has (OOBE state, tutorial mask, …), so storing these two on
+ * their own would wipe the rest. Values are stored by NAME, the way the client posts them,
+ * so the bag stays readable; `parseChatPrivacy` takes either spelling back.
+ */
+async function writeChatPrivacy(
+	env: Env,
+	accountId: number,
+	settings: Partial<Record<typeof DM_PRIVACY_KEY | typeof GROUP_PRIVACY_KEY, ChatPrivacyValue>>
+): Promise<void> {
+	const merged: Record<string, string> = { ...(await getPlayerSettings(env, accountId)) }
+	for (const [key, value] of Object.entries(settings)) {
+		if (value !== undefined) merged[key] = CHAT_PRIVACY_NAMES[value]
+	}
+	await env.RECFLARE_PLAYER_SETTINGS.put(`player:${accountId}`, JSON.stringify(merged))
+}
 
 /** The hub is a single global Durable Object instance, as every worker addresses it. */
 const HUB_INSTANCE = 'global'
@@ -525,14 +615,16 @@ const app = new Hono<App>()
 	)
 
 	// The caller's chat privacy settings — who may DM them, and who may pull them into a
-	// group chat. Both report `Friends`, which is the reference's default and the safer of
-	// the two directions to be wrong in: it describes a player as more private than the
-	// server actually enforces, rather than less.
+	// group chat — read out of their `playersettings` map. A player who has never opened the
+	// privacy screen reads `Friends` for both, the reference's default and the safer of the
+	// two directions to be wrong in: it describes a player as more private than the server
+	// actually enforces, rather than less.
 	//
-	// REPORTED, NOT ENFORCED. Nothing here stores a per-player setting or checks one — the
-	// DM check below allows every message regardless — so this is what the client renders on
-	// its privacy screen. Wire the two together if this ever becomes real: a screen that says
-	// "Friends" while anyone can message you is worse than one that says nothing.
+	// STORED, NOT ENFORCED. The PUT below keeps the player's choice, but nothing checks it:
+	// the DM check further down allows every message regardless, because this server has no
+	// friends/favorites list to test a sender against. Wire the two together once it does —
+	// a screen that says "Favorites" while anyone can message you is worse than one that
+	// says nothing.
 	//
 	// `playerId` comes off the TOKEN, not a query param: the answer is about the caller.
 	.get(
@@ -542,31 +634,79 @@ const app = new Hono<App>()
 			summary: 'The caller’s chat privacy settings',
 			description: [
 				'Who may direct-message the caller and who may add them to a group chat, as the',
-				'`ChatPrivacy` enum by NUMBER (0 Friends · 1 Favorites · 2 NoOne). Both are `Friends`',
-				'here — nothing stores a per-player setting — and nothing enforces them either: the',
-				'DM check allows every message. `playerId` is the caller, read from the token.',
+				'`ChatPrivacy` enum by NUMBER (0 Friends · 1 Favorites · 2 NoOne) — note the PUT takes',
+				'the same enum by NAME. Read from the caller’s `playersettings` map; a player who has',
+				'never set them reads `Friends` for both, as does one whose stored value won’t parse.',
+				'Stored but not enforced: the DM check allows every message. `playerId` is the caller,',
+				'read from the token.',
 			].join(' '),
 			security: AUTHED,
 			responses: {
-				200: json(ChatPrivacySettings, 'The caller’s settings — always Friends/Friends'),
+				200: json(ChatPrivacySettings, 'The caller’s stored settings (Friends/Friends by default)'),
 				401: UNAUTHORIZED_RESPONSE,
 			},
 		}),
 		async (c) => {
 			const id = await authedId(c)
 			if (id === null) return c.body(null, 401)
-			return c.json({
-				playerId: id,
-				directMessagePrivacySetting: ChatPrivacy.Friends,
-				groupChatPrivacySetting: ChatPrivacy.Friends,
-			})
+			return c.json({ playerId: id, ...(await readChatPrivacy(c.env, id)) })
+		}
+	)
+
+	// Set one of the two settings. The client PUTs whichever row of its privacy screen the
+	// player just changed — `directMessagePrivacySetting=Favorites` OR
+	// `groupChatPrivacySetting=Favorites`, never both — so a field that isn't in the body is
+	// left alone rather than reset to the default, which would silently undo the other row.
+	//
+	// The body spells the enum by NAME while the GET answers the ordinal; that asymmetry is
+	// the client's, not a mistake here. An unrecognized value writes nothing.
+	//
+	// Answers the RESULTING settings, the same body the GET serves, rather than an empty
+	// ack: the client has just changed a toggle it renders, and a body it can read back
+	// can't disagree with what was stored.
+	.put(
+		'/thread/chatPrivacySetting',
+		describeRoute({
+			tags: ['Threads'],
+			summary: 'Set the caller’s chat privacy settings',
+			description: [
+				'Stores the posted setting(s) in the caller’s `playersettings` map and answers the',
+				'resulting settings — the same body `GET /thread/chatPrivacySetting` serves, with the',
+				'enum by NUMBER. The body names the enum by NAME',
+				'(`directMessagePrivacySetting=Favorites`); the ordinal is accepted too. The client',
+				'sends one field per call, so an absent field leaves that setting as it was, and the',
+				'write merges into the settings map so the player’s other settings are untouched. A',
+				'body with nothing readable in it is a no-op 200 answering the stored settings, not a',
+				'400. Stored, not enforced: nothing checks these when a message is sent.',
+			].join(' '),
+			security: AUTHED,
+			requestBody: form(ChatPrivacySettingRequest, 'The setting(s) to store'),
+			responses: {
+				200: json(ChatPrivacySettings, 'The caller’s settings as they now stand'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return c.body(null, 401)
+
+			const posted = {
+				[DM_PRIVACY_KEY]: parseChatPrivacy(await formField(c, DM_PRIVACY_KEY)),
+				[GROUP_PRIVACY_KEY]: parseChatPrivacy(await formField(c, GROUP_PRIVACY_KEY)),
+			}
+			if (posted[DM_PRIVACY_KEY] !== undefined || posted[GROUP_PRIVACY_KEY] !== undefined) {
+				await writeChatPrivacy(c.env, id, posted)
+			}
+
+			return c.json({ playerId: id, ...(await readChatPrivacy(c.env, id)) })
 		}
 	)
 
 	// May the caller DM this player? Asked before the client opens a new direct message, so
-	// it can grey the button out rather than let the send fail. Always 0 (Success): nothing
-	// here stores the who-can-message-me privacy setting the name refers to, so there is no
-	// setting to refuse on.
+	// it can grey the button out rather than let the send fail. Always 0 (Success): the
+	// setting the name refers to is stored (see `/thread/chatPrivacySetting`) but can't be
+	// checked, since Friends and Favorites both need a friends list this server doesn't
+	// keep. Enforce it here the moment one exists.
 	//
 	// The body is a bare ChatResult INTEGER — the client instantiates its response wrapper
 	// with the ChatResult enum, not a bool, so `true` decodes as nothing. The refusals this
@@ -582,8 +722,9 @@ const app = new Hono<App>()
 			description: [
 				'Whether the caller may open a direct message with `receivingPlayerId`, as a bare',
 				'ChatResult integer — 0 (Success) means allowed; a real refusal would be 15 (the',
-				'caller’s own privacy setting) or 16 (the other player’s). Always 0 here: this server',
-				'stores no who-can-message-me privacy setting, so there is nothing to refuse on.',
+				'caller’s own privacy setting) or 16 (the other player’s). Always 0 here: the settings',
+				'`/thread/chatPrivacySetting` stores are not enforced, since Friends and Favorites both',
+				'need a friends list this server doesn’t keep.',
 				'`receivingPlayerId` is accepted and ignored; the answer is the same for every player,',
 				'and the client asks again for the next one.',
 			].join(' '),

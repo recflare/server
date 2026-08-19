@@ -165,14 +165,16 @@ export const PartyInviteSettings = z.object({
 })
 
 /**
- * `GET /thread/chatPrivacySetting` — who may start a chat with the caller. camelCase, unlike
- * the PascalCase thread DTOs, and the two settings are the `ChatPrivacy` enum served
+ * `GET|PUT /thread/chatPrivacySetting` — who may start a chat with the caller. camelCase,
+ * unlike the PascalCase thread DTOs, and the two settings are the `ChatPrivacy` enum served
  * NUMERICALLY (0 Friends · 1 Favorites · 2 NoOne): this client build carries no by-name enum
- * formatter, so a string would decode as nothing.
+ * formatter, so a string would decode as nothing. Note the asymmetry with the PUT, which
+ * sends the enum by NAME (`directMessagePrivacySetting=Favorites`).
  *
- * Reported, not enforced. Nothing on this server stores a per-player privacy setting or
- * checks one — `GET /thread/checkCanSendDirectMessageWithPrivacySetting` allows every DM —
- * so these are the values the client renders its privacy screen from.
+ * STORED, NOT ENFORCED. The PUT keeps the player's choice in the `playersettings` KV and this
+ * is what the client renders its privacy screen from, but nothing checks it —
+ * `GET /thread/checkCanSendDirectMessageWithPrivacySetting` still allows every DM, since this
+ * server has no friends/favorites list to test a sender against.
  */
 export const ChatPrivacySettings = z.object({
 	playerId: z.int().describe('The caller — read from the token, not from the query'),
@@ -255,6 +257,27 @@ export const SnoozeThreadRequest = z.object({
 	snooze: z
 		.string()
 		.describe('`True`/`False` as the client spells it (`1`/`yes` also count as true)'),
+})
+
+/**
+ * `PUT /thread/chatPrivacySetting` form body. The client sends ONE of the two fields per
+ * call — it PUTs whichever row of its privacy screen the player just changed — so a field
+ * that isn't in the body leaves that setting as it was rather than resetting it.
+ *
+ * The value is the `ChatPrivacy` enum by NAME (`Favorites`), which is how the client spells
+ * it here even though the GET answers with the ordinal; the ordinal is accepted too.
+ */
+export const ChatPrivacySettingRequest = z.object({
+	directMessagePrivacySetting: z
+		.string()
+		.optional()
+		.describe('Who may DM the caller: `Friends` · `Favorites` · `NoOne` (or 0 · 1 · 2)'),
+	groupChatPrivacySetting: z
+		.string()
+		.optional()
+		.describe(
+			'Who may add the caller to a group chat: `Friends` · `Favorites` · `NoOne` (or 0 · 1 · 2)'
+		),
 })
 
 /** `PUT|POST /thread/:id/favorite` form body. */

@@ -3,7 +3,9 @@ import { describeRoute } from 'hono-openapi'
 
 import charadesWords from '../../static/charades.json'
 import communityBoard from '../../static/community-board.json'
+import { authedId, unauthorized } from '../http'
 import {
+	AUTHED,
 	BareString,
 	idParam,
 	IsPureResponse,
@@ -15,9 +17,22 @@ import {
 	KeepsakeConfig,
 	SanitizeRequest,
 	stringParam,
+	UNAUTHORIZED_RESPONSE,
 } from '../openapi'
+import { containsSwears } from '../sanitize'
 
+import type { Context } from 'hono'
 import type { App } from '../context'
+
+/**
+ * The text to check, from the JSON body the client posts (`{ "Value": "..." }`). A body
+ * that isn't JSON, or carries no `Value`, reads as the empty string — which every caller
+ * here treats as "nothing to object to" rather than as a bad request.
+ */
+async function sanitizeValue(c: Context<App>): Promise<string> {
+	const body = await c.req.json<{ Value?: unknown }>().catch(() => ({}) as { Value?: unknown })
+	return typeof body.Value === 'string' ? body.Value : ''
+}
 
 // Text sanitization, keepsakes, objectives/events/rewards, and the misc analytics
 // sinks the client hits during load.
@@ -36,21 +51,34 @@ export const gameplayRoutes = new Hono<App>({ strict: false })
 			requestBody: jsonBody(SanitizeRequest, 'The text to clean'),
 			responses: { 200: json(BareString, 'The input text, unchanged (a bare JSON string)') },
 		}),
-		async (c) => {
-			const body = await c.req.json<{ Value?: unknown }>().catch(() => ({}) as { Value?: unknown })
-			return c.json(typeof body.Value === 'string' ? body.Value : '')
-		}
+		async (c) => c.json(await sanitizeValue(c))
 	)
+	// The yes/no form of the filter, and the one that actually filters: the client asks
+	// this before it accepts a display name, a room name or an invention title. Auth-gated,
+	// as the reference is — the client only ever asks while logged in.
 	.post(
 		'/api/sanitize/v1/isPure',
 		describeRoute({
 			tags: ['Gameplay'],
 			summary: 'Whether a string is clean',
-			description: 'The yes/no form of the filter. Always `true` — nothing is filtered here.',
+			description:
+				'Reports whether the posted `Value` contains a swear — the check the client runs ' +
+				'against a display name, room name or invention title before it accepts one. ' +
+				'Matching is word-boundary aware, so ordinary words that contain a swear ' +
+				'(`analysis`, `Scunthorpe`, `class`) are pure, while leetspeak (`sh1t`, `a$$hole`) ' +
+				'is not. An empty or absent `Value` is pure.',
+			security: AUTHED,
 			requestBody: jsonBody(SanitizeRequest, 'The text to check'),
-			responses: { 200: json(IsPureResponse, 'Always pure') },
+			responses: {
+				200: json(IsPureResponse, 'Whether the text is clean'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
 		}),
-		(c) => c.json({ IsPure: true })
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+			return c.json({ IsPure: !containsSwears(await sanitizeValue(c)) })
+		}
 	)
 
 	// ---- Activities -----------------------------------------------------------

@@ -16,6 +16,7 @@
 		"test": "run-vitest"
 	},
 	"dependencies": {
+		"@2toad/profanity": "3.3.0",
 		"@repo/domain": "workspace:*",
 		"@repo/hono-helpers": "workspace:*",
 		"@repo/jwt": "workspace:*",

@@ -410,7 +410,7 @@ describe('GET /thread/party', () => {
 })
 
 describe('GET /thread/chatPrivacySetting', () => {
-	it('reports Friends for both settings, keyed to the caller', async () => {
+	it('reports Friends for both settings by default, keyed to the caller', async () => {
 		const res = await SELF.fetch(`${ORIGIN}/thread/chatPrivacySetting`, {
 			headers: await bearer(886001),
 		})
@@ -424,6 +424,37 @@ describe('GET /thread/chatPrivacySetting', () => {
 		})
 	})
 
+	it('reads the stored settings out of the player settings map', async () => {
+		await env.RECFLARE_PLAYER_SETTINGS.put(
+			'player:886003',
+			JSON.stringify({
+				directMessagePrivacySetting: 'Favorites',
+				groupChatPrivacySetting: 'NoOne',
+			})
+		)
+		const res = await SELF.fetch(`${ORIGIN}/thread/chatPrivacySetting`, {
+			headers: await bearer(886003),
+		})
+		expect(await res.json()).toEqual({
+			playerId: 886003,
+			directMessagePrivacySetting: 1,
+			groupChatPrivacySetting: 2,
+		})
+	})
+
+	it('falls back to Friends for a stored value it can’t parse', async () => {
+		await env.RECFLARE_PLAYER_SETTINGS.put(
+			'player:886004',
+			JSON.stringify({ directMessagePrivacySetting: 'Nobody at all' })
+		)
+		const res = await SELF.fetch(`${ORIGIN}/thread/chatPrivacySetting`, {
+			headers: await bearer(886004),
+		})
+		expect(
+			((await res.json()) as { directMessagePrivacySetting: number }).directMessagePrivacySetting
+		).toBe(0)
+	})
+
 	it('reads playerId off the token, not a query param', async () => {
 		const res = await SELF.fetch(`${ORIGIN}/thread/chatPrivacySetting?playerId=999999`, {
 			headers: await bearer(886002),
@@ -433,6 +464,99 @@ describe('GET /thread/chatPrivacySetting', () => {
 
 	it('401s without a token', async () => {
 		const res = await SELF.fetch(`${ORIGIN}/thread/chatPrivacySetting`)
+		expect(res.status).toBe(401)
+	})
+})
+
+describe('PUT /thread/chatPrivacySetting', () => {
+	const path = `${ORIGIN}/thread/chatPrivacySetting`
+
+	/** The client's PUT: one form field, the enum by NAME. */
+	async function put(playerId: number, body: Record<string, string>) {
+		return SELF.fetch(path, {
+			method: 'PUT',
+			headers: await bearer(playerId),
+			body: new URLSearchParams(body),
+		})
+	}
+
+	const settings = async (playerId: number) =>
+		env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(`player:${playerId}`, 'json')
+
+	it('stores the DM setting and answers the resulting settings', async () => {
+		const res = await put(887001, { directMessagePrivacySetting: 'Favorites' })
+		expect(res.status).toBe(200)
+		// The same body the GET serves — the enum by NUMBER, not the name that was posted.
+		expect(await res.json()).toEqual({
+			playerId: 887001,
+			directMessagePrivacySetting: 1,
+			groupChatPrivacySetting: 0,
+		})
+		// Stored by NAME in the player settings map the `playersettings` worker owns.
+		expect((await settings(887001))?.directMessagePrivacySetting).toBe('Favorites')
+	})
+
+	it('stores the group chat setting on its own', async () => {
+		const res = await put(887002, { groupChatPrivacySetting: 'NoOne' })
+		expect(await res.json()).toEqual({
+			playerId: 887002,
+			directMessagePrivacySetting: 0,
+			groupChatPrivacySetting: 2,
+		})
+	})
+
+	it('leaves the other setting alone — the client sends one field per call', async () => {
+		await put(887003, { directMessagePrivacySetting: 'NoOne' })
+		const res = await put(887003, { groupChatPrivacySetting: 'Favorites' })
+		expect(await res.json()).toEqual({
+			playerId: 887003,
+			directMessagePrivacySetting: 2,
+			groupChatPrivacySetting: 1,
+		})
+	})
+
+	it('merges, leaving the player’s other settings untouched', async () => {
+		await env.RECFLARE_PLAYER_SETTINGS.put(
+			'player:887004',
+			JSON.stringify({ 'Recroom.OOBE': '77' })
+		)
+		await put(887004, { directMessagePrivacySetting: 'Favorites' })
+		expect(await settings(887004)).toEqual({
+			'Recroom.OOBE': '77',
+			directMessagePrivacySetting: 'Favorites',
+		})
+	})
+
+	it('accepts the enum by ordinal too, and is case-insensitive about the name', async () => {
+		expect(await (await put(887005, { directMessagePrivacySetting: '2' })).json()).toMatchObject({
+			directMessagePrivacySetting: 2,
+		})
+		expect(
+			await (await put(887005, { directMessagePrivacySetting: 'favorites' })).json()
+		).toMatchObject({ directMessagePrivacySetting: 1 })
+	})
+
+	it('accepts the fields in the query string as well as the body', async () => {
+		const res = await SELF.fetch(`${path}?groupChatPrivacySetting=NoOne`, {
+			method: 'PUT',
+			headers: await bearer(887006),
+		})
+		expect(await res.json()).toMatchObject({ groupChatPrivacySetting: 2 })
+	})
+
+	it('ignores an unreadable value rather than 400ing or writing a default', async () => {
+		await put(887007, { directMessagePrivacySetting: 'Favorites' })
+		const res = await put(887007, { directMessagePrivacySetting: 'Whoever' })
+		expect(res.status).toBe(200)
+		// Unchanged — a value that won't parse is not a write of `Friends`.
+		expect(await res.json()).toMatchObject({ directMessagePrivacySetting: 1 })
+	})
+
+	it('401s without a token', async () => {
+		const res = await SELF.fetch(path, {
+			method: 'PUT',
+			body: new URLSearchParams({ directMessagePrivacySetting: 'NoOne' }),
+		})
 		expect(res.status).toBe(401)
 	})
 })
@@ -1406,6 +1530,7 @@ describe('openapi', () => {
 			'POST /thread/{id}/read',
 			'POST /thread/{id}/rename',
 			'POST /thread/{id}/snooze',
+			'PUT /thread/chatPrivacySetting',
 			'PUT /thread/{id}/favorite',
 			'PUT /thread/{id}/message/{messageId}/read',
 			'PUT /thread/{id}/read',

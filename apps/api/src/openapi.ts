@@ -556,7 +556,7 @@ export const SuccessValueEnvelope = z.object({ success: z.boolean(), value: z.nu
 /** `POST /api/sanitize/v1` JSON body — the text to clean. */
 export const SanitizeRequest = z.object({ Value: z.string() })
 
-/** `POST /api/sanitize/v1/isPure` — whether the text is clean (always true here). */
+/** `POST /api/sanitize/v1/isPure` — whether the text is free of profanity. */
 export const IsPureResponse = z.object({ IsPure: z.boolean() })
 
 /** `GET /api/keepsakes/globalconfig` — the keepsake feature switches. */

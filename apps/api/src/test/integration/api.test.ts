@@ -1700,7 +1700,7 @@ describe('public endpoints', () => {
 		expect(await ids(featuredPage)).toEqual([202])
 	})
 
-	test('POST /api/sanitize/v1 echoes the value; isPure reports true', async () => {
+	test('POST /api/sanitize/v1 echoes the value', async () => {
 		const san = await exports.default.fetch(`${ORIGIN}/api/sanitize/v1`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
@@ -1708,10 +1708,65 @@ describe('public endpoints', () => {
 		})
 		expect(san.status).toBe(200)
 		expect(await san.json()).toBe('hello world')
+	})
 
-		const pure = await exports.default.fetch(`${ORIGIN}/api/sanitize/v1/isPure`, { method: 'POST' })
-		expect(pure.status).toBe(200)
-		expect(await pure.json()).toEqual({ IsPure: true })
+	describe('POST /api/sanitize/v1/isPure', () => {
+		const isPure = async (Value?: string, authed = true) =>
+			exports.default.fetch(`${ORIGIN}/api/sanitize/v1/isPure`, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					...(authed ? await bearer('42') : {}),
+				},
+				body: Value === undefined ? undefined : JSON.stringify({ Value }),
+			})
+
+		test('401s without a token', async () => {
+			expect((await isPure('hello', false)).status).toBe(401)
+		})
+
+		test.each([
+			'hello world',
+			'My Cool Room',
+			// The words a substring filter gets wrong. Rejecting these is worse than
+			// missing a swear: the player is told the name is unacceptable and can't
+			// see why.
+			'Grape Escape',
+			'Title Screen',
+			'assassin',
+			'Bass Pro Shop',
+			'analysis of the class',
+			'Scunthorpe United',
+			'shiitake mushrooms',
+			// Nothing to object to in an empty box — the client checks as you type.
+			'',
+		])('%j is pure', async (value) => {
+			const res = await isPure(value)
+			expect(res.status).toBe(200)
+			expect(await res.json()).toEqual({ IsPure: true })
+		})
+
+		test.each([
+			'fuck this',
+			// Leetspeak and symbol substitution are folded back to letters.
+			'sh1t',
+			'a$$hole',
+			'n1gger',
+			// A swear anywhere in the string, not just on its own.
+			'my totally fucking cool room',
+			// Ours, on top of the dataset — see EXTRA_PATTERNS.
+			'kys',
+		])('%j is not pure', async (value) => {
+			const res = await isPure(value)
+			expect(res.status).toBe(200)
+			expect(await res.json()).toEqual({ IsPure: false })
+		})
+
+		test('a body with no Value is pure rather than a bad request', async () => {
+			const res = await isPure()
+			expect(res.status).toBe(200)
+			expect(await res.json()).toEqual({ IsPure: true })
+		})
 	})
 })
 
