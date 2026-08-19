@@ -1060,6 +1060,33 @@ describe('auth-gated endpoints', () => {
 		expect(priv.roomInstance.photonRoomId).not.toBe(a.roomInstance.photonRoomId)
 	})
 
+	test('POST /matchmake/room/:roomId only pools players on the same client build', async () => {
+		const matchmake = async (sub: string, version: string) =>
+			(await (
+				await exports.default.fetch(`${ORIGIN}/matchmake/room/2`, {
+					method: 'POST',
+					headers: await bearer(sub, version),
+				})
+			).json()) as { roomInstance: { photonRoomId: string; roomInstanceId: number } }
+
+		// Two players on one build share an instance, exactly as before — the build scoping
+		// groups players, it doesn't stop grouping them.
+		const oldA = await matchmake('910', '20250424.01')
+		const oldB = await matchmake('911', '20250424.01')
+		expect(oldB.roomInstance.roomInstanceId).toBe(oldA.roomInstance.roomInstanceId)
+
+		// A player on a different build asking for the same room gets their own instance:
+		// the live one is running a version of the room their client can't render, so it
+		// isn't somebody to join.
+		const next = await matchmake('912', '20250718.01')
+		expect(next.roomInstance.roomInstanceId).not.toBe(oldA.roomInstance.roomInstanceId)
+		expect(next.roomInstance.photonRoomId).not.toBe(oldA.roomInstance.photonRoomId)
+
+		// ...and they pool with their own build in turn.
+		const nextB = await matchmake('913', '20250718.01')
+		expect(nextB.roomInstance.roomInstanceId).toBe(next.roomInstance.roomInstanceId)
+	})
+
 	test('GET /player/connection-info hands back the Photon room the caller matchmade into', async () => {
 		const matchmaked = (await (
 			await exports.default.fetch(`${ORIGIN}/matchmake/room/2`, {
@@ -1269,6 +1296,34 @@ describe('auth-gated endpoints', () => {
 			photonRoomId: first.roomInstance.photonRoomId,
 			roomInstanceId: first.roomInstance.roomInstanceId,
 		})
+	})
+
+	test('POST /matchmake/dorm gives each client build its own dorm instance', async () => {
+		const dorm = async (version: string) =>
+			(await (
+				await exports.default.fetch(`${ORIGIN}/matchmake/dorm`, {
+					method: 'POST',
+					headers: await bearer('43', version),
+				})
+			).json()) as {
+				roomInstance: { roomId: number; photonRoomId: string; roomInstanceId: number }
+			}
+
+		// Same dorm ROOM whichever build the owner is on — it's their one dorm...
+		const older = await dorm('20250424.01')
+		const newer = await dorm('20250718.01')
+		expect(newer.roomInstance.roomId).toBe(older.roomInstance.roomId)
+
+		// ...but a separate session per build. A dorm takes guests, so a mixed one is a
+		// room where neither side can see what the other spawned; the owner on a new build
+		// and a guest still on the old one are deliberately kept apart.
+		expect(newer.roomInstance.roomInstanceId).not.toBe(older.roomInstance.roomInstanceId)
+		expect(newer.roomInstance.photonRoomId).not.toBe(older.roomInstance.photonRoomId)
+
+		// Each build's instance is still the stable one it re-enters (id + Photon room),
+		// and coming back on the older build doesn't hand back the newer session.
+		expect(await dorm('20250424.01')).toMatchObject({ roomInstance: older.roomInstance })
+		expect(await dorm('20250718.01')).toMatchObject({ roomInstance: newer.roomInstance })
 	})
 
 	test('a matchmake echoes the request’s CorrelationId (and mirrors errorCode as result)', async () => {
@@ -1606,8 +1661,15 @@ describe('auth-gated endpoints', () => {
 			)
 			.run()
 
+	// A stand-in instance id for presence rows whose instance is beside the point. Kept
+	// far above what createRoomInstance hands out (ID_BASE + 1, climbing by one per
+	// instance) so it can never collide with a real one — a live presence row pointing at
+	// a real instance makes that instance look occupied, which quietly breaks whichever
+	// test is watching the empty-instance sweep.
+	const UNRELATED_INSTANCE_ID = 1_900_042
+
 	const seedPresence = (id: number, expiresAt: number) =>
-		seedPresenceInInstance(id, 1000042, expiresAt)
+		seedPresenceInInstance(id, UNRELATED_INSTANCE_ID, expiresAt)
 
 	const storedExpiresAt = async (id: number): Promise<number> => {
 		const row = await env.DB.prepare('SELECT data FROM presence WHERE account_id = ?1')
@@ -1651,11 +1713,12 @@ describe('auth-gated endpoints', () => {
 	})
 
 	test('countPlayersInInstance counts live players in a room instance (excludes expired)', async () => {
-		// Three players in instance 1000099 — two live, one expired.
-		await seedPresenceInInstance(710, 1000099, nowSeconds() + 800)
-		await seedPresenceInInstance(711, 1000099, nowSeconds() + 800)
-		await seedPresenceInInstance(712, 1000099, nowSeconds() - 10) // expired → not counted
-		expect(await countPlayersInInstance(env.DB, 1000099)).toBe(2)
+		// Three players in instance 1900099 (synthetic, like UNRELATED_INSTANCE_ID above) —
+		// two live, one expired.
+		await seedPresenceInInstance(710, 1_900_099, nowSeconds() + 800)
+		await seedPresenceInInstance(711, 1_900_099, nowSeconds() + 800)
+		await seedPresenceInInstance(712, 1_900_099, nowSeconds() - 10) // expired → not counted
+		expect(await countPlayersInInstance(env.DB, 1_900_099)).toBe(2)
 		expect(await countPlayersInInstance(env.DB, 999999)).toBe(0)
 	})
 
@@ -1782,22 +1845,36 @@ describe('auth-gated endpoints', () => {
 		expect(await getRoomInstance(env.DB, fresh.roomInstanceId)).not.toBeNull()
 	})
 
-	test('the cron sweep spares an empty dorm instance', async () => {
-		// A dorm is backed by one persistent instance so its Photon room id survives
-		// re-entry — it sits empty whenever the owner is anywhere else.
+	test('the cron sweep retires an empty dorm instance like any other', async () => {
+		// A dorm gets no exemption: once its owner is elsewhere the session is an empty
+		// Photon room nobody can be pointed at, exactly like a public instance everyone
+		// left. What persists about a dorm is the ROOM and the scene saved in it.
 		const headers = await bearer('833')
-		const dorm = (await (
-			await exports.default.fetch(`${ORIGIN}/matchmake/dorm`, { method: 'POST', headers })
-		).json()) as { roomInstance: { roomInstanceId: number } }
-		const dormInstanceId = dorm.roomInstance.roomInstanceId
+		const enterDorm = async () =>
+			(await (
+				await exports.default.fetch(`${ORIGIN}/matchmake/dorm`, { method: 'POST', headers })
+			).json()) as {
+				roomInstance: { roomInstanceId: number; roomId: number; photonRoomId: string }
+			}
+
+		const dorm = await enterDorm()
 		await expirePresence(833)
-		await backdateInstance(dormInstanceId)
+		await backdateInstance(dorm.roomInstance.roomInstanceId)
 
 		const ctx = createExecutionContext()
 		await scheduled(createScheduledController(), env, ctx)
 		await waitOnExecutionContext(ctx)
 
-		expect(await getRoomInstance(env.DB, dormInstanceId)).not.toBeNull()
+		expect(await getRoomInstance(env.DB, dorm.roomInstance.roomInstanceId)).toBeNull()
+
+		// And the owner walks back into their own dorm regardless — same room, a fresh
+		// session of it. Freshness is read off the Photon room (a new GUID per instance)
+		// rather than the id: ids come from MAX(id) + 1, so retiring the newest row hands
+		// its number straight back to the next instance created.
+		const again = await enterDorm()
+		expect(again.roomInstance.roomId).toBe(dorm.roomInstance.roomId)
+		expect(again.roomInstance.photonRoomId).not.toBe(dorm.roomInstance.photonRoomId)
+		expect(await getRoomInstance(env.DB, again.roomInstance.roomInstanceId)).not.toBeNull()
 	})
 
 	test('player/login and exclusivelogin preserve presence', async () => {
@@ -1944,6 +2021,42 @@ describe('auth-gated endpoints', () => {
 		})
 		expect(coOwner.status).toBe(200)
 		expect((await coOwner.json()) as unknown[]).toHaveLength(instances.length)
+	})
+
+	test('POST /matchmake/instance/:id refuses an instance running another client build', async () => {
+		const spawn = async (sub: string, version: string) =>
+			(
+				(await (
+					await exports.default.fetch(`${ORIGIN}/matchmake/room/3`, {
+						method: 'POST',
+						headers: await bearer(sub, version),
+					})
+				).json()) as { roomInstance: { roomInstanceId: number } }
+			).roomInstance.roomInstanceId
+
+		const join = async (instanceId: number, version: string) =>
+			(
+				await exports.default.fetch(`${ORIGIN}/matchmake/instance/${instanceId}`, {
+					method: 'POST',
+					headers: await bearer('42', version),
+				})
+			).json()
+
+		// The owner of room 3 (42) can't drop into a session running a build their own
+		// client isn't: owning the room doesn't make an older client able to render it.
+		// Their build is behind the instance's, so they're told to update (16) rather than
+		// given the opaque refusal.
+		const newer = await spawn('914', '20250718.01')
+		expect(await join(newer, '20250424.01')).toEqual(refused(16))
+
+		// The other direction has no code of its own — there's no "the people in there must
+		// update" — so it's the opaque NoSuchRoom every other unjoinable thing answers.
+		const older = await spawn('915', '20250424.01')
+		expect(await join(older, '20250718.01')).toEqual(refused(20))
+
+		// Same build → in they go.
+		const same = await spawn('916', '20250718.01')
+		expect(await join(same, '20250718.01')).toMatchObject({ errorCode: 0 })
 	})
 
 	test('POST /matchmake/instance/:id joins that exact instance, owner-only', async () => {
@@ -2272,6 +2385,37 @@ describe('auth-gated endpoints', () => {
 		// An unauthenticated logout is a no-op too.
 		await exports.default.fetch(`${ORIGIN}/player/logout`, { method: 'POST' })
 		expect(await sent()).toEqual([])
+	})
+
+	test('POST /matchmake/player/:id refuses a friend on another client build', async () => {
+		// 9810 is friends with 9811, 9812 with 9813 — one pair per direction of the build gap.
+		const insertRel = env.DB.prepare(
+			'INSERT INTO relationship (requester_id, target_id, relationship_type) VALUES (?1, ?2, ?3)'
+		)
+		await env.DB.batch([insertRel.bind(9810, 9811, 3), insertRel.bind(9812, 9813, 3)])
+
+		const enter = async (sub: string, version: string) =>
+			exports.default.fetch(`${ORIGIN}/matchmake/room/2`, {
+				method: 'POST',
+				headers: await bearer(sub, version),
+			})
+		const follow = async (targetId: number, sub: string, version: string) =>
+			(
+				await exports.default.fetch(`${ORIGIN}/matchmake/player/${targetId}`, {
+					method: 'POST',
+					headers: await bearer(sub, version),
+				})
+			).json()
+
+		// The friend is standing in a session of a newer build: following them would put
+		// two builds in one Photon room, so the follower is told to update (16) instead.
+		await enter('9811', '20250718.01')
+		expect(await follow(9811, '9810', '20250424.01')).toEqual(refused(16))
+
+		// Following someone on an OLDER build is refused too — opaquely, since there's no
+		// code for "they're the ones who need to update".
+		await enter('9813', '20250424.01')
+		expect(await follow(9813, '9812', '20250718.01')).toEqual(refused(20))
 	})
 
 	test('POST /matchmake/player/:id follows a friend into their room, friends only', async () => {

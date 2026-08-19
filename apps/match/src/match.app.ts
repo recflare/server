@@ -24,6 +24,7 @@ import {
 	getRoomInstance,
 	getRoomInstancesByRoom,
 	getRoomInstanceSummariesByRoom,
+	getStoredRoomInstance,
 	isClubMember,
 	isPlayerBannedFromRoom,
 	MatchmakingErrorCode,
@@ -254,6 +255,19 @@ function unauthorized(c: Context<App>) {
  */
 async function callerVersion(c: Context<App>): Promise<string | null> {
 	return validateAndGetVersion(c.req.raw, await c.env.JWT_SECRET.get())
+}
+
+/**
+ * The build to matchmake the caller as — {@link callerVersion} with the server's own
+ * `GAME_VERSION` standing in when the token doesn't say (the same fallback presence
+ * uses, so a player's instance and their reported build agree).
+ *
+ * Unlike presence, this can never be left unset: it is the key an instance is created
+ * under and searched by, and an empty one would pool every unknown-build player into a
+ * shared "" bucket — exactly the mixed session the stamp exists to prevent.
+ */
+async function callerGameVersion(c: Context<App>): Promise<string> {
+	return (await callerVersion(c)) ?? GAME_VERSION
 }
 
 /**
@@ -548,6 +562,32 @@ const NO_SUCH_ROOM = MatchmakingErrorCode.NoSuchRoom
 const BANNED_FROM_ROOM = MatchmakingErrorCode.BannedFromRoom
 
 /**
+ * Whether a player on `callerVersion` may join a session already running
+ * `instanceVersion` — `null` when they may, otherwise the code to refuse with.
+ *
+ * The room matchmakes resolve this by construction: they only ever reuse an instance of
+ * the caller's own build and create one otherwise. The paths that join a NAMED instance
+ * can't — following a friend and the owner's instance listing both hand out a Photon
+ * room id for a session that already exists — so they ask here instead of putting two
+ * builds in one Photon room, where neither side sees what the other spawns.
+ *
+ * Which refusal depends on who is behind: a caller on the older build is told
+ * `UpdateRequired`, the one code that says "your client can't go there" and the honest
+ * answer. There is no code for the other direction ("they must update"), so a caller on
+ * the newer build gets the opaque NoSuchRoom every other unjoinable thing answers.
+ * Builds are date-stamped (`20230414`, `20250718.01`), so they order as strings; an
+ * instance carrying no version at all (written before the stamp existed) is nobody's
+ * build and refuses both ways.
+ */
+function crossBuildRefusal(
+	callerVersion: string,
+	instanceVersion: string
+): MatchmakingErrorCode | null {
+	if (callerVersion === instanceVersion) return null
+	return instanceVersion > callerVersion ? MatchmakingErrorCode.UpdateRequired : NO_SUCH_ROOM
+}
+
+/**
  * "This event isn't open to you" — the refusal on a private event the caller wasn't
  * invited to. Told plainly rather than hidden behind the opaque NoSuchRoom: a player
  * reaching this already holds the event id from somewhere that showed it to them, so
@@ -790,8 +830,10 @@ const DEFAULT_MATCHMAKING_POLICY = 0
  * because sending fields the reference doesn't send is how you find out the hard way
  * that the client reads one of them.
  *
- * Only the wire shape differs — the instance itself is the same row, so a v1 and a v2
- * client asking for the same public room land in the same instance.
+ * Only the wire shape differs — an instance is the same row whichever spelling asked for
+ * it. That does NOT mean a v1 and a v2 client asking for the same public room land in the
+ * same one: instances are scoped to the caller's client build, and these are two builds,
+ * so each gets its own session of the room (see resolveRoomInstance).
  */
 function toV2RoomInstance(instance: RoomInstance) {
 	return {
@@ -995,6 +1037,14 @@ async function substituteRoom(
  * Every matchmake that names a room lands here, so this is also where the operator's
  * room substitutions apply (`ROOM_REDIRECTS`) — everything downstream, from the ban
  * check to presence and the visit count, sees only the room actually entered.
+ *
+ * It is also where a session's client build is decided. An instance is reused only when
+ * it is running the caller's own build, and a new one is stamped with it, so players
+ * only ever share a Photon room with others on the same version of the room — two builds
+ * in one instance disagree about how the scene and its objects serialize, and each side
+ * simply fails to see what the other spawned. Players on another build therefore don't
+ * count as somebody to join: a room busy with them reads as empty and the caller gets a
+ * fresh instance beside them.
  */
 async function resolveRoomInstance(
 	c: Context<App>,
@@ -1032,12 +1082,18 @@ async function resolveRoomInstance(
 	const currentInstanceId = isPrivate
 		? undefined
 		: (await getPresence<RoomInstance>(c.env.DB, ownerId))?.roomInstance?.roomInstanceId
-	// Reuse an existing joinable public instance *of the same subroom* — subrooms are
-	// separate places, so joining one must never land you in another. Private
-	// matchmakes always get a fresh instance. Create one when there's nothing to join.
+	// The build this player is on, from their token. It scopes the search below and is
+	// stamped on the instance when one is created, which is what keeps a session to a
+	// single client version.
+	const gameVersion = await callerGameVersion(c)
+	// Reuse an existing joinable public instance *of the same subroom and the same
+	// build* — subrooms are separate places, so joining one must never land you in
+	// another, and neither must a session running a different version of the room.
+	// Private matchmakes always get a fresh instance. Create one when there's nothing
+	// to join.
 	let instance = isPrivate
 		? null
-		: await getJoinableInstance(c.env.DB, f.roomId, f.subRoomId, currentInstanceId)
+		: await getJoinableInstance(c.env.DB, f.roomId, gameVersion, f.subRoomId, currentInstanceId)
 	if (!instance) {
 		instance = await createRoomInstance(c.env.DB, {
 			ownerAccountId: ownerId,
@@ -1050,6 +1106,7 @@ async function resolveRoomInstance(
 			maxCapacity: f.maxCapacity,
 			isPrivate: isPrivate || f.isDorm,
 			roomInstanceType: f.roomInstanceType,
+			gameVersion,
 		})
 	}
 	return {
@@ -1096,17 +1153,28 @@ async function matchmakeIntoRoom(c: Context<App>) {
 }
 
 /**
- * The authed player's personal dorm instance. Gets-or-creates their dorm room,
- * then backs it with a single persistent private `room_instance` so the dorm has
- * a stable, unique Photon room id (dorms are isolated from each other) that
- * survives re-entry. The room's current scene/saved data is re-read each time, so
- * edits show up on the next visit.
+ * The authed player's personal dorm instance. Gets-or-creates their dorm room, then backs
+ * it with a private `room_instance` carrying its own Photon room id (dorms are isolated
+ * from each other). The room's current scene/saved data is re-read each time, so edits
+ * show up on the next visit — what persists about a dorm is the ROOM and the scene saved
+ * in it, not the session.
+ *
+ * One instance PER CLIENT BUILD: a dorm isn't private to its owner — they can invite
+ * people in — so it's an instance like any other and a build gets its own. An owner on a
+ * new build and a guest still on the old one end up in different sessions of the same
+ * dorm and can't see each other, which is the point: a mixed instance is a room where
+ * each side silently fails to see what the other spawned.
+ *
+ * A dorm instance is reused while it lasts — the owner leaving and coming back on the
+ * same build lands in the same session — but it is swept like any other once it sits
+ * empty past the grace window, and they simply get a fresh one on the next visit.
  */
 async function playerDormInstance(c: Context<App>, accountId: number): Promise<RoomInstance> {
 	const room = await getOrCreateDormRoom(c.env.DB, accountId)
 	const f = instanceFieldsFromRoom(room)
-	// Reuse the dorm's one instance (private, so getJoinableInstance won't find it).
-	let instance = (await getRoomInstancesByRoom(c.env.DB, f.roomId))[0]
+	const gameVersion = await callerGameVersion(c)
+	// Reuse this build's dorm instance (private, so getJoinableInstance won't find it).
+	let instance = (await getRoomInstancesByRoom(c.env.DB, f.roomId, gameVersion))[0]
 	if (!instance) {
 		instance = await createRoomInstance(c.env.DB, {
 			ownerAccountId: accountId,
@@ -1119,6 +1187,7 @@ async function playerDormInstance(c: Context<App>, accountId: number): Promise<R
 			maxCapacity: f.maxCapacity,
 			isPrivate: true,
 			roomInstanceType: f.roomInstanceType,
+			gameVersion,
 		})
 	}
 	return roomInstanceFromRoom(c.env, room, true, instance.roomInstanceId, instance.photonRoomId)
@@ -1734,6 +1803,25 @@ const app = new Hono<App>()
 				return matchmakeResult(c, BANNED_FROM_ROOM, null)
 			}
 
+			// Nor does it go through the build scoping the room matchmakes get by
+			// construction, so a player on another build could otherwise follow their way
+			// into a session that can't render them. Compared against the FRIEND's presence
+			// rather than the instance's stamp: they're the person actually standing in
+			// there, their row is already read, and the two agree anyway (every matchmake
+			// writes the build it placed them under).
+			const followed = crossBuildRefusal(
+				await callerGameVersion(c),
+				targetPresence?.appVersion ?? GAME_VERSION
+			)
+			if (followed !== null) {
+				logger.info('follow refused: friend is on another client build', {
+					roomInstanceId: instance.roomInstanceId,
+					targetId,
+					id,
+				})
+				return matchmakeResult(c, followed, null)
+			}
+
 			// Join that same instance (same id + Photon room) and store it as the caller's
 			// presence, so the heartbeat replays it and their own friend fan-out fires.
 			await enterRoom(c, id, instance)
@@ -1787,7 +1875,9 @@ const app = new Hono<App>()
 			if (id === null) return unauthorized(c)
 
 			const instanceId = Number.parseInt(c.req.param('instanceId'), 10)
-			const stored = await getRoomInstance(c.env.DB, instanceId)
+			// The stored row rather than the client DTO: this needs the instance's own
+			// `gameVersion`, which the DTO drops.
+			const stored = await getStoredRoomInstance(c.env.DB, instanceId)
 			// One opaque refusal for "no such instance", "no such room" and "not yours":
 			// a distinct code for the last would confirm which instance ids are live.
 			if (!stored) return matchmakeResult(c, NO_SUCH_ROOM, null)
@@ -1812,6 +1902,20 @@ const app = new Hono<App>()
 					id,
 				})
 				return matchmakeResult(c, BANNED_FROM_ROOM, null)
+			}
+
+			// Owning the room doesn't make an older client able to render a session running a
+			// newer build. This path picks a fixed instance, so unlike a room matchmake there
+			// is no same-build instance to fall back to — the owner is refused and can enter
+			// the room normally instead, which gets them a session of their own build.
+			const crossBuild = crossBuildRefusal(await callerGameVersion(c), stored.gameVersion)
+			if (crossBuild !== null) {
+				logger.info('instance matchmake refused: instance is on another client build', {
+					roomInstanceId: instanceId,
+					instanceVersion: stored.gameVersion,
+					accountId: id,
+				})
+				return matchmakeResult(c, crossBuild, null)
 			}
 
 			// Rebuild the wire instance from the room (fresh scene + published save) keyed to
@@ -1893,10 +1997,14 @@ const app = new Hono<App>()
 
 	// The newer client asks for the same two room matchmakes under a `/v2/` prefix
 	// (`/matchmake/v2/room/{roomId}` and `/matchmake/v2/room/{roomId}/{subRoomId}`). The
-	// MATCHMAKING is the same — same rooms, same instances, same refusals, so a v1 and a
-	// v2 player asking for the same public room stand in the same place — and so these
-	// share the handler. What differs is the wire on both ends: the request is JSON with
-	// real types rather than a urlencoded form, and the response is the PascalCase
+	// MATCHMAKING is the same — same rooms, same instance table, same refusals — and so
+	// these share the handler. They do NOT put the two clients in one session, though: an
+	// instance is scoped to the caller's build, and a v1 and a v2 player are by definition
+	// on different ones, so each stands in their own instance of the room. That is the
+	// point — the two builds can't render each other's scene.
+	//
+	// What differs is the wire on both ends: the request is JSON with real types rather
+	// than a urlencoded form, and the response is the PascalCase
 	// envelope (`ErrorCode`/`CorrelationId`/`RoomInstance`, no `result` twin, no Photon
 	// coordinates or DataBlob on the instance, plus `MatchmakingPolicy`). Neither is
 	// handled here: `readRequestFields` takes either encoding and `matchmakeResult` picks
