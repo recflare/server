@@ -6,13 +6,21 @@ import '../../econ.app'
 
 import {
 	getOwnedInventionIds,
+	getProgression,
 	INVENTORY_INVENTION_SCHEMA_DDL,
+	PROGRESSION_SCHEMA_DDL,
 	RECEIVED_GIFT_SCHEMA_DDL,
 } from '@repo/domain'
 
 // The `invention` table belongs to the `api` worker; buyInvention reads it, so its DDL
 // is built here too (see the same cross-worker import in econ.app.ts).
 import { SCHEMA_DDL as INVENTION_SCHEMA_DDL } from '../../../../api/src/inventions-db'
+// The notification-type ids the hub carries, from the worker that owns them — asserting
+// against the enum rather than a copied number is what keeps these frames honest.
+import { NotificationType } from '../../../../notify/src/notification-types'
+// The live weekly rotation, so the challenge tests exercise whatever it currently holds
+// instead of hard-coded ids from a rotation that has since been replaced.
+import weeklyChallenge from '../../../static/weekly-challenge.json'
 import { SCHEMA_DDL } from '../../avatar-db'
 import {
 	BALANCE_SCHEMA_DDL,
@@ -21,10 +29,12 @@ import {
 	getBalance,
 	spendCurrency,
 } from '../../balance-db'
+import { CHALLENGE_GIFT_SCHEMA_DDL, CHALLENGE_STATUS_SCHEMA_DDL } from '../../challenge-db'
 import { CONSUMABLE_SCHEMA_DDL, grantConsumable } from '../../consumables-db'
-import { EQUIPMENT_SCHEMA_DDL } from '../../equipment-db'
+import { EQUIPMENT_SCHEMA_DDL, grantEquipment } from '../../equipment-db'
 import { INVENTORY_SCHEMA_DDL } from '../../inventory-db'
 import { OUTFIT_SCHEMA_DDL } from '../../outfit-db'
+import { REWARD_STATUS_SCHEMA_DDL } from '../../reward-db'
 
 import type { Env } from '../../context'
 
@@ -34,6 +44,9 @@ declare module 'cloudflare:test' {
 
 const ORIGIN = 'https://example.com'
 
+/** The first challenge of the live rotation — the progress tests report against it. */
+const CURRENT_CHALLENGE = weeklyChallenge.Challenges[0]
+
 // Build the accounts table and seed the test player (the default token's sub, 42)
 // so avatar reads/writes have a row to attach to.
 beforeAll(async () => {
@@ -42,6 +55,10 @@ beforeAll(async () => {
 	for (const stmt of SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of BALANCE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of OUTFIT_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	for (const stmt of CHALLENGE_STATUS_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	for (const stmt of CHALLENGE_GIFT_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	for (const stmt of PROGRESSION_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	for (const stmt of REWARD_STATUS_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of INVENTORY_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of CONSUMABLE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of EQUIPMENT_SCHEMA_DDL) await env.DB.prepare(stmt).run()
@@ -145,10 +162,17 @@ function b64url(input: ArrayBuffer | string): string {
 	return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
-async function bearer(sub = '42'): Promise<Record<string, string>> {
+/**
+ * A bearer token for `sub`. `roles` becomes the `role` claim the auth worker stamps from an
+ * account's flags — pass `['gameClient', 'developer']` for an elevated account; the default
+ * is no claim at all, which reads as no roles.
+ */
+async function bearer(sub = '42', roles?: string[]): Promise<Record<string, string>> {
 	const now = Math.floor(Date.now() / 1000)
+	const claims =
+		roles === undefined ? { sub, exp: now + 3600 } : { sub, exp: now + 3600, role: roles }
 	const signingInput = `${b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))}.${b64url(
-		JSON.stringify({ sub, exp: now + 3600 })
+		JSON.stringify(claims)
 	)}`
 	const key = await crypto.subtle.importKey(
 		'raw',
@@ -340,6 +364,37 @@ describe('econ endpoints', () => {
 			expect(res.status).toBe(200)
 			expect(await res.json()).toEqual([])
 		}
+	})
+
+	test('POST /api/objectives/v1/updateobjective echoes the group, never completed', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/objectives/v1/updateobjective`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({
+				Index: 2,
+				Group: 3,
+				Progress: 1,
+				VisualProgress: 0,
+				IsCompleted: true,
+				HasClaimedReward: false,
+			}),
+		})
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as { group: number; isCompleted: boolean; clearedAt: string }
+		expect(body.group).toBe(3)
+		expect(body.isCompleted).toBe(false)
+		expect(Number.isNaN(Date.parse(body.clearedAt))).toBe(false)
+	})
+
+	test('POST /api/objectives/v1/updateobjective tolerates a non-JSON body', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/objectives/v1/updateobjective`, {
+			method: 'POST',
+			body: 'not json',
+		})
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as { group: number; isCompleted: boolean }
+		expect(body.group).toBe(0)
+		expect(body.isCompleted).toBe(false)
 	})
 
 	test('GET /api/checklist/v1/current 401s without a token, returns [] with one', async () => {
@@ -729,13 +784,25 @@ describe('econ endpoints', () => {
 		expect(gift.AvatarItemDesc).not.toBe('')
 		expect(gift.Id).toBeGreaterThan(0)
 
-		// The socket frame carries the same change the response does — the client adds it to
-		// the balance it is showing, so the resulting total here would double-count the 9550.
+		// A purchase pushes StorefrontBalancePurchase, which SETS one (CurrencyType, Platform)
+		// bucket to an absolute value: `Balance` is the resulting total (10000 - 450) and `Delta`
+		// is display-only. The bucket key is `Platform`, and it MUST be the -2 the balance
+		// endpoint reports below — the client sums its buckets, so a frame naming any other
+		// platform (or spelling the key `BalanceType`, which the client's decoder drops) invents
+		// a second balance beside the real one. That is what showed a live player 34,100 tokens
+		// after spending 900 of 17,500, then 33,200 once the body's -900 landed.
 		expect(await drainFrames()).toEqual([
 			{
 				accountId: 20,
-				notificationType: STOREFRONT_BALANCE_UPDATE,
-				payload: { Balance: -450, CurrencyType: 2, BalanceType: -2 },
+				notificationType: NotificationType.StorefrontBalancePurchase,
+				payload: {
+					// 1400 = CommercePurchase; -2 = NonPurchasedNotUsableInP2P, the only bucket we use.
+					BalanceAddType: 1400,
+					Delta: -450,
+					Balance: 9550,
+					Platform: -2,
+					CurrencyType: 2,
+				},
 			},
 		])
 
@@ -1010,18 +1077,15 @@ describe('econ endpoints', () => {
 	 * test sees what was actually pushed.
 	 */
 	const drainFrames = async (): Promise<
-		Array<{ accountId: number; notificationType: number; payload: Record<string, number> }>
+		Array<{ accountId: number; notificationType: number; payload: Record<string, unknown> }>
 	> =>
 		(
 			env.RECFLARE_NOTIFICATIONS_HUB.getByName('global') as unknown as {
 				drainFrames(): Promise<
-					Array<{ accountId: number; notificationType: number; payload: Record<string, number> }>
+					Array<{ accountId: number; notificationType: number; payload: Record<string, unknown> }>
 				>
 			}
 		).drainFrames()
-
-	/** `NotificationType.StorefrontBalanceUpdate` in the notify worker's enum. */
-	const STOREFRONT_BALANCE_UPDATE = 61
 
 	// buyInvention is a GET with query params — that is how the client sends it.
 	const buyInvention = async (sub: string, inventionId: number, requestedPrice = 0) =>
@@ -1089,19 +1153,31 @@ describe('econ endpoints', () => {
 		).toBe(DEFAULT_STARTING_TOKENS + 250)
 		expect(await getOwnedInventionIds(env.DB, 51)).toEqual([9])
 
-		// Both sides get a socket frame carrying their CHANGE, not their new total: the client
-		// ADDS what it receives to the balance it is showing, so a total would have the creator
-		// reading their own balance plus the payout. Equal and opposite, like the ledger.
+		// Both sides get a frame carrying their RESULTING TOTAL, into the same -2 bucket the
+		// balance endpoint reports — a StorefrontBalance* push SETS that bucket, so sending the
+		// change (250 / -250) would set their whole balance to it. The creator sold, so theirs is
+		// a plain update; the buyer bought, so theirs is a purchase frame with a display-only
+		// `Delta`. Note the key is `Platform`: the client renames `BalanceType` away and drops it.
 		expect(await drainFrames()).toEqual([
 			{
 				accountId: 999,
-				notificationType: STOREFRONT_BALANCE_UPDATE,
-				payload: { Balance: 250, CurrencyType: CurrencyType.RecCenterTokens, BalanceType: -2 },
+				notificationType: NotificationType.StorefrontBalanceUpdate,
+				payload: {
+					Balance: DEFAULT_STARTING_TOKENS + 250,
+					CurrencyType: CurrencyType.RecCenterTokens,
+					Platform: -2,
+				},
 			},
 			{
 				accountId: 51,
-				notificationType: STOREFRONT_BALANCE_UPDATE,
-				payload: { Balance: -250, CurrencyType: CurrencyType.RecCenterTokens, BalanceType: -2 },
+				notificationType: NotificationType.StorefrontBalancePurchase,
+				payload: {
+					BalanceAddType: 1400,
+					Delta: -250,
+					Balance: DEFAULT_STARTING_TOKENS - 250,
+					Platform: -2,
+					CurrencyType: CurrencyType.RecCenterTokens,
+				},
 			},
 		])
 	})
@@ -1311,36 +1387,554 @@ describe('econ endpoints', () => {
 		expect(await res.json()).toEqual([])
 	})
 
-	test('POST /api/challenge/v2/updateProgress echoes the challenge, never complete (stub)', async () => {
-		const config =
-			'{"ct":1,"ipc":false,"ctc":[{"ct":0,"ipc":false,"wc":[{"ct":6,"vs":[2]},{"ct":7,"vs":[{"l":"a673712c-877f-4749-b69a-4a4c6310d545"}]}]}],"t":5,"cc":1}'
+	test('POST /api/challenge/v2/updateProgress echoes the challenge and its stored completion', async () => {
+		// Post the live rotation's own challenge and rule tree — what the client actually
+		// sends — so editing static/weekly-challenge.json can't quietly stale this test.
+		const challenge = CURRENT_CHALLENGE
 		const res = await exports.default.fetch(`${ORIGIN}/api/challenge/v2/updateProgress`, {
 			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
+			headers: { ...(await bearer('70')), 'Content-Type': 'application/json' },
 			body: JSON.stringify({
-				ChallengeMapId: '17',
-				ChallengeId: '49',
-				Config: config,
+				ChallengeMapId: String(weeklyChallenge.ChallengeMapId),
+				ChallengeId: String(challenge.ChallengeId),
+				Config: challenge.Config,
+				// .NET's bool.ToString() — the capitalized string, which `Boolean("False")`
+				// would read as complete.
 				Complete: 'False',
 			}),
 		})
 		expect(res.status).toBe(200)
 		expect(await res.json()).toEqual({
-			ChallengeMapId: 17,
-			ChallengeId: 49,
-			Config: config,
+			ChallengeMapId: weeklyChallenge.ChallengeMapId,
+			ChallengeId: challenge.ChallengeId,
+			Config: challenge.Config,
 			Complete: false,
 		})
 	})
 
-	test('POST /api/gamerewards/v1/request returns [] (stub)', async () => {
-		const res = await exports.default.fetch(`${ORIGIN}/api/gamerewards/v1/request`, {
+	test('POST /api/challenge/v2/updateProgress is 401 without a token', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/challenge/v2/updateProgress`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ ChallengeMapId: '17', ChallengeId: '49', Complete: 'True' }),
+		})
+		expect(res.status).toBe(401)
+	})
+
+	test('a completed challenge persists and getCurrent stamps it for that player only', async () => {
+		const completedId = CURRENT_CHALLENGE.ChallengeId
+		const bearerHeaders = await bearer('71')
+		const posted = await exports.default.fetch(`${ORIGIN}/api/challenge/v2/updateProgress`, {
+			method: 'POST',
+			headers: { ...bearerHeaders, 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				ChallengeMapId: String(weeklyChallenge.ChallengeMapId),
+				ChallengeId: completedId,
+				Complete: 'True',
+			}),
+		})
+		expect(posted.status).toBe(200)
+
+		const mine = await exports.default.fetch(`${ORIGIN}/api/challenge/v2/getCurrent`, {
+			headers: bearerHeaders,
+		})
+		const body = (await mine.json()) as {
+			Challenges: Array<{ ChallengeId: number; Complete: boolean }>
+		}
+		// Only the reported one is stamped; the rest of the rotation is untouched.
+		expect(body.Challenges.filter((ch) => ch.Complete).map((ch) => ch.ChallengeId)).toEqual([
+			completedId,
+		])
+
+		// A different player, and an anonymous caller, still see the static catalog.
+		const other = await exports.default.fetch(`${ORIGIN}/api/challenge/v2/getCurrent`, {
+			headers: await bearer('72'),
+		})
+		const otherBody = (await other.json()) as { Challenges: Array<{ Complete: boolean }> }
+		expect(otherBody.Challenges.some((ch) => ch.Complete)).toBe(false)
+		const anon = await exports.default.fetch(`${ORIGIN}/api/challenge/v2/getCurrent`)
+		const anonBody = (await anon.json()) as { Challenges: Array<{ Complete: boolean }> }
+		expect(anonBody.Challenges.some((ch) => ch.Complete)).toBe(false)
+	})
+
+	test('completion latches within a rotation but resets on a new one', async () => {
+		const headers = { ...(await bearer('73')), 'Content-Type': 'application/json' }
+		// A challenge id of its own, so this says nothing about the live rotation.
+		const post = (ChallengeMapId: string, Complete: string) =>
+			exports.default.fetch(`${ORIGIN}/api/challenge/v2/updateProgress`, {
+				method: 'POST',
+				headers,
+				body: JSON.stringify({ ChallengeMapId, ChallengeId: '9001', Complete }),
+			})
+		const completeOf = async (res: Response) =>
+			((await res.json()) as { Complete: boolean }).Complete
+
+		expect(await completeOf(await post('17', 'True'))).toBe(true)
+		// A later report that says "not complete" must not un-finish it.
+		expect(await completeOf(await post('17', 'False'))).toBe(true)
+		// …but the same challenge id in the NEXT rotation starts over.
+		expect(await completeOf(await post('18', 'False'))).toBe(false)
+		expect(await completeOf(await post('18', 'True'))).toBe(true)
+	})
+
+	/**
+	 * How many of the rotation's challenges earn the gift — three, unless the rotation
+	 * publishes fewer or declares itself all-or-nothing (`CHALLENGES_REQUIRED_FOR_GIFT`).
+	 */
+	const REQUIRED_FOR_GIFT = weeklyChallenge.CompletedRequired
+		? weeklyChallenge.Challenges.length
+		: Math.min(3, weeklyChallenge.Challenges.length)
+
+	/** Report the live rotation's challenges complete, for one player. */
+	async function finishTheRotation(sub: string) {
+		const headers = { ...(await bearer(sub)), 'Content-Type': 'application/json' }
+		const ids = weeklyChallenge.Challenges.map((challenge) => challenge.ChallengeId)
+		const report = (challengeId: number) =>
+			exports.default.fetch(`${ORIGIN}/api/challenge/v2/updateProgress`, {
+				method: 'POST',
+				headers,
+				body: JSON.stringify({
+					ChallengeMapId: String(weeklyChallenge.ChallengeMapId),
+					ChallengeId: String(challengeId),
+					Complete: 'True',
+				}),
+			})
+		return { ids, report }
+	}
+
+	/** A player's unopened gift boxes, as the client reads them back. */
+	async function giftBoxes(sub: string) {
+		const res = await exports.default.fetch(`${ORIGIN}/api/avatar/v2/gifts`, {
+			headers: await bearer(sub),
+		})
+		return (await res.json()) as Array<{
+			Id: number
+			Message: string
+			EquipmentModificationGuid: string
+			AvatarItemDesc: string
+			ConsumableItemDesc: string
+			GiftRarity: number
+		}>
+	}
+
+	test('completing enough of the rotation grants its gift, once', async () => {
+		// The live rotation, so this follows whatever static/weekly-challenge.json holds.
+		const { ids, report } = await finishTheRotation('74')
+		// The whole point of the threshold: the gift lands before the set is finished (the
+		// published week is five challenges for three).
+		expect(REQUIRED_FOR_GIFT).toBeLessThan(ids.length)
+		for (const id of ids.slice(0, REQUIRED_FOR_GIFT - 1)) {
+			expect((await report(id)).status).toBe(200)
+		}
+		// One short of the threshold — the gift isn't due yet, even though challenges remain
+		// unfinished either way.
+		expect(await giftBoxes('74')).toEqual([])
+		await drainFrames()
+
+		expect((await report(ids[REQUIRED_FOR_GIFT - 1] ?? 0)).status).toBe(200)
+		const won = await giftBoxes('74')
+		expect(won).toHaveLength(1)
+		expect(won[0]?.Message).toBe('Weekly challenge complete!')
+		expect(won[0]?.EquipmentModificationGuid).toBe(weeklyChallenge.Gift.EquipmentModificationGuid)
+
+		// The client is told the moment the set is finished, rather than finding the box the
+		// next time it reads the gifts list. `Immediate` (31), from Coach (1).
+		const frames = await drainFrames()
+		expect(frames).toHaveLength(1)
+		expect(frames[0]?.accountId).toBe(74)
+		expect(frames[0]?.notificationType).toBe(NotificationType.GiftPackageReceivedImmediate)
+		expect(frames[0]?.payload).toEqual({
+			Id: won[0]?.Id,
+			FromGiftDropId: 0,
+			FromPlayerId: 1,
+			ConsumableItemDesc: '',
+			AvatarItemDesc: weeklyChallenge.Gift.AvatarItemDesc,
+			AvatarItemType: weeklyChallenge.Gift.AvatarItemType,
+			EquipmentPrefabName: weeklyChallenge.Gift.EquipmentPrefabName,
+			EquipmentModificationGuid: weeklyChallenge.Gift.EquipmentModificationGuid,
+			CurrencyType: 0,
+			Currency: 0,
+			Xp: 0,
+			Level: 0,
+			Platform: -1,
+			PlatformsToSpawnOn: -1,
+			BalanceType: -2,
+			GiftContext: weeklyChallenge.Gift.GiftContext,
+			// The catalog's rarity for the item, not the block's `GiftRarity` of 0.
+			GiftRarity: 5,
+			Message: 'Weekly challenge complete!',
+		})
+
+		// The reward is the item, not the box: it lands in the inventory unopened.
+		const unlocked = await exports.default.fetch(`${ORIGIN}/api/equipment/v2/getUnlocked`, {
+			headers: await bearer('74'),
+		})
+		const owned = (await unlocked.json()) as Array<{ ModificationGuid: string }>
+		expect(owned.map((e) => e.ModificationGuid)).toContain(
+			weeklyChallenge.Gift.EquipmentModificationGuid
+		)
+
+		// Finishing the REST of the set, and re-reporting what's already done (which the client
+		// keeps doing), must not mint a second reward.
+		for (const id of ids) expect((await report(id)).status).toBe(200)
+		expect(await giftBoxes('74')).toHaveLength(1)
+	})
+
+	test('a player who already owns the rotation’s gift rolls the fallback box instead', async () => {
+		// Own the reward up front — the case the rotation's `FallbackGiftName` exists for.
+		await grantEquipment(env.DB, 75, {
+			ModificationGuid: weeklyChallenge.Gift.EquipmentModificationGuid,
+			PrefabName: weeklyChallenge.Gift.EquipmentPrefabName,
+			FriendlyName: 'Camera Skin (Comic)',
+			Tooltip: '',
+			Rarity: 5,
+			PlatformMask: -1,
+			Favorited: false,
+		})
+
+		const { ids, report } = await finishTheRotation('75')
+		for (const id of ids.slice(0, REQUIRED_FOR_GIFT - 1)) {
+			expect((await report(id)).status).toBe(200)
+		}
+		await drainFrames()
+		expect((await report(ids[REQUIRED_FOR_GIFT - 1] ?? 0)).status).toBe(200)
+
+		const won = await giftBoxes('75')
+		expect(won).toHaveLength(1)
+		// Something they don't have, at the tier `FallbackGiftName` names ("4-Star Box" → 30),
+		// rather than a second copy of the gift.
+		const rolled = won[0]
+		expect(rolled?.EquipmentModificationGuid).not.toBe(
+			weeklyChallenge.Gift.EquipmentModificationGuid
+		)
+		expect(rolled?.GiftRarity).toBe(30)
+		expect(
+			(rolled?.AvatarItemDesc ?? '') !== '' || (rolled?.EquipmentModificationGuid ?? '') !== ''
+		).toBe(true)
+
+		// The frame announces what was ROLLED, not the box that promised it — so the client
+		// pops the item they actually won.
+		const frames = await drainFrames()
+		expect(frames).toHaveLength(1)
+		expect(frames[0]?.notificationType).toBe(NotificationType.GiftPackageReceivedImmediate)
+		expect(frames[0]?.payload).toMatchObject({
+			Id: rolled?.Id,
+			FromPlayerId: 1,
+			GiftRarity: 30,
+			AvatarItemDesc: rolled?.AvatarItemDesc,
+			EquipmentModificationGuid: rolled?.EquipmentModificationGuid,
+			Message: 'Weekly challenge complete!',
+		})
+	})
+
+	test('buying a query drop rolls a real item into the buyer’s inventory', async () => {
+		// sf2's "4-Star Unique Box" (539) — an `IsQuery` drop with no item fields of its own,
+		// which before the roll existed debited the buyer and granted nothing.
+		const res = await exports.default.fetch(`${ORIGIN}/api/storefronts/v2/buyItem`, {
+			method: 'POST',
+			headers: { ...(await bearer('76')), 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				StorefrontType: 2,
+				PurchasableItemId: 539,
+				CurrencyType: CurrencyType.RecCenterTokens,
+				RequestedPrice: 800,
+			}),
+		})
+		expect(res.status).toBe(200)
+
+		// The RESPONSE describes what the roll landed on, not the box that was bought: the
+		// client draws the purchase from this entry, and the box's own fields are all empty.
+		const bought = (await res.json()) as {
+			BalanceUpdates: Array<{
+				Data: Array<{
+					AvatarItemDesc: string
+					EquipmentModificationGuid: string
+					GiftRarity: number
+				}>
+			}>
+		}
+		const entry = bought.BalanceUpdates[0]?.Data[0]
+		expect(entry?.GiftRarity).toBe(30)
+		expect(`${entry?.AvatarItemDesc ?? ''}${entry?.EquipmentModificationGuid ?? ''}`).not.toBe('')
+
+		const boxes = await giftBoxes('76')
+		expect(boxes).toHaveLength(1)
+		// The box shows what was rolled — a real 4-star item, not the empty box drop.
+		expect(boxes[0]?.GiftRarity).toBe(30)
+		expect(entry?.AvatarItemDesc).toBe(boxes[0]?.AvatarItemDesc)
+		const key = (box?: { AvatarItemDesc: string; EquipmentModificationGuid: string }) =>
+			`${box?.AvatarItemDesc ?? ''}|${box?.EquipmentModificationGuid ?? ''}`
+		expect(key(boxes[0])).not.toBe('|')
+
+		// …and it is already in their inventory, unopened box or not.
+		const items = await exports.default.fetch(`${ORIGIN}/api/avatar/v4/items`, {
+			headers: await bearer('76'),
+		})
+		const owned = (await items.json()) as Array<{ AvatarItemDesc: string }>
+		if ((boxes[0]?.AvatarItemDesc ?? '') !== '') {
+			expect(owned.map((i) => i.AvatarItemDesc)).toContain(boxes[0]?.AvatarItemDesc)
+		}
+
+		// A second box can't roll the same prize: "an item that you don't have" excludes what
+		// the first roll just granted. Two draws from a 244-item pool could collide by chance,
+		// so this only holds because the pool is filtered by ownership.
+		const second = await exports.default.fetch(`${ORIGIN}/api/storefronts/v2/buyItem`, {
+			method: 'POST',
+			headers: { ...(await bearer('76')), 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				StorefrontType: 2,
+				PurchasableItemId: 539,
+				CurrencyType: CurrencyType.RecCenterTokens,
+				RequestedPrice: 800,
+			}),
+		})
+		expect(second.status).toBe(200)
+		const after = await giftBoxes('76')
+		expect(after).toHaveLength(2)
+		expect(key(after[0])).not.toBe(key(after[1]))
+	})
+
+	test('buying sf3’s Uncommon Random box answers with the rolled item', async () => {
+		// The purchase that came back as an empty box: an sf3 query drop, rolled out of the very
+		// catalog it sells in.
+		const res = await exports.default.fetch(`${ORIGIN}/api/storefronts/v2/buyItem`, {
+			method: 'POST',
+			headers: { ...(await bearer('77')), 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				StorefrontType: 3,
+				PurchasableItemId: 2455,
+				CurrencyType: CurrencyType.RecCenterTokens,
+				RequestedPrice: 200,
+				CouponConsumablePlayerMappingId: null,
+				Gift: null,
+			}),
+		})
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as {
+			BalanceUpdates: Array<{
+				Data: Array<{ Id: number; AvatarItemDesc: string; GiftRarity: number }>
+			}>
+		}
+		const entry = body.BalanceUpdates[0]?.Data[0]
+		// Uncommon: rarity 10, and a real item rather than the box's empty fields.
+		expect(entry?.GiftRarity).toBe(10)
+		expect(entry?.AvatarItemDesc).not.toBe('')
+
+		const boxes = await giftBoxes('77')
+		expect(boxes).toHaveLength(1)
+		expect(boxes[0]?.Id).toBe(entry?.Id)
+		expect(boxes[0]?.AvatarItemDesc).toBe(entry?.AvatarItemDesc)
+	})
+
+	test('POST /api/gamerewards/v1/request claims once an hour per reward type and activity', async () => {
+		const headers = {
+			...(await bearer('80')),
+			'Content-Type': 'application/x-www-form-urlencoded',
+		}
+		const request = (body: string) =>
+			exports.default.fetch(`${ORIGIN}/api/gamerewards/v1/request`, {
+				method: 'POST',
+				headers,
+				body,
+			})
+		const statusOf = (rewardType: string, giftContext = '') =>
+			env.DB.prepare(
+				`SELECT granted_at, grant_count FROM reward_status
+				 WHERE account_id = 80 AND reward_type = ?1 AND gift_context = ?2`
+			)
+				.bind(rewardType, giftContext)
+				.first<{ granted_at: string; grant_count: number }>()
+
+		// A claim answers the empty list the client accepts — the reward rides in a gift box.
+		const first = await request(
+			'rewardType=FirstActivityOfDay&Message=First%20Game%20of%20the%20Day'
+		)
+		expect(first.status).toBe(200)
+		expect(await first.json()).toEqual([])
+		const claimed = await statusOf('FirstActivityOfDay')
+		expect(claimed?.grant_count).toBe(1)
+
+		// Asking again inside the hour claims nothing — and must not push the cooldown out,
+		// or a client that retries in a loop would never become eligible.
+		expect((await request('rewardType=FirstActivityOfDay&Message=again')).status).toBe(200)
+		expect(await statusOf('FirstActivityOfDay')).toEqual(claimed)
+
+		// A different type has its own cooldown — and so does each `giftContext` within a type:
+		// Soccer and Paintball are separate rows that each claim once.
+		expect(
+			(
+				await request(
+					'rewardType=PostGameActivity&Message=Activity%20completed%21&giftContext=Soccer'
+				)
+			).status
+		).toBe(200)
+		expect((await statusOf('PostGameActivity', 'Soccer'))?.grant_count).toBe(1)
+		expect(
+			(
+				await request(
+					'rewardType=PostGameActivity&Message=Activity%20completed%21&giftContext=Paintball'
+				)
+			).status
+		).toBe(200)
+		expect((await statusOf('PostGameActivity', 'Paintball'))?.grant_count).toBe(1)
+
+		// …but the same activity again inside the hour claims nothing.
+		const soccer = await statusOf('PostGameActivity', 'Soccer')
+		expect((await request('rewardType=PostGameActivity&giftContext=Soccer')).status).toBe(200)
+		expect(await statusOf('PostGameActivity', 'Soccer')).toEqual(soccer)
+
+		// A contextless ask is its own bucket (`''`), not a wildcard over the two above.
+		expect((await request('rewardType=PostGameActivity&Message=no%20context')).status).toBe(200)
+		expect((await statusOf('PostGameActivity'))?.grant_count).toBe(1)
+		expect((await request('rewardType=PostGameActivity&Message=again')).status).toBe(200)
+		expect((await statusOf('PostGameActivity'))?.grant_count).toBe(1)
+
+		// Once the hour has passed, the same type claims again.
+		await env.DB.prepare(
+			"UPDATE reward_status SET granted_at = ?1 WHERE account_id = 80 AND reward_type = 'FirstActivityOfDay'"
+		)
+			.bind(new Date(Date.now() - 61 * 60 * 1000).toISOString())
+			.run()
+		expect((await request('rewardType=FirstActivityOfDay&Message=tomorrow')).status).toBe(200)
+		expect((await statusOf('FirstActivityOfDay'))?.grant_count).toBe(2)
+	})
+
+	test('a claimed game reward pays XP into a gift box, and announces it', async () => {
+		const request = async (body: string) =>
+			exports.default.fetch(`${ORIGIN}/api/gamerewards/v1/request`, {
+				method: 'POST',
+				headers: {
+					...(await bearer('82')),
+					'Content-Type': 'application/x-www-form-urlencoded',
+				},
+				body,
+			})
+		/** Age the cooldown so the next ask is eligible again. */
+		const passAnHour = () =>
+			env.DB.prepare(
+				"UPDATE reward_status SET granted_at = ?1 WHERE account_id = 82 AND reward_type = 'FirstActivityOfDay'"
+			)
+				.bind(new Date(Date.now() - 61 * 60 * 1000).toISOString())
+				.run()
+
+		await drainFrames()
+		expect((await getProgression(env.DB, 82)).XP).toBe(0)
+		const res = await request('rewardType=FirstActivityOfDay&Message=First%20Game%20of%20the%20Day')
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
+
+		// 5 XP is deliberately less than the 10 the first level costs, so one action moves the
+		// bar without levelling anyone up.
+		expect(await getProgression(env.DB, 82)).toEqual({ PlayerId: 82, Level: 1, XP: 5 })
+
+		// One box: the XP reward itself, carrying the message the client asked to show and no
+		// item — a game reward is not an item.
+		const first = await giftBoxes('82')
+		expect(first).toHaveLength(1)
+		expect(first[0]).toMatchObject({
+			Xp: 5,
+			Message: 'First Game of the Day',
+			AvatarItemDesc: '',
+			EquipmentModificationGuid: '',
+			ConsumableItemDesc: '',
+		})
+
+		// The box, then the bar — no level-up box, since no level was crossed.
+		const frames = await drainFrames()
+		expect(frames.map((f) => f.notificationType)).toEqual([
+			NotificationType.GiftPackageReceivedImmediate,
+			NotificationType.PlayerProgressionLevelUpdate,
+		])
+		expect(frames[0]?.accountId).toBe(82)
+		expect(frames[0]?.payload).toMatchObject({
+			Id: first[0]?.Id,
+			FromPlayerId: 1,
+			Xp: 5,
+			// GiftContext.GameRewards — the box came from gameplay, not a purchase.
+			GiftContext: 50,
+			Message: 'First Game of the Day',
+		})
+		expect(frames[1]?.payload).toEqual({ PlayerId: 82, Level: 1, XP: 5 })
+
+		// An on-cooldown ask pays nothing: no more boxes, no frames, no more XP.
+		expect((await request('rewardType=FirstActivityOfDay&Message=again')).status).toBe(200)
+		expect(await getProgression(env.DB, 82)).toEqual({ PlayerId: 82, Level: 1, XP: 5 })
+		expect(await giftBoxes('82')).toHaveLength(1)
+		expect(await drainFrames()).toEqual([])
+
+		// A SECOND reward completes the 10 XP level 1 costs — two actions per early level, which
+		// is the pacing the smaller grant buys.
+		await passAnHour()
+		expect((await request('rewardType=FirstActivityOfDay&Message=Second')).status).toBe(200)
+		expect(await getProgression(env.DB, 82)).toEqual({ PlayerId: 82, Level: 2, XP: 0 })
+
+		// …and level 2 pays 2-Star Clothing per the published table: an AVATAR ITEM, never an
+		// equipment skin, which is what the avatar-only roll is for.
+		const afterLevel2 = await giftBoxes('82')
+		expect(afterLevel2).toHaveLength(3)
+		const clothingBox = afterLevel2[2]
+		expect(clothingBox?.Message).toBe('Level 2!')
+		expect(clothingBox?.AvatarItemDesc).not.toBe('')
+		expect(clothingBox?.EquipmentModificationGuid).toBe('')
+		expect(clothingBox?.ConsumableItemDesc).toBe('')
+		expect(clothingBox?.GiftRarity).toBe(10)
+
+		const items = await exports.default.fetch(`${ORIGIN}/api/avatar/v4/items`, {
+			headers: await bearer('82'),
+		})
+		const owned = (await items.json()) as Array<{ AvatarItemDesc: string }>
+		expect(owned.map((i) => i.AvatarItemDesc)).toContain(clothingBox?.AvatarItemDesc)
+		expect((await drainFrames()).map((f) => f.notificationType)).toEqual([
+			NotificationType.GiftPackageReceivedImmediate,
+			NotificationType.PlayerProgressionLevelUpdate,
+			NotificationType.GiftPackageReceivedImmediate,
+		])
+
+		// Two more rewards reach level 3, which the table pays as a CONSUMABLE rather than
+		// clothing — rolled without a rarity, since the table names none for them.
+		for (const message of ['Third', 'Fourth']) {
+			await passAnHour()
+			expect((await request(`rewardType=FirstActivityOfDay&Message=${message}`)).status).toBe(200)
+		}
+		expect(await getProgression(env.DB, 82)).toEqual({ PlayerId: 82, Level: 3, XP: 0 })
+
+		const afterLevel3 = await giftBoxes('82')
+		const consumableBox = afterLevel3[afterLevel3.length - 1]
+		expect(consumableBox?.Message).toBe('Level 3!')
+		expect(consumableBox?.ConsumableItemDesc).not.toBe('')
+		expect(consumableBox?.AvatarItemDesc).toBe('')
+		expect(consumableBox?.EquipmentModificationGuid).toBe('')
+
+		const consumables = await exports.default.fetch(`${ORIGIN}/api/consumables/v2/getUnlocked`, {
+			headers: await bearer('82'),
+		})
+		const held = (await consumables.json()) as Array<{ ConsumableItemDesc: string }>
+		expect(held.map((cons) => cons.ConsumableItemDesc)).toContain(consumableBox?.ConsumableItemDesc)
+	})
+
+	test('POST /api/gamerewards/v1/request is 401 without a token, and ignores a typeless ask', async () => {
+		const anon = await exports.default.fetch(`${ORIGIN}/api/gamerewards/v1/request`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
 			body: 'rewardType=FirstActivityOfDay&Message=First%20Game%20of%20the%20Day',
 		})
-		expect(res.status).toBe(200)
-		expect(await res.json()).toEqual([])
+		expect(anon.status).toBe(401)
+
+		// No reward type: nothing to gate, so no row keyed on an empty string.
+		const typeless = await exports.default.fetch(`${ORIGIN}/api/gamerewards/v1/request`, {
+			method: 'POST',
+			headers: {
+				...(await bearer('81')),
+				'Content-Type': 'application/x-www-form-urlencoded',
+			},
+			body: 'Message=First%20Game%20of%20the%20Day',
+		})
+		expect(typeless.status).toBe(200)
+		expect(await typeless.json()).toEqual([])
+		const rows = await env.DB.prepare(
+			'SELECT COUNT(*) AS count FROM reward_status WHERE account_id = 81'
+		).first<{ count: number }>()
+		expect(rows?.count).toBe(0)
 	})
 
 	test('GET /api/roomkeys/v1/mine returns []', async () => {
@@ -1349,18 +1943,53 @@ describe('econ endpoints', () => {
 		expect(await res.json()).toEqual([])
 	})
 
-	test('POST /api/CampusCard/v1/UpdateAndGetSubscription returns null fields', async () => {
-		const res = await exports.default.fetch(
-			`${ORIGIN}/api/CampusCard/v1/UpdateAndGetSubscription`,
-			{
-				method: 'POST',
-			}
-		)
-		expect(res.status).toBe(200)
-		expect(await res.json()).toEqual({
-			subscription: null,
-			platformAccountSubscribedPlayerId: null,
+	const getSubscription = async (headers: Record<string, string> = {}) =>
+		exports.default.fetch(`${ORIGIN}/api/CampusCard/v1/UpdateAndGetSubscription`, {
+			method: 'POST',
+			headers,
 		})
+
+	test('POST /api/CampusCard/v1/UpdateAndGetSubscription gives a developer a Gold year', async () => {
+		const res = await getSubscription(await bearer('205', ['gameClient', 'developer']))
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as {
+			Subscription: Record<string, unknown>
+			PlatformAccountSubscribedPlayerId: null
+		}
+		expect(body.PlatformAccountSubscribedPlayerId).toBeNull()
+		expect(body.Subscription).toMatchObject({
+			SubscriptionId: 1,
+			// The subscribed player is the caller, not a fixed id.
+			RecNetPlayerId: 205,
+			// -1 All: no store sold this. 0 = Gold (1 is Platinum), 1 = Year.
+			PlatformType: -1,
+			PlatformId: '',
+			PlatformPurchaseId: '',
+			Level: 0,
+			Period: 1,
+			IsAutoRenewing: true,
+		})
+
+		// The subscription runs a year from the call rather than to a hard-coded date, so it
+		// cannot lapse on a day nobody is expecting.
+		const created = new Date(body.Subscription.CreatedAt as string)
+		const expires = new Date(body.Subscription.ExpirationDate as string)
+		expect(body.Subscription.ModifiedAt).toBe(body.Subscription.CreatedAt)
+		expect(expires.getTime()).toBeGreaterThan(Date.now())
+		expect(expires.getUTCFullYear()).toBe(created.getUTCFullYear() + 1)
+		expect(expires.getUTCMonth()).toBe(created.getUTCMonth())
+		expect(expires.getUTCDate()).toBe(created.getUTCDate())
+	})
+
+	test('POST /api/CampusCard/v1/UpdateAndGetSubscription is {} without the developer role', async () => {
+		// A plain player's token: valid, but no elevated role.
+		expect(await (await getSubscription(await bearer('206', ['gameClient']))).json()).toEqual({})
+		// A token with no `role` claim at all.
+		expect(await (await getSubscription(await bearer('206'))).json()).toEqual({})
+		// No token: "not subscribed" rather than 401, so a loading client isn't stalled.
+		const anon = await getSubscription()
+		expect(anon.status).toBe(200)
+		expect(await anon.json()).toEqual({})
 	})
 
 	test('unknown path returns 404', async () => {
@@ -1425,6 +2054,7 @@ describe('econ endpoints', () => {
 			'POST /api/consumables/v1/consume',
 			'POST /api/gamerewards/v1/request',
 			'POST /api/objectives/v1/cleargroup',
+			'POST /api/objectives/v1/updateobjective',
 			'POST /api/storefronts/v2/buyItem',
 			'PUT /api/equipment/v1/update',
 		])

@@ -191,6 +191,7 @@ edit the value, then re-deploy the worker that reads them.
 | `RECFLARE_MAX_ACCOUNTS_PER_PLATFORM_ID` | `auth`  | `3`     | Accounts one Steam-verified identity may create. `0` disables. |
 | `RECFLARE_MAX_ACCOUNTS_PER_IP`          | `auth`  | `3`     | Accounts one signup IP may create. `0` disables.               |
 | `RECFLARE_STARTING_TOKENS`              | `econ`  | `10000` | RecCenterTokens a new player is granted.                       |
+| `RECFLARE_ROOM_REDIRECTS`               | `match` | unset   | Rooms to switch out on matchmake, e.g. `2=MyHub`.              |
 
 Then deploy just the worker that reads it:
 

@@ -53,10 +53,11 @@ recflare_load_env() {
 # why a value set in the Cloudflare dashboard doesn't survive one.)
 #
 # Values must not contain whitespace: the result is a flag list the caller word-splits.
-# Knobs are numbers and short enums, and real secrets belong in the Secrets Store (which is
-# bound in wrangler.jsonc, not passed through here), so this hasn't been worth the ceremony
-# of an array. Vars also arrive in the Worker as strings (`--var X:3` is "3", not 3), which
-# is why the workers parse them through `intVar` rather than reading them as numbers.
+# Knobs are numbers and short unquoted strings (`2=MyHub`), and real secrets belong in the
+# Secrets Store (which is bound in wrangler.jsonc, not passed through here), so this hasn't
+# been worth the ceremony of an array. Vars also arrive in the Worker as strings (`--var
+# X:3` is "3", not 3), which is why a numeric knob is parsed through `intVar` rather than
+# read as a number.
 recflare_vars() {
 	# The sed only ever yields [A-Z0-9_] names, so the eval below can't expand anything else.
 	for _name in $(env | sed -n 's/^RECFLARE_\([A-Z0-9_][A-Z0-9_]*\)=.*/\1/p'); do

@@ -4,8 +4,17 @@
 	"main": "src/cdn.app.ts",
 	"compatibility_date": "2026-06-16",
 	"compatibility_flags": ["nodejs_compat"],
+	// Workers Caching is OFF here, and must stay off: it STRIPS the `Range` header before
+	// invoking the worker, asks for the whole body, and slices the 206 out of its own
+	// cache. That works only while the response is actually cacheable — on any bypass
+	// (see the automatic bypass rules) nothing slices, and the client that asked for a
+	// byte range receives the whole object with a 200. A chunked downloader writes that
+	// at the offset it asked for and the reassembled file is corrupt (EAC "Signatures
+	// don't match"). With caching off the `Range` header reaches serveAsset, which
+	// always answers a `bytes=` request with a 206 and a truthful Content-Range.
+	// The cost is that every asset read hits R2; correctness on these blobs is worth it.
 	"cache": {
-		"enabled": true
+		"enabled": false
 	},
 	// CDN binaries (signature blobs + room build data) are stored as R2 objects
 	// and streamed back by key. Keys are prefixed `sigs/` and `room/`.

@@ -99,14 +99,50 @@ inconsistency here without checking the client first.
   publish: no publish step exists in the client for them. Saves live in the
   `subroom_save` table with globally-unique ids (a bare id has to resolve —
   `StagedSubRoomDataSaveId` carries no subroom context), and nothing is overwritten, so
-  `…/saves` is real history and `publish_save` doubles as restore-a-save. `…/saves` is
-  auth-gated and CREATOR-only (not co-owners) — it lists unpublished staged saves. There
+  `…/saves` is real history and `publish_save` doubles as restore-a-save. There
   is no `GET …/subrooms/:sid/data`; only the POST (the room save) exists on that path.
+  `GET …/saves/:saveId` is the detail behind a list row, under the same gate, but in the
+  CAMELCASE projection the room save's response uses — not the PascalCase rows the list
+  serves. Three shapes of one save; keep them straight.
+- Both save reads (`rooms`: `…/saves` and `…/saves/:saveId`) are auth-gated and readable by
+  the room's CREATOR or by anyone whose live `presence` row puts them in that room — not by
+  co-owners as such (a co-owner passes only by standing there). They list unpublished
+  staged saves, so they aren't public; but a visitor resolves which version an instance is
+  running from this list, so creator-only locks them out of loading the room. The grant
+  expires with the presence row.
+- A room save writes ONLY to the subroom and its save row — never to the room. Everything
+  the body carries describes that one revision: `Description` is the save comment shown in
+  `…/saves`, and `PersistenceVersion`/`InventionUsage` describe the scene just saved (the
+  latter lives on the SUBROOM). The room's public description is `PUT /rooms/:id/description`'s
+  alone; copying the save comment onto `room.Description` (as this once did) silently
+  replaces the room's description every time someone saves.
 - Matchmaking (`match`: `/matchmake/room/:roomId/:subRoomId`) always serves the PUBLISHED
   `CurrentSave` blob, creator included. Joining a private instance, the client itself asks
   the owner whether to load the latest or the published version and resolves it from the
   `/subrooms/:sid/saves` list — the matchmake call is identical either way. Don't make
   this server-side: it would put two people in one instance on different versions.
+- A balance lives in a `(CurrencyType, Platform)` BUCKET and the client shows the SUM of the
+  buckets, so `Platform` is a balance's identity, not a label. This server uses exactly one
+  bucket per currency — `ALL_PLATFORMS`, -2 `NonPurchasedNotUsableInP2P` — and every surface
+  must name it: the balance DTO (`econ`: `GET /api/storefronts/v4/balance/:type`), the
+  `BalanceType` the storefront bodies echo, and the `Platform` on every `StorefrontBalance*`
+  socket frame. Two traps, which produced two "balance doubling" bugs that both looked like
+  the frames being additive when they are not:
+  - Each frame SETS the bucket it names to an absolute value — `Balance` is the RESULTING
+    TOTAL, never the change (`StorefrontBalancePurchase`'s `Delta`/`BalanceAddType` are
+    display-only; the client logs them and stores `Balance` outright). Send a change and the
+    balance becomes that change. Being absolute, a frame is idempotent: re-sending one, or
+    racing a `GET /balance`, cannot drift the total, so the player reading the HTTP response
+    for the same change gets a frame too.
+  - The bucket key on the wire is `Platform`. The client's property is named `BalanceType`
+    but carries a `[DataMember]` rename, and its decoder drops unknown members silently, so
+    a frame saying `BalanceType` lands in `Platform` 0 (`SteamPurchased`) and adds a phantom
+    balance to the real one — 10,000 tokens + a 250 reward read 20,250. Sending a real-but-
+    different platform does the same: `Platform: RecNet` on a buy showed 34,100 to a player
+    who spent 900 of 17,500, then 33,200 once the body's -900 reached the true bucket.
+  The payload shapes are recovered from the client's own decoder in
+  `apps/notify/src/notification-payloads.ts` — build frames against those interfaces (econ
+  does) so a renamed key fails the build instead of silently vanishing on the wire.
 - Accessibility is sent as the `RoomAccessibility` enum NAME on
   `rooms` `PUT /rooms/:id/subrooms/:sid/accessibility` (`accessibility=Private`), not the
   ordinal the room-level `/rooms/:id/accessibility` takes. The enum has five members

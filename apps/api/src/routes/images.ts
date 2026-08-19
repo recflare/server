@@ -1,7 +1,6 @@
 import { Hono } from 'hono'
 import { describeRoute } from 'hono-openapi'
 
-import { authedId, unauthorized } from '../http'
 import {
 	createImage,
 	deleteImage,
@@ -16,7 +15,9 @@ import {
 	SLIDESHOW_LIMIT,
 	SLIDESHOW_MAX_LIMIT,
 	toImagesPlayer,
-} from '../images-db'
+} from '@repo/domain'
+
+import { authedId, unauthorized } from '../http'
 import {
 	AUTHED,
 	CheeredEntry,

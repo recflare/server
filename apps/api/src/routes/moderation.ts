@@ -59,18 +59,22 @@ const asFloat = (v: string | undefined): number | null => {
 
 // ---- Player reporting ------------------------------------------------------
 export const moderationRoutes = new Hono<App>({ strict: false })
-	// Whether the caller is currently blocked (banned / timed out / host-kicked). No
-	// ban storage yet, so this is always the "not blocked" answer. `ReportCategory` is
-	// -1 (no category) rather than 0, which is a real category; `Message` is null, not
-	// an empty string — the client distinguishes "no message" from a blank one.
+	// Whether the caller is currently blocked (banned / timed out / host-kicked). Bans
+	// are stored (a report row with `banned` set) and enforced at matchmake and at login,
+	// but this endpoint is not wired to them, so it's always the "not blocked" answer.
+	// `ReportCategory` is -1 (no category) rather than 0, which is a real category;
+	// `Message` is null, not an empty string — the client distinguishes "no message"
+	// from a blank one.
 	.get(
 		'/api/PlayerReporting/v1/moderationBlockDetails',
 		describeRoute({
 			tags: ['Moderation'],
 			summary: 'Whether the caller is blocked',
 			description:
-				'Ban / timeout / host-kick state for the caller. There is no ban storage yet, so ' +
-				'this is always the “not blocked” answer. Two details matter to the client: ' +
+				'Ban / timeout / host-kick state for the caller. Bans are stored (a `report` row ' +
+				'with `banned` set) and enforced at matchmake and at login, but this endpoint is ' +
+				'not wired to them, so it is always the “not blocked” answer. Two details matter ' +
+				'to the client: ' +
 				'`ReportCategory` is -1 (no category) rather than 0, which is a real category, and ' +
 				'`Message` is null rather than an empty string — the client distinguishes “no ' +
 				'message” from a blank one.',
@@ -122,9 +126,10 @@ export const moderationRoutes = new Hono<App>({ strict: false })
 			tags: ['Moderation'],
 			summary: 'Submit a player report',
 			description:
-				'Records a player report in the `report` table — an append-only log; nothing ' +
-				'dedupes or acts on the rows yet, and `moderationBlockDetails` still answers ' +
-				'“not blocked” unconditionally.\n\n' +
+				'Records a player report in the `report` table; nothing dedupes the rows, and ' +
+				'`moderationBlockDetails` still answers “not blocked” unconditionally. A report ' +
+				'is filed unbanned — a moderator converts one into an account-wide ban by setting ' +
+				'`banned` on the row, which is what matchmaking and `/connect/token` refuse on.\n\n' +
 				'The reporter is the caller (from the bearer token), NOT a body field. Only ' +
 				'`PlayerIdReported` is required; the client omits whatever it has no value for ' +
 				'(a report raised outside a room carries no `RoomId`), and those are stored as ' +

@@ -8,7 +8,7 @@
 		{
 			"ChallengeId": 37,
 			"Name": "CompleteJT",
-			"Config": "{\"ct\":0,\"ipc\":false,\"wc\":[{\"ct\":6,\"vs\":[2]},{\"ct\":9,\"vs\":[true],\"v\":\"won\"},{\"ct\":7,\"vs\":[{\"l\":\"acc06e66-c2d0-4361-b0cd-46246a4c455c\"}]}]}",
+			"Config": "{\"ct\":1,\"c\":true,\"ipc\":false,\"ctc\":[{\"ct\":0,\"ipc\":false,\"wc\":[{\"ct\":6,\"vs\":[2]},{\"ct\":7,\"vs\":[{\"l\":\"6d5eea4b-f069-4ed0-9916-0e2f07df0d03\"},{\"l\":\"4078dfed-24bb-4db7-863f-578ba48d726b\"}]}]}],\"t\":1,\"cc\":1}",
 			"Description": "Complete ^TheRiseOfJumbotron quest",
 			"Tooltip": "Vanquish Jumbotron in the Rise of Jumbotron quest!",
 			"Complete": false
@@ -60,5 +60,5 @@
 		"GiftRarity": 0
 	},
 	"FallbackGiftName": "4-Star Box",
-	"ChallengeThemeString": "\"do like \"kapow\"-like its a punch to the face that we're doing weekly challenges\" - fexlar"
+	"ChallengeThemeString": ""
 }

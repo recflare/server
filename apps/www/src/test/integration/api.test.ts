@@ -32,7 +32,7 @@ beforeAll(async () => {
 // Web signup is open, but only behind the Turnstile check. These pin the closed door:
 // the pass path can't be tested here (it would call Cloudflare's siteverify for real).
 //
-// The hostnames matter as much as the key: the SPA calls auth/accounts/api/notify
+// The hostnames matter as much as the key: the SPA calls auth/accounts/api/notify/rooms
 // DIRECTLY (as rec.net's site did), and this is the only place it learns where they are.
 // A build with them missing can't sign anyone in.
 it('advertises signup and where the other workers live', async () => {
@@ -48,6 +48,9 @@ it('advertises signup and where the other workers live', async () => {
 			api: 'https://api.rec.example.com',
 			img: 'https://img.rec.example.com',
 			notify: 'https://notify.rec.example.com',
+			rooms: 'https://rooms.rec.example.com',
+			cdn: 'https://cdn.rec.example.com',
+			storage: 'https://storage.rec.example.com',
 		},
 	})
 })

@@ -50,7 +50,7 @@
 	"secrets_store_secrets": [
 		{
 			"binding": "JWT_SECRET",
-			"store_id": "local",
+			"store_id": "108d4951c92b427a92cf6ef643d14626",
 			"secret_name": "JWT_SECRET"
 		}
 	],

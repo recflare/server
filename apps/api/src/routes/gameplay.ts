@@ -11,16 +11,16 @@ import {
 	JsonArray,
 	jsonBody,
 	JsonObject,
+	KeepsakeCategories,
 	KeepsakeConfig,
 	SanitizeRequest,
 	stringParam,
-	SubscriptionResponse,
 } from '../openapi'
 
 import type { App } from '../context'
 
-// Text sanitization, keepsakes, objectives/events/rewards, and the misc
-// analytics/subscription sinks the client hits during load.
+// Text sanitization, keepsakes, objectives/events/rewards, and the misc analytics
+// sinks the client hits during load.
 export const gameplayRoutes = new Hono<App>({ strict: false })
 	// Text sanitization (display names, room names, chat). `v1` echoes the input
 	// value back; `isPure` reports the text is clean.
@@ -98,15 +98,25 @@ export const gameplayRoutes = new Hono<App>({ strict: false })
 		}),
 		(c) => c.body(null, 204)
 	)
+	// A counted result set, NOT the bare list the stubs around it serve: the client parses
+	// this one as an object and an array fails it outright — "expected:'{', actual:'[', at
+	// offset:0", logged as "Failed to get keepsake categories" — which takes the keepsake
+	// load down with it. `TotalResults` is the length of `Results`, not a total behind a
+	// page; the reference returns `results.Length`.
 	.get(
 		'/api/keepsakes/categories',
 		describeRoute({
 			tags: ['Gameplay'],
 			summary: 'Keepsake categories',
-			description: 'No keepsake catalog yet, so this is an empty list.',
-			responses: { 200: json(JsonArray, 'An empty list') },
+			description:
+				'No keepsake catalog yet, so the result set is empty — but it IS a result set ' +
+				'(`{ Results, TotalResults }`), not the empty list the stubs around it serve. ' +
+				"The client parses this one as an object and fails on an array (\"expected '{', " +
+				"actual '['\"), taking the keepsake load down with it. `TotalResults` counts " +
+				'`Results` itself — there is no paging here.',
+			responses: { 200: json(KeepsakeCategories, 'An empty result set') },
 		}),
-		(c) => c.json([])
+		(c) => c.json({ Results: [], TotalResults: 0 })
 	)
 
 	// ---- Objectives / events / rewards ---------------------------------------
@@ -149,18 +159,4 @@ export const gameplayRoutes = new Hono<App>({ strict: false })
 			responses: { 200: { description: 'Accepted (empty body)' } },
 		}),
 		(c) => c.body(null, 200)
-	)
-
-	// ---- Subscription ---------------------------------------------------------
-	.post(
-		'/api/CampusCard/v1/UpdateAndGetSubscription',
-		describeRoute({
-			tags: ['Gameplay'],
-			summary: 'The caller’s subscription',
-			description:
-				'Rec Room Plus subscription state. There are no subscriptions on this server, so ' +
-				'both fields are null. Also served by the `econ` worker on its own host.',
-			responses: { 200: json(SubscriptionResponse, 'No subscription') },
-		}),
-		(c) => c.json({ subscription: null, platformAccountSubscribedPlayerId: null })
 	)

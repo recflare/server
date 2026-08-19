@@ -183,8 +183,8 @@ MINIFY="--minify"
 
 # Deploy with wrangler using the extracted values as binding variables
 echo "Deploying worker $NAME version $VERSION to $HOST"
-# $EXTRA_VARS is intentionally unquoted — it's a flag list to word-split, and every
-# value in it is an integer, so there's nothing to split on inside a value.
+# $EXTRA_VARS is intentionally unquoted — it's a flag list to word-split, and no knob value
+# contains whitespace (see recflare_vars), so there's nothing to split on inside a value.
 wrangler deploy \
 	--config "$CONFIG" \
 	--var NAME:"$NAME" \

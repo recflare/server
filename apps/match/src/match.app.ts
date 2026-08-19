@@ -3,9 +3,11 @@ import { describeRoute, openAPIRouteHandler } from 'hono-openapi'
 import { useWorkersLogger } from 'workers-tagged-logger'
 
 import {
+	Accessibility,
 	areFriends,
 	canManageRoom,
 	createRoomInstance,
+	deleteEmptyRoomInstances,
 	deleteExpiredPresence,
 	deletePresence,
 	GAME_VERSION,
@@ -24,7 +26,9 @@ import {
 	getRoomInstanceSummariesByRoom,
 	isClubMember,
 	isPlayerBannedFromRoom,
+	MatchmakingErrorCode,
 	MessageType,
+	recordRoomVisit,
 	refreshInstanceFullness,
 	RoomInstanceType,
 	setPresence,
@@ -35,11 +39,20 @@ import {
 import { logger, withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
 import { validateAndGetAccountId } from '@repo/jwt'
 
+// The account-wide ban lives on a `report` row, whose table the api worker owns; its
+// db module is plain D1 queries with no runtime deps, so it imports cleanly here (the
+// same way econ reads api's inventions-db).
+import { banEvasionMatch, resolveBan } from '../../api/src/bans-db'
+// The player-event tables are the api worker's too (same plain-D1 shape as bans-db):
+// `/matchmake/event` needs the event's room and the caller's invite row.
+import { getEventById, getEventResponse } from '../../api/src/events-db'
 // Value import of the notify worker's NotificationType enum (its bundle has no runtime
 // deps), so /invite sends a typed MessageReceived frame instead of a magic number.
 import { NotificationType } from '../../notify/src/notification-types'
 import {
 	AUTHED,
+	AvoidJuniorsRequest,
+	AvoidJuniorsResponse,
 	EMPTY_OK,
 	ExclusiveLoginResponse,
 	form,
@@ -124,6 +137,110 @@ async function authedId(c: Context<App>): Promise<number | null> {
 /** Results.Unauthorized() equivalent — 401 with empty body. */
 function unauthorized(c: Context<App>) {
 	return c.body(null, 401)
+}
+
+/**
+ * The "avoid juniors" preference, spelled the way the client posts it — the key a NEW
+ * setting is written under, and the one every stored spelling is matched against.
+ *
+ * The player's settings are a free-form `{ key: value }` bag written by the client through
+ * the `playersettings` worker, and the exact spelling it writes this key under is
+ * reverse-engineered, so the lookup is case- and separator-insensitive (`avoidJuniors`,
+ * `AvoidJuniors`, `AVOID_JUNIORS` all resolve to this one preference) rather than betting on
+ * one casing and silently reading false forever if it's wrong. The write then overwrites
+ * whichever spelling is already there, so a player never ends up with two keys for the one
+ * preference — which would make the read depend on their order in the map.
+ */
+const AVOID_JUNIORS_KEY = 'avoidJuniors'
+
+/** Lowercase and drop separators, so keys compare on their letters alone. */
+function normalizeSettingKey(key: string): string {
+	return key.toLowerCase().replaceAll(/[^a-z0-9]/g, '')
+}
+
+/** The player's existing spelling of the setting key, if their map has one. */
+function findAvoidJuniorsKey(stored: Record<string, unknown>): string | undefined {
+	const wanted = normalizeSettingKey(AVOID_JUNIORS_KEY)
+	return Object.keys(stored).find((key) => normalizeSettingKey(key) === wanted)
+}
+
+/**
+ * Settings values are strings, so a boolean arrives as `True`/`false`/`1`/`0` (the client
+ * isn't consistent about which). `undefined` for anything unrecognized, which the read and
+ * the write treat differently: a stored value that won't parse is a false preference, but a
+ * posted one that won't parse is a body worth ignoring rather than a write of `false`.
+ */
+function parseSettingBool(value: unknown): boolean | undefined {
+	if (typeof value === 'boolean') return value
+	switch (String(value).trim().toLowerCase()) {
+		case 'true':
+		case '1':
+		case 'yes':
+			return true
+		case 'false':
+		case '0':
+		case 'no':
+			return false
+		default:
+			return undefined
+	}
+}
+
+/** The player's settings map from the KV the `playersettings` worker owns. */
+async function getPlayerSettings(
+	env: Env,
+	accountId: number
+): Promise<Record<string, string> | null> {
+	return env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(
+		`player:${accountId}`,
+		'json'
+	).catch(() => null)
+}
+
+/**
+ * Read a player's "avoid juniors" preference. Absent settings, an absent key, and an
+ * unparseable value are all false: the client asks this before matchmaking, so a read that
+ * can't answer must not keep a player out of rooms.
+ */
+async function readAvoidJuniors(env: Env, accountId: number): Promise<boolean> {
+	const stored = await getPlayerSettings(env, accountId)
+	if (!stored) return false
+
+	const key = findAvoidJuniorsKey(stored)
+	return key === undefined ? false : (parseSettingBool(stored[key]) ?? false)
+}
+
+/**
+ * Write a player's "avoid juniors" preference back into their settings map.
+ *
+ * The write MERGES, exactly as the `playersettings` worker's own PUT does: the map holds
+ * every setting the player has (OOBE state, tutorial mask, …), so storing this one on its
+ * own would wipe the rest. Read-modify-write on KV isn't atomic, but the same is true of
+ * the settings worker, and two writers racing over one player's own settings means that
+ * player toggling two options in the same instant.
+ */
+async function writeAvoidJuniors(env: Env, accountId: number, value: boolean): Promise<void> {
+	const stored = (await getPlayerSettings(env, accountId)) ?? {}
+	const merged: Record<string, string> = { ...stored }
+	merged[findAvoidJuniorsKey(merged) ?? AVOID_JUNIORS_KEY] = value ? 'True' : 'False'
+	await env.RECFLARE_PLAYER_SETTINGS.put(`player:${accountId}`, JSON.stringify(merged))
+}
+
+/**
+ * The posted preference, out of a form (`avoidJuniors=True`, what the client sends) or a
+ * JSON body. The field name is matched the same loose way the stored key is, so the casing
+ * the client picks can't silently miss. `undefined` when the body carries no readable
+ * value — the caller leaves the setting alone rather than writing a guess.
+ */
+async function readAvoidJuniorsBody(c: Context<App>): Promise<boolean | undefined> {
+	const contentType = c.req.header('content-type') ?? ''
+	const body = contentType.includes('application/json')
+		? await c.req.json<unknown>().catch(() => null)
+		: await c.req.parseBody().catch(() => null)
+	if (body === null || typeof body !== 'object') return undefined
+
+	const key = findAvoidJuniorsKey(body as Record<string, unknown>)
+	return key === undefined ? undefined : parseSettingBool((body as Record<string, unknown>)[key])
 }
 
 /** A synthesized room instance (same shape for dorm and other rooms). */
@@ -233,7 +350,8 @@ async function notifyFriendsPresence(c: Context<App>, playerId: number): Promise
 }
 
 /**
- * Store the room instance the player just matchmade into, preserving status.
+ * Store the room instance the player just matchmade into, preserving status, and count
+ * the visit against the room.
  *
  * With no live presence to carry forward (the player's first matchmake after login,
  * or one after their presence lapsed) the device fields would otherwise default —
@@ -258,6 +376,22 @@ async function enterRoom(c: Context<App>, id: number, roomInstance: RoomInstance
 		// and the heartbeat can keep verifying against it.
 		loginLock: prev?.loginLock,
 	})
+
+	// Count the visit. Every matchmake route funnels through here with the instance the
+	// player landed in, and a matchmake is the only way into a room, so this is the one
+	// place a visit can be recorded once — whether they got here by room id, by subroom,
+	// by following a friend, from a club's clubhouse, or into their own dorm. Bumps the
+	// room's `visits` column, which is served as `Stats.VisitCount`. Best-effort: a
+	// counter is not worth failing the matchmake over.
+	try {
+		await recordRoomVisit(c.env.DB, roomInstance.roomId)
+	} catch (err) {
+		logger.error('failed to record room visit', {
+			roomId: roomInstance.roomId,
+			error: err instanceof Error ? err.message : String(err),
+		})
+	}
+
 	// Keep the destination instance's is_full flag in sync with live presence (the
 	// player's own presence, just written, is counted). Then re-evaluate the
 	// instance they left — its head-count dropped — so a full room frees up when
@@ -274,16 +408,25 @@ async function enterRoom(c: Context<App>, id: number, roomInstance: RoomInstance
 	await notifyFriendsPresence(c, id)
 }
 
-/** MatchmakingErrorCode.NoSuchRoom — returned when a room isn't in the DB. */
-const NO_SUCH_ROOM = 20
+/** Returned when a room isn't in the DB — and for every other opaque refusal. */
+const NO_SUCH_ROOM = MatchmakingErrorCode.NoSuchRoom
 
 /**
- * MatchmakingErrorCode for "you are banned from this room". Unlike the opaque
- * NoSuchRoom every other refusal answers, a banned player is told why: they already
- * know the room exists, so there's nothing to hide, and the client can say so instead
- * of showing a room that mysteriously fails to load.
+ * "You are banned from this room". Unlike the opaque NoSuchRoom every other refusal
+ * answers, a banned player is told why: they already know the room exists, so there's
+ * nothing to hide, and the client can say so instead of showing a room that
+ * mysteriously fails to load.
  */
-const BANNED_FROM_ROOM = 55
+const BANNED_FROM_ROOM = MatchmakingErrorCode.BannedFromRoom
+
+/**
+ * "This event isn't open to you" — the refusal on a private event the caller wasn't
+ * invited to. Told plainly rather than hidden behind the opaque NoSuchRoom: a player
+ * reaching this already holds the event id from somewhere that showed it to them, so
+ * the only thing withholding the reason buys is a room that fails to load for no
+ * visible reason.
+ */
+const EVENT_IS_PRIVATE = MatchmakingErrorCode.EventIsPrivate
 
 /** The notifications hub is a single global DO instance (see the `notify` worker). */
 const HUB_INSTANCE = 'global'
@@ -494,27 +637,94 @@ async function inviteParty(
  * there (NoSuchRoom) from one the caller is banned from — those answer different codes.
  */
 type ResolvedInstance =
-	| { instance: RoomInstance; errorCode: 0 }
-	| { instance: null; errorCode: number }
+	| { instance: RoomInstance; errorCode: MatchmakingErrorCode.Success }
+	| { instance: null; errorCode: MatchmakingErrorCode }
+
+/**
+ * The operator's room substitutions, parsed from the `ROOM_REDIRECTS` var: a map of
+ * the room id the client asks for to the room it actually enters (id or room name).
+ * The var is comma-separated `<fromRoomId>=<to>` pairs, e.g. `2=MyHub,3=100`.
+ *
+ * Keyed on the source's numeric id rather than the path segment because the client can
+ * matchmake by either id or name (`/matchmake/room/2` and `/matchmake/room/RecCenter`
+ * are the same room), so the substitution is matched against the room D1 resolved —
+ * one entry then covers both spellings. Unparseable pairs are skipped rather than
+ * failing the matchmake: a typo in the knob must not take room entry down.
+ */
+function roomRedirects(env: Env): Map<number, string> {
+	const map = new Map<number, string>()
+	if (typeof env.ROOM_REDIRECTS !== 'string') return map
+	for (const pair of env.ROOM_REDIRECTS.split(',')) {
+		const eq = pair.indexOf('=')
+		if (eq === -1) continue
+		const from = Number(pair.slice(0, eq).trim())
+		const to = pair.slice(eq + 1).trim()
+		if (!Number.isInteger(from) || to === '') continue
+		map.set(from, to)
+	}
+	return map
+}
+
+/**
+ * Apply the operator's `ROOM_REDIRECTS` substitution to a room the client asked for.
+ * Answers the room to actually enter, plus the subroom to enter it by.
+ *
+ * A substituted room drops the requested subroom: the id the client sent addresses a
+ * subroom of the room it *asked* for, and the same number in the target room is a
+ * different place entirely (or nothing at all), so entry falls back to the target's
+ * default subroom. Substitution is a single hop — `2=3,3=2` swaps the two rooms rather
+ * than looping — and an unresolvable target leaves the original room in place, so a
+ * typo'd knob degrades to "no substitution" instead of a dead hub.
+ */
+async function substituteRoom(
+	c: Context<App>,
+	room: Room,
+	subRoomId?: number
+): Promise<{ room: Room; subRoomId?: number }> {
+	const fromId = typeof room.RoomId === 'number' ? room.RoomId : NaN
+	const to = roomRedirects(c.env).get(fromId)
+	if (to === undefined) return { room, subRoomId }
+
+	const toId = Number.parseInt(to, 10)
+	const target = Number.isNaN(toId)
+		? await getRoomByName(c.env.DB, to)
+		: await getRoomById(c.env.DB, toId)
+	if (!target) {
+		logger.warn('room redirect target not found; entering the requested room', {
+			roomId: fromId,
+			target: to,
+		})
+		return { room, subRoomId }
+	}
+
+	logger.info('room redirected', { roomId: fromId, target: to })
+	return { room: target, subRoomId: undefined }
+}
 
 /**
  * Resolve a room by `:room` path segment (numeric id or name) from D1, then find a
  * joinable instance of it (public matchmakes reuse one via the `room_instance`
  * table) or create a new one. A null instance carries the error code to answer:
  * NoSuchRoom when the room isn't in the DB, BannedFromRoom when the caller is banned.
+ *
+ * Every matchmake that names a room lands here, so this is also where the operator's
+ * room substitutions apply (`ROOM_REDIRECTS`) — everything downstream, from the ban
+ * check to presence and the visit count, sees only the room actually entered.
  */
 async function resolveRoomInstance(
 	c: Context<App>,
 	roomKey: string,
 	isPrivate: boolean,
 	ownerId: number,
-	subRoomId?: number
+	requestedSubRoomId?: number
 ): Promise<ResolvedInstance> {
 	const id = Number.parseInt(roomKey, 10)
-	const room = Number.isNaN(id)
+	const requested = Number.isNaN(id)
 		? await getRoomByName(c.env.DB, roomKey)
 		: await getRoomById(c.env.DB, id)
-	if (!room) return { instance: null, errorCode: NO_SUCH_ROOM }
+	if (!requested) return { instance: null, errorCode: NO_SUCH_ROOM }
+
+	const { room, subRoomId } = await substituteRoom(c, requested, requestedSubRoomId)
 
 	const f = instanceFieldsFromRoom(room, subRoomId)
 
@@ -565,7 +775,7 @@ async function resolveRoomInstance(
 			instance.photonRoomId,
 			f.subRoomId
 		),
-		errorCode: 0,
+		errorCode: MatchmakingErrorCode.Success,
 	}
 }
 
@@ -608,6 +818,45 @@ const app = new Hono<App>()
 				release: c.env.SENTRY_RELEASE,
 			})(c, next)
 	)
+
+	// A banned player goes nowhere. Room bans are per-room and checked per route (they
+	// depend on which room you're entering); a BAN isn't about a room at all, so it's
+	// enforced once here, across every matchmake — by room, by subroom, by instance, into
+	// a club's clubhouse, following a friend, and into their own dorm. A gate rather than
+	// six copies of the same check: a route added later inherits it, and there is no
+	// matchmake left that hands a banned player Photon coordinates.
+	//
+	// `resolveBan` matches the caller's own account AND the accounts they share a proven
+	// platform identity or an IP with, so a ban survives the evader making a new account
+	// (see bans-db.ts; the operator narrows the linked arms with BAN_EVASION_MATCH). The
+	// arm that matched is logged, because "banned" and "shares a network with somebody
+	// banned" are very different things to be looking at in a log.
+	//
+	// It answers the same BannedFromRoom the room bans do. The code is per-room in name
+	// only — it's the one refusal the client renders as "you are banned" instead of a room
+	// that mysteriously fails to load, and it's what the enum offers.
+	//
+	// Unauthenticated requests fall through untouched: the route's own `authedId` answers
+	// 401, which mustn't turn into "banned" just because the token was missing.
+	.use('/matchmake/*', async (c, next) => {
+		const id = await authedId(c)
+		if (id !== null) {
+			const match = await resolveBan(c.env.DB, id, {
+				identity: { ip: c.req.header('cf-connecting-ip') },
+				arms: banEvasionMatch(c.env.BAN_EVASION_MATCH),
+			})
+			if (match) {
+				logger.info('matchmake refused: player banned', {
+					accountId: id,
+					via: match.via,
+					bannedAccountId: match.bannedAccountId,
+					path: c.req.path,
+				})
+				return c.json({ errorCode: BANNED_FROM_ROOM, roomInstance: null })
+			}
+		}
+		await next()
+	})
 
 	.onError(withOnError())
 	.notFound(withNotFound())
@@ -878,6 +1127,68 @@ const app = new Hono<App>()
 		}
 	)
 
+	// The caller's "avoid juniors" preference. It's asked of this worker because it's a
+	// matchmaking question, but it isn't matchmaking state: the setting is written by the
+	// client through the `playersettings` worker, so this reads that worker's KV map
+	// directly (read-only) rather than keeping a second copy of the same toggle here.
+	.get(
+		'/player/avoidjuniors',
+		describeRoute({
+			tags: ['Player settings'],
+			summary: 'The player’s “avoid juniors” preference',
+			description: [
+				'Whether the authenticated player asked to be kept away from junior accounts, read',
+				'from their settings map in the `playersettings` KV. The body is a bare JSON boolean',
+				'(`true`/`false`), not an envelope. A player who never set it reads `false`.',
+			].join(' '),
+			security: AUTHED,
+			responses: {
+				200: json(AvoidJuniorsResponse, 'The preference; `false` when never set'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			return c.json(await readAvoidJuniors(c.env, id))
+		}
+	)
+
+	// Set the preference. Answers the RESULTING value rather than an empty ack, the way the
+	// GET does — the client has just changed a toggle it renders, and a body it can read
+	// back can't disagree with what was stored.
+	.put(
+		'/player/avoidjuniors',
+		describeRoute({
+			tags: ['Player settings'],
+			summary: 'Set the player’s “avoid juniors” preference',
+			description: [
+				'Stores the posted preference in the authenticated player’s settings map (the',
+				'`playersettings` KV) and answers the resulting value as a bare JSON boolean. The',
+				'write merges, so the player’s other settings are left alone. A body with no readable',
+				'`avoidJuniors` value leaves the setting as it was and answers the stored value — a',
+				'no-op 200, not a 400.',
+			].join(' '),
+			security: AUTHED,
+			requestBody: form(AvoidJuniorsRequest, 'The preference to store'),
+			responses: {
+				200: json(AvoidJuniorsResponse, 'The preference now stored'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const posted = await readAvoidJuniorsBody(c)
+			if (posted === undefined) return c.json(await readAvoidJuniors(c.env, id))
+
+			await writeAvoidJuniors(c.env, id, posted)
+			return c.json(posted)
+		}
+	)
+
 	// ---- Room navigation -----------------------------------------------------
 	// Each matchmake persists the resulting instance as the player's presence so the
 	// heartbeat can replay it (keeping client presence in sync).
@@ -939,6 +1250,88 @@ const app = new Hono<App>()
 			)
 			if (!instance) return c.json({ errorCode, roomInstance: null })
 			await enterRoom(c, id, instance)
+			return c.json({ errorCode: 0, roomInstance: instance })
+		}
+	)
+
+	// Matchmake into a player event (`/matchmake/event/{playerEventId}`) — the "join" on
+	// an event. The event names the room (and optionally the subroom) to enter, so this
+	// is a room matchmake behind an access check on the EVENT.
+	.post(
+		'/matchmake/event/:eventId{[0-9]+}',
+		describeRoute({
+			tags: ['Navigation'],
+			summary: 'Matchmake into a player event',
+			description: [
+				'Places the caller into an instance of the event’s room — its subroom too, when the',
+				'event pins one. Who may join: anyone, if the event is Public (1) or Unlisted (2),',
+				'since unlisted only keeps an event out of the listings rather than closing it; and',
+				'otherwise only the event’s creator or a player who has been invited to it (any',
+				'`event_attendee` row, whatever their answer — being able to decline and change your',
+				'mind is the point). Everyone else gets errorCode 35 (EventIsPrivate) with a null',
+				'instance; an unknown event is the opaque errorCode 20, and 55 when the caller is',
+				'banned from the room the event runs in.',
+				'',
+				'The event’s start and end times are NOT enforced — the reference has codes for',
+				'both (4 EventNotStarted, 5 EventAlreadyFinished) but nothing here has been observed',
+				'sending them, and locking a creator out of their own room before the hour would be',
+				'worse than letting people in early.',
+			].join(' '),
+			security: AUTHED,
+			requestBody: form(MatchmakeRoomRequest, 'Optional JoinMode and AdditionalPlayerIds'),
+			parameters: [
+				{
+					name: 'eventId',
+					in: 'path',
+					required: true,
+					description: 'Player event id (digits only)',
+					schema: { type: 'string', pattern: '^[0-9]+$' },
+				},
+			],
+			responses: {
+				200: json(
+					MatchmakeResponse,
+					'The event’s instance (or a null instance with errorCode 20 / 35 / 55)'
+				),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const eventId = Number.parseInt(c.req.param('eventId'), 10)
+			const event = await getEventById(c.env.DB, eventId)
+			// Opaque, like the club path: an unknown event and one the caller can't see
+			// shouldn't be distinguishable by probing ids.
+			if (event === null) return c.json({ errorCode: NO_SUCH_ROOM, roomInstance: null })
+
+			const open =
+				event.Accessibility === Accessibility.Public ||
+				event.Accessibility === Accessibility.Unlisted
+			// An `event_attendee` row is the invite: bulkInvite writes one, and so does
+			// responding, so anyone who was invited or answered passes. The creator is checked
+			// separately so an event whose creator deleted their own response still lets them in.
+			if (
+				!open &&
+				event.CreatorPlayerId !== id &&
+				(await getEventResponse(c.env.DB, eventId, id)) === null
+			) {
+				logger.info('matchmake refused: not invited to private event', { eventId, id })
+				return c.json({ errorCode: EVENT_IS_PRIVATE, roomInstance: null })
+			}
+
+			const { joinMode, additionalPlayerIds } = await readMatchmakeBody(c)
+			const { instance, errorCode } = await resolveRoomInstance(
+				c,
+				String(event.RoomId),
+				joinMode === 2,
+				id,
+				event.SubRoomId ?? undefined
+			)
+			if (!instance) return c.json({ errorCode, roomInstance: null })
+			await enterRoom(c, id, instance)
+			await inviteParty(c, id, additionalPlayerIds, instance)
 			return c.json({ errorCode: 0, roomInstance: instance })
 		}
 	)
@@ -1201,11 +1594,12 @@ const app = new Hono<App>()
 			description: [
 				'Single-segment matchmake into the caller’s personal dorm, stored as presence. The',
 				'client only ever calls this with the `dorm` keyword — real rooms go through',
-				'`/matchmake/room/:roomId`.',
+				'`/matchmake/room/:roomId`. Returns errorCode 55 with a null instance when the',
+				'account is banned: a ban keeps a player out of their own dorm too.',
 			].join(' '),
 			security: AUTHED,
 			responses: {
-				200: json(MatchmakeResponse, 'The player’s personal dorm instance'),
+				200: json(MatchmakeResponse, 'The dorm instance (or a null instance with errorCode 55)'),
 				401: UNAUTHORIZED_RESPONSE,
 			},
 		}),
@@ -1475,24 +1869,33 @@ const app = new Hono<App>()
 	)
 
 /**
- * Cron: sweep presence that has aged past its TTL. Reads already ignore expired rows,
- * so this isn't about correctness of `/player` — it's that a player who crashed or
- * hard-quit never matchmakes out of their instance, so nothing recomputes that
- * instance's fullness and it can stay flagged full (and unjoinable) with nobody in it.
- * Recompute the instances the expiring rows point at, *then* delete: the sweep is the
- * only thing that notices those departures. Fullness is recomputed after the delete so
- * the head-count no longer sees them.
+ * Cron: sweep presence that has aged past its TTL, then the instances left empty.
+ *
+ * The presence purge isn't about correctness of `/player` — reads already ignore
+ * expired rows. It's that a player who crashed or hard-quit never matchmakes out of
+ * their instance, so nothing recomputes that instance's fullness and it can stay
+ * flagged full (and unjoinable) with nobody in it. Note the instances the expiring
+ * rows point at *before* deleting: the sweep is the only thing that notices those
+ * departures.
+ *
+ * Emptying an instance is what makes it garbage — nothing ever reuses it, and a
+ * joiner handed one would land alone in a Photon room everyone left — so the empty
+ * sweep runs next. It reads presence without consulting expiry, so it depends on
+ * running after the purge above: this order is what makes a lapsed row count as a
+ * departure. Fullness is recomputed last, so it works from the final head-count and
+ * skips (returns null for) the instances just deleted.
  */
 async function sweepExpiredPresence(env: Env): Promise<void> {
 	const staleInstanceIds = await getExpiredPresenceInstanceIds(env.DB)
 	const removed = await deleteExpiredPresence(env.DB)
+	const emptyInstanceIds = await deleteEmptyRoomInstances(env.DB)
 	for (const instanceId of staleInstanceIds) {
 		await refreshInstanceFullness(env.DB, instanceId)
 	}
 	// The tagged logger is request-scoped (its middleware never runs for a cron), so
 	// log plainly here — Workers observability picks it up either way.
 	console.log(
-		`presence sweep: removed ${removed} expired rows, refreshed ${staleInstanceIds.length} instances`
+		`presence sweep: removed ${removed} expired rows, deleted ${emptyInstanceIds.length} empty instances, refreshed ${staleInstanceIds.length} instances`
 	)
 }
 
@@ -1513,7 +1916,8 @@ app.get(
 						'Room backend. Rooms and room instances are D1-backed (matchmaking finds or creates a',
 						'`room_instance` per session); presence — the instance each player is currently in —',
 						'lives in the shared `presence` table and expires on a TTL. A cron sweep clears',
-						'expired presence and frees up instances a crashed player never left.',
+						'expired presence, frees up instances a crashed player never left, and deletes',
+						'instances nobody is standing in any more.',
 					].join('\n'),
 				},
 				servers: [{ url: 'https://match.recflare.net', description: 'Production' }],

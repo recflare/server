@@ -11,9 +11,18 @@ import {
 	searchAccounts,
 	updateAccount,
 } from '@repo/domain'
-import { logger, withCleanSpec, withDefaultCors, withNotFound, withOnError } from '@repo/hono-helpers'
+import {
+	logger,
+	withCleanSpec,
+	withDefaultCors,
+	withNotFound,
+	withOnError,
+} from '@repo/hono-helpers'
 import { validateAndGetAccountId } from '@repo/jwt'
 
+// The notification-type ids the hub carries (owned by the `notify` worker). Imported as a
+// value — the enum has no runtime dependencies.
+import { NotificationType } from '../../notify/src/notification-types'
 import {
 	AccountDto,
 	BioRequest,
@@ -69,18 +78,17 @@ function unauthorized(c: Context<App>) {
 const DEFAULT_USERNAME_CHANGES = 1
 
 /**
- * Username-change result envelope: `{ success, error, value }`. On success `value` is
- * the updated account; on a refusal `error` carries the message and `value` is an empty
- * string.
+ * Username-change result envelope: `{ success, error, value }`, always HTTP 200.
+ * On success `value` is the updated account; on error `error` carries the message
+ * and `value` is an empty string.
  *
- * A refusal is a 400. The body shape is unchanged — anything reading `error` still
- * works — but it used to come back at HTTP 200, which meant a caller keying off the
- * status read every refusal as a success. That envelope-at-200 was the reference's
- * (`RecNet`) convention and is kept by `POST /account/create`; here it was traded for a
- * status a client can actually branch on.
+ * The envelope-at-200 is the reference's (`RecNet`) convention — a refusal is a
+ * successful call that answers "no", and the player-facing sentence rides in `error`.
+ * `POST /account/create` does the same. This was briefly a 400 so a caller could branch
+ * on the status; it isn't, because that's not what the real service does.
  */
 function usernameResult(c: Context<App>, error = '', value: unknown = '') {
-	return c.json({ success: error === '', error, value }, error === '' ? 200 : 400)
+	return c.json({ success: error === '', error, value })
 }
 
 /** Read a single string field from a form-urlencoded / multipart body. */
@@ -111,13 +119,17 @@ function toAccountDto(account: Account) {
 /**
  * Project a stored account into the private self DTO (the /account/me shape) —
  * the public DTO plus owner-only fields. `juniorState`/`parentAccountId` are
- * OMITTED when null (emitting `null` makes the client's enum parser throw);
- * `email`/`birthday` are kept as null (not enums, so null is fine).
+ * OMITTED when null (emitting `null` makes the client's enum parser throw).
+ *
+ * An unset `email` is `""`, never null — same as `bio`. Two reasons: the client reads
+ * it as a string, and this DTO also rides the `SelfAccountUpdate` hub frame, where the
+ * hub DROPS null values from `Msg` — so a null email doesn't arrive as null, it
+ * vanishes from the frame entirely.
  */
 function toSelfAccountDto(account: Account) {
 	return {
 		...toAccountDto(account),
-		email: account.email ?? null,
+		email: account.email ?? '',
 		// @todo he game client needs this to be set. I forget how birthdays were set, so for now
 		// everyone can be old.
 		birthday: '1904-01-01T00:00:00.000Z',
@@ -139,9 +151,13 @@ async function pushAccountUpdate(c: Context<App>, account: Account): Promise<voi
 	try {
 		const hub = c.env.RECFLARE_NOTIFICATIONS_HUB.getByName(HUB_INSTANCE)
 		const publicDto = toAccountDto(account)
-		await hub.notifyPlayer(account.accountId, 'SelfAccountUpdate', toSelfAccountDto(account))
-		await hub.notifyPlayer(account.accountId, 'AccountUpdate', publicDto)
-		await hub.broadcast('AccountUpdate', publicDto)
+		await hub.notifyPlayer(
+			account.accountId,
+			NotificationType.SubscriptionUpdateSelfProfile,
+			toSelfAccountDto(account)
+		)
+		await hub.notifyPlayer(account.accountId, NotificationType.SubscriptionUpdateProfile, publicDto)
+		await hub.broadcast(NotificationType.SubscriptionUpdateProfile, publicDto)
 	} catch (err) {
 		logger.error('failed to push account update notifications', {
 			accountId: account.accountId,
@@ -461,8 +477,7 @@ const app = new Hono<App>()
 			].join(' '),
 			security: AUTHED,
 			responses: {
-				200: json(UsernameResult, 'The updated account, in the result envelope'),
-				400: json(UsernameResult, 'Refused — `error` carries the reason, `value` is ""'),
+				200: json(UsernameResult, 'Result envelope (success or a validation error)'),
 				401: UNAUTHORIZED_RESPONSE,
 			},
 		}),

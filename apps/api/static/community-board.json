@@ -11,22 +11,22 @@
     ]
   },
   "CurrentAnnouncement": {
-    "Message": "Welcome To Rug Room!",
-    "MoreInfoUrl": "https://recflare.net"
+    "Message": "Welcome to Rug Room!",
+    "MoreInfoUrl": "https://www.rugnetarchival.xyz/"
   },
   "InstagramImages": [
     {
       "ImageName": "test.jpg",
-      "ImageUrl": "https://github.com/djdevin/recflare"
+      "ImageUrl": "https://www.rugnetarchival.xyz/"
     }
   ],
   "Videos": [
     {
       "BlobName": "something.mp4",
-      "Title": "test",
+      "Title": "Sneak Peak At The Next Rug Room Update!",
       "Description": "test description",
       "ThumbnailBlobName": "something.jpg",
-      "SourceUrl": "https://www.youtube.com"
+      "SourceUrl": "https://www.youtube.com/watch?v=-3V3PPg5ZlM"
     }
   ]
 }

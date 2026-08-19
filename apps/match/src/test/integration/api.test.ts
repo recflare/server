@@ -11,6 +11,7 @@ import { beforeAll, describe, expect, test } from 'vitest'
 import {
 	countPlayersInInstance,
 	createRoomInstance,
+	EMPTY_INSTANCE_GRACE_SECONDS,
 	GAME_VERSION,
 	getRoomInstance,
 	PRESENCE_SCHEMA_DDL,
@@ -20,6 +21,13 @@ import {
 	SUBROOM_SCHEMA_DDL,
 } from '@repo/domain'
 
+import { SCHEMA_DDL as EVENTS_SCHEMA_DDL } from '../../../../api/src/events-db'
+import {
+	banFromReport,
+	createReport,
+	SCHEMA_DDL as REPORTS_SCHEMA_DDL,
+} from '../../../../api/src/reports-db'
+import { PLATFORM_SCHEMA_DDL } from '../../../../auth/src/platform-db'
 import { scheduled } from '../../match.app'
 
 import type { Env } from '../../context'
@@ -143,6 +151,49 @@ beforeAll(async () => {
 		insertMember.bind(5, 120, 100),
 	])
 
+	// Player-event tables (owned by the api worker) — matchmake/event reads the event
+	// for its room and the caller's invite row for access.
+	for (const stmt of EVENTS_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	const insertEvent = env.DB.prepare('INSERT OR IGNORE INTO event (data) VALUES (?1)')
+	const event = (id: number, accessibility: number, extra?: Record<string, unknown>) =>
+		JSON.stringify({
+			PlayerEventId: id,
+			CreatorPlayerId: 300,
+			ImageName: null,
+			RoomId: 2,
+			SubRoomId: null,
+			ClubId: null,
+			Name: `Event ${id}`,
+			Description: '',
+			StartTime: '2020-11-29T22:00:00Z',
+			EndTime: '2020-11-29T23:00:00Z',
+			AttendeeCount: 1,
+			State: 0,
+			Accessibility: accessibility,
+			IsMultiInstance: false,
+			SupportMultiInstanceRoomChat: false,
+			DefaultBroadcastPermissions: 0,
+			CanRequestBroadcastPermissions: 0,
+			...extra,
+		})
+	await env.DB.batch([
+		insertEvent.bind(event(8, 0)), // private
+		insertEvent.bind(event(9, 1)), // public
+		insertEvent.bind(event(10, 2)), // unlisted — listings only, still joinable
+		// A private one in the two-subroom room, pinning the SECOND subroom.
+		insertEvent.bind(event(11, 0, { RoomId: 77, SubRoomId: 35 })),
+	])
+	const insertAttendee = env.DB.prepare(
+		`INSERT INTO event_attendee (event_id, player_id, status, responded_at)
+		 VALUES (?1, ?2, ?3, '2020-11-29T21:00:00Z')`
+	)
+	await env.DB.batch([
+		insertAttendee.bind(8, 300, 0), // the creator, Going from create
+		insertAttendee.bind(8, 301, 0), // invited
+		insertAttendee.bind(8, 302, 2), // invited, but declined — still allowed in
+		insertAttendee.bind(11, 301, 0),
+	])
+
 	// Relationship table (owned by the api worker) — matchmake reads it to push a
 	// presence update to the player's friends. Seed friendships for player 9700.
 	await env.DB.prepare(
@@ -161,7 +212,23 @@ beforeAll(async () => {
 		insertRel.bind(9702, 9700, 3), // friends (9702 requested) — friend is the requester
 		insertRel.bind(9700, 9703, 1), // pending request out — 9703 is NOT a friend
 	])
+
+	// Report table (owned by the api worker) — an account-wide ban is a report row with
+	// `banned` set, and every matchmake is refused for a player who has one.
+	for (const stmt of REPORTS_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	// Platform identity links (owned by the auth worker) — a ban also reaches the
+	// accounts sharing a proven identity with the banned one.
+	for (const stmt of PLATFORM_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 })
+
+/**
+ * Ban a player account-wide the way a moderator would: file a report against them and
+ * convert it. `banExpires` null is a permanent ban.
+ */
+async function banAccount(playerId: number, banExpires: string | null = null): Promise<void> {
+	const row = await createReport(env.DB, { reporterPlayerId: 1, reportedPlayerId: playerId })
+	await banFromReport(env.DB, row.id, { banExpires })
+}
 
 // Mint a token the way the `auth` worker does, signing with the shared test key seeded into the JWT_SECRET store, so the
 // match worker's validation accepts it. Kept inline to avoid a cross-package
@@ -256,6 +323,145 @@ describe('public endpoints', () => {
 		expect(players[0]).toMatchObject({ playerId: 1, isOnline: true, appVersion: GAME_VERSION })
 	})
 
+	// The "avoid juniors" preference lives in the playersettings KV map, not in presence.
+	// The body is a BARE boolean — the client reads the whole body as the value.
+	describe('GET /player/avoidjuniors', () => {
+		const settings = async (playerId: number, map: Record<string, string>) =>
+			env.RECFLARE_PLAYER_SETTINGS.put(`player:${playerId}`, JSON.stringify(map))
+
+		const read = async (playerId: number) => {
+			const res = await exports.default.fetch(`${ORIGIN}/player/avoidjuniors`, {
+				headers: await bearer(String(playerId)),
+			})
+			expect(res.status).toBe(200)
+			return res.json()
+		}
+
+		test('reads the stored setting', async () => {
+			await settings(3100, { avoidJuniors: 'True', 'Recroom.OOBE': '77' })
+			expect(await read(3100)).toBe(true)
+
+			await settings(3101, { avoidJuniors: 'False' })
+			expect(await read(3101)).toBe(false)
+		})
+
+		test('the key match ignores casing and separators', async () => {
+			await settings(3102, { AVOID_JUNIORS: '1' })
+			expect(await read(3102)).toBe(true)
+
+			await settings(3103, { avoidjuniors: 'yes' })
+			expect(await read(3103)).toBe(true)
+		})
+
+		// A player who never touched the setting, and one whose value is junk, both read
+		// false — the read gates matchmaking, so it must not fail closed.
+		test('defaults to false when unset or unparseable', async () => {
+			expect(await read(3104)).toBe(false)
+
+			await settings(3105, { 'Recroom.OOBE': '77' })
+			expect(await read(3105)).toBe(false)
+
+			await settings(3106, { avoidJuniors: 'maybe' })
+			expect(await read(3106)).toBe(false)
+		})
+
+		test('is auth-gated', async () => {
+			const res = await exports.default.fetch(`${ORIGIN}/player/avoidjuniors`)
+			expect(res.status).toBe(401)
+		})
+	})
+
+	describe('PUT /player/avoidjuniors', () => {
+		const stored = async (playerId: number) =>
+			env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(`player:${playerId}`, 'json')
+
+		const write = async (playerId: number, body: string) => {
+			const res = await exports.default.fetch(`${ORIGIN}/player/avoidjuniors`, {
+				method: 'PUT',
+				headers: {
+					...(await bearer(String(playerId))),
+					'Content-Type': 'application/x-www-form-urlencoded',
+				},
+				body,
+			})
+			expect(res.status).toBe(200)
+			return res.json()
+		}
+
+		const read = async (playerId: number) => {
+			const res = await exports.default.fetch(`${ORIGIN}/player/avoidjuniors`, {
+				headers: await bearer(String(playerId)),
+			})
+			return res.json()
+		}
+
+		// The body the client posts. The response is the resulting value, and the GET agrees.
+		test('stores the posted preference and answers it', async () => {
+			expect(await write(3200, 'avoidJuniors=True')).toBe(true)
+			expect(await read(3200)).toBe(true)
+
+			expect(await write(3200, 'avoidJuniors=False')).toBe(false)
+			expect(await read(3200)).toBe(false)
+		})
+
+		// The map holds every setting the player has, so the write must not replace it.
+		test('merges into the player’s other settings', async () => {
+			await env.RECFLARE_PLAYER_SETTINGS.put(
+				'player:3201',
+				JSON.stringify({ 'Recroom.OOBE': '77', TUTORIAL_COMPLETE_MASK: '11' })
+			)
+			await write(3201, 'avoidJuniors=True')
+			expect(await stored(3201)).toEqual({
+				'Recroom.OOBE': '77',
+				TUTORIAL_COMPLETE_MASK: '11',
+				avoidJuniors: 'True',
+			})
+		})
+
+		// Whichever spelling the player's map already carries is the one overwritten —
+		// two keys for one preference would make the read depend on their order.
+		test('overwrites an existing key rather than adding a second one', async () => {
+			await env.RECFLARE_PLAYER_SETTINGS.put(
+				'player:3202',
+				JSON.stringify({ AVOID_JUNIORS: 'True' })
+			)
+			expect(await write(3202, 'avoidJuniors=False')).toBe(false)
+			expect(await stored(3202)).toEqual({ AVOID_JUNIORS: 'False' })
+		})
+
+		test('accepts a JSON body', async () => {
+			const res = await exports.default.fetch(`${ORIGIN}/player/avoidjuniors`, {
+				method: 'PUT',
+				headers: {
+					...(await bearer('3203')),
+					'Content-Type': 'application/json',
+				},
+				body: JSON.stringify({ avoidJuniors: true }),
+			})
+			expect(res.status).toBe(200)
+			expect(await res.json()).toBe(true)
+			expect(await read(3203)).toBe(true)
+		})
+
+		// An unreadable body leaves the stored setting alone and answers it — a no-op 200,
+		// not a 400 and not a write of `false`.
+		test('a body with no readable value is a no-op', async () => {
+			await write(3204, 'avoidJuniors=True')
+			expect(await write(3204, 'avoidJuniors=maybe')).toBe(true)
+			expect(await write(3204, '')).toBe(true)
+			expect(await stored(3204)).toEqual({ avoidJuniors: 'True' })
+		})
+
+		test('is auth-gated', async () => {
+			const res = await exports.default.fetch(`${ORIGIN}/player/avoidjuniors`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+				body: 'avoidJuniors=True',
+			})
+			expect(res.status).toBe(401)
+		})
+	})
+
 	test('POST /matchmake/room/:roomId resolves the room scene from D1', async () => {
 		const headers = await bearer('88')
 		const res = await exports.default.fetch(`${ORIGIN}/matchmake/room/2`, {
@@ -275,6 +481,46 @@ describe('public endpoints', () => {
 			location: RECCENTER_SCENE,
 			isPrivate: true,
 		})
+	})
+
+	test('a matchmake counts a visit against the room', async () => {
+		const visits = async (roomId: number): Promise<number> =>
+			(await env.DB.prepare('SELECT visits FROM room WHERE room_id = ?1')
+				.bind(roomId)
+				.first<{ visits: number }>())!.visits
+		const enter = async (path: string, player: string) => {
+			const res = await exports.default.fetch(`${ORIGIN}${path}`, {
+				method: 'POST',
+				headers: {
+					...(await bearer(player)),
+					'Content-Type': 'application/x-www-form-urlencoded',
+				},
+				body: new URLSearchParams({ JoinMode: '2' }).toString(),
+			})
+			expect(res.status).toBe(200)
+		}
+
+		// Counted per matchmake, whichever route got the player there — the two-segment
+		// room form and the subroom form both land in room 77.
+		const before = await visits(77)
+		await enter('/matchmake/room/77', '94')
+		expect(await visits(77)).toBe(before + 1)
+		await enter('/matchmake/room/77/35', '95')
+		expect(await visits(77)).toBe(before + 2)
+
+		// Same player entering again is another visit (VisitCount is visits, not visitors),
+		// and it's the entered room that's counted — not every room.
+		const otherBefore = await visits(2)
+		await enter('/matchmake/room/77', '94')
+		expect(await visits(77)).toBe(before + 3)
+		expect(await visits(2)).toBe(otherBefore)
+
+		// A refused matchmake counts nothing: an unknown room has no row to bump.
+		const res = await exports.default.fetch(`${ORIGIN}/matchmake/room/99999`, {
+			method: 'POST',
+			headers: await bearer('96'),
+		})
+		expect(((await res.json()) as { errorCode: number }).errorCode).toBe(20)
 	})
 
 	test('POST /matchmake/room/:roomId seeds presence with the account device class', async () => {
@@ -451,6 +697,80 @@ describe('public endpoints', () => {
 		expect((await matchmake('/matchmake/club/4')).status).toBe(401)
 	})
 
+	test('POST /matchmake/event/:eventId gates a private event on the invite list', async () => {
+		const matchmake = async (path: string, sub?: string) =>
+			exports.default.fetch(`${ORIGIN}${path}`, {
+				method: 'POST',
+				headers: {
+					...(sub === undefined ? {} : await bearer(sub)),
+					'Content-Type': 'application/x-www-form-urlencoded',
+				},
+				body: 'JoinMode=0',
+			})
+		type Body = {
+			errorCode: number
+			roomInstance: { roomId: number; location: string; roomInstanceId: number } | null
+		}
+		const join = async (path: string, sub?: string) =>
+			(await (await matchmake(path, sub)).json()) as Body
+
+		// An invited player lands in an instance of the event's room (2)...
+		const invited = await join('/matchmake/event/8', '301')
+		expect(invited.errorCode).toBe(0)
+		expect(invited.roomInstance).toMatchObject({ roomId: 2, location: RECCENTER_SCENE })
+
+		// ...recorded as their presence, like any other matchmake.
+		const row = await env.DB.prepare('SELECT data FROM presence WHERE account_id = ?1')
+			.bind(301)
+			.first<{ data: string }>()
+		const presence = JSON.parse(row!.data) as { roomInstance: { roomInstanceId: number } }
+		expect(presence.roomInstance.roomInstanceId).toBe(invited.roomInstance!.roomInstanceId)
+
+		// The creator gets in, and so does someone who was invited and DECLINED — the row
+		// is the invite, whatever the answer.
+		expect((await join('/matchmake/event/8', '300')).errorCode).toBe(0)
+		expect((await join('/matchmake/event/8', '302')).errorCode).toBe(0)
+
+		// A stranger doesn't — and is told why (35 EventIsPrivate), not fobbed off with 20.
+		expect(await join('/matchmake/event/8', '399')).toEqual({
+			errorCode: 35,
+			roomInstance: null,
+		})
+
+		// Public and unlisted are open to anyone: unlisted only keeps an event out of the
+		// listings, it doesn't close it.
+		expect((await join('/matchmake/event/9', '399')).errorCode).toBe(0)
+		expect((await join('/matchmake/event/10', '399')).errorCode).toBe(0)
+
+		// An unknown event is the opaque NoSuchRoom, so ids can't be probed.
+		expect(await join('/matchmake/event/9999', '399')).toEqual({
+			errorCode: 20,
+			roomInstance: null,
+		})
+
+		// Signed out is a 401, not a matchmaking error.
+		expect((await matchmake('/matchmake/event/9')).status).toBe(401)
+	})
+
+	test('POST /matchmake/event/:eventId enters the subroom the event pins', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/matchmake/event/11`, {
+			method: 'POST',
+			headers: { ...(await bearer('301')), 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: 'JoinMode=0',
+		})
+		const body = (await res.json()) as {
+			errorCode: number
+			roomInstance: { roomId: number; subRoomId: number; location: string } | null
+		}
+		// Room 77's SECOND subroom (35), not its first — the event pins the scene.
+		expect(body.errorCode).toBe(0)
+		expect(body.roomInstance).toMatchObject({
+			roomId: 77,
+			subRoomId: 35,
+			location: SECOND_SUBROOM_SCENE,
+		})
+	})
+
 	test('POST /matchmake/room/:roomId returns NoSuchRoom for an unknown room', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/matchmake/room/99999`, {
 			method: 'POST',
@@ -458,6 +778,79 @@ describe('public endpoints', () => {
 		})
 		expect(res.status).toBe(200)
 		expect(await res.json()).toEqual({ errorCode: 20, roomInstance: null })
+	})
+
+	test('ROOM_REDIRECTS switches a matchmake out to another room', async () => {
+		// `env` is shared by every test in this file, so restore the knob in `finally`.
+		const original = env.ROOM_REDIRECTS
+		const matchmake = async (path: string, player: string) =>
+			(await (
+				await exports.default.fetch(`${ORIGIN}${path}`, {
+					method: 'POST',
+					headers: {
+						...(await bearer(player)),
+						'Content-Type': 'application/x-www-form-urlencoded',
+					},
+					// Private, so each call gets a fresh instance of whatever room it landed in.
+					body: new URLSearchParams({ JoinMode: '2' }).toString(),
+				})
+			).json()) as {
+				errorCode: number
+				roomInstance: { roomId: number; subRoomId: number; location: string; name: string } | null
+			}
+
+		try {
+			env.ROOM_REDIRECTS = '2=MultiRoom'
+			// The room asked for is never entered; the substitute is, scene and all.
+			expect((await matchmake('/matchmake/room/2', '8801')).roomInstance).toMatchObject({
+				roomId: 77,
+				name: '^MultiRoom',
+				location: RECCENTER_SCENE,
+			})
+			// Matched on the resolved room, not the path segment, so the name spelling of the
+			// same room is substituted too.
+			expect((await matchmake('/matchmake/room/RecCenter', '8802')).roomInstance).toMatchObject({
+				roomId: 77,
+			})
+			// The requested subroom is dropped — 35 is a subroom of the substitute, not of the
+			// room asked for — so entry falls back to the substitute's default subroom (34).
+			expect((await matchmake('/matchmake/room/2/35', '8803')).roomInstance).toMatchObject({
+				roomId: 77,
+				subRoomId: 34,
+				location: RECCENTER_SCENE,
+			})
+			// Club 4's clubhouse is room 2, and it resolves through the same path: a
+			// substituted room is substituted wherever a matchmake names it.
+			expect((await matchmake('/matchmake/club/4', '121')).roomInstance).toMatchObject({
+				roomId: 77,
+			})
+
+			// Targeting by id works the same, and substitution is a single hop: 2 and 77
+			// swap rather than bouncing between each other.
+			env.ROOM_REDIRECTS = '2=77,77=2'
+			expect((await matchmake('/matchmake/room/2', '8804')).roomInstance).toMatchObject({
+				roomId: 77,
+			})
+			expect((await matchmake('/matchmake/room/77', '8805')).roomInstance).toMatchObject({
+				roomId: 2,
+			})
+
+			// A target that doesn't resolve leaves the requested room in place — a typo'd
+			// knob must not make the room unreachable.
+			env.ROOM_REDIRECTS = '2=NoSuchRoomHere'
+			expect((await matchmake('/matchmake/room/2', '8806')).roomInstance).toMatchObject({
+				roomId: 2,
+			})
+
+			// Unset: everyone enters the room they asked for.
+			env.ROOM_REDIRECTS = undefined
+			expect((await matchmake('/matchmake/room/2', '8807')).roomInstance).toMatchObject({
+				roomId: 2,
+				name: '^RecCenter',
+			})
+		} finally {
+			env.ROOM_REDIRECTS = original
+		}
 	})
 
 	test('PUT /player/statusvisibility returns 200', async () => {
@@ -731,14 +1124,15 @@ describe('auth-gated endpoints', () => {
 		expect(await stale.text()).toBe('')
 	})
 
-	// Seed presence directly into D1 with a chosen `expiresAt` (epoch seconds) so the
-	// TTL-refresh branch can be exercised deterministically (independent of timing).
-	const seedPresence = (id: number, expiresAt: number) =>
+	// Seed presence directly into D1 with a chosen instance and `expiresAt` (epoch
+	// seconds), so the TTL branches can be exercised deterministically (independent of
+	// timing) and a player can be planted in an instance without matchmaking there.
+	const seedPresenceInInstance = (id: number, roomInstanceId: number, expiresAt: number) =>
 		env.DB.prepare('INSERT OR REPLACE INTO presence (data) VALUES (?1)')
 			.bind(
 				JSON.stringify({
 					accountId: id,
-					roomInstance: { roomInstanceId: 1000042, roomId: 1 },
+					roomInstance: { roomInstanceId, roomId: 1 },
 					statusVisibility: 0,
 					deviceClass: 0,
 					vrMovementMode: 1,
@@ -748,6 +1142,9 @@ describe('auth-gated endpoints', () => {
 				})
 			)
 			.run()
+
+	const seedPresence = (id: number, expiresAt: number) =>
+		seedPresenceInInstance(id, 1000042, expiresAt)
 
 	const storedExpiresAt = async (id: number): Promise<number> => {
 		const row = await env.DB.prepare('SELECT data FROM presence WHERE account_id = ?1')
@@ -792,24 +1189,9 @@ describe('auth-gated endpoints', () => {
 
 	test('countPlayersInInstance counts live players in a room instance (excludes expired)', async () => {
 		// Three players in instance 1000099 — two live, one expired.
-		const seedInInstance = (id: number, expiresAt: number) =>
-			env.DB.prepare('INSERT OR REPLACE INTO presence (data) VALUES (?1)')
-				.bind(
-					JSON.stringify({
-						accountId: id,
-						roomInstance: { roomInstanceId: 1000099, roomId: 2 },
-						statusVisibility: 0,
-						deviceClass: 0,
-						vrMovementMode: 1,
-						platform: 0,
-						appVersion: GAME_VERSION,
-						expiresAt,
-					})
-				)
-				.run()
-		await seedInInstance(710, nowSeconds() + 800)
-		await seedInInstance(711, nowSeconds() + 800)
-		await seedInInstance(712, nowSeconds() - 10) // already expired → not counted
+		await seedPresenceInInstance(710, 1000099, nowSeconds() + 800)
+		await seedPresenceInInstance(711, 1000099, nowSeconds() + 800)
+		await seedPresenceInInstance(712, 1000099, nowSeconds() - 10) // expired → not counted
 		expect(await countPlayersInInstance(env.DB, 1000099)).toBe(2)
 		expect(await countPlayersInInstance(env.DB, 999999)).toBe(0)
 	})
@@ -870,6 +1252,89 @@ describe('auth-gated endpoints', () => {
 		// Expired row gone, and the instance is joinable again.
 		expect(await countPresenceRows(824)).toBe(0)
 		expect((await getRoomInstance(env.DB, solo))?.isFull).toBe(false)
+	})
+
+	// Age an instance past EMPTY_INSTANCE_GRACE_SECONDS by backdating its `createdAt`
+	// (the generated `created_at` column follows the blob), so the empty-instance sweep
+	// can be exercised without waiting out the grace window.
+	const backdateInstance = (id: number, secondsAgo = EMPTY_INSTANCE_GRACE_SECONDS + 60) =>
+		env.DB.prepare(
+			"UPDATE room_instance SET data = json_set(data, '$.createdAt', ?2) WHERE id = ?1"
+		)
+			.bind(id, new Date(Date.now() - secondsAgo * 1000).toISOString())
+			.run()
+
+	const expirePresence = (accountId: number) =>
+		env.DB.prepare(
+			"UPDATE presence SET data = json_set(data, '$.expiresAt', ?2) WHERE account_id = ?1"
+		)
+			.bind(accountId, nowSeconds() - 10)
+			.run()
+
+	test('the cron sweep deletes instances nobody is left standing in', async () => {
+		// Two instances built directly rather than by matchmaking, so neither is one a
+		// previous test's player is still standing in (public matchmakes reuse instances).
+		// One holds a player who crashed out — an expired row the sweep purges first,
+		// leaving the instance empty — the other a live player.
+		const abandoned = await createRoomInstance(env.DB, {
+			ownerAccountId: 830,
+			roomId: 2,
+			photonRoomId: 'abandoned-instance',
+			maxCapacity: 12,
+		})
+		await seedPresenceInInstance(830, abandoned.roomInstanceId, nowSeconds() - 10)
+		const occupied = await createRoomInstance(env.DB, {
+			ownerAccountId: 831,
+			roomId: 2,
+			photonRoomId: 'occupied-instance',
+			maxCapacity: 12,
+		})
+		await seedPresenceInInstance(831, occupied.roomInstanceId, nowSeconds() + 800)
+		await backdateInstance(abandoned.roomInstanceId)
+		await backdateInstance(occupied.roomInstanceId)
+
+		const ctx = createExecutionContext()
+		await scheduled(createScheduledController(), env, ctx)
+		await waitOnExecutionContext(ctx)
+
+		expect(await getRoomInstance(env.DB, abandoned.roomInstanceId)).toBeNull()
+		expect(await getRoomInstance(env.DB, occupied.roomInstanceId)).not.toBeNull()
+	})
+
+	test('the cron sweep spares a freshly created instance nobody has joined yet', async () => {
+		// The instance and its creator's presence are written by the same request but not
+		// atomically — a sweep landing in between must not delete the instance the player
+		// is being handed. `createdAt` is left alone, so it's inside the grace window.
+		const fresh = await createRoomInstance(env.DB, {
+			ownerAccountId: 832,
+			roomId: 2,
+			photonRoomId: 'fresh-instance',
+			maxCapacity: 12,
+		})
+
+		const ctx = createExecutionContext()
+		await scheduled(createScheduledController(), env, ctx)
+		await waitOnExecutionContext(ctx)
+
+		expect(await getRoomInstance(env.DB, fresh.roomInstanceId)).not.toBeNull()
+	})
+
+	test('the cron sweep spares an empty dorm instance', async () => {
+		// A dorm is backed by one persistent instance so its Photon room id survives
+		// re-entry — it sits empty whenever the owner is anywhere else.
+		const headers = await bearer('833')
+		const dorm = (await (
+			await exports.default.fetch(`${ORIGIN}/matchmake/dorm`, { method: 'POST', headers })
+		).json()) as { roomInstance: { roomInstanceId: number } }
+		const dormInstanceId = dorm.roomInstance.roomInstanceId
+		await expirePresence(833)
+		await backdateInstance(dormInstanceId)
+
+		const ctx = createExecutionContext()
+		await scheduled(createScheduledController(), env, ctx)
+		await waitOnExecutionContext(ctx)
+
+		expect(await getRoomInstance(env.DB, dormInstanceId)).not.toBeNull()
 	})
 
 	test('player/login and exclusivelogin preserve presence', async () => {
@@ -1032,8 +1497,11 @@ describe('auth-gated endpoints', () => {
 
 		// No token → 401.
 		expect(
-			(await exports.default.fetch(`${ORIGIN}/matchmake/instance/${instanceId}`, { method: 'POST' }))
-				.status
+			(
+				await exports.default.fetch(`${ORIGIN}/matchmake/instance/${instanceId}`, {
+					method: 'POST',
+				})
+			).status
 		).toBe(401)
 
 		// Authed but not the room's owner or co-owner → the opaque NoSuchRoom refusal,
@@ -1412,8 +1880,9 @@ describe('auth-gated endpoints', () => {
 				roomInstance: null,
 			})
 		} finally {
-			await env.DB.prepare('DELETE FROM room_ban WHERE room_id = 2 AND banned_player_id = 9800')
-				.run()
+			await env.DB.prepare(
+				'DELETE FROM room_ban WHERE room_id = 2 AND banned_player_id = 9800'
+			).run()
 		}
 	})
 
@@ -1549,12 +2018,14 @@ describe('auth-gated endpoints', () => {
 		)
 		expect([...documented].sort()).toEqual([
 			'GET /player',
+			'GET /player/avoidjuniors',
 			'GET /room/{roomId}/instances',
 			'GET /rooms/requiring/developer',
 			'GET /rooms/requiring/rrplus',
 			'POST /invite',
 			'POST /matchmake/club/{clubId}',
 			'POST /matchmake/dorm',
+			'POST /matchmake/event/{eventId}',
 			'POST /matchmake/instance/{instanceId}',
 			'POST /matchmake/player/{playerId}',
 			'POST /matchmake/room/{roomId}',
@@ -1566,6 +2037,7 @@ describe('auth-gated endpoints', () => {
 			'POST /player/notifydisconnect',
 			'POST /roominstance/{id}/markprivate',
 			'POST /roominstance/{id}/reportjoinresult',
+			'PUT /player/avoidjuniors',
 			'PUT /player/gameserverregionpings',
 			'PUT /player/photonregionpings',
 			'PUT /player/statusvisibility',
@@ -1576,6 +2048,194 @@ describe('auth-gated endpoints', () => {
 		// documentation.
 		for (const ops of Object.values(spec.paths)) {
 			for (const op of Object.values(ops)) expect(op.summary).toBeTruthy()
+		}
+	})
+})
+
+// An ACCOUNT ban (a `report` row with `banned` set, owned by the api worker) is not
+// about any one room, so it is enforced across every matchmake rather than per route —
+// see the /matchmake/* gate in match.app.ts. It answers the same BannedFromRoom (55) the
+// per-room bans do, which is the code the client renders as "you are banned".
+describe('account bans', () => {
+	const matchmake = async (path: string, player: string) =>
+		exports.default.fetch(`${ORIGIN}${path}`, {
+			method: 'POST',
+			headers: await bearer(player),
+		})
+
+	test('every matchmake route is refused for a banned account', async () => {
+		await banAccount(6001)
+		// One live instance of room 2 and one club membership, so each route would
+		// otherwise have somewhere to put them.
+		for (const path of [
+			'/matchmake/room/2',
+			'/matchmake/room/77/34',
+			'/matchmake/dorm',
+			'/matchmake/club/4',
+			'/matchmake/player/9701',
+			'/matchmake/instance/1',
+		]) {
+			const res = await matchmake(path, '6001')
+			expect(res.status, path).toBe(200)
+			expect(await res.json(), path).toEqual({ errorCode: 55, roomInstance: null })
+		}
+	})
+
+	// The refusal is the ban's, not the room's: nothing is entered, so no presence is
+	// written and the player stays where they were (nowhere).
+	test('a refused matchmake leaves no presence behind', async () => {
+		await banAccount(6002)
+		expect((await matchmake('/matchmake/room/2', '6002')).status).toBe(200)
+
+		const player = (await (
+			await exports.default.fetch(`${ORIGIN}/player?id=6002`, { headers: await bearer('6002') })
+		).json()) as Array<{ isOnline: boolean; roomInstance: unknown }>
+		expect(player[0]?.roomInstance ?? null).toBeNull()
+	})
+
+	// A timed ban lifts itself once its expiry passes — nothing clears the flag.
+	test('an expired ban no longer blocks a matchmake', async () => {
+		await banAccount(6003, '2020-01-01T00:00:00.000Z')
+		const res = await matchmake('/matchmake/room/2', '6003')
+		const body = (await res.json()) as { errorCode: number; roomInstance: unknown }
+		expect(body.errorCode).toBe(0)
+		expect(body.roomInstance).not.toBeNull()
+	})
+
+	test('a ban that has not expired yet blocks a matchmake', async () => {
+		await banAccount(6004, new Date(Date.now() + 3_600_000).toISOString())
+		expect(await (await matchmake('/matchmake/room/2', '6004')).json()).toEqual({
+			errorCode: 55,
+			roomInstance: null,
+		})
+	})
+
+	// A report on its own is not a ban — only a moderator converting it is.
+	test('an unbanned report does not block a matchmake', async () => {
+		await createReport(env.DB, { reporterPlayerId: 1, reportedPlayerId: 6005 })
+		const body = (await (await matchmake('/matchmake/room/2', '6005')).json()) as {
+			errorCode: number
+		}
+		expect(body.errorCode).toBe(0)
+	})
+
+	// Filing the report doesn't touch the reporter, so they still play.
+	test('the reporter is not banned by the report they filed', async () => {
+		await banAccount(6006)
+		const body = (await (await matchmake('/matchmake/room/2', '1')).json()) as { errorCode: number }
+		expect(body.errorCode).toBe(0)
+	})
+
+	// The gate must not turn a missing token into "banned" — that's still a 401.
+	test('an unauthenticated matchmake is still a 401', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/matchmake/room/2`, { method: 'POST' })
+		expect(res.status).toBe(401)
+	})
+
+	// Only the matchmakes are gated: presence and the rest of the surface keep working,
+	// so a banned player's client isn't left hammering a dead heartbeat.
+	test('the gate does not touch non-matchmake routes', async () => {
+		await banAccount(6007)
+		const res = await exports.default.fetch(`${ORIGIN}/player/heartbeat`, {
+			method: 'POST',
+			headers: await bearer('6007'),
+		})
+		expect(res.status).toBe(200)
+	})
+})
+
+// The ban follows the player past the account it was written on: a new account sharing a
+// proven platform identity or an IP with a banned one is refused the same way. See
+// bans-db.ts in the api worker for the arms and the BAN_EVASION_MATCH knob.
+describe('ban evasion at matchmake', () => {
+	const matchmake = async (player: string, ip?: string) =>
+		(await (
+			await exports.default.fetch(`${ORIGIN}/matchmake/room/2`, {
+				method: 'POST',
+				headers: { ...(await bearer(player)), ...(ip ? { 'CF-Connecting-IP': ip } : {}) },
+			})
+		).json()) as { errorCode: number; roomInstance: unknown }
+
+	/** Seed an account row carrying the IPs it signed up / last logged in from. */
+	const account = async (id: number, ips: Record<string, string> = {}) => {
+		await env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
+			.bind(JSON.stringify({ accountId: id, username: `Player${id}`, ...ips }))
+			.run()
+	}
+
+	const link = async (id: number, platform: number, platformId: string) => {
+		await env.DB.prepare(
+			`INSERT OR IGNORE INTO platform_account (account_id, platform, platform_id, linked_at)
+			 VALUES (?1, ?2, ?3, ?4)`
+		)
+			.bind(id, platform, platformId, new Date().toISOString())
+			.run()
+	}
+
+	test('a new account sharing a banned account’s platform identity is refused', async () => {
+		await account(6201)
+		await link(6201, 0, 'steam-evader')
+		await banAccount(6201)
+		// The replacement account: different id, same headset.
+		await account(6202)
+		await link(6202, 0, 'steam-evader')
+
+		expect(await matchmake('6202')).toEqual({ errorCode: 55, roomInstance: null })
+	})
+
+	test('a new account sharing a banned account’s signup IP is refused', async () => {
+		await account(6203, { signupIp: '203.0.113.203' })
+		await banAccount(6203)
+		await account(6204, { signupIp: '203.0.113.203' })
+
+		expect(await matchmake('6204')).toEqual({ errorCode: 55, roomInstance: null })
+	})
+
+	// The address the request arrives from counts too, so an account that has never
+	// logged in from the banned network before is caught on the first matchmake.
+	test('the request’s own IP is matched even when the account has none stored', async () => {
+		await account(6205, { signupIp: '203.0.113.205' })
+		await banAccount(6205)
+		await account(6206)
+
+		expect(await matchmake('6206', '203.0.113.205')).toEqual({ errorCode: 55, roomInstance: null })
+		// From anywhere else, that same account plays.
+		expect((await matchmake('6206', '198.51.100.50')).errorCode).toBe(0)
+	})
+
+	test('an unrelated account is unaffected', async () => {
+		await account(6207, { signupIp: '203.0.113.207' })
+		await banAccount(6207)
+		await account(6208, { signupIp: '198.51.100.208' })
+		await link(6208, 0, 'steam-innocent')
+
+		expect((await matchmake('6208')).errorCode).toBe(0)
+	})
+
+	// BAN_EVASION_MATCH is the operator's answer to the IP arm's false positives: the
+	// housemate of a banned player gets back in, the evader on the same headset does not.
+	test('BAN_EVASION_MATCH=platform drops the IP arm but keeps the direct ban', async () => {
+		const original = env.BAN_EVASION_MATCH
+		await account(6210, { signupIp: '203.0.113.210' })
+		await link(6210, 0, 'steam-knob')
+		await banAccount(6210)
+		await account(6211, { signupIp: '203.0.113.210' }) // housemate
+		await account(6212)
+		await link(6212, 0, 'steam-knob') // same headset
+
+		try {
+			env.BAN_EVASION_MATCH = 'platform'
+			expect((await matchmake('6211')).errorCode).toBe(0)
+			expect(await matchmake('6212')).toEqual({ errorCode: 55, roomInstance: null })
+			// The banned account itself is still refused, whatever the knob says.
+			expect(await matchmake('6210')).toEqual({ errorCode: 55, roomInstance: null })
+
+			env.BAN_EVASION_MATCH = 'off'
+			expect((await matchmake('6211')).errorCode).toBe(0)
+			expect((await matchmake('6212')).errorCode).toBe(0)
+			expect(await matchmake('6210')).toEqual({ errorCode: 55, roomInstance: null })
+		} finally {
+			env.BAN_EVASION_MATCH = original
 		}
 	})
 })

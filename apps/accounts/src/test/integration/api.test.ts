@@ -161,6 +161,9 @@ describe('auth-gated endpoints', () => {
 			personalPronouns: 0,
 			identityFlags: 0,
 			availableUsernameChanges: 1,
+			// An unset email is "", not null — the client reads it as a string, and the
+			// hub frame this DTO also rides drops null values outright.
+			email: '',
 		})
 		// juniorState + parentAccountId must be omitted when null, not emitted as
 		// null, or the client's enum parser throws on `juniorState`. `phone` isn't
@@ -220,9 +223,8 @@ describe('auth-gated endpoints', () => {
 			...form({ username: 'Coach' }),
 			headers: { ...(await bearer('893')), 'Content-Type': 'application/x-www-form-urlencoded' },
 		})
-		// A refusal is a 400 carrying the same { success, error, value } envelope. It used
-		// to be HTTP 200, which read as a success to anything branching on the status.
-		expect(res.status).toBe(400)
+		// Business errors are HTTP 200 with the { success, error, value } envelope.
+		expect(res.status).toBe(200)
 		const body = (await res.json()) as { success: boolean; error: string; value: string }
 		expect(body.success).toBe(false)
 		expect(body.error).toMatch(/already taken/i)
@@ -261,7 +263,7 @@ describe('auth-gated endpoints', () => {
 			...form({ username: 'coachy' }),
 			headers,
 		})
-		expect(blocked.status).toBe(400)
+		expect(blocked.status).toBe(200)
 		const blockedBody = (await blocked.json()) as { success: boolean; error: string }
 		expect(blockedBody.success).toBe(false)
 		expect(blockedBody.error).toMatch(/no username changes/i)
@@ -509,8 +511,9 @@ describe('name, email and bio validation', () => {
 				headers,
 			})
 			// Refused by the SCHEMA (see openapi.ts `UsernameRequest`) before the handler
-			// runs — but still in this route's envelope, because the hook puts it there.
-			expect(res.status, username).toBe(400)
+			// runs — but still the envelope at HTTP 200, like every other refusal here,
+			// because the hook puts it there.
+			expect(res.status, username).toBe(200)
 			const body = (await res.json()) as { success: boolean; error: string; value: string }
 			expect(body.success, username).toBe(false)
 			expect(body.error).toMatch(/letters and numbers|at most 50 characters/)

@@ -89,6 +89,9 @@ export const roomIdParam = idParam('roomId', 'Room id')
 /** The `:subRoomId` path parameter. */
 export const subRoomIdParam = idParam('subRoomId', 'Subroom id (globally unique, not per-room)')
 
+/** The `:saveId` path parameter — a `subroom_save` id (globally unique, not per-subroom). */
+export const saveIdParam = idParam('saveId', 'The save’s id, as `…/saves` lists it')
+
 /** The `:playerId` path parameter (an account id). */
 export const playerIdParam = idParam('playerId', 'The account whose list to read')
 
@@ -137,8 +140,10 @@ export const RoomTagDto = z.object({
 
 /**
  * A room's engagement counters. `CheerCount`/`FavoriteCount` are aggregated from the
- * per-player `interaction` rows on every read; nothing records visits yet, so
- * `VisitorCount`/`VisitCount` stay at 0.
+ * per-player `interaction` rows on every read. `VisitCount` is the room's lifetime
+ * visits — the `room.visits` column, bumped by the `match` worker on every successful
+ * matchmake into the room. Nothing records distinct visitors, so `VisitorCount` stays
+ * at 0.
  */
 export const RoomStatsDto = z.object({
 	CheerCount: z.int(),
@@ -159,6 +164,11 @@ export const LoadScreenDto = z.object({
  * from the PascalCase `CurrentSave` embedded in a room (no persistence/OM/UGC versions,
  * no moderation state, no asset arrays; but `unityAsset`/`unityAssetHash`/`dataBlobHash`
  * that `CurrentSave` doesn't show). The two are deliberately not unified.
+ *
+ * Also what `GET …/subrooms/{subRoomId}/saves/{saveId}` answers — one save fetched by id
+ * is the same thing the save that created it returned, so both go through
+ * `toSaveResponse`. Note the `…/saves` LIST is the third shape here: it serves the raw
+ * PascalCase rows ({@link SubRoomDataSaveDto}), not this.
  */
 export const SubRoomDataSaveResponseDto = z.object({
 	subRoomDataSaveId: z.int(),
@@ -238,6 +248,7 @@ export const SubRoomDto = z.object({
 	RoomDataBlob: z.string().optional().describe('Uploaded room-data key; absent until first save'),
 	DataSavedAt: z.string().optional().describe('ISO timestamp of the last save'),
 	PersistenceVersion: z.int().optional(),
+	InventionUsage: z.string().optional().describe('Recorded by a room save; absent until then'),
 })
 
 /** A room's localization settings — carried through verbatim; nothing localizes yet. */
@@ -310,7 +321,10 @@ export const RoomDto = z.object({
 	PromoExternalContent: z.array(z.unknown()),
 	LoadScreens: z.array(LoadScreenDto),
 	RestrictedCircuitsAllowListNames: z.array(z.string()),
-	InventionUsage: z.string().optional().describe('Recorded by a room save; absent until then'),
+	InventionUsage: z
+		.string()
+		.optional()
+		.describe('Legacy: room saves used to write this here; it now lives on the SUBROOM'),
 })
 
 /** A paged room list (`PagedResultsDTO<RoomDTO>`) — search, hot, similar. */
@@ -598,9 +612,12 @@ export const SaveSubRoomDataRequest = z.object({
 		.object({ Filename: z.string() })
 		.optional()
 		.describe('The uploaded room-level data blob — becomes `RoomDataBlob`'),
-	Description: z.string().optional().describe('The save comment; also written to the ROOM'),
-	PersistenceVersion: z.int().optional(),
-	InventionUsage: z.string().optional().describe('Written to the room'),
+	Description: z
+		.string()
+		.optional()
+		.describe('The save comment — a description of THIS revision, not the room’s description'),
+	PersistenceVersion: z.int().optional().describe('Recorded on the save and the subroom'),
+	InventionUsage: z.string().optional().describe('Recorded on the subroom'),
 	UnityAssetId: z.string().nullable().optional().describe('Recorded on the save when set'),
 	AutoPublish: z
 		.boolean()

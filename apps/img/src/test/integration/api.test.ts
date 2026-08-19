@@ -1,8 +1,8 @@
 import { PhotonImage } from '@cf-wasm/photon'
-import { env, SELF } from 'cloudflare:test'
+import { createExecutionContext, env, SELF, waitOnExecutionContext } from 'cloudflare:test'
 import { beforeAll, describe, expect, it } from 'vitest'
 
-import '../../img.app'
+import app from '../../img.app'
 
 import type { Env } from '../../context'
 
@@ -37,6 +37,18 @@ const R2_KEY = 'user-photo.jpg'
 // An extensionless name, as returned by the `storage` worker for a FileType 3
 // upload — served from `recflare-cdn` under `image/`, not `recflare-img`.
 const CDN_NAME = '2028-06-01/12345-67890-12345'
+
+/**
+ * Fetch with real signing turned OFF — the deployed default. `vitest.config.ts`
+ * binds `IMG_SIGNING_ENABLED` on so the RSA path stays covered, so the placeholder
+ * path has to drive the app directly with an overridden env.
+ */
+async function unsignedFetch(url: string): Promise<Response> {
+	const ctx = createExecutionContext()
+	const res = await app.fetch(new Request(url), { ...env, IMG_SIGNING_ENABLED: false }, ctx)
+	await waitOnExecutionContext(ctx)
+	return res
+}
 
 beforeAll(async () => {
 	await env.IMAGES.put(R2_KEY, IMAGE_BYTES, {
@@ -128,6 +140,62 @@ describe('img endpoints', () => {
 		expect(res.status).toBe(304)
 	})
 
+	it('honors a Range request on the stored image with a 206', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/${R2_KEY}`, { headers: { Range: 'bytes=2-4' } })
+		expect(res.status).toBe(206)
+		expect(res.headers.get('content-range')).toBe('bytes 2-4/8')
+		expect(res.headers.get('accept-ranges')).toBe('bytes')
+		expect(new Uint8Array(await res.arrayBuffer())).toEqual(IMAGE_BYTES.slice(2, 5))
+	})
+
+	// R2 resolves a range it cannot parse or satisfy to the WHOLE object rather than
+	// failing. Handing that back as a bare 200 is the shape that corrupts a chunked
+	// download — the client wrote a whole file where it expected a slice — so every one
+	// of these still states what the body holds.
+	it('never answers a bytes range with a whole-object 200', async () => {
+		for (const range of ['bytes=100-200', 'bytes=abc', 'bytes=0-1,3-4', 'bytes=0-7']) {
+			const res = await SELF.fetch(`${ORIGIN}/${R2_KEY}`, { headers: { Range: range } })
+			expect(res.status, range).toBe(206)
+			expect(res.headers.get('content-range'), range).toBe('bytes 0-7/8')
+		}
+
+		// A unit other than bytes must be ignored outright (RFC 9110), not answered with
+		// a byte-denominated Content-Range.
+		const other = await SELF.fetch(`${ORIGIN}/${R2_KEY}`, { headers: { Range: 'items=0-1' } })
+		expect(other.status).toBe(200)
+		expect(other.headers.get('content-range')).toBeNull()
+	})
+
+	// A resize decodes the whole image, so there is no meaningful slice of the source to
+	// read — the range is ignored and the whole transformed result served, which is the
+	// legal answer. What it must NOT do is claim a 206 over bytes it rebuilt. Runs against
+	// the R2 path (a decodable JPEG borrowed from `static/`), since that is the one that
+	// has a range to suppress; the static-asset path is never handed one at all.
+	it('ignores a Range when a transform rebuilds the body', async () => {
+		const real = await (await SELF.fetch(`${ORIGIN}/3DCharades.jpg`)).arrayBuffer()
+		await env.IMAGES.put('ranged-transform.jpg', real, {
+			httpMetadata: { contentType: 'image/jpeg' },
+		})
+
+		const res = await SELF.fetch(`${ORIGIN}/ranged-transform.jpg?width=128`, {
+			headers: { Range: 'bytes=0-9' },
+		})
+		expect(res.status).toBe(200)
+		expect(res.headers.get('content-range')).toBeNull()
+		expect(res.headers.get('accept-ranges')).toBeNull()
+		expect(jpegSize(new Uint8Array(await res.arrayBuffer())).width).toBe(128)
+
+		// Same for a real RSA signature, which covers the whole body (the test env binds
+		// IMG_SIGNING_ENABLED on, so `?sig=p1` takes the signing path rather than the stub).
+		const signed = await SELF.fetch(`${ORIGIN}/ranged-transform.jpg?sig=p1`, {
+			headers: { Range: 'bytes=0-9' },
+		})
+		expect(signed.status).toBe(200)
+		expect(signed.headers.get('content-range')).toBeNull()
+		expect(signed.headers.get('content-signature')).toContain('key-id=KEY:RSA:p1.rec.net')
+		expect(new Uint8Array(await signed.arrayBuffer()).byteLength).toBe(real.byteLength)
+	})
+
 	it('serves the DefaultProfileImage.jpg fallback for a missing image', async () => {
 		const res = await SELF.fetch(`${ORIGIN}/missing.png`)
 		expect(res.status).toBe(200)
@@ -186,6 +254,48 @@ describe('img endpoints', () => {
 	it('does not sign without ?sig=p1', async () => {
 		const res = await SELF.fetch(`${ORIGIN}/${R2_KEY}`)
 		expect(res.headers.get('content-signature')).toBeNull()
+	})
+
+	it('returns a placeholder signature when IMG_SIGNING_ENABLED is off', async () => {
+		// The deployed default (see wrangler.jsonc). The header must still be there —
+		// the client requires it — but the value is derived from the key, so the body
+		// is neither buffered nor hashed and streams straight out of R2.
+		const res = await unsignedFetch(`${ORIGIN}/${R2_KEY}?sig=p1`)
+		expect(res.status).toBe(200)
+
+		const header = res.headers.get('content-signature')
+		expect(header).toMatch(/^key-id=KEY:RSA:p1\.rec\.net; data=/)
+		// Same shape as a real RSA-2048 signature, so the client's parser sees no
+		// difference between the two modes.
+		const signature = Uint8Array.from(atob(header!.split('data=')[1]), (ch) => ch.charCodeAt(0))
+		expect(signature.length).toBe(256)
+		expect(signature.some((b) => b !== 0)).toBe(true)
+
+		// Still on the streaming path: the source etag survives and the bytes are the
+		// stored object, untouched.
+		expect(res.headers.get('etag')).toBeTruthy()
+		expect(new Uint8Array(await res.arrayBuffer())).toEqual(IMAGE_BYTES)
+	})
+
+	it('derives the placeholder signature from the key, stably', async () => {
+		const sigFor = async (path: string) =>
+			(await unsignedFetch(`${ORIGIN}/${path}?sig=p1`)).headers.get('content-signature')
+
+		// Stable for a key, so a cached response and a fresh one agree...
+		expect(await sigFor(R2_KEY)).toBe(await sigFor(R2_KEY))
+		// ...and distinct across keys, so it isn't a single hardcoded constant.
+		expect(await sigFor(R2_KEY)).not.toBe(await sigFor(CDN_NAME))
+	})
+
+	it('signs the fallback and resized bodies with a placeholder too', async () => {
+		// The fallback (missing key) and the transform path both go through
+		// serveStaticAsset/finalizeImage — the header must survive both.
+		const fallback = await unsignedFetch(`${ORIGIN}/missing.png?sig=p1`)
+		expect(fallback.headers.get('content-signature')).toMatch(/^key-id=KEY:RSA:p1\.rec\.net; /)
+
+		const resized = await unsignedFetch(`${ORIGIN}/RecCenter.jpg?width=512&sig=p1`)
+		expect(resized.headers.get('content-signature')).toMatch(/^key-id=KEY:RSA:p1\.rec\.net; /)
+		expect(jpegSize(new Uint8Array(await resized.arrayBuffer())).width).toBe(512)
 	})
 
 	it('resizes a static asset to ?width, preserving aspect ratio', async () => {

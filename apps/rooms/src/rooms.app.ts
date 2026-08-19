@@ -29,6 +29,7 @@ import {
 	getRoomsByIds,
 	getSimilarRooms,
 	getSubRoomPermissions,
+	getSubRoomSaveById,
 	getSubRoomSaves,
 	getVisitedRooms,
 	modifySubRoom,
@@ -49,12 +50,19 @@ import {
 	unbanPlayerFromRoom,
 	updateRoomFields,
 } from '@repo/domain'
-import { intVar, logger, withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
+import {
+	intVar,
+	logger,
+	withCleanSpec,
+	withDefaultCors,
+	withNotFound,
+	withOnError,
+} from '@repo/hono-helpers'
 import { validateAndGetAccountId, validateAndGetRoles } from '@repo/jwt'
+
 // The notification-type ids the hub carries (owned by the `notify` worker). Imported
 // as a value — the enum has no runtime dependencies.
 import { NotificationType } from '../../notify/src/notification-types'
-
 import {
 	AccessibilityRequest,
 	AUTHED,
@@ -84,18 +92,20 @@ import {
 	PublishSaveRequest,
 	RestrictionsRequest,
 	RoleRequest,
-	RoomBanEnvelope,
 	RoomBanEntryDto,
+	RoomBanEnvelope,
 	RoomDto,
 	RoomEnvelope,
 	roomIdParam,
 	RoomLookup,
 	RoomResultEnvelope,
 	RoomSaveEnvelope,
+	saveIdParam,
 	SaveSubRoomDataRequest,
 	ServiceStatus,
 	stringQuery,
 	SubRoomAccessibilityRequest,
+	SubRoomDataSaveResponseDto,
 	subRoomIdParam,
 	SubRoomPermissionsRequest,
 	SubRoomSavesPage,
@@ -156,6 +166,7 @@ const MAKER_PEN_ACCOUNT_IDS = new Set([1, 2, 3])
  */
 interface PresenceView {
 	roomInstanceId?: number
+	roomId?: number
 	subRoomId?: number
 }
 
@@ -238,6 +249,31 @@ async function handlePhotonAccessToken(c: Context<App>) {
 			? await getSubRoomPermissions(c.env.DB, instance.subRoomId)
 			: []
 	return c.json(photonAccessToken(accountId, instance?.roomInstanceId ?? null, overrides))
+}
+
+/**
+ * May this caller read the room's saves? The room's creator always may. So may anyone
+ * whose live presence puts them IN the room: they are already loading its scene, and the
+ * client resolves which version to load — the published one or the creator's latest — from
+ * the save list, so refusing everyone but the creator leaves a visitor unable to load what
+ * the instance is actually running.
+ *
+ * Presence is the shared `presence` table the `match` heartbeat maintains, so this grant
+ * lasts only as long as the player is actually there (rows carry an absolute expiry and
+ * expired ones don't read back). Co-owners get nothing extra from being co-owners — a
+ * co-owner standing in the room passes because of where they are, not what they hold.
+ *
+ * The presence read only happens for a non-creator, so the owner's own path stays one query.
+ */
+async function canReadSaves(
+	c: Context<App>,
+	room: Record<string, unknown>,
+	roomId: number,
+	accountId: number
+): Promise<boolean> {
+	if (room.CreatorAccountId === accountId) return true
+	const instance = (await getPresence<PresenceView>(c.env.DB, accountId))?.roomInstance
+	return instance?.roomId === roomId
 }
 
 /** The Bearer token's account id (`sub`), or null when there's no valid token. */
@@ -366,7 +402,7 @@ async function pushRoomUpdate(
 	try {
 		await c.env.RECFLARE_NOTIFICATIONS_HUB.getByName(HUB_INSTANCE).notifyPlayer(
 			playerId,
-			'RoomUpdate',
+			NotificationType.SubscriptionUpdateRoom,
 			room
 		)
 	} catch (err) {
@@ -517,6 +553,15 @@ const app = new Hono<App>()
 			})(c, next)
 	)
 
+	// The website (`www`) is a browser origin calling these endpoints directly, the way
+	// rec.net's own site called the game's API — its "My rooms" list is this worker's
+	// `GET /rooms/ownedby/me` — so the responses need CORS headers or the browser
+	// discards them. `origin: '*'` is deliberate and safe HERE because these endpoints
+	// authenticate with a bearer token in the `Authorization` header, never a cookie: a
+	// hostile page can't read another origin's stored token, so there is no ambient
+	// credential for `*` to expose. Do not add cookie auth without narrowing it.
+	.use('*', withDefaultCors())
+
 	.onError(withOnError())
 	.notFound(withNotFound())
 
@@ -596,9 +641,11 @@ const app = new Hono<App>()
 
 	// "Hot" rooms feed — public, non-dorm rooms ordered by live player count (their
 	// instances' presence), then stored engagement, optionally filtered to a single
-	// `tag` (e.g. `rro`). `tag=new` is a pseudo-tag no room carries: it serves the
-	// player-made (non-RRO) rooms newest-first. Paginated via skip/take (take defaults
-	// to 100). Returns `{ Results, TotalResults }` like search.
+	// `tag` (e.g. `rro`). `tag=new` and `tag=community` are pseudo-tags no room
+	// carries: `new` serves the player-made (non-RRO) rooms newest-first, `community`
+	// keeps the normal ordering but drops the rooms the Coach account created.
+	// Paginated via skip/take (take defaults to 100). Returns
+	// `{ Results, TotalResults }` like search.
 	.get(
 		'/rooms/hot',
 		describeRoute({
@@ -608,11 +655,16 @@ const app = new Hono<App>()
 				'Public, non-dorm rooms ordered by how many players are in them right now — live',
 				'presence summed across each room’s instances — falling back to stored engagement',
 				'for rooms nobody is in. Optionally narrowed to a single `tag` (the browse screen’s',
-				'filter chips post one, e.g. `rro`). The `new` chip is a pseudo-tag — no room carries',
-				'a `new` tag — and instead serves the player-made (non-RRO) rooms, newest first.',
+				'filter chips post one, e.g. `rro`). The `new` and `community` chips are pseudo-tags —',
+				'no room carries either. `new` instead serves the player-made (non-RRO) rooms, newest',
+				'first; `community` keeps the ordering above but serves only rooms the Coach account',
+				'(the system account owning the seeded first-party rooms) did not create.',
 			].join(' '),
 			parameters: [
-				stringQuery('tag', 'Restrict to rooms carrying this tag (or `new`, a pseudo-tag)'),
+				stringQuery(
+					'tag',
+					'Restrict to rooms carrying this tag (or `new`/`community`, pseudo-tags)'
+				),
 				...pageParams(100),
 			],
 			responses: { 200: json(PagedRooms, 'The feed page') },
@@ -742,7 +794,10 @@ const app = new Hono<App>()
 
 	// Rooms created/owned by the caller. Auth-gated — no token is a 401, never
 	// account 1. `ownedby/me` drops the dorm (it's not a room the player made);
-	// the `createdby` variants return everything the account created.
+	// the `createdby` variants return everything the account created. None of them
+	// filter on Accessibility: these are the owner's own "My Rooms" lists, so a room
+	// they haven't published yet (a fresh clone is Private) has to show up here.
+	// Only the public `ownedby/:accountId` profile list is accessibility-filtered.
 	.get(
 		'/roomserver/rooms/createdby/me',
 		describeRoute({
@@ -766,7 +821,9 @@ const app = new Hono<App>()
 			description: [
 				'The caller’s own rooms with the dorm filtered out: a dorm is auto-provisioned, not a',
 				'room the player made, so it doesn’t belong in the “rooms you own” list. Use',
-				'`createdby/me` for everything the account created.',
+				'`createdby/me` for everything the account created. Accessibility is deliberately NOT',
+				'filtered — this is the owner’s own list, so unpublished (Private) rooms appear, unlike',
+				'the public `ownedby/{accountId}` profile list.',
 			].join(' '),
 			security: AUTHED,
 			responses: {
@@ -1047,8 +1104,9 @@ const app = new Hono<App>()
 				'Copies a room’s content (scene, subrooms, settings) into a new room owned by the',
 				'caller. Cloning is the only way to make a room, so the per-account room cap is',
 				'enforced here — it counts the rooms the account created, minus their auto-provisioned',
-				'dorm (`MAX_ROOMS_PER_ACCOUNT`; 0 lifts the cap). The clone starts with no tags and',
-				'`IsRRO` cleared.',
+				'dorm (`MAX_ROOMS_PER_ACCOUNT`; 0 lifts the cap). The clone starts with no tags,',
+				'`IsRRO` cleared, and PRIVATE accessibility — a new room is unpublished until its',
+				'owner sets its accessibility, so it never lands in the public feeds on creation.',
 				'',
 				'Rejections — a blank or taken name, the cap, a source that disallows cloning — are',
 				'HTTP 200 with `success: false` and the message the client shows.',
@@ -1221,9 +1279,9 @@ const app = new Hono<App>()
 		}
 	)
 
-	// Toggle a tag on a room. Auth-gated (401) and owner-only. Body is the `tag`
-	// form field. There's no delete/patch endpoint, so this call toggles: it adds
-	// the tag (Type 0) if absent and removes it if present. The "main" tags
+	// Toggle a tag on a room. Auth-gated (401) and owner/co-owner-only (403). Body is
+	// the `tag` form field. There's no delete/patch endpoint, so this call toggles: it
+	// adds the tag (Type 0) if absent and removes it if present. The "main" tags
 	// (#pvp/#quest/#game/#hangout/#art) are radio buttons — setting one clears the
 	// others. Returns the `{ success, error, value }` envelope with the updated
 	// room as `value`; business failures are 200 with success:false.
@@ -1233,11 +1291,11 @@ const app = new Hono<App>()
 			tags: ['Room settings'],
 			summary: 'Toggle a tag on a room',
 			description: [
-				'Owner-only. There is no delete/patch counterpart, so this call TOGGLES: it adds the',
-				'tag (Type 0) when absent and removes it when present. The “main” tags',
-				'(`pvp`/`quest`/`game`/`hangout`/`art`) behave as radio buttons — setting one clears',
-				'the others. Answers the lowercase envelope with the updated room, which the client',
-				're-renders from.',
+				'Owner or co-owner only (403 otherwise). There is no delete/patch counterpart, so',
+				'this call TOGGLES: it adds the tag (Type 0) when absent and removes it when',
+				'present. The “main” tags (`pvp`/`quest`/`game`/`hangout`/`art`) behave as radio',
+				'buttons — setting one clears the others. Answers the lowercase envelope with the',
+				'updated room, which the client re-renders from.',
 			].join(' '),
 			security: AUTHED,
 			parameters: [roomIdParam],
@@ -1245,6 +1303,7 @@ const app = new Hono<App>()
 			responses: {
 				200: json(RoomEnvelope, 'The updated room, or a rejection with `success: false`'),
 				401: UNAUTHORIZED_RESPONSE,
+				403: FORBIDDEN_RESPONSE,
 			},
 		}),
 		async (c) => {
@@ -1254,9 +1313,9 @@ const app = new Hono<App>()
 			const roomId = Number.parseInt(c.req.param('roomId'), 10)
 			const room = await getRoomById(c.env.DB, roomId)
 			if (!room) return roomEnvelope(c, null, 'This room does not exist!')
-			if (room.CreatorAccountId !== accountId) {
-				return roomEnvelope(c, null, 'You are not the owner of this room!')
-			}
+			// A valid token but not the room's owner/co-owner → 403 (the auth gate above
+			// already returned 401 for a missing/invalid token).
+			if (!canManageRoom(room, accountId)) return c.body(null, 403)
 
 			const body = (await c.req.parseBody().catch(() => ({}))) as Record<string, unknown>
 			const tag = typeof body.tag === 'string' ? body.tag.trim() : ''
@@ -1871,8 +1930,8 @@ const app = new Hono<App>()
 
 	// A subroom's saved-data versions — the room-history / "restore a save" list. Every
 	// save is its own `subroom_save` row (nothing is overwritten), so this is real
-	// history, newest first, paged by skip/take. Auth-gated (401) and creator-only (403):
-	// the list exposes unpublished saves, which only the owner is entitled to see.
+	// history, newest first, paged by skip/take. Auth-gated (401), and readable by the
+	// room's creator or anyone whose presence puts them in the room (see `canReadSaves`).
 	.get(
 		'/rooms/:roomId{[0-9]+}/subrooms/:subRoomId{[0-9]+}/saves',
 		describeRoute({
@@ -1884,9 +1943,11 @@ const app = new Hono<App>()
 				'only when the subroom has never been saved.',
 				'`unityAssetTarget`/`unityAssetVersion` are accepted and ignored.',
 				'',
-				'Owner-only (403 otherwise) — the list includes STAGED saves that were never',
-				'published, so it is not public. It is what the client reads to offer the owner',
-				'“load the latest or the published version?” when they enter a private instance.',
+				'The list includes STAGED saves that were never published, so it is not public:',
+				'the room’s creator may read it, and so may anyone standing IN the room (their live',
+				'presence says so). Anyone else is a 403. It is what the client reads to resolve',
+				'“load the latest or the published version?” on entering a private instance — a',
+				'visitor who cannot read it cannot load what the instance is running.',
 				'',
 				'`TotalResults` and `TotalCount` carry the same number: the client’s paged DTO and',
 				'the reference disagree on the name, so both are emitted.',
@@ -1917,7 +1978,7 @@ const app = new Hono<App>()
 			if (!room || !findSubRoom(room, subRoomId)) {
 				return c.json({ Results: [], TotalResults: 0, TotalCount: 0 })
 			}
-			if (room.CreatorAccountId !== accountId) return c.body(null, 403)
+			if (!(await canReadSaves(c, room, roomId, accountId))) return c.body(null, 403)
 			const saves = await getSubRoomSaves(c.env.DB, subRoomId)
 
 			const skip = Number.parseInt(c.req.query('skip') ?? '', 10)
@@ -1929,11 +1990,58 @@ const app = new Hono<App>()
 		}
 	)
 
+	// One of a subroom's saves by id — the detail behind a row of the `…/saves` list.
+	// Same gate as that list: a save id resolves whether or not it was ever published, so
+	// this exposes the same unpublished work, to the same readers.
+	.get(
+		'/rooms/:roomId{[0-9]+}/subrooms/:subRoomId{[0-9]+}/saves/:saveId{[0-9]+}',
+		describeRoute({
+			tags: ['Subrooms'],
+			summary: 'One of a subroom’s saves by id',
+			description: [
+				'A single save, in the SAME camelCase projection the room save that created it',
+				'returned — not the PascalCase rows `…/saves` lists. Save ids are globally',
+				'unique but resolved scoped to the subroom, so one subroom cannot read another’s',
+				'save by guessing an id: a save that belongs elsewhere is a 404, same as an unknown',
+				'one.',
+				'',
+				'Gated like the list it details — the room’s creator, or anyone whose presence puts',
+				'them in the room. A save id resolves whether or not it was ever published, so this',
+				'reads unpublished work.',
+			].join(' '),
+			security: AUTHED,
+			parameters: [roomIdParam, subRoomIdParam, saveIdParam],
+			responses: {
+				200: json(SubRoomDataSaveResponseDto, 'The save'),
+				401: UNAUTHORIZED_RESPONSE,
+				403: FORBIDDEN_RESPONSE,
+				404: { description: 'No such room, subroom, or save on that subroom' },
+			},
+		}),
+		async (c) => {
+			const accountId = await authedAccountId(c)
+			if (accountId === null) return unauthorized(c)
+
+			const roomId = Number.parseInt(c.req.param('roomId'), 10)
+			const subRoomId = Number.parseInt(c.req.param('subRoomId'), 10)
+			const saveId = Number.parseInt(c.req.param('saveId'), 10)
+
+			// Scoped through the room, like the list, so a subroom id from another room can't
+			// be used to read its saves.
+			const room = await getRoomById(c.env.DB, roomId)
+			if (!room || !findSubRoom(room, subRoomId)) return c.notFound()
+			if (!(await canReadSaves(c, room, roomId, accountId))) return c.body(null, 403)
+
+			const save = await getSubRoomSaveById(c.env.DB, subRoomId, saveId)
+			return save ? c.json(toSaveResponse(save)) : c.notFound()
+		}
+	)
+
 	// Save a subroom's data (room save). Auth-gated (401 with empty body). Editable
 	// by the room creator or a Creator/CoOwner role holder. Points the subroom at
-	// the uploaded data blobs and records the room-level save fields, notifies the
-	// owner, and returns the updated ROOM in the lowercase `{ success, error, value }`
-	// envelope the reference's SetRoomData uses.
+	// the uploaded data blobs and records the revision's fields against that SUBROOM,
+	// notifies the owner, and returns the updated ROOM in the lowercase
+	// `{ success, error, value }` envelope the reference's SetRoomData uses.
 	.post(
 		'/rooms/:roomId{[0-9]+}/subrooms/:subRoomId{[0-9]+}/data',
 		describeRoute({
@@ -1941,10 +2049,11 @@ const app = new Hono<App>()
 			summary: 'Save a subroom’s data (room save)',
 			description: [
 				'Records a save against the subroom from the blobs the client has already uploaded',
-				'through the `storage` worker; the room-level fields it carries (`Description`,',
-				'`PersistenceVersion`, `InventionUsage`) are written to the room. Editable by the',
-				'room’s creator or a co-owner (403 otherwise); a missing token is an EMPTY-body 401,',
-				'unlike the other room writes.',
+				'through the `storage` worker. Everything the body carries describes THAT revision',
+				'and lands on the save and its subroom — `Description` is the save comment, NOT the',
+				'room’s description (only `PUT /rooms/{roomId}/description` sets that). Nothing here',
+				'writes to the room. Editable by the room’s creator or a co-owner (403 otherwise); a',
+				'missing token is an EMPTY-body 401, unlike the other room writes.',
 				'',
 				'`AutoPublish: true` makes the save live immediately. Otherwise it is STAGED: it',
 				'lands on `StagedSubRoomDataSaveId` with the live `CurrentSave` untouched, so',

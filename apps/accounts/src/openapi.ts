@@ -77,12 +77,16 @@ export const AccountDto = z.object({
 /**
  * The private self DTO (`toSelfAccountDto`, the `/account/me` shape) — the public DTO
  * plus owner-only fields. `juniorState`/`parentAccountId` are omitted entirely when
- * unset (emitting `null` makes the client's enum parser throw); `email`/`birthday` are
- * kept as nullable since they aren't enums.
+ * unset (emitting `null` makes the client's enum parser throw).
  */
 export const SelfAccountDto = AccountDto.extend({
-	email: z.string().nullable(),
-	birthday: z.null().describe('Always null — birthday is not stored'),
+	email: z
+		.string()
+		.describe(
+			'"" when unset — never null: the client reads it as a string, and the hub frame this ' +
+				'DTO also rides drops null values outright'
+		),
+	birthday: z.iso.datetime().describe('A fixed placeholder — birthdays are not stored'),
 	availableUsernameChanges: z.int().describe('Remaining username changes'),
 })
 

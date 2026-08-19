@@ -1,4 +1,4 @@
-import { DISCORD_INVITE, ISSUES_URL, PRIVACY_EMAIL, SOURCE_REPO } from './links'
+import { DISCORD_INVITE, ISSUES_URL, PRIVACY_EMAIL } from './links'
 
 /**
  * The privacy policy, served on www at `/privacy`.
@@ -138,13 +138,10 @@ footer a { color: var(--muted); }
  * PRIVACY_EMAIL) can't be listed in one place and forgotten in the other.
  */
 function contactList(): string {
-	const email = PRIVACY_EMAIL
-		? `<li><strong>Email</strong> — <a href="mailto:${PRIVACY_EMAIL}">${PRIVACY_EMAIL}</a>.</li>`
-		: ''
 	return `<ul>
 	${email}
-	<li><strong>Discord</strong> — ask a moderator in <a href="${DISCORD_INVITE}" target="_blank" rel="noreferrer">our Discord server</a>.</li>
-	<li><strong>GitHub</strong> — <a href="${ISSUES_URL}" target="_blank" rel="noreferrer">open an issue</a> on the project repo. Don't post personal details in a public issue; your username is enough for us to find you.</li>
+	<li><strong>Discord</strong> — ask a moderator in <a href="https://discord.gg/m569yWvGEG" target="_blank" rel="noreferrer">our Discord server</a>.</li>
+	 Don't post personal details in a public issue; your username is enough for us to find you.</li>
 </ul>`
 }
 
@@ -191,7 +188,7 @@ export function privacyPage(): string {
 	<h2>Who runs this</h2>
 	<p>
 		Rug Room is maintained by a volunteer community, and its source code is public at
-		<a href="${SOURCE_REPO}" target="_blank" rel="noreferrer">github.com/djdevin/rug-room</a>.
+		<a href="${SOURCE_REPO}" target="_blank" rel="noreferrer">github.com/djdevin/recflare</a>.
 		This policy covers the Rug Room game servers and this website. It is a fan project, not
 		affiliated with, endorsed by, or connected to Rec Room Inc.
 	</p>
@@ -332,7 +329,7 @@ export function privacyPage(): string {
 		transit. Passwords are stored only as salted hashes and refresh tokens only as one-way
 		hashes, so a copy of our database would not reveal either. Access to the production
 		data is limited to the maintainers who operate the service. No system is perfectly
-		secure, and we won't pretend otherwise — but this is a hobby server, so please don't
+		secure, and we won't pretend otherwise — but this is just a game, so please don't
 		reuse a password here that you use anywhere important.
 	</p>
 

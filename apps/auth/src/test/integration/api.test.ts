@@ -13,7 +13,13 @@ import {
 	seedRoomWithSubRooms,
 	SUBROOM_SCHEMA_DDL,
 } from '@repo/domain'
+import { TOKEN_TTL_SECONDS } from '@repo/jwt'
 
+import {
+	banFromReport,
+	createReport,
+	SCHEMA_DDL as REPORTS_SCHEMA_DDL,
+} from '../../../../api/src/reports-db'
 import {
 	getLinksForAccount,
 	linkPlatformIdentity,
@@ -80,7 +86,26 @@ beforeAll(async () => {
 		IsDorm: false,
 		SubRooms: [{ SubRoomId: 23, UnitySceneId: ORIENTATION_SCENE, MaxPlayers: 1 }],
 	})
+	// Report table (owned by the api worker) — a banned account is refused a token, and
+	// a ban is a report row with `banned` set.
+	for (const stmt of REPORTS_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 })
+
+/**
+ * Ban an account the way a moderator would: file a report against it and convert that
+ * report into a ban. `banExpires` null is a permanent ban.
+ */
+async function banAccount(accountId: number, banExpires: string | null = null): Promise<void> {
+	const row = await createReport(env.DB, { reporterPlayerId: 1, reportedPlayerId: accountId })
+	await banFromReport(env.DB, row.id, { banExpires })
+}
+
+/** Seed an account with LOGIN_PASSWORD set, so it can be logged into. */
+async function seedAccount(accountId: number, username: string): Promise<void> {
+	await env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
+		.bind(JSON.stringify({ accountId, username, passwordHash: await hashPassword(LOGIN_PASSWORD) }))
+		.run()
+}
 
 /** Decode a JWT payload (no verification) for asserting claims. */
 function decodePayload(token: string): Record<string, unknown> {
@@ -473,7 +498,7 @@ describe('auth worker routes', () => {
 			expires_in: number
 		}
 		expect(json.token_type).toBe('Bearer')
-		expect(json.expires_in).toBe(3600)
+		expect(json.expires_in).toBe(TOKEN_TTL_SECONDS)
 		// header.payload.signature
 		const parts = json.access_token.split('.')
 		expect(parts).toHaveLength(3)
@@ -490,9 +515,14 @@ describe('auth worker routes', () => {
 		expect(payload.iss).toBe('https://auth.recflare.net')
 		expect(payload.aud).toBe('https://auth.recflare.net')
 		expect(payload.role).toContain('gameClient')
-		// A plain account carries only the base role — no elevated roles.
+		// screenshare is a feature gate, not a grant — every token carries it.
+		expect(payload.role).toContain('screenshare')
+		// A plain adult account carries nothing beyond those — no elevated roles.
 		expect(payload.role).not.toContain('developer')
 		expect(payload.role).not.toContain('moderator')
+		expect(payload.role).not.toContain('junior')
+		// No privileges to carry, so the claim is absent rather than an empty array.
+		expect(payload['rn.privilege']).toBeUndefined()
 		expect(payload.scope).toContain('rn.api')
 	})
 
@@ -510,6 +540,25 @@ describe('auth worker routes', () => {
 			.run()
 		const payload = await tokenFor(`account_id=91&password=${LOGIN_PASSWORD}`)
 		expect(payload.role).toEqual(expect.arrayContaining(['gameClient', 'developer', 'moderator']))
+	})
+
+	test('POST /connect/token stamps the junior role for an isJunior account', async () => {
+		await env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
+			.bind(
+				JSON.stringify({
+					accountId: 92,
+					username: 'JuniorPlayer',
+					passwordHash: await hashPassword(LOGIN_PASSWORD),
+					isJunior: true,
+				})
+			)
+			.run()
+		const payload = await tokenFor(`account_id=92&password=${LOGIN_PASSWORD}`)
+		expect(payload.role).toEqual(expect.arrayContaining(['gameClient', 'screenshare', 'junior']))
+		expect(payload.role).not.toContain('developer')
+		// `rn.privilege` is a claim, not a scope — it sits beside `role`, never in `scope`.
+		expect(payload['rn.privilege']).toEqual(['BanVChat', 'BanRmChat'])
+		expect(payload.scope).not.toContain('rn.privilege')
 	})
 
 	test('POST /connect/token 400s when no account_id is posted (never defaults to 1)', async () => {
@@ -1104,9 +1153,7 @@ describe('CORS', () => {
 		)
 		expect(res.status).toBe(204)
 		expect(res.headers.get('access-control-allow-origin')).toBe('*')
-		expect(res.headers.get('access-control-allow-headers')?.toLowerCase()).toContain(
-			'content-type'
-		)
+		expect(res.headers.get('access-control-allow-headers')?.toLowerCase()).toContain('content-type')
 	})
 
 	// The header has to be on the REAL response too, not just the preflight — and on a
@@ -1146,5 +1193,212 @@ describe('CORS', () => {
 		expect(res.headers.get('access-control-allow-headers')?.toLowerCase()).toContain(
 			'authorization'
 		)
+	})
+})
+
+// A banned account is refused a token at all — the outer wall of a ban, since with no
+// token every other worker is shut to it. The ban is a `report` row with `banned` set
+// (the api worker owns that table); matchmaking enforces the same ban on tokens issued
+// before it was handed down.
+describe('banned accounts', () => {
+	test('POST /connect/token refuses a password grant from a banned account', async () => {
+		await seedAccount(6101, 'BannedPlayer')
+		await banAccount(6101)
+
+		const res = await postToken(`account_id=6101&password=${LOGIN_PASSWORD}`)
+		expect(res.status).toBe(400)
+		expect(res.json.error).toBe('invalid_grant')
+		// The exact sentence www's shared auth-messages table keys on to put a real
+		// message in front of the player — changing it silently downgrades that to the
+		// generic "you could not be signed in".
+		expect(res.json.error_description).toBe('this account is banned')
+	})
+
+	test('POST /connect/token refuses a username login from a banned account', async () => {
+		await seedAccount(6102, 'BannedByName')
+		await banAccount(6102)
+
+		const res = await postToken(
+			`grant_type=password&username=BannedByName&password=${LOGIN_PASSWORD}`
+		)
+		expect(res.status).toBe(400)
+		expect(res.json.error_description).toBe('this account is banned')
+	})
+
+	// A client that was already signed in when the ban landed still holds a valid refresh
+	// token; redeeming it must not renew the session.
+	test('POST /connect/token refuses to refresh a banned account’s session', async () => {
+		await seedAccount(6103, 'BannedLater')
+		const login = await postToken(`account_id=6103&password=${LOGIN_PASSWORD}`)
+		expect(login.status).toBe(200)
+		const refreshToken = login.json.refresh_token as string
+
+		await banAccount(6103)
+		const refreshed = await postToken(
+			`grant_type=refresh_token&refresh_token=${encodeURIComponent(refreshToken)}`
+		)
+		expect(refreshed.status).toBe(400)
+		expect(refreshed.json.error_description).toBe('this account is banned')
+	})
+
+	// The ban check runs AFTER the credential check, so a wrong password on a banned
+	// account still answers the ordinary bad-credential refusal — it can't be used to
+	// find out whether an account exists or is banned without knowing its password.
+	test('a wrong password on a banned account is still a credential refusal', async () => {
+		await seedAccount(6104, 'BannedWrongPw')
+		await banAccount(6104)
+
+		const res = await postToken('account_id=6104&password=not-the-password')
+		expect(res.status).toBe(400)
+		expect(res.json.error_description).toBe('invalid account_id or password')
+	})
+
+	// A timed ban lifts itself when its expiry passes; nothing clears the flag.
+	test('an expired ban lets the account sign in again', async () => {
+		await seedAccount(6105, 'ServedTime')
+		await banAccount(6105, '2020-01-01T00:00:00.000Z')
+
+		const res = await postToken(`account_id=6105&password=${LOGIN_PASSWORD}`)
+		expect(res.status).toBe(200)
+		expect(decodePayload(res.json.access_token as string).sub).toBe('6105')
+	})
+
+	test('a ban that has not expired yet still refuses the login', async () => {
+		await seedAccount(6106, 'StillServing')
+		await banAccount(6106, new Date(Date.now() + 3_600_000).toISOString())
+
+		const res = await postToken(`account_id=6106&password=${LOGIN_PASSWORD}`)
+		expect(res.status).toBe(400)
+		expect(res.json.error_description).toBe('this account is banned')
+	})
+
+	// A report is not a ban until a moderator converts it.
+	test('an unbanned report does not refuse the login', async () => {
+		await seedAccount(6107, 'MerelyReported')
+		await createReport(env.DB, { reporterPlayerId: 1, reportedPlayerId: 6107 })
+
+		const res = await postToken(`account_id=6107&password=${LOGIN_PASSWORD}`)
+		expect(res.status).toBe(200)
+	})
+
+	// The ban is the ACCOUNT's: nothing here stops the player signing up again, which is
+	// the signup caps' job, not this check's.
+	test('a banned player can still create a new account', async () => {
+		await seedAccount(6108, 'BannedButNew')
+		await banAccount(6108)
+
+		const created = await postToken('grant_type=create_account&platform_id=steam-after-ban')
+		expect(created.status).toBe(200)
+	})
+})
+
+// The ban follows the player past the account it was written on: a login from an account
+// that shares a proven platform identity or an IP with a banned one is refused, and a
+// signup carrying either is refused before it mints anything. See the api worker's
+// bans-db.ts for the arms and the BAN_EVASION_MATCH knob.
+describe('ban evasion at the token endpoint', () => {
+	/** Seed a loginable account carrying the IPs it signed up / last logged in from. */
+	const account = async (id: number, name: string, ips: Record<string, string> = {}) => {
+		await env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
+			.bind(
+				JSON.stringify({
+					accountId: id,
+					username: name,
+					passwordHash: await hashPassword(LOGIN_PASSWORD),
+					...ips,
+				})
+			)
+			.run()
+	}
+
+	const login = (id: number, ip?: string) =>
+		postToken(`account_id=${id}&password=${LOGIN_PASSWORD}`, ip)
+
+	test('an account sharing a banned account’s platform identity cannot log in', async () => {
+		await account(6301, 'EvaderOne')
+		await linkPlatformIdentity(env.DB, 6301, 0, 'steam-tokenevader')
+		await banAccount(6301)
+		await account(6302, 'EvaderTwo')
+		await linkPlatformIdentity(env.DB, 6302, 0, 'steam-tokenevader')
+
+		const res = await login(6302)
+		expect(res.status).toBe(400)
+		// A vaguer sentence than a direct ban: this account may belong to somebody else.
+		expect(res.json.error_description).toBe('this device or network is blocked')
+	})
+
+	test('an account sharing a banned account’s IP cannot log in', async () => {
+		await account(6303, 'SameHouseBanned', { signupIp: '203.0.113.30' })
+		await banAccount(6303)
+		await account(6304, 'SameHouseClean', { signupIp: '203.0.113.30' })
+
+		const res = await login(6304)
+		expect(res.status).toBe(400)
+		expect(res.json.error_description).toBe('this device or network is blocked')
+	})
+
+	// The address the request arrives from counts, so an account that never logged in
+	// from the banned network before is caught on the first attempt rather than the second.
+	test('the request’s own IP is matched even when the account has none stored', async () => {
+		await account(6305, 'BannedAtHome', { signupIp: '203.0.113.31' })
+		await banAccount(6305)
+		await account(6306, 'CleanElsewhere')
+
+		expect((await login(6306, '203.0.113.31')).status).toBe(400)
+		// The same account from any other network signs in normally.
+		expect((await login(6306, '198.51.100.31')).status).toBe(200)
+	})
+
+	test('an unrelated account signs in normally', async () => {
+		await account(6307, 'Unrelated', { signupIp: '198.51.100.7' })
+		await banAccount(6307 + 1000) // a ban on somebody else entirely
+		expect((await login(6307)).status).toBe(200)
+	})
+
+	// The point of checking before minting: a refused signup must leave nothing behind,
+	// or the evader keeps the account (and burns a slot off the signup caps) anyway.
+	test('create_account from a banned IP is refused and creates no account', async () => {
+		await account(6310, 'BannedSignupSource', { signupIp: '203.0.113.40' })
+		await banAccount(6310)
+
+		const before = await env.DB.prepare('SELECT COUNT(*) AS n FROM account').first<{ n: number }>()
+		const res = await postToken('grant_type=create_account', '203.0.113.40')
+		expect(res.status).toBe(400)
+		expect(res.json.error_description).toBe('this device or network is blocked')
+		const after = await env.DB.prepare('SELECT COUNT(*) AS n FROM account').first<{ n: number }>()
+		expect(after?.n).toBe(before?.n)
+	})
+
+	test('create_account from an unrelated IP still works', async () => {
+		const res = await postToken('grant_type=create_account', '198.51.100.99')
+		expect(res.status).toBe(200)
+	})
+
+	// The knob an operator reaches for when the IP arm locks out real players.
+	test('BAN_EVASION_MATCH=platform drops the IP arm but keeps the direct ban', async () => {
+		const original = env.BAN_EVASION_MATCH
+		await account(6320, 'KnobBanned', { signupIp: '203.0.113.50' })
+		await linkPlatformIdentity(env.DB, 6320, 0, 'steam-knobevader')
+		await banAccount(6320)
+		await account(6321, 'KnobHousemate', { signupIp: '203.0.113.50' })
+		await account(6322, 'KnobEvader')
+		await linkPlatformIdentity(env.DB, 6322, 0, 'steam-knobevader')
+
+		try {
+			env.BAN_EVASION_MATCH = 'platform'
+			expect((await login(6321)).status).toBe(200)
+			expect((await login(6322)).status).toBe(400)
+			// And signup from that network is open again.
+			expect((await postToken('grant_type=create_account', '203.0.113.50')).status).toBe(200)
+
+			env.BAN_EVASION_MATCH = 'off'
+			expect((await login(6322)).status).toBe(200)
+			// The banned account itself is refused whatever the knob says.
+			const banned = await login(6320)
+			expect(banned.status).toBe(400)
+			expect(banned.json.error_description).toBe('this account is banned')
+		} finally {
+			env.BAN_EVASION_MATCH = original
+		}
 	})
 })

@@ -4,7 +4,7 @@ import { beforeAll, describe, expect, test } from 'vitest'
 
 import '../../clubs.app'
 
-import { SCHEMA_DDL } from '../../clubs-db'
+import { CLUB_SCHEMA_DDL } from '@repo/domain'
 
 import type { Env } from '../../context'
 
@@ -18,7 +18,7 @@ beforeAll(async () => {
 	// Seed the shared JWT signing key into the local Secrets Store so .get() resolves.
 	await adminSecretsStore(env.JWT_SECRET).create('test-signing-key')
 	// Build the club / club_member tables (mirrors the migration).
-	for (const stmt of SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	for (const stmt of CLUB_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 
 	// Accounts table (owned by the auth worker) — a player's home club is a field on
 	// their account row, so /club/home/me reads and writes it here.

@@ -1,4 +1,9 @@
 import type { SharedHonoEnv, SharedHonoVariables } from '@repo/hono-helpers/src/types'
+// Type-only import (erased at build) of the DO class this worker re-exports from its
+// entry. The parameter has to be here, not just on `match`'s Env: `scheduled` hands this
+// worker's superset Env straight to `matchScheduled`, and a bare `DurableObjectNamespace`
+// is not assignable to the `DurableObjectNamespace<NotificationsHub>` that one declares.
+import type { NotificationsHub } from '../../notify/src/notifications-hub'
 
 /**
  * Union of every mounted worker's bindings.
@@ -25,7 +30,7 @@ export type Env = SharedHonoEnv & {
 	RECFLARE_PLAYER_SETTINGS: KVNamespace
 	// Real-time notifications hub. The class is defined in `notify` and re-exported by
 	// this worker's entry so the binding resolves in-process (no `script_name`).
-	RECFLARE_NOTIFICATIONS_HUB: DurableObjectNamespace
+	RECFLARE_NOTIFICATIONS_HUB: DurableObjectNamespace<NotificationsHub>
 }
 
 export type Variables = SharedHonoVariables

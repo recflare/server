@@ -24,6 +24,9 @@ import {
 import { intVar, logger, withCleanSpec, withDefaultCors, withNotFound, withOnError } from '@repo/hono-helpers'
 import { generateToken, TOKEN_TTL_SECONDS, validateAndGetAccountId } from '@repo/jwt'
 
+// The account-wide ban lives on a `report` row, whose table the api worker owns; its db
+// module is plain D1 queries with no runtime deps, so it imports cleanly here.
+import { banEvasionMatch, resolveBan } from '../../api/src/bans-db'
 import { verifyMetaNonce } from './meta-nonce'
 import {
 	CachedLogin,
@@ -57,6 +60,23 @@ import type { PlatformLink } from './platform-db'
 /** OAuth scopes granted by `/connect/token`. */
 const TOKEN_SCOPE =
 	'offline_access profile rn rn.accounts rn.accounts.gc rn.api rn.chat rn.clubs rn.commerce rn.match.read rn.match.write rn.notify rn.rooms rn.storage'
+
+/**
+ * The `error_description` a banned account's grant is refused with. A fixed sentence,
+ * never interpolated with the expiry, because `www`'s shared auth-messages table keys on
+ * this exact string to put a real sentence in front of a player — anything varying would
+ * fall through to the generic "you could not be signed in". Keep the two in sync.
+ */
+const BANNED_DESCRIPTION = 'this account is banned'
+
+/**
+ * The refusal when it is not THIS account that is banned but one it shares an identity
+ * with (see bans-db's linked arms). Deliberately a different, vaguer sentence: the
+ * account being refused may be an innocent housemate of a banned player, so telling them
+ * "this account is banned" would be a lie, and naming the account we matched them to
+ * would hand out somebody else's moderation record.
+ */
+const BLOCKED_DESCRIPTION = 'this device or network is blocked'
 
 /**
  * The platform id a SIDELOADED Oculus APK reports. It is not an identity: a sideloaded
@@ -175,16 +195,33 @@ async function authedId(c: Context<App>): Promise<number | null> {
 }
 
 /**
- * The elevated role names for an account's token `role` claim, derived from its
- * role flags. Base roles (gameClient) are added by generateToken — these are only
- * the operator-granted extras. Order is stable so tokens are deterministic.
+ * The role names beyond `gameClient` for an account's token `role` claim. Base roles
+ * (gameClient) are added by generateToken. `screenshare` rides on EVERY token — the
+ * client gates the screen-share feature on it and nothing grants it per-account, so it
+ * is unconditional (even with no account resolved). The rest are the operator-granted
+ * extras, plus `junior` off the account's own `isJunior` flag. Order is stable so
+ * tokens are deterministic.
  */
-function accountRoles(account: Pick<Account, 'isDeveloper' | 'isModerator'> | null): string[] {
-	if (!account) return []
-	const roles: string[] = []
+function accountRoles(
+	account: Pick<Account, 'isDeveloper' | 'isModerator' | 'isJunior'> | null
+): string[] {
+	const roles = ['screenshare']
+	if (!account) return roles
 	if (account.isDeveloper) roles.push('developer')
 	if (account.isModerator) roles.push('moderator')
+	if (account.isJunior) roles.push('junior')
 	return roles
+}
+
+/**
+ * The account's token `rn.privilege` claim. Despite the scope-shaped name it is a CLAIM,
+ * read out of the same claims dictionary as `role` — it never belongs in `scope`. The
+ * client knows exactly two values, both chat restrictions, and both ride on a junior
+ * account: `BanVChat` (voice) and `BanRmChat` (room chat). Empty for everyone else, which
+ * drops the claim rather than sending a blank one.
+ */
+function accountPrivileges(account: Pick<Account, 'isJunior'> | null): string[] {
+	return account?.isJunior ? ['BanVChat', 'BanRmChat'] : []
 }
 
 /**
@@ -545,7 +582,25 @@ const app = new Hono<App>()
 				'succeeds; it simply links nothing, and the player types their password each launch.',
 				'',
 				'**Roles.** The token embeds a `role` claim from the account, so developer/moderator',
-				'powers refresh on every login and every refresh grant.',
+				'powers refresh on every login and every refresh grant. `junior` rides along for an',
+				'account flagged `isJunior`, and `screenshare` is on every token — it is a feature',
+				'gate the client reads, not a privilege anyone is granted. A junior also carries',
+				'the `rn.privilege` CLAIM (`BanVChat`, `BanRmChat`) — scope-shaped name, but the',
+				'client reads it as a claim beside `role`, and it is absent for everyone else.',
+				'',
+				'**Bans.** Once the grant has resolved an account, a BANNED account is refused a',
+				'token at all (`invalid_grant`) — every grant, including a refresh. A ban is a',
+				'`report` row with `banned` set (the `api` worker owns that table); it lifts on its',
+				'own when `ban_expires` passes, and never if that is null.',
+				'',
+				'The refusal follows the player, not just the account: it also catches an account',
+				'that shares a PROVEN platform identity (a `platform_account` link) or an IP',
+				'(`signupIp`/`lastLoginIp`, or the address this request came from) with a banned',
+				'one, and a `create_account` carrying either is refused BEFORE it mints anything.',
+				'Those two arms are the operator’s `BAN_EVASION_MATCH` knob (`ip`, `platform`, or',
+				'`off`); the ban on the account itself is always enforced. A linked match answers a',
+				'deliberately vaguer description than a direct one — the account refused may belong',
+				'to a housemate of the banned player rather than to them.',
 			].join('\n'),
 			requestBody: form(
 				TokenRequest,
@@ -557,7 +612,8 @@ const app = new Hono<App>()
 					OAuthError,
 					[
 						'Unusable grant: bad credentials, an unverifiable platform or platform_auth, an',
-						'invalid/expired refresh token, a missing account identifier, or a signup cap reached',
+						'invalid/expired refresh token, a missing account identifier, a signup cap reached,',
+						'or a banned account',
 					].join(' ')
 				),
 				500: json(
@@ -574,16 +630,6 @@ const app = new Hono<App>()
 			// Reads `grant_type`, `account_id`, `platform_id` and `platform` from the
 			// form body.
 			const body = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>)
-
-                        logger.info('TOKEN BODY AFTER PARSE', {
-                                body,
-                                username: body.username,
-                                account_id: body.account_id,
-                        })
-                        logger.info("TOKEN DEBUG BODY", {
-                                body,
-                                contentType: c.req.header("content-type"),
-                        })
 			const grantType = typeof body.grant_type === 'string' ? body.grant_type : ''
 			// `platform`/`platform_id` come from the body for a fresh login; a refresh
 			// grant overrides them below with what was stored when the token was issued.
@@ -609,12 +655,16 @@ const app = new Hono<App>()
 			// the edge sets it — unlike X-Forwarded-For, which is why we don't read that).
 			// Recorded as the immutable `signupIp` at creation and as `lastLoginIp` on every
 			// login; both feed the per-IP signup cap. Absent (empty) outside the CF edge.
+			// Only trust a forwarded IP (from the www BFF's server-to-server call) when it
+			// presents the shared internal secret — otherwise anyone could spoof
+			// x-forwarded-client-ip directly against this public endpoint to dodge the cap.
 			const presentedSecret = c.req.header('x-internal-secret') ?? ''
 			const internalSecretValid =
 				presentedSecret !== '' && presentedSecret === c.env.INTERNAL_SECRET
 			const clientIp = internalSecretValid
 				? (c.req.header('x-forwarded-client-ip') ?? '')
 				: (c.req.header('cf-connecting-ip') ?? '')
+			logger.info('DEBUG ip resolution', { internalSecretValid: internalSecretValid, presentedSecretLen: presentedSecret.length, envSecretLen: (c.env.INTERNAL_SECRET || '').length, forwardedIp: c.req.header('x-forwarded-client-ip') || null, connectingIp: c.req.header('cf-connecting-ip') || null, resolvedClientIp: clientIp })
 
 			// A platform-authenticated login proves who you are with the platform itself, and
 			// we can verify exactly two: Steam (0), from its Steam-signed platform_auth ticket,
@@ -725,6 +775,35 @@ const app = new Hono<App>()
 			//    via create_account or /account/me/changepassword.
 			let accountId: string
 			if (grantType === 'create_account') {
+				// A banned player's next move is a new account, so the ban is checked BEFORE
+				// one is minted — against the only identity a signup has, the IP it came from
+				// and the platform identity it just proved. Refusing after the fact (as the
+				// shared check below would) still refuses the token, but leaves the account
+				// row behind and burns a slot off both signup caps, so the evader gets to keep
+				// making them.
+				//
+				// Nothing here can match the account arm (there is no account yet), so this is
+				// purely the linked matching, and BAN_EVASION_MATCH=off leaves signup open —
+				// which is the honest default position: a server that won't accept the IP arm's
+				// false positives is choosing to let evaders re-register.
+				const blocked = await resolveBan(c.env.DB, null, {
+					identity: {
+						ip: clientIp,
+						platform: verifiedPlatform,
+						platformId: verifiedPlatformId,
+					},
+					arms: banEvasionMatch(c.env.BAN_EVASION_MATCH),
+				})
+				if (blocked) {
+					logger.info('signup refused: player banned', {
+						via: blocked.via,
+						bannedAccountId: blocked.bannedAccountId,
+						ip: clientIp,
+						platformId: verifiedPlatformId,
+					})
+					return c.json({ error: 'invalid_grant', error_description: BLOCKED_DESCRIPTION }, 400)
+				}
+
 				// Signup caps. Checked before minting anything, so a rejected signup leaves no
 				// account behind. Each arm is skipped when it's disabled (var <= 0) or when its
 				// identity is unknown (no verified platform id / no client IP) — an unattributable
@@ -894,6 +973,44 @@ const app = new Hono<App>()
 				await setLoginContext(c.env.DB, resolvedId, { deviceId, deviceClass, ip: clientIp })
 			}
 
+			// A banned player gets no token — and with no token every other worker is shut to
+			// them, so this is the outer wall of a ban; matchmaking's refusal is the inner
+			// one, which still has to exist because a token issued before the ban stays valid
+			// until it expires.
+			//
+			// Checked once here, after the grant has resolved an account, so it covers every
+			// grant: password, cached_login and a refresh_token redeemed by a client that has
+			// been running since before the ban. Deliberately AFTER the credential checks —
+			// a wrong password is still "invalid account_id or password", so this can't be
+			// used to probe whether an account exists or is banned without knowing it.
+			//
+			// The request's own IP and proven identity are passed alongside the account, so a
+			// ban also reaches an old, clean account logged into from the banned player's
+			// device or network — the stored ips alone would only catch that on the SECOND
+			// login. create_account was already refused before it minted anything (above);
+			// this still runs for it, so a signup that raced one is refused too.
+			const ban = await resolveBan(c.env.DB, Number(accountId), {
+				identity: { ip: clientIp, platform: verifiedPlatform, platformId: verifiedPlatformId },
+				arms: banEvasionMatch(c.env.BAN_EVASION_MATCH),
+			})
+			if (ban) {
+				logger.info('token refused: player banned', {
+					accountId,
+					grantType,
+					via: ban.via,
+					bannedAccountId: ban.bannedAccountId,
+					reportId: ban.ban.id,
+					banExpires: ban.ban.ban_expires,
+				})
+				return c.json(
+					{
+						error: 'invalid_grant',
+						error_description: ban.via === 'account' ? BANNED_DESCRIPTION : BLOCKED_DESCRIPTION,
+					},
+					400
+				)
+			}
+
 			// Never sign with an empty key. An empty JWT_SECRET (misconfigured/missing
 			// binding) would still yield a well-formed token — but one signed with an empty
 			// key, which every worker validates against, so anyone could forge it. Refuse to
@@ -923,7 +1040,8 @@ const app = new Hono<App>()
 				platformId,
 				platform,
 				jwtSecret,
-				accountRoles(roleAccount)
+				accountRoles(roleAccount),
+				accountPrivileges(roleAccount)
 			)
 			// Issue a fresh, persisted refresh token (single-use; the client redeems it via
 			// grant_type=refresh_token). A refresh grant thus rotates its token.
@@ -1028,7 +1146,7 @@ app.get(
 						'of the Rec Room backend.',
 					].join('\n'),
 				},
-				servers: [{ url: 'https://auth.recflare.net', description: 'Production' }],
+				servers: [{ url: 'https://auth.rugnetarchival.xyz', description: 'Production' }],
 				components: {
 					securitySchemes: {
 						bearerAuth: {

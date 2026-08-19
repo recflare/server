@@ -28,7 +28,13 @@ export const ROOM_SCHEMA_DDL: string[] = [
 		name TEXT GENERATED ALWAYS AS (json_extract(data, '$.Name')) VIRTUAL,
 		name_lower TEXT GENERATED ALWAYS AS (lower(json_extract(data, '$.Name'))) VIRTUAL,
 		creator_account_id INTEGER GENERATED ALWAYS AS (json_extract(data, '$.CreatorAccountId')) VIRTUAL,
-		is_dorm INTEGER GENERATED ALWAYS AS (json_extract(data, '$.IsDorm')) VIRTUAL
+		is_dorm INTEGER GENERATED ALWAYS AS (json_extract(data, '$.IsDorm')) VIRTUAL,
+		-- Lifetime visit counter (migrations/0011_room_visits.sql, which appends it here):
+		-- bumped once per successful matchmake into the room by {@link recordRoomVisit},
+		-- and served as the room's \`Stats.VisitCount\`. A real column rather than a field
+		-- in the blob so a visit is one atomic UPDATE that can't lose a concurrent
+		-- read-modify-write of the whole room.
+		visits INTEGER NOT NULL DEFAULT 0
 	)`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_rooms_room_id ON room (room_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_rooms_name_lower ON room (name_lower)`,
@@ -248,9 +254,10 @@ export async function isPlayerBannedFromRoom(
  * room's content (scene/subrooms/settings), assigning a fresh RoomId, the given
  * name, and the new owner. The clone starts with an empty tag set — the source's
  * tags (including the `base` template tag) do not carry over, so the owner tags the
- * clone from scratch — and `IsRRO` is cleared so the client doesn't render a virtual
- * "RRO" tag on it. Returns the new room, or null when the source isn't in D1 or
- * disallows cloning.
+ * clone from scratch — `IsRRO` is cleared so the client doesn't render a virtual
+ * "RRO" tag on it, and it starts PRIVATE rather than inheriting the source's
+ * visibility. Returns the new room, or null when the source isn't in D1 or disallows
+ * cloning.
  */
 export async function cloneRoom(
 	db: D1Database,
@@ -284,6 +291,11 @@ export async function cloneRoom(
 		// A user clone is not a Rec Room Original — clear the inherited flag, or the
 		// client renders a virtual "RRO" tag on the clone.
 		IsRRO: false,
+		// A brand-new room is unpublished: the owner publishes it by setting the room's
+		// accessibility. Inheriting the source's would put the clone straight into the
+		// public feeds (hot/search/recommendations/similar all key on Accessibility === 1)
+		// the moment it was made — every clone of a PUBLIC source, template or player room.
+		Accessibility: Accessibility.Private,
 		Roles: roles,
 		// A fresh room has no engagement of its own — don't inherit the source's counters
 		// (the derived ones are recomputed per read, but the clone is returned as-is here).
@@ -447,6 +459,11 @@ export interface SaveSubRoomDataInput {
 	subRoomDataHash?: string
 	/** Uploaded blob key for the room-level METADATA blob (a separate upload). */
 	roomDataFilename?: string
+	/**
+	 * The save comment — a description of THIS revision, typed into the client's save box.
+	 * It belongs to the save (and shows up in the `…/saves` history); it is not the room's
+	 * public description, which only `PUT /rooms/:id/description` sets.
+	 */
 	description?: string
 	persistenceVersion?: number
 	inventionUsage?: string
@@ -561,9 +578,10 @@ function legacySubRoomSave(sub: SubRoom): SubRoomDataSave | null {
 }
 
 /**
- * Persist a room-save against a specific subroom and record the room-level fields the
- * save carries. Returns the updated (hydrated) room AND the save that was just created —
- * the route answers with both — or null when the room or subroom doesn't exist.
+ * Persist a room-save against a specific subroom. Everything the save carries belongs to
+ * that subroom's revision — nothing is written to the room. Returns the updated
+ * (hydrated) room AND the save that was just created — the route answers with both — or
+ * null when the room or subroom doesn't exist.
  *
  * Whether the save goes live is the client's call: `AutoPublish: true` publishes it
  * outright, otherwise it becomes the subroom's `staged_save_id` with the live
@@ -619,7 +637,7 @@ export async function saveSubRoomData(
 				input.persistenceVersion ?? (typeof priorVersion === 'number' ? priorVersion : 0),
 			savedByAccountId: accountId,
 			// The save comment — empty string, not null, when the save carries none (the
-			// reference's `roomDesc ?? ""`). Also written to the room below.
+			// reference's `roomDesc ?? ""`).
 			description: input.description ?? '',
 			createdAt: new Date().toISOString(),
 			unityAssetId: input.unityAssetId,
@@ -629,11 +647,15 @@ export async function saveSubRoomData(
 	if (input.roomDataFilename) sub.RoomDataBlob = input.roomDataFilename
 	sub.DataSavedAt = new Date().toISOString()
 	if (input.persistenceVersion !== undefined) sub.PersistenceVersion = input.persistenceVersion
+	if (input.inventionUsage !== undefined) sub.InventionUsage = input.inventionUsage
 
-	// Room-level fields carried by the save.
-	if (typeof input.description === 'string') room.Description = input.description
-	if (input.persistenceVersion !== undefined) room.PersistenceVersion = input.persistenceVersion
-	if (input.inventionUsage !== undefined) room.InventionUsage = input.inventionUsage
+	// Nothing here touches the ROOM. A room save is a revision of one SUBROOM, and every
+	// field it carries describes that revision: `Description` is the save comment shown in
+	// the `…/saves` history, `PersistenceVersion` and `InventionUsage` describe the scene
+	// just saved. They used to be copied onto the room as well, which meant each save
+	// silently replaced the room's public description with the save comment. The room's own
+	// fields are edited through their own routes (`PUT /rooms/:id/description` and
+	// friends), so the room row is not rewritten here at all.
 
 	// Publish outright when the client asked to (`AutoPublish`), or for a dorm — a dorm is
 	// the player's own private space with no publish step in the client, so staging one
@@ -653,7 +675,6 @@ export async function saveSubRoomData(
 		db
 			.prepare('UPDATE subroom SET data = ?2 WHERE sub_room_id = ?1')
 			.bind(subRoomId, serializeSubRoom(sub, roomId)),
-		db.prepare('UPDATE room SET data = ?2 WHERE room_id = ?1').bind(roomId, serializeRoom(room)),
 	])
 
 	// Re-hydrate so the returned room reflects the just-saved subroom.
@@ -838,10 +859,28 @@ export async function deleteSubRoom(
 
 interface RoomRow {
 	data: string
+	visits: number
 }
 
-const parseOne = (row: RoomRow | null): Room | null => (row ? (JSON.parse(row.data) as Room) : null)
-const parseAll = (rows: RoomRow[]): Room[] => rows.map((r) => JSON.parse(r.data) as Room)
+/**
+ * The columns every room read selects. `visits` is authoritative for the room's
+ * `Stats.VisitCount` (the blob keeps it at 0 — see {@link storedStats}), so it has to
+ * come back with the blob on every read; a join aliases them (`r.data AS data`).
+ */
+const ROOM_COLUMNS = 'data, visits'
+
+/**
+ * Parse a room row: the stored blob with the counters the columns own folded back in.
+ * `visits` is a real column, so a room read straight from the DB carries the live count.
+ */
+const parseRow = (row: RoomRow): Room => {
+	const room = JSON.parse(row.data) as Room
+	room.Stats = { ...storedStats(room.Stats), VisitCount: row.visits ?? 0 }
+	return room
+}
+
+const parseOne = (row: RoomRow | null): Room | null => (row ? parseRow(row) : null)
+const parseAll = (rows: RoomRow[]): Room[] => rows.map(parseRow)
 
 // ---- Subrooms -------------------------------------------------------------
 // Subrooms are their own table (globally-unique autoincrement `sub_room_id`); a
@@ -971,8 +1010,14 @@ async function attachSubRooms(db: D1Database, rooms: Room[]): Promise<void> {
 // A room's cheer/favorite counters are DERIVED from the `interaction` table rather than
 // stored: they're recomputed on every read, so a cheer shows up immediately and the
 // counts can't drift from the per-player rows they're made of. The blob keeps them at 0
-// (see {@link serializeRoom}). `VisitorCount`/`VisitCount` are left as the blob has them
-// — nothing records a visit yet, and `interaction.last_visited_at` is only stamped by the
+// (see {@link serializeRoom}).
+//
+// `VisitCount` is neither stored in the blob nor derived: it's the `room.visits` column,
+// incremented by {@link recordRoomVisit} on each matchmake and read back with the blob
+// (see {@link parseRow}). It can't be derived the way cheers are — a visit leaves no
+// per-player row to count — and it can't live in the blob, where a read-modify-write of
+// the whole room would drop concurrent visits. `VisitorCount` (distinct visitors) is
+// still left as the blob has it: `interaction.last_visited_at` is only stamped by the
 // cheer/favorite toggles, so counting those rows would report cheerers as visitors.
 
 /** One room's derived engagement counters (the aggregate maps below key these by RoomId). */
@@ -997,13 +1042,23 @@ const STATS_ID_LIMIT = 90
 const roomIdOf = (room: Room): number => (typeof room.RoomId === 'number' ? room.RoomId : 0)
 
 /**
- * The `Stats` object to persist: whatever the room carried, with the derived counters
- * back at 0 so the blob never holds a stale copy of them.
+ * The `Stats` object to persist: whatever the room carried, with the counters the
+ * columns/tables own back at 0 so the blob never holds a stale copy of them.
  */
 function storedStats(stats: unknown): Record<string, unknown> {
 	const stored =
 		typeof stats === 'object' && stats !== null ? (stats as Record<string, unknown>) : {}
-	return { ...ZERO_STATS, ...stored, CheerCount: 0, FavoriteCount: 0 }
+	return { ...ZERO_STATS, ...stored, CheerCount: 0, FavoriteCount: 0, VisitCount: 0 }
+}
+
+/**
+ * Count one visit to a room — the `match` worker calls this on every successful
+ * matchmake (see its `enterRoom`), which is the only way a player ever lands in a room.
+ * A blind `visits = visits + 1` UPDATE: it's the whole write, so simultaneous visitors
+ * can't clobber each other, and an unknown room id simply matches nothing.
+ */
+export async function recordRoomVisit(db: D1Database, roomId: number): Promise<void> {
+	await db.prepare('UPDATE room SET visits = visits + 1 WHERE room_id = ?1').bind(roomId).run()
 }
 
 /**
@@ -1048,8 +1103,12 @@ async function attachStats(
 	const byRoom = stats ?? (await getRoomStats(db, [...new Set(rooms.map(roomIdOf))]))
 	for (const room of rooms) {
 		const counts = byRoom.get(roomIdOf(room))
+		// `storedStats` zeroes VisitCount (the blob doesn't own it), so carry over the
+		// value `parseRow` folded in from the `visits` column rather than losing it here.
+		const stats = (room.Stats ?? {}) as Record<string, unknown>
 		room.Stats = {
-			...storedStats(room.Stats),
+			...storedStats(stats),
+			VisitCount: typeof stats.VisitCount === 'number' ? stats.VisitCount : 0,
 			CheerCount: counts?.CheerCount ?? 0,
 			FavoriteCount: counts?.FavoriteCount ?? 0,
 		}
@@ -1369,7 +1428,10 @@ export async function getRoomById(db: D1Database, roomId: number): Promise<Room 
 	return hydrateRoom(
 		db,
 		parseOne(
-			await db.prepare('SELECT data FROM room WHERE room_id = ?1').bind(roomId).first<RoomRow>()
+			await db
+				.prepare(`SELECT ${ROOM_COLUMNS} FROM room WHERE room_id = ?1`)
+				.bind(roomId)
+				.first<RoomRow>()
 		)
 	)
 }
@@ -1407,7 +1469,7 @@ export async function getRoomByName(db: D1Database, name: string): Promise<Room 
 		db,
 		parseOne(
 			await db
-				.prepare('SELECT data FROM room WHERE name_lower = ?1')
+				.prepare(`SELECT ${ROOM_COLUMNS} FROM room WHERE name_lower = ?1`)
 				.bind(name.toLowerCase())
 				.first<RoomRow>()
 		)
@@ -1419,7 +1481,7 @@ export async function getRoomsByIds(db: D1Database, ids: number[]): Promise<Room
 	if (ids.length === 0) return []
 	const placeholders = ids.map((_, i) => `?${i + 1}`).join(',')
 	const { results } = await db
-		.prepare(`SELECT data FROM room WHERE room_id IN (${placeholders})`)
+		.prepare(`SELECT ${ROOM_COLUMNS} FROM room WHERE room_id IN (${placeholders})`)
 		.bind(...ids)
 		.all<RoomRow>()
 	return hydrateRooms(db, parseAll(results))
@@ -1428,7 +1490,7 @@ export async function getRoomsByIds(db: D1Database, ids: number[]): Promise<Room
 /** All rooms created by an account (e.g. their dorm). */
 export async function getRoomsByCreator(db: D1Database, accountId: number): Promise<Room[]> {
 	const { results } = await db
-		.prepare('SELECT data FROM room WHERE creator_account_id = ?1')
+		.prepare(`SELECT ${ROOM_COLUMNS} FROM room WHERE creator_account_id = ?1`)
 		.bind(accountId)
 		.all<RoomRow>()
 	return hydrateRooms(db, parseAll(results))
@@ -1475,7 +1537,7 @@ export async function getFavoritedRooms(
 ): Promise<Room[]> {
 	const { results } = await db
 		.prepare(
-			`SELECT r.data AS data
+			`SELECT r.data AS data, r.visits AS visits
 			 FROM interaction i
 			 JOIN room r ON r.room_id = i.room_id
 			 WHERE i.player_id = ?1 AND i.favorited = 1
@@ -1500,7 +1562,7 @@ export async function getVisitedRooms(
 ): Promise<Room[]> {
 	const { results } = await db
 		.prepare(
-			`SELECT r.data AS data
+			`SELECT r.data AS data, r.visits AS visits
 			 FROM interaction i
 			 JOIN room r ON r.room_id = i.room_id
 			 WHERE i.player_id = ?1 AND i.last_visited_at IS NOT NULL
@@ -1659,7 +1721,7 @@ export async function searchRooms(
 	if (q === '') return { Results: [], TotalResults: 0 }
 	const terms = q.split(/[\s+]+/).filter(Boolean)
 
-	const { results } = await db.prepare('SELECT data FROM room').all<RoomRow>()
+	const { results } = await db.prepare(`SELECT ${ROOM_COLUMNS} FROM room`).all<RoomRow>()
 	let rooms = parseAll(results).filter((r) => r.IsDorm !== true && r.Accessibility === 1)
 
 	for (const term of terms) {
@@ -1698,6 +1760,18 @@ function hotScore(room: Room, stats: Map<number, RoomStats>): number {
 const NEW_TAG = 'new'
 
 /**
+ * The browse screen's "Community" chip posts `tag=community`, another PSEUDO-tag no
+ * room carries. It means "made by a player", which here is every room whose creator
+ * isn't the Coach account — the system account that owns the seeded Rec Room rooms.
+ * Unlike {@link NEW_TAG} it only filters: the page keeps the feed's normal
+ * live-population ordering.
+ */
+const COMMUNITY_TAG = 'community'
+
+/** The system account (`Coach`) that owns the seeded first-party rooms. */
+const COACH_ACCOUNT_ID = 1
+
+/**
  * True if the room is a Rec Room Original. `IsRRO` is the flag the client renders a
  * virtual "RRO" tag from; the auto-derived `rro` tag is checked too so a room that only
  * carries the tag isn't mistaken for player-made.
@@ -1722,7 +1796,8 @@ function createdAt(room: Room): number {
  * skip/take; returns `{ Results, TotalResults }` like search. The dataset is
  * small, so this filters/sorts in memory rather than in SQL.
  *
- * `tag=new` is the one filter that isn't a tag lookup — see {@link NEW_TAG}.
+ * `tag=new` and `tag=community` are the filters that aren't tag lookups — see
+ * {@link NEW_TAG} and {@link COMMUNITY_TAG}.
  */
 export async function getHotRooms(
 	db: D1Database,
@@ -1730,7 +1805,7 @@ export async function getHotRooms(
 	skip: number,
 	take: number
 ): Promise<{ Results: Room[]; TotalResults: number }> {
-	const { results } = await db.prepare('SELECT data FROM room').all<RoomRow>()
+	const { results } = await db.prepare(`SELECT ${ROOM_COLUMNS} FROM room`).all<RoomRow>()
 	let rooms = parseAll(results).filter(
 		(r) => r.IsDorm !== true && r.Accessibility === 1 && r.ExcludeFromLists !== true
 	)
@@ -1748,7 +1823,9 @@ export async function getHotRooms(
 		}
 	}
 
-	if (t !== '') {
+	if (t === COMMUNITY_TAG) {
+		rooms = rooms.filter((r) => r.CreatorAccountId !== COACH_ACCOUNT_ID)
+	} else if (t !== '') {
 		const accepted = new Set([t, ...(TAG_ALIASES[t] ?? [])])
 		rooms = rooms.filter((r) => roomHasAnyTag(r, accepted))
 	}
@@ -1781,7 +1858,7 @@ export async function getRecommendedRooms(
 	skip: number,
 	take: number
 ): Promise<Room[]> {
-	const { results } = await db.prepare('SELECT data FROM room').all<RoomRow>()
+	const { results } = await db.prepare(`SELECT ${ROOM_COLUMNS} FROM room`).all<RoomRow>()
 	const stats = await getRoomStats(db)
 	return hydrateRooms(
 		db,
@@ -1819,7 +1896,7 @@ export interface FeaturedRoomGroup {
  * Small dataset, so done in memory.
  */
 export async function getFeaturedRooms(db: D1Database): Promise<FeaturedRoomGroup> {
-	const { results } = await db.prepare('SELECT data FROM room').all<RoomRow>()
+	const { results } = await db.prepare(`SELECT ${ROOM_COLUMNS} FROM room`).all<RoomRow>()
 	const rooms = parseAll(results).filter(
 		(r) => r.IsDorm !== true && r.Accessibility === 1 && r.ExcludeFromLists !== true
 	)
@@ -1866,7 +1943,7 @@ export async function getSimilarRooms(
 	const targetTags = new Set(roomTags(target))
 	if (targetTags.size === 0) return empty
 
-	const { results } = await db.prepare('SELECT data FROM room').all<RoomRow>()
+	const { results } = await db.prepare(`SELECT ${ROOM_COLUMNS} FROM room`).all<RoomRow>()
 	const sharedCount = (r: Room): number => roomTags(r).filter((t) => targetTags.has(t)).length
 	const stats = await getRoomStats(db)
 
@@ -1902,7 +1979,7 @@ export async function getSimilarRooms(
  * array. Small dataset, so done in memory.
  */
 export async function getBaseRooms(db: D1Database, skip: number, take: number): Promise<Room[]> {
-	const { results } = await db.prepare('SELECT data FROM room').all<RoomRow>()
+	const { results } = await db.prepare(`SELECT ${ROOM_COLUMNS} FROM room`).all<RoomRow>()
 	const base = new Set(['base'])
 	return hydrateRooms(
 		db,
@@ -1933,7 +2010,9 @@ export async function getDormRoom(db: D1Database, accountId: number): Promise<Ro
 		db,
 		parseOne(
 			await db
-				.prepare('SELECT data FROM room WHERE creator_account_id = ?1 AND is_dorm = 1 LIMIT 1')
+				.prepare(
+					`SELECT ${ROOM_COLUMNS} FROM room WHERE creator_account_id = ?1 AND is_dorm = 1 LIMIT 1`
+				)
 				.bind(accountId)
 				.first<RoomRow>()
 		)

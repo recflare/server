@@ -12,8 +12,11 @@ import { sign, verify } from 'hono/jwt'
 
 import { GAME_VERSION } from '@repo/domain'
 
-/** Token lifetime in seconds (mirrored in the `expires_in` response field). */
-export const TOKEN_TTL_SECONDS = 3600
+// Token lifetime in seconds (mirrored in the `expires_in` response field).
+// @todo Allegedly, the game is supposed to refresh tokens every 3600 seconds, but it doesn't.
+// It's possible our refresh_token implementation is broken, but for now we just make the token
+// last a day so the client doesn't have to refresh it.
+export const TOKEN_TTL_SECONDS = 86400
 
 /**
  * Validate an HS256 token and return its `sub` (account id) claim, or `null` when
@@ -110,15 +113,16 @@ export async function generateToken(
 	platformId: string,
 	platform: number,
 	secret: string,
-	extraRoles: string[] = []
+	extraRoles: string[] = [],
+	privileges: string[] = []
 ): Promise<string> {
 	const now = Math.floor(Date.now() / 1000)
 	// The client reads `role`/`scope` (and expects a well-formed iss/aud) to
 	// authorize itself; a token with only `sub` is rejected before login finishes.
 	return sign(
 		{
-			iss: 'https://auth.recflare.net',
-			aud: 'https://auth.recflare.net',
+			iss: 'https://auth.rugnetarchival.xyz',
+			aud: 'https://auth.rugnetarchival.xyz',
 			nbf: now,
 			iat: now,
 			exp: now + TOKEN_TTL_SECONDS,
@@ -132,6 +136,11 @@ export async function generateToken(
 			'rn.ver': GAME_VERSION,
 			'rn.plat': platform,
 			role: [...BASE_ROLES, ...extraRoles],
+			// `rn.privilege` LOOKS like a scope but is a claim: the client reads it out of
+			// the same claims dictionary it reads `role` from, and it never appears in
+			// `scope`. Omitted entirely when empty, so an unrestricted token is byte-for-byte
+			// what it was before privileges existed.
+			...(privileges.length > 0 ? { 'rn.privilege': privileges } : {}),
 			scope: TOKEN_SCOPES,
 			jti: crypto.randomUUID(),
 		},

@@ -50,6 +50,13 @@ export const UNAUTHORIZED_RESPONSE = { description: 'Missing or invalid bearer t
 /** Bearer-JWT security requirement, for the auth-gated routes. */
 export const AUTHED = [{ bearerAuth: [] }]
 
+/**
+ * Optional bearer JWT — the empty requirement object makes "no credentials" a valid
+ * alternative. For routes that serve public data but personalise it for a known caller
+ * (the weekly challenge's per-player `Complete`) instead of 401ing.
+ */
+export const OPTIONAL_AUTHED: OpenAPIV3_1.SecurityRequirementObject[] = [{}, { bearerAuth: [] }]
+
 // ---- Loose shapes ----------------------------------------------------------
 // Several routes serve opaque static catalogs (avatar items, the weekly challenge) or
 // empty-list stubs. Modelling every catalog field adds noise without value, so these
@@ -98,18 +105,65 @@ export const CustomAvatarItemsResponse = z.object({
 	TotalResults: z.int(),
 })
 
-/** `POST /api/CampusCard/v1/UpdateAndGetSubscription` — both fields null (no subs yet). */
-export const SubscriptionResponse = z.object({
-	subscription: z.null(),
-	platformAccountSubscribedPlayerId: z.null(),
+/**
+ * A Rec Room Plus subscription (the client calls it a `CampusCard`). Nothing here sells one,
+ * so this is the complimentary subscription a `developer` account reports — see
+ * `developerSubscription` in econ.app.ts for why each field reads the way it does.
+ */
+export const SubscriptionDto = z.object({
+	SubscriptionId: z.int().describe('Placeholder — no subscription is stored'),
+	RecNetPlayerId: z.int().describe('The subscribed player: the caller'),
+	PlatformType: z
+		.int()
+		.nullable()
+		.describe(
+			'Which store sold it: -1 All, 0 Steam, 1 Oculus, 2 PlayStation, 3 Xbox, 4 RecNet, ' +
+				'5 IOS, 6 GooglePlay, 7 Standalone, 8 Pico. -1 here — no store did'
+		),
+	PlatformId: z.string().describe('Empty — no store account behind it'),
+	PlatformPurchaseId: z.string().describe('Empty — nothing was purchased'),
+	Level: z.int().describe('0 Gold, 1 Platinum'),
+	Period: z.int().describe('0 Month, 1 Year, 2 ThreeMonth, 3 SixMonth'),
+	ExpirationDate: z.string().describe('ISO 8601 UTC; a year out, recomputed per call'),
+	IsAutoRenewing: z.boolean(),
+	CreatedAt: z.string(),
+	ModifiedAt: z.string(),
 })
+
+/**
+ * `POST /api/CampusCard/v1/UpdateAndGetSubscription` — the caller's subscription, or `{}`
+ * when they have none (which is everyone without the `developer` role). `{}` rather than a
+ * `Subscription: null` envelope: an absent key is how the client reads "not subscribed".
+ */
+export const SubscriptionResponse = z.union([
+	z.object({
+		Subscription: SubscriptionDto,
+		PlatformAccountSubscribedPlayerId: z
+			.null()
+			.describe('The platform account holding the sub, when it is shared. Never set here'),
+	}),
+	z.object({}).describe('`{}` — no subscription'),
+])
 
 /** `POST /api/challenge/v2/updateProgress` — the identifying fields echoed back. */
 export const ChallengeProgressResponse = z.object({
 	ChallengeMapId: z.int(),
 	ChallengeId: z.int(),
-	Config: z.string(),
-	Complete: z.boolean().describe('Always false — no challenge-progress store yet'),
+	Config: z.string().describe('Echoed back verbatim; not stored'),
+	Complete: z
+		.boolean()
+		.describe('The STORED completion — latches true within a rotation, so it may differ'),
+})
+
+/**
+ * `POST /api/objectives/v1/updateobjective` — the group the objective belongs to, after
+ * the update. camelCase, unlike the PascalCase body the client posts and the PascalCase
+ * `ObjectiveGroups` entries `myprogress` serves — three spellings of the same group.
+ */
+export const UpdateObjectiveResponse = z.object({
+	group: z.int().describe('Echoed back from the request'),
+	isCompleted: z.boolean().describe('Always false — no objectives store yet'),
+	clearedAt: z.string().describe('When the group was cleared — now, since nothing persists'),
 })
 
 /**
@@ -195,7 +249,40 @@ export const ConsumeGiftRequest = z.object({
 export const ChallengeProgressRequest = z.object({
 	ChallengeMapId: z.union([z.string(), z.int()]).optional(),
 	ChallengeId: z.union([z.string(), z.int()]).optional(),
-	Config: z.string().optional().describe('The client-evaluated rule tree'),
+	Config: z
+		.string()
+		.optional()
+		.describe('The client-evaluated rule tree, with its running count in `cc`; not stored'),
+	Complete: z
+		.union([z.string(), z.boolean()])
+		.optional()
+		.describe('The client’s verdict — sent as .NET’s `"True"`/`"False"`'),
+})
+
+/** `POST /api/gamerewards/v1/request` form body. */
+export const GameRewardRequest = z.object({
+	rewardType: z
+		.string()
+		.describe('The reward being asked for, e.g. `FirstActivityOfDay`, `PostGameActivity`'),
+	Message: z.string().optional().describe('The message to show for the reward'),
+	giftContext: z
+		.string()
+		.optional()
+		.describe('The activity it came from, e.g. `Soccer` — part of the cooldown key'),
+})
+
+/**
+ * `POST /api/objectives/v1/updateobjective` JSON body — one objective's state as the
+ * client now sees it. `Index`/`Group` identify it within `myprogress`; the rest is the
+ * progress it wants persisted.
+ */
+export const UpdateObjectiveRequest = z.object({
+	Index: z.int().describe('Which objective within the group'),
+	Group: z.int().describe('Which objective group'),
+	Progress: z.int().optional(),
+	VisualProgress: z.int().optional().describe('What the client animates towards'),
+	IsCompleted: z.boolean().optional(),
+	HasClaimedReward: z.boolean().optional(),
 })
 
 /** `POST /api/avatar/v3/saved/set` JSON body — an outfit with a target `Slot`. */

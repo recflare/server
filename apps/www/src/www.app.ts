@@ -14,10 +14,13 @@ import {
 	accountsBase,
 	apiBase,
 	authBase,
+	cdnBase,
 	imgBase,
 	notifyBase,
 	postAuthForm,
 	readAuthError,
+	roomsBase,
+	storageBase,
 } from './upstream'
 
 import type { App } from './context'
@@ -69,6 +72,9 @@ const app = new Hono<App>()
 				api: apiBase(c.env),
 				img: imgBase(c.env),
 				notify: notifyBase(c.env),
+				rooms: roomsBase(c.env),
+				cdn: cdnBase(c.env),
+				storage: storageBase(c.env),
 			},
 		})
 	})

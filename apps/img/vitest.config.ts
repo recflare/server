@@ -8,6 +8,10 @@ export default defineConfig({
 			miniflare: {
 				bindings: {
 					ENVIRONMENT: 'VITEST',
+					// Signing is off in `wrangler.jsonc`; turn it on here so the `?sig=p1`
+					// path stays covered. The flag-off behaviour is tested by calling the
+					// app directly with an overridden env.
+					IMG_SIGNING_ENABLED: true,
 				},
 			},
 		}),

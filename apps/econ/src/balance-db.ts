@@ -1,3 +1,5 @@
+import { BalancePlatform } from '../../notify/src/notification-payloads'
+
 /**
  * Currency balances on the shared `recflare` D1 database.
  *
@@ -13,7 +15,8 @@
  */
 
 /**
- * The currencies the client knows about (its `CurrencyType` enum). The client sends
+ * The currencies the client knows about (its `CurrencyType` enum, obfuscated
+ * `GKPEKOLBBJL` — which lists every member below except `RoomInventoryItem`). The client sends
  * these ints in the balance/storefront paths — `/api/storefronts/v4/balance/2` is
  * RecCenterTokens — so the values are fixed by the client, not by us.
  *
@@ -90,10 +93,23 @@ export function startingBalances(
 }
 
 /**
- * `Platform` in the client's balance DTO. -2 is "all platforms" — we don't track
- * per-platform wallets (real RecNet did, for platform-purchased tokens).
+ * The ONE balance bucket this server uses: `NonPurchasedNotUsableInP2P` (-2).
+ *
+ * The client keys a balance by `(CurrencyType, Platform)` and shows the SUM of the buckets,
+ * so which Platform a balance is reported under is not cosmetic — it is the bucket's
+ * identity. Everything we hand out is minted rather than bought, and we track no
+ * per-platform wallets (real RecNet did, for tokens paid for on each store), so one
+ * account-wide bucket per currency answers for all of them.
+ *
+ * Every surface that names the bucket must name THIS one: the balance DTO's `Platform`, the
+ * `BalanceType` the storefront HTTP bodies echo, and the `Platform` on every
+ * `StorefrontBalance*` socket frame. Naming a second one there invents a balance the client
+ * adds to the real total — see the frame rule in econ.app.ts.
+ *
+ * The enum itself lives in the notify worker's `notification-payloads.ts`, recovered from
+ * the client's decoder, rather than being duplicated here.
  */
-export const ALL_PLATFORMS = -2
+export const ALL_PLATFORMS: BalancePlatform = BalancePlatform.NonPurchasedNotUsableInP2P
 
 /** Schema DDL (mirror of migrations 0001_balance.sql) — also used to build the table in tests. */
 export const BALANCE_SCHEMA_DDL: string[] = [

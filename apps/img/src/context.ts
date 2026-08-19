@@ -19,6 +19,14 @@ export type Env = SharedHonoEnv & {
 	 * requested with `?sig=p1`. Optional — when absent, responses are unsigned.
 	 */
 	IMG_SIGNING_KEY?: string
+	/**
+	 * Feature flag for REAL response signing. `?sig=p1` always returns a
+	 * `Content-Signature` header, but only when this is true is the value an
+	 * actual RSA-SHA1 signature over the body; when false (the default) it is a
+	 * cheap placeholder derived from the object key, which keeps the response on
+	 * the streaming path. See `stubSignature()` in `img.app.ts`.
+	 */
+	IMG_SIGNING_ENABLED?: boolean
 }
 
 /** Variables can be extended */

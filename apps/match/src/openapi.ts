@@ -150,6 +150,23 @@ export const MatchmakeResponse = z.object({
 	roomInstance: RoomInstanceDto.nullable(),
 })
 
+/**
+ * `GET /player/avoidjuniors` — a BARE JSON boolean (`true`/`false`), not an envelope and
+ * not a `{ value }` wrapper. The whole body is the preference.
+ */
+export const AvoidJuniorsResponse = z
+	.boolean()
+	.describe('Whether the player asked to be kept away from junior accounts')
+
+/**
+ * `PUT /player/avoidjuniors` form body. The client posts `avoidJuniors=True`; the field is
+ * matched case-insensitively and `True`/`false`/`1`/`0`/`yes`/`no` all parse, since neither
+ * the casing nor the spelling of the boolean is guaranteed across the client's surfaces.
+ */
+export const AvoidJuniorsRequest = z.object({
+	avoidJuniors: z.string().describe('`True`/`False` (also `1`/`0`, `yes`/`no`)'),
+})
+
 /** `POST /player/exclusivelogin` — a bare error code. */
 export const ExclusiveLoginResponse = z.object({ errorCode: z.int().describe('Always 0') })
 

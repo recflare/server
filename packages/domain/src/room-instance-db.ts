@@ -12,6 +12,7 @@
  * the client DTO (`toDto`).
  */
 
+import { RoomInstanceType } from './enums'
 import { countPlayersInInstance, getPlayerIdsByRoomInstance } from './presence-db'
 
 /** Schema DDL (mirror of migrations/0004_room_instance.sql). */
@@ -280,6 +281,56 @@ export async function refreshInstanceFullness(
 			.run()
 	}
 	return isFull
+}
+
+/**
+ * How long (s) a room instance is left alone after it's created, even with nobody in
+ * it. Every path that creates an instance writes the creator's presence in the same
+ * request, so an empty instance is normally already abandoned — but the two writes
+ * aren't atomic, and a cron firing in between would delete the instance the player is
+ * being handed. One cron interval of slack closes that window.
+ */
+export const EMPTY_INSTANCE_GRACE_SECONDS = 300
+
+/**
+ * Delete room instances with no presence rows pointing at them — the sessions left
+ * behind when every player quit or timed out. Nothing reuses them (matchmaking would
+ * happily hand a joiner an instance whose Photon room has long since emptied), so
+ * they're pure accumulation: one row per room visit, forever.
+ *
+ * Emptiness is a plain "are there any rows" test — expiry is not consulted, because
+ * {@link deleteExpiredPresence} is what retires a lapsed row and must have run first.
+ * Run out of that order and a crashed player's stale row keeps their instance alive
+ * until the following sweep.
+ *
+ * Instances younger than `graceSeconds` are skipped (see
+ * {@link EMPTY_INSTANCE_GRACE_SECONDS}), as are dorms: a dorm is backed by one
+ * persistent instance so its Photon room id survives re-entry, and it sits empty
+ * whenever the owner is elsewhere.
+ *
+ * Returns the ids deleted.
+ */
+export async function deleteEmptyRoomInstances(
+	db: D1Database,
+	graceSeconds = EMPTY_INSTANCE_GRACE_SECONDS,
+	now = Date.now()
+): Promise<number[]> {
+	// `createdAt` is an ISO-8601 UTC timestamp, which sorts lexicographically in the
+	// same order it sorts chronologically — so a string compare is a time compare.
+	const createdBefore = new Date(now - graceSeconds * 1000).toISOString()
+	const { results } = await db
+		.prepare(
+			`DELETE FROM room_instance
+			 WHERE created_at < ?1
+			   AND room_instance_type != ?2
+			   AND NOT EXISTS (
+			     SELECT 1 FROM presence WHERE presence.room_instance_id = room_instance.id
+			   )
+			 RETURNING json_extract(data, '$.roomInstanceId') AS id`
+		)
+		.bind(createdBefore, RoomInstanceType.Dormroom)
+		.all<{ id: number }>()
+	return results.map((r) => r.id)
 }
 
 /**

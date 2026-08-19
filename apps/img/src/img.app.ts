@@ -3,7 +3,7 @@ import { Hono } from 'hono'
 import { describeRoute, openAPIRouteHandler } from 'hono-openapi'
 import { useWorkersLogger } from 'workers-tagged-logger'
 
-import { withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
+import { withCleanSpec, withNotFound, withOnError, writeContentRange } from '@repo/hono-helpers'
 
 import { imageBytes, json, ServiceStatus } from './openapi'
 
@@ -152,17 +152,88 @@ async function signImage(env: Env, bytes: BufferSource): Promise<string | null> 
 	return btoa(binary)
 }
 
+/** Length of an RSA-2048 signature, matched by the placeholder below. */
+const SIGNATURE_BYTES = 256
+
+/**
+ * A placeholder `Content-Signature` value derived from the object key.
+ *
+ * The client requires the header to be PRESENT when it asks for `?sig=p1` — it
+ * does not check the value — and a real signature is this worker's dominant CPU
+ * cost, so by default we fabricate one. Being a pure function of the key it needs
+ * no access to the body, which is the whole point: the response still streams out
+ * of R2 instead of being buffered into the isolate to be hashed.
+ *
+ * FNV-1a over the key seeds an xorshift32 PRNG that fills a full RSA-2048-length
+ * signature, so the value looks structurally right and is stable for a given key
+ * (a cached response and a fresh one agree). It is NOT verifiable: turn on
+ * `IMG_SIGNING_ENABLED` if anything ever needs to check it.
+ */
+function stubSignature(key: string): string {
+	let state = 0x811c9dc5
+	for (let i = 0; i < key.length; i++) {
+		state = Math.imul(state ^ key.charCodeAt(i), 0x01000193) >>> 0
+	}
+	// xorshift32 is a fixed point at zero; the FNV basis makes this unreachable in
+	// practice, but a degenerate all-zero signature is worth ruling out outright.
+	if (state === 0) state = 0x811c9dc5
+
+	let binary = ''
+	for (let i = 0; i < SIGNATURE_BYTES; i++) {
+		state = (state ^ (state << 13)) >>> 0
+		state = state ^ (state >>> 17)
+		state = (state ^ (state << 5)) >>> 0
+		binary += String.fromCharCode(state & 0xff)
+	}
+	return btoa(binary)
+}
+
+/**
+ * How this request's `Content-Signature` header gets produced.
+ *
+ * - `none` — no `?sig=p1` was asked for; no header.
+ * - `stub` — the value is a pure function of the object key and is already
+ *   computed, so the body never has to be read. The default.
+ * - `rsa` — a real RSA-SHA1 signature over the bytes actually returned, which
+ *   forces the whole body through the isolate.
+ */
+type Signing = { mode: 'none' } | { mode: 'stub'; value: string } | { mode: 'rsa' }
+
+function resolveSigning(env: Env, sig: string | undefined, key: string): Signing {
+	if (sig !== 'p1') return { mode: 'none' }
+	if (env.IMG_SIGNING_ENABLED === true) return { mode: 'rsa' }
+	return { mode: 'stub', value: stubSignature(key) }
+}
+
+function signatureHeader(value: string): string {
+	return `key-id=${SIGNATURE_KEY_ID}; data=${value}`
+}
+
+/**
+ * Apply the key-derived placeholder signature, if that's the mode in play. Called
+ * before the body is touched — a stub never forces buffering.
+ */
+function applyStubSignature(headers: Headers, signing: Signing): void {
+	if (signing.mode === 'stub') headers.set('content-signature', signatureHeader(signing.value))
+}
+
+/** Whether serving this response requires the full body in the isolate. */
+function needsBody(transform: Transform | null, signing: Signing): boolean {
+	return transform !== null || signing.mode === 'rsa'
+}
+
 /**
  * Given the full image bytes and prepared response `headers`, optionally resize
- * (Photon) and/or RSA-SHA1 sign (`?sig=p1`) before returning the `Response`.
- * Both operations need the whole body, so callers buffer before calling this.
+ * (Photon) and/or RSA-SHA1 sign before returning the `Response`. Both operations
+ * need the whole body, so callers buffer before calling this. A `stub` signature
+ * is already on `headers` by this point.
  */
 async function finalizeImage(
 	env: Env,
 	bytes: ArrayBuffer,
 	headers: Headers,
 	transform: Transform | null,
-	wantsSignature: boolean
+	signing: Signing
 ): Promise<Response> {
 	let body: BufferSource = bytes
 	if (transform) {
@@ -172,11 +243,9 @@ async function finalizeImage(
 		headers.delete('etag')
 	}
 
-	if (wantsSignature) {
+	if (signing.mode === 'rsa') {
 		const signature = await signImage(env, body)
-		if (signature) {
-			headers.set('content-signature', `key-id=${SIGNATURE_KEY_ID}; data=${signature}`)
-		}
+		if (signature) headers.set('content-signature', signatureHeader(signature))
 	}
 
 	return new Response(body, { headers })
@@ -184,23 +253,25 @@ async function finalizeImage(
 
 /**
  * Serve a static asset `Response` with our standard cache headers, honouring
- * `?width`/`?height` (resize) and `?sig=p1` (signing). Either requires the full
- * body, so the asset is buffered; otherwise it is streamed through untouched.
+ * `?width`/`?height` (resize) and `?sig=p1` (signing). A transform or a real
+ * signature requires the full body, so the asset is buffered; otherwise it is
+ * streamed through untouched.
  */
 async function serveStaticAsset(
 	env: Env,
 	asset: Response,
 	transform: Transform | null,
-	wantsSignature: boolean
+	signing: Signing
 ): Promise<Response> {
 	const headers = new Headers()
 	const contentType = asset.headers.get('content-type')
 	if (contentType) headers.set('content-type', contentType)
 	headers.set('cache-control', CACHE_CONTROL)
+	applyStubSignature(headers, signing)
 
-	if (transform || wantsSignature) {
+	if (needsBody(transform, signing)) {
 		const bytes = await asset.arrayBuffer()
-		return finalizeImage(env, bytes, headers, transform, wantsSignature)
+		return finalizeImage(env, bytes, headers, transform, signing)
 	}
 
 	return new Response(asset.body, { headers })
@@ -256,8 +327,9 @@ app.get(
 						'as the fallback when a key is missing. Keys with an extension come from the',
 						'`recflare-img` bucket; extensionless ones are `storage` uploads and come from the',
 						'shared `recflare-cdn` bucket under its `image/` prefix. Optional center-crop and resize',
-						'run through the Photon WASM codec; `?sig=p1` adds the RSA-SHA1 `Content-Signature`',
-						'header the client verifies against `KEY:RSA:p1.rec.net`.',
+						'run through the Photon WASM codec; `?sig=p1` adds the `Content-Signature` header',
+						'the client expects against `KEY:RSA:p1.rec.net` — a key-derived placeholder',
+						'unless the `IMG_SIGNING_ENABLED` flag turns on real RSA-SHA1 signing.',
 						'',
 						'Note that this worker only serves bytes: the image metadata the client lists (the',
 						'`SavedImage` records behind `/api/images/...`) lives in the `api` worker, which',
@@ -301,6 +373,12 @@ app.get(
 			'return JPEG with no `ETag` (the source etag no longer describes the body), and the',
 			'`If-None-Match` precondition is skipped. An out-of-range or non-integer dimension is',
 			'ignored and the original is served — never an error.',
+			'',
+			'A `Range` is honoured (206) only on the untouched stream, which is the only response',
+			'that advertises `Accept-Ranges`. A transform decodes the whole image and a real',
+			'signature covers the whole body, so those serve the entire result and ignore the',
+			'header. Where a range does apply, a `bytes=` request is never answered with a bare',
+			'200: the `Content-Range` always states which bytes the body holds.',
 		].join('\n'),
 		parameters: [
 			{
@@ -343,10 +421,13 @@ app.get(
 				in: 'query',
 				required: false,
 				description: [
-					'`p1` RSA-SHA1 signs the response body and returns it as',
-					'`Content-Signature: key-id=KEY:RSA:p1.rec.net; data=<base64>`. Signed over the',
-					'bytes actually returned, i.e. the resized body when a transform applies. Omitted',
-					'when the worker has no `IMG_SIGNING_KEY`.',
+					'`p1` returns a `Content-Signature: key-id=KEY:RSA:p1.rec.net; data=<base64>`',
+					'header. By default `data` is a PLACEHOLDER derived from the object key, not a',
+					'real signature — the client requires the header to be present but does not',
+					'verify it, and signing for real costs the streaming fast path. Set',
+					'`IMG_SIGNING_ENABLED` for a true RSA-SHA1 signature over the bytes actually',
+					'returned (i.e. the resized body when a transform applies); that also needs an',
+					'`IMG_SIGNING_KEY`, without which the header is omitted entirely.',
 				].join(' '),
 				schema: { type: 'string', enum: ['p1'] },
 			},
@@ -358,9 +439,22 @@ app.get(
 					'Conditional request against the R2 object etag. Ignored when a transform is requested.',
 				schema: { type: 'string' },
 			},
+			{
+				name: 'Range',
+				in: 'header',
+				required: false,
+				description: [
+					'A single byte range, parsed by R2 itself. Honoured with a 206 on the untouched',
+					'stream only — ignored when a transform or a real signature applies, since both',
+					'need the whole image. A `bytes=` value never yields a bare 200: the',
+					'`Content-Range` names the bytes enclosed even where that is all of them.',
+				].join(' '),
+				schema: { type: 'string', example: 'bytes=0-1023' },
+			},
 		],
 		responses: {
 			200: imageBytes('The image bytes (or the DefaultProfileImage.jpg fallback)'),
+			206: imageBytes('A byte range of the stored image, when the request carried a `Range`'),
 			304: { description: 'If-None-Match matched the stored object etag; no body' },
 			400: { description: 'The key contained `..`; no body' },
 		},
@@ -369,7 +463,11 @@ app.get(
 		const key = c.req.param('key')
 		if (key.includes('..')) return c.body(null, 400)
 
-		const wantsSignature = c.req.query('sig') === 'p1'
+		// `?sig=p1` always answers with a Content-Signature header — the client needs
+		// one to be there — but by default the value is a cheap placeholder derived
+		// from the key rather than a real RSA-SHA1 signature over the body. See
+		// stubSignature(); IMG_SIGNING_ENABLED switches back to real signing.
+		const signing = resolveSigning(c.env, c.req.query('sig'), key)
 		const transform = parseTransform(
 			c.req.query('width'),
 			c.req.query('height'),
@@ -381,7 +479,7 @@ app.get(
 		// that always win over whatever, if anything, is in the bucket.
 		const staticAsset = await c.env.ASSETS.fetch(new URL(`/${key}`, c.req.url))
 		if (staticAsset.ok) {
-			return serveStaticAsset(c.env, staticAsset, transform, wantsSignature)
+			return serveStaticAsset(c.env, staticAsset, transform, signing)
 		}
 
 		// Conditional requests only make sense for the untransformed object: a
@@ -389,16 +487,22 @@ app.get(
 		// one. Skip the precondition when a transform is requested.
 		const ifNoneMatch = transform ? undefined : c.req.header('if-none-match')?.replace(/"/g, '')
 		const { bucket, objectKey } = resolveObject(c.env, key)
-		const object = await bucket.get(
-			objectKey,
-			ifNoneMatch ? { onlyIf: { etagDoesNotMatch: ifNoneMatch } } : undefined
-		)
+		// A `Range` applies only to the untouched stream. Resizing decodes the whole image
+		// and an RSA signature covers the whole body, so a ranged read there would produce
+		// bytes that are not the range asked for — ask R2 for the range only when we are
+		// going to hand its bytes straight back. R2 parses the header itself; see
+		// writeContentRange() below for why it is never answered with a bare 200.
+		const range = needsBody(transform, signing) ? undefined : c.req.raw.headers
+		const object = await bucket.get(objectKey, {
+			...(ifNoneMatch ? { onlyIf: { etagDoesNotMatch: ifNoneMatch } } : {}),
+			...(range ? { range } : {}),
+		})
 		if (!object) {
 			// Missing from both static and R2 → serve the bundled DefaultProfileImage.jpg
 			// static asset so clients still get a valid image instead of a 404. Honour
-			// `?sig=p1` the same way so signed clients can verify the fallback.
+			// `?sig=p1` the same way so the fallback is signed like any other image.
 			const asset = await c.env.ASSETS.fetch(new URL(FALLBACK_ASSET_PATH, c.req.url))
-			return serveStaticAsset(c.env, asset, transform, wantsSignature)
+			return serveStaticAsset(c.env, asset, transform, signing)
 		}
 
 		const headers = new Headers()
@@ -409,9 +513,22 @@ app.get(
 		// Precondition matched (If-None-Match) → R2 returns no body.
 		if (!('body' in object)) return new Response(null, { status: 304, headers })
 
-		if (transform || wantsSignature) {
+		// Set after the 304 above so both signing modes behave alike: the header only
+		// ever rides a response that actually carries bytes.
+		applyStubSignature(headers, signing)
+
+		if (needsBody(transform, signing)) {
 			const bytes = await object.arrayBuffer()
-			return finalizeImage(c.env, bytes, headers, transform, wantsSignature)
+			return finalizeImage(c.env, bytes, headers, transform, signing)
+		}
+
+		// Only the untouched stream can honour a range, so only it advertises the fact.
+		// The transformed and static-asset paths above serve the whole thing regardless,
+		// which is the legal answer to a range you cannot honour — but claiming
+		// `accept-ranges` there would invite a client to expect otherwise.
+		headers.set('accept-ranges', 'bytes')
+		if (writeContentRange(headers, c.req.raw.headers, object)) {
+			return new Response(object.body, { status: 206, headers })
 		}
 
 		return new Response(object.body, { headers })

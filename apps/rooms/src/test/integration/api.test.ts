@@ -50,6 +50,33 @@ async function bearer(sub: string, roles?: string[]): Promise<Record<string, str
 	return { Authorization: `Bearer ${signingInput}.${b64url(sig)}` }
 }
 
+/**
+ * Put a player in a room, the way the `match` heartbeat would — the save routes read this
+ * to decide whether a non-creator may see the room's history. `expired` writes a row that
+ * has already lapsed, which reads back as no presence at all.
+ */
+async function putInRoom(
+	accountId: number,
+	roomId: number,
+	{ expired = false }: { expired?: boolean } = {}
+): Promise<void> {
+	const now = Math.floor(Date.now() / 1000)
+	await env.DB.prepare('INSERT OR REPLACE INTO presence (data) VALUES (?1)')
+		.bind(
+			JSON.stringify({
+				accountId,
+				roomInstance: { roomInstanceId: 1000000 + roomId, roomId, subRoomId: roomId },
+				expiresAt: expired ? now - 1 : now + 900,
+			})
+		)
+		.run()
+}
+
+/** Take a player back out of whatever room they were in. */
+async function clearPresence(accountId: number): Promise<void> {
+	await env.DB.prepare('DELETE FROM presence WHERE account_id = ?1').bind(accountId).run()
+}
+
 // Apply the schema + seed the imported rooms into the test D1 (mirrors the migrations).
 beforeAll(async () => {
 	// Seed the shared JWT signing key into the local Secrets Store so .get() resolves.
@@ -152,6 +179,71 @@ describe('rooms endpoints', () => {
 			await SELF.fetch(`${ORIGIN}/rooms/ownedby/me`, { headers: await bearer('999') })
 		).json()) as unknown[]
 		expect(other).toEqual([])
+	})
+
+	// The website's "My rooms" list is a browser calling this worker from another origin,
+	// so a response without CORS headers is one the browser throws away — and the page
+	// can't tell that apart from the server being down. Pinned on the preflight too: the
+	// SPA sends `Authorization`, which makes even the GET a preflighted request.
+	it('answers CORS so the website can read a room list from the browser', async () => {
+		const preflight = await SELF.fetch(`${ORIGIN}/rooms/ownedby/me`, {
+			method: 'OPTIONS',
+			headers: {
+				origin: 'https://www.example.com',
+				'access-control-request-method': 'GET',
+				'access-control-request-headers': 'authorization',
+			},
+		})
+		expect(preflight.status).toBe(204)
+		expect(preflight.headers.get('access-control-allow-origin')).toBe('*')
+		expect(preflight.headers.get('access-control-allow-headers')?.toLowerCase()).toContain(
+			'authorization'
+		)
+
+		const res = await SELF.fetch(`${ORIGIN}/rooms/ownedby/me`, {
+			headers: { ...(await bearer('1')), origin: 'https://www.example.com' },
+		})
+		expect(res.status).toBe(200)
+		expect(res.headers.get('access-control-allow-origin')).toBe('*')
+	})
+
+	it('GET /rooms/ownedby|createdby/me lists the caller’s UNPUBLISHED rooms too', async () => {
+		// "My Rooms" is the owner's own list, not a catalog: it must show a room that
+		// isn't public yet, or a freshly created room (which starts Private — see
+		// cloneRoom) would be invisible to the person who just made it. Only the
+		// PUBLIC-facing `ownedby/:accountId` profile list filters on accessibility.
+		const headers = {
+			...(await bearer('804')),
+			'Content-Type': 'application/x-www-form-urlencoded',
+		}
+		await SELF.fetch(`${ORIGIN}/rooms/24/clone`, {
+			method: 'POST',
+			headers,
+			body: new URLSearchParams({ name: 'MyUnpublishedRoom' }).toString(),
+		})
+
+		const listOf = async (path: string) =>
+			(await (await SELF.fetch(`${ORIGIN}${path}`, { headers })).json()) as Array<{
+				Name: string
+				Accessibility: number
+			}>
+
+		for (const path of [
+			'/rooms/ownedby/me',
+			'/rooms/createdby/me',
+			'/roomserver/rooms/createdby/me',
+		]) {
+			const mine = await listOf(path)
+			const room = mine.find((r) => r.Name === 'MyUnpublishedRoom')
+			expect(room, `${path} must list the caller's unpublished room`).toBeDefined()
+			expect(room!.Accessibility).toBe(0)
+		}
+
+		// The same room is absent from the account's PUBLIC profile list.
+		const publicList = (await (await SELF.fetch(`${ORIGIN}/rooms/ownedby/804`)).json()) as Array<{
+			Name: string
+		}>
+		expect(publicList.some((r) => r.Name === 'MyUnpublishedRoom')).toBe(false)
 	})
 
 	it('GET /rooms/ownedby/:id returns an account public rooms (no auth)', async () => {
@@ -485,6 +577,56 @@ describe('rooms endpoints', () => {
 		await env.DB.prepare(`DELETE FROM subroom WHERE room_id IN (${ids})`).run()
 	})
 
+	it('GET /rooms/hot?tag=community serves rooms the Coach account did not create', async () => {
+		type Feed = { Results: Array<{ Name: string }>; TotalResults: number }
+		const feed = async (): Promise<Feed> =>
+			(await (
+				await SELF.fetch(`${ORIGIN}/rooms/hot?tag=community&skip=0&take=100`)
+			).json()) as Feed
+		const names = async (): Promise<string[]> => (await feed()).Results.map((r) => r.Name)
+
+		// No room carries a `community` tag, and every seeded room belongs to Coach
+		// (account 1) — so the feed is empty until another account makes something.
+		expect(await feed()).toEqual({ Results: [], TotalResults: 0 })
+
+		const seeded: number[] = []
+		const seed = async (room: Record<string, unknown>) => {
+			seeded.push(Number(room.RoomId))
+			await seedRoomWithSubRooms(env.DB, {
+				Accessibility: 1,
+				IsDorm: false,
+				CreatorAccountId: 2,
+				...room,
+			})
+		}
+
+		await seed({ RoomId: 9101, Name: 'CommunityOne' })
+		await seed({ RoomId: 9102, Name: 'CommunityTwo' })
+		// Coach's own rooms stay out, and so do non-public rooms as everywhere else.
+		await seed({ RoomId: 9103, Name: 'CoachRoom', CreatorAccountId: 1 })
+		await seed({ RoomId: 9104, Name: 'UnlistedCommunityRoom', Accessibility: 2 })
+
+		// Nobody is in any of them and their stats are all zero, so the feed's normal
+		// ordering falls through to RoomId.
+		expect(await names()).toEqual(['CommunityOne', 'CommunityTwo'])
+
+		// Creator, not RRO-ness, is what `community` filters on — unlike `new`, a
+		// player-made room flagged as an RRO still belongs here.
+		await seed({ RoomId: 9105, Name: 'PlayerMadeRRO', IsRRO: true })
+		expect(await names()).toEqual(['CommunityOne', 'CommunityTwo', 'PlayerMadeRRO'])
+
+		// Paging comes off the same order.
+		const page = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/hot?tag=community&skip=1&take=1`)
+		).json()) as Feed
+		expect(page).toMatchObject({ Results: [{ Name: 'CommunityTwo' }], TotalResults: 3 })
+
+		// Leave the shared feeds as they were for the tests that follow.
+		const ids = seeded.join(',')
+		await env.DB.prepare(`DELETE FROM room WHERE room_id IN (${ids})`).run()
+		await env.DB.prepare(`DELETE FROM subroom WHERE room_id IN (${ids})`).run()
+	})
+
 	it('GET /rooms/base returns a bare array of base/template rooms (incl. non-public)', async () => {
 		const res = await SELF.fetch(`${ORIGIN}/rooms/base`)
 		expect(res.status).toBe(200)
@@ -603,6 +745,7 @@ describe('rooms endpoints', () => {
 					CreatorAccountId: number
 					Tags?: Array<{ Tag: string }>
 					IsRRO: boolean
+					Accessibility: number
 					Roles: Array<{ AccountId: number; Role: number; InvitedRole: number }>
 				} | null
 			}
@@ -620,6 +763,8 @@ describe('rooms endpoints', () => {
 		expect(ok.value!.Tags).toEqual([])
 		// IsRRO is cleared so the client doesn't render a virtual "RRO" tag on the clone.
 		expect(ok.value!.IsRRO).toBe(false)
+		// A new room is unpublished: Private (0), never the source's visibility.
+		expect(ok.value!.Accessibility).toBe(0)
 		// Ownership is reset to the cloner: sole owner (Role 255), and none of the
 		// source base room's roles (accounts 1/2) carry over.
 		expect(ok.value!.Roles).toEqual([
@@ -636,6 +781,39 @@ describe('rooms endpoints', () => {
 		const dup = await post(24, 'MyMakerClone')
 		expect(dup).toMatchObject({ success: false, value: null })
 		expect(dup.error).toMatch(/already exists/i)
+	})
+
+	it('POST /rooms/:id/clone of a PUBLIC source stays out of the public feeds', async () => {
+		// Park (RoomId 25) is the one seeded base room that is itself public
+		// (Accessibility 1). Cloning used to inherit that, so a room appeared in
+		// hot/search/recommendations the instant it was created — before its owner had
+		// published anything.
+		const res = await SELF.fetch(`${ORIGIN}/rooms/25/clone`, {
+			method: 'POST',
+			headers: {
+				...(await bearer('802')),
+				'Content-Type': 'application/x-www-form-urlencoded',
+			},
+			body: new URLSearchParams({ name: 'ParkCloneUnpublished' }).toString(),
+		})
+		const { value } = (await res.json()) as { value: { RoomId: number; Accessibility: number } }
+		expect(value.Accessibility).toBe(0)
+
+		const namesIn = async (path: string) => {
+			const body = (await (await SELF.fetch(`${ORIGIN}${path}`)).json()) as
+				{ Results: Array<{ Name: string }> } | Array<{ Name: string }>
+			return (Array.isArray(body) ? body : body.Results).map((r) => r.Name)
+		}
+		expect(await namesIn('/rooms/hot?take=200')).not.toContain('ParkCloneUnpublished')
+		expect(await namesIn('/rooms/hot?tag=new&take=200')).not.toContain('ParkCloneUnpublished')
+		expect(await namesIn('/rooms/recommendations?take=200')).not.toContain('ParkCloneUnpublished')
+		expect(await namesIn('/rooms/search?query=parkcloneunpublished')).not.toContain(
+			'ParkCloneUnpublished'
+		)
+
+		// Publishing it (owner sets Accessibility to Public) puts it in the feed.
+		await putForm('/rooms/' + value.RoomId + '/accessibility', { accessibility: '1' }, '802')
+		expect(await namesIn('/rooms/hot?take=200')).toContain('ParkCloneUnpublished')
 	})
 
 	it('POST /rooms/:id/clone requires auth (401, no account-1 fallback)', async () => {
@@ -1376,6 +1554,15 @@ describe('rooms endpoints', () => {
 		})
 		expect(await envOf(await authed(2, 9999, '1'))).toMatchObject({ success: false })
 
+		// The room's own fields are read first: a save is a revision of a SUBROOM and must
+		// leave them alone. `Description` in the body is the save comment, not the room's
+		// description — that is `PUT /rooms/:id/description`'s to set.
+		const before = (await (await SELF.fetch(`${ORIGIN}/rooms/2`)).json()) as {
+			Description: string
+			PersistenceVersion: number
+		}
+		expect(before.Description).not.toBe('mydescription here')
+
 		// Owner saves → 200. `value` carries BOTH the updated room and the new save, and
 		// `error` is null (not ''). This fixture sends `AutoPublish: true`, so it goes live.
 		const ok = await authed(2, 2, '1')
@@ -1390,7 +1577,7 @@ describe('rooms endpoints', () => {
 		}
 		expect(saved.success).toBe(true)
 		expect(saved.error).toBeNull()
-		expect(saved.value.room).toMatchObject({ RoomId: 2, Description: 'mydescription here' })
+		expect(saved.value.room).toMatchObject({ RoomId: 2, Description: before.Description })
 
 		// The save is a camelCase projection, NOT the PascalCase CurrentSave shape.
 		expect(saved.value.subRoomDataSave).toEqual({
@@ -1430,6 +1617,7 @@ describe('rooms endpoints', () => {
 				SubRoomDataSaveId: number
 				SavedByAccountId: number
 				PersistenceVersion: number
+				Description: string
 				UnitySubAssets: unknown[]
 				Tags: unknown[]
 			}
@@ -1446,13 +1634,18 @@ describe('rooms endpoints', () => {
 		expect(sub.CurrentSave.SubRoomDataSaveId).toBeGreaterThan(0)
 		expect(sub.StagedSubRoomDataSaveId).toBeNull()
 
-		// Room-level fields land on the room too.
+		// The save comment and the scene fields land on the SUBROOM's revision, and the
+		// room's own fields are untouched — a save must never rewrite the room.
+		expect(sub.CurrentSave.Description).toBe('mydescription here')
+		expect(sub).toMatchObject({ PersistenceVersion: 41, InventionUsage: 'CAE=' })
 		const room = (await (await SELF.fetch(`${ORIGIN}/rooms/2`)).json()) as {
 			Description: string
 			PersistenceVersion: number
+			InventionUsage?: string
 		}
-		expect(room.Description).toBe('mydescription here')
-		expect(room.PersistenceVersion).toBe(41)
+		expect(room.Description).toBe(before.Description)
+		expect(room.PersistenceVersion).toBe(before.PersistenceVersion)
+		expect(room.InventionUsage).toBeUndefined()
 
 		// A CoOwner (account 2 holds Role 30 in the seeded rooms) may also save — 200
 		// with the room envelope. The creator stays account 1 (not clobbered).
@@ -1701,7 +1894,7 @@ describe('rooms endpoints', () => {
 		expect(clone.CurrentSave!.SubRoomId).toBe(clone.SubRoomId)
 	})
 
-	it('PUT /rooms/:id/tags is auth-gated, owner-only, and toggles (add/remove)', async () => {
+	it('PUT /rooms/:id/tags is auth-gated, owner/co-owner-only, and toggles (add/remove)', async () => {
 		// The lowercase `{ success, error, value }` envelope this endpoint returns.
 		type TagResult = {
 			success: boolean
@@ -1713,11 +1906,8 @@ describe('rooms endpoints', () => {
 
 		// No token → 401.
 		expect((await putForm('/rooms/2/tags', { tag: 'quest' })).status).toBe(401)
-		// Not the owner → failure envelope.
-		expect(await envOf(await putForm('/rooms/2/tags', { tag: 'quest' }, '999'))).toMatchObject({
-			success: false,
-			error: 'You are not the owner of this room!',
-		})
+		// A valid token but no role on the room → 403.
+		expect((await putForm('/rooms/2/tags', { tag: 'quest' }, '999')).status).toBe(403)
 		// Unknown room → failure envelope.
 		expect(await envOf(await putForm('/rooms/99999/tags', { tag: 'quest' }, '1'))).toMatchObject({
 			success: false,
@@ -1753,6 +1943,11 @@ describe('rooms endpoints', () => {
 		const off = await envOf(await putForm('/rooms/2/tags', { tag: 'quest' }, '1'))
 		expect(tagsIn(off)).not.toContain('quest')
 		expect(tagsIn(off)).toContain('campfire')
+
+		// The co-owner (account 2, Role 30) may edit tags too.
+		const byCoOwner = await envOf(await putForm('/rooms/2/tags', { tag: 'spooky' }, '2'))
+		expect(byCoOwner).toMatchObject({ success: true, error: '' })
+		expect(tagsIn(byCoOwner)).toContain('spooky')
 	})
 
 	it('PUT /rooms/:id/name is auth-gated, owner-only, unique, and persists', async () => {
@@ -1946,7 +2141,8 @@ describe('rooms endpoints', () => {
 		expect(await searched()).toMatchObject({ CheerCount: 2, FavoriteCount: 1 })
 		expect(await direct()).toMatchObject({ CheerCount: 2, FavoriteCount: 1 })
 
-		// Clearing a cheer decrements it. Nothing records visits, so those stay 0.
+		// Clearing a cheer decrements it. Visits are counted by the `match` worker on
+		// matchmake and nobody has entered this room, so those stay 0.
 		await interact('562', 'cheer', 'DELETE')
 		expect(await direct()).toEqual({
 			CheerCount: 1,
@@ -1954,6 +2150,35 @@ describe('rooms endpoints', () => {
 			VisitorCount: 0,
 			VisitCount: 0,
 		})
+
+		// VisitCount is the `room.visits` column (what match bumps on each matchmake),
+		// served on every read of the room — here and in the search results — and it
+		// survives the cheer/favorite aggregation rather than being zeroed by it.
+		await env.DB.prepare('UPDATE room SET visits = 7 WHERE room_id = 15').run()
+		expect(await direct()).toEqual({
+			CheerCount: 1,
+			FavoriteCount: 1,
+			VisitorCount: 0,
+			VisitCount: 7,
+		})
+		expect(await searched()).toMatchObject({ VisitCount: 7 })
+
+		// A write to the room doesn't bake the count into the blob (nor reset it).
+		// Account 1 created room 15, so the description write is allowed.
+		const wrote = await SELF.fetch(`${ORIGIN}/rooms/15/description`, {
+			method: 'PUT',
+			headers: {
+				...(await bearer('1')),
+				'Content-Type': 'application/x-www-form-urlencoded',
+			},
+			body: new URLSearchParams({ description: 'counted' }).toString(),
+		})
+		expect(wrote.status).toBe(200)
+		const blob = await env.DB.prepare('SELECT data FROM room WHERE room_id = 15').first<{
+			data: string
+		}>()
+		expect((JSON.parse(blob!.data) as { Stats: Stats }).Stats.VisitCount).toBe(0)
+		expect(await direct()).toMatchObject({ VisitCount: 7 })
 	})
 
 	it('DELETE /rooms/:id/interactionby/me/cheer clears the cheer (auth-gated, idempotent)', async () => {
@@ -2564,18 +2789,98 @@ describe('rooms endpoints', () => {
 		})
 		expect(await empty.json()).toEqual({ Results: [], TotalResults: 0, TotalCount: 0 })
 
-		// The list exposes unpublished saves, so it is owner-only: no token → 401, and a
-		// valid token that isn't the room's creator → 403.
+		// The list exposes unpublished saves, so it isn't public: no token → 401, and a
+		// valid token from someone who is neither the creator nor in the room → 403. Account
+		// 2 is a co-owner (Role 30 on the seeded rooms) and is refused too — holding a role
+		// grants nothing here; being in the room does (see below).
 		expect((await SELF.fetch(`${ORIGIN}/rooms/2/subrooms/2/saves`)).status).toBe(401)
 		expect(
 			(await SELF.fetch(`${ORIGIN}/rooms/2/subrooms/2/saves`, { headers: await bearer('999') }))
 				.status
 		).toBe(403)
-		// Even a co-owner (account 2 holds Role 30 on the seeded rooms) is refused.
 		expect(
 			(await SELF.fetch(`${ORIGIN}/rooms/2/subrooms/2/saves`, { headers: await bearer('2') }))
 				.status
 		).toBe(403)
+
+		// …but a player standing IN the room reads it: the client resolves which version to
+		// load from this list, so a visitor who can't read it can't load the instance.
+		await putInRoom(999, 2)
+		expect(
+			(await SELF.fetch(`${ORIGIN}/rooms/2/subrooms/2/saves`, { headers: await bearer('999') }))
+				.status
+		).toBe(200)
+		// Presence in a DIFFERENT room is not presence in this one.
+		await putInRoom(999, 5)
+		expect(
+			(await SELF.fetch(`${ORIGIN}/rooms/2/subrooms/2/saves`, { headers: await bearer('999') }))
+				.status
+		).toBe(403)
+		// And the grant lasts only as long as the presence does — an expired row reads as
+		// absent, so the visitor is refused again the moment they leave.
+		await putInRoom(999, 2, { expired: true })
+		expect(
+			(await SELF.fetch(`${ORIGIN}/rooms/2/subrooms/2/saves`, { headers: await bearer('999') }))
+				.status
+		).toBe(403)
+		await clearPresence(999)
+	})
+
+	it('GET /rooms/:id/subrooms/:sid/saves/:saveId is the detail behind a history row', async () => {
+		const get = async (path: string, sub?: string) =>
+			SELF.fetch(`${ORIGIN}${path}`, sub === undefined ? {} : { headers: await bearer(sub) })
+
+		// Pick a real save off the history the previous test paged.
+		const list = (await (await get('/rooms/2/subrooms/2/saves', '1')).json()) as {
+			Results: Array<{ SubRoomDataSaveId: number; DataBlob: string; Description: string }>
+		}
+		const row = list.Results[0]!
+
+		const res = await get(`/rooms/2/subrooms/2/saves/${row.SubRoomDataSaveId}`, '1')
+		expect(res.status).toBe(200)
+		// The camelCase projection the room save returns — NOT the PascalCase row the list
+		// serves. Same field set, exactly: no persistence/OM/UGC versions, no asset arrays.
+		expect(await res.json()).toEqual({
+			subRoomDataSaveId: row.SubRoomDataSaveId,
+			subRoomId: 2,
+			unityAssetId: null,
+			unityAsset: null,
+			unityAssetHash: null,
+			dataBlob: row.DataBlob,
+			dataBlobHash: null,
+			savedByAccountId: expect.any(Number),
+			savedOnPlatform: 0,
+			savedOnDeviceClass: 0,
+			description: row.Description,
+			createdAt: expect.any(String),
+		})
+
+		// Unknown save, and a save that exists but belongs to ANOTHER subroom (ids are
+		// global, so an unscoped lookup would happily resolve this one) — both 404.
+		expect((await get('/rooms/2/subrooms/2/saves/99999', '1')).status).toBe(404)
+		const foreign = (
+			(await subRoomOf(5, 5)) as unknown as { CurrentSave: { SubRoomDataSaveId: number } }
+		).CurrentSave.SubRoomDataSaveId
+		expect((await get(`/rooms/2/subrooms/2/saves/${foreign}`, '1')).status).toBe(404)
+		// …and it does resolve on its own subroom, so the 404 above is the scoping, not a
+		// missing row.
+		expect((await get(`/rooms/5/subrooms/5/saves/${foreign}`, '1')).status).toBe(200)
+
+		// Unknown room or subroom is a 404 too (the LIST answers an empty page instead).
+		expect((await get('/rooms/99999/subrooms/2/saves/1', '1')).status).toBe(404)
+		expect((await get('/rooms/2/subrooms/99999/saves/1', '1')).status).toBe(404)
+
+		// Same gate as the list it details: 401 unauthed, 403 for someone who is neither the
+		// creator nor in the room (a co-owner included) — it reads unpublished saves.
+		const detail = `/rooms/2/subrooms/2/saves/${row.SubRoomDataSaveId}`
+		expect((await get(detail)).status).toBe(401)
+		expect((await get(detail, '999')).status).toBe(403)
+		expect((await get(detail, '2')).status).toBe(403)
+		// A player standing in the room reads it, for as long as they're there.
+		await putInRoom(999, 2)
+		expect((await get(detail, '999')).status).toBe(200)
+		await clearPresence(999)
+		expect((await get(detail, '999')).status).toBe(403)
 	})
 
 	it('GET /openapi.json documents every route', async () => {
@@ -2625,6 +2930,7 @@ describe('rooms endpoints', () => {
 			'GET /rooms/{roomId}/playerdata/me',
 			'GET /rooms/{roomId}/similar',
 			'GET /rooms/{roomId}/subrooms/{subRoomId}/saves',
+			'GET /rooms/{roomId}/subrooms/{subRoomId}/saves/{saveId}',
 			'GET /roomserver/rooms/createdby/me',
 			'POST /rooms/{roomId}/bans',
 			'POST /rooms/{roomId}/clone',

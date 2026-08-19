@@ -73,6 +73,44 @@ describe('cdn endpoints', () => {
 		expect(new Uint8Array(await suffix.arrayBuffer())).toEqual(new Uint8Array([14, 15]))
 	})
 
+	// The corrupting answer to a byte-range request is a bare 200 carrying the whole
+	// object: the downloader asked for a slice, so it writes the body at that offset and
+	// the reassembled file is wrong (EAC "Signatures don't match"). R2 resolves a value
+	// it cannot parse or satisfy to the WHOLE object rather than failing, so these are
+	// exactly the inputs that used to fall through to a 200 — every one of them must
+	// still come back 206 with a Content-Range stating what the body actually holds.
+	test('GET /sigs/:sigName never answers a bytes range with a whole-object 200', async () => {
+		await env.CDN_ASSETS.put('sigs/ranged3', new Uint8Array([10, 11, 12, 13, 14, 15]))
+		const fetchRange = (range: string) =>
+			exports.default.fetch(`${ORIGIN}/sigs/ranged3`, { headers: { Range: range } })
+
+		for (const range of [
+			'bytes=100-200', // wholly past the end of a 6-byte object
+			'bytes=abc', // not the byte-range grammar
+			'bytes=0-1,3-4', // multi-range, which R2 does not serve
+			'bytes=0-5', // satisfiable, and covers everything
+		]) {
+			const res = await fetchRange(range)
+			expect(res.status, range).toBe(206)
+			expect(res.headers.get('content-range'), range).toBe('bytes 0-5/6')
+		}
+
+		// A range that runs off the end but starts inside is a real partial read.
+		const partial = await fetchRange('bytes=4-99')
+		expect(partial.status).toBe(206)
+		expect(partial.headers.get('content-range')).toBe('bytes 4-5/6')
+		expect(new Uint8Array(await partial.arrayBuffer())).toEqual(new Uint8Array([14, 15]))
+
+		// A unit other than bytes must be ignored outright — RFC 9110 — not answered
+		// with a byte-denominated Content-Range.
+		const other = await fetchRange('items=0-1')
+		expect(other.status).toBe(200)
+		expect(other.headers.get('content-range')).toBeNull()
+		expect(new Uint8Array(await other.arrayBuffer())).toEqual(
+			new Uint8Array([10, 11, 12, 13, 14, 15])
+		)
+	})
+
 	test('GET /room/:dataBlob streams the room blob from R2', async () => {
 		await env.CDN_ASSETS.put('room/94tp5zjtwz0gppp8xlv1j9l5b.room', new Uint8Array([9, 8, 7]))
 		const res = await exports.default.fetch(`${ORIGIN}/room/94tp5zjtwz0gppp8xlv1j9l5b.room`)
@@ -84,6 +122,20 @@ describe('cdn endpoints', () => {
 	test('GET /room/:dataBlob 404s when the blob is absent', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/room/missing.room`)
 		expect(res.status).toBe(404)
+	})
+
+	// The website lets a room's owner download their own scene data (the room page in
+	// `www`), which is a browser reading these bytes from another origin. Without the
+	// header it can fetch them but not read the result — and the page can't tell that
+	// apart from the blob being gone.
+	test('answers CORS so a browser on another origin can read a blob', async () => {
+		await env.CDN_ASSETS.put('room/2026-08-01/cors-check', new Uint8Array([4, 2]))
+		const res = await exports.default.fetch(`${ORIGIN}/room/2026-08-01/cors-check`, {
+			headers: { origin: 'https://www.example.net' },
+		})
+		expect(res.status).toBe(200)
+		expect(res.headers.get('access-control-allow-origin')).toBe('*')
+		expect(new Uint8Array(await res.arrayBuffer())).toEqual(new Uint8Array([4, 2]))
 	})
 
 	test('GET /invention/:dataBlob streams the invention blob from R2', async () => {
