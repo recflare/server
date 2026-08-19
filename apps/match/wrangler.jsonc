@@ -61,10 +61,13 @@
 			"head_sampling_rate": 1 // 100%
 		}
 	},
-	// The room substitutions (ROOM_REDIRECTS) are deliberately NOT set here. They're
-	// injected at deploy time from the gitignored .env (RECFLARE_ROOM_REDIRECTS, see
-	// .env.example), so swapping a room out never means editing a versioned file. Unset —
-	// the default — means every matchmake enters the room it asked for.
+	// The operator's knobs — the room substitutions (ROOM_REDIRECTS) and the Photon app ids
+	// and region (PHOTON_REALTIME_APP_ID, PHOTON_VOICE_APP_ID, PHOTON_CHAT_APP_ID,
+	// PHOTON_REGION) — are deliberately NOT set here. They're injected at deploy time from
+	// the gitignored .env (RECFLARE_<VAR>, see .env.example), so swapping a room out or
+	// pointing at your own Photon apps never means editing a versioned file. Unset — the
+	// default — means every matchmake enters the room it asked for, the Photon app ids are
+	// empty (recflare ships none of its own), and sessions run in the `us` region.
 	"vars": {
 		"ENVIRONMENT": "development", // overridden during deployment
 		"SENTRY_RELEASE": "unknown" // overridden during deployment

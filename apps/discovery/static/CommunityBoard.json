@@ -1,0 +1,162 @@
+[
+  {
+    "id": "Accounts_OnlineFriends_WatchHome",
+    "sectionType": 1,
+    "sectionSubType": "Accounts_OnlineFriends",
+    "source": "OnlineFriends",
+    "sourceMetadata": null,
+    "displayMetadata": "{\"DisplayTitle\":\"Online Friends\",\"itemCount\":3,\"cardStyle\":\"Horizontal\"}"
+  },
+  {
+    "id": "Rooms_ForYou_PlayHighlight",
+    "sectionType": 0,
+    "sectionSubType": "Rooms_ForYou",
+    "source": "CarouselEndpoint",
+    "sourceMetadata": "foryou",
+    "displayMetadata": "{\"DisplayTitle\":\"Recommended For You\",\"supportsDedupe\":\"true\",\"numRows\":\"2\",\"sizePerPlatform\":\"\",\"backgroundColor\":\"#F3DDCE\",\"horizontalScrollEnabled\":\"false\"}"
+  },
+  {
+    "id": "Rooms_MostPopular",
+    "sectionType": 0,
+    "sectionSubType": "Rooms_MostPopular",
+    "source": "Hot",
+    "sourceMetadata": null,
+    "displayMetadata": "{\"DisplayTitle\":\"Trending\",\"supportsDedupe\":\"true\",\"numRows\":\"1\"}"
+  },
+  {
+    "id": "Rooms_FeaturedThisWeek",
+    "sectionType": 0,
+    "sectionSubType": "Rooms_Featured",
+    "source": "Featured",
+    "sourceMetadata": null,
+    "displayMetadata": "{\"DisplayTitle\":\"Featured This Week\",\"supportsDedupe\":\"false\",\"numRows\":\"1\",\"sizePerPlatform\":\"all=highlight_scale_150\",\"backgroundColor\":\"\",\"horizontalScrollEnabled\":\"false\"}"
+  },
+  {
+    "id": "Rooms_New_PlayHighlight",
+    "sectionType": 0,
+    "sectionSubType": "Rooms_New",
+    "source": "Hot",
+    "sourceMetadata": "new",
+    "displayMetadata": "{\"DisplayTitle\":\"New\",\"supportsDedupe\":\"true\",\"numRows\":\"1\",\"sizePerPlatform\":\"\",\"backgroundColor\":\"\",\"horizontalScrollEnabled\":\"false\",\"unsupportedPlatforms\":[\"Switch\"]}"
+  },
+  {
+    "id": "Rooms_RRO_PlayHighlight",
+    "sectionType": 0,
+    "sectionSubType": "Rooms_RRO",
+    "source": "Hot",
+    "sourceMetadata": "rro",
+    "displayMetadata": "{\"DisplayTitle\":\"Rec Room Originals\",\"supportsDedupe\":\"false\",\"numRows\":\"1\",\"sizePerPlatform\":\"\",\"backgroundColor\":\"\",\"horizontalScrollEnabled\":\"false\"}"
+  },
+  {
+    "id": "Rooms_WeLove",
+    "sectionType": 0,
+    "sectionSubType": "Rooms_WeLove",
+    "source": "CarouselEndpoint",
+    "sourceMetadata": "inkshowcase",
+    "displayMetadata": "{\"DisplayTitle\":\"Rooms We Love\",\"supportsDedupe\":\"false\",\"numRows\":\"1\",\"sizePerPlatform\":\"\",\"backgroundColor\":\"\",\"horizontalScrollEnabled\":\"false\"}"
+  },
+  {
+    "id": "Rooms_ContinuePlaying_PlayHighlight",
+    "sectionType": 0,
+    "sectionSubType": "Rooms_ContinuePlaying",
+    "source": "Recent",
+    "sourceMetadata": null,
+    "displayMetadata": "{\"DisplayTitle\":\"Continue Playing\",\"supportsDedupe\":\"false\",\"numRows\":\"1\",\"sizePerPlatform\":\"\",\"backgroundColor\":\"\",\"horizontalScrollEnabled\":\"false\"}"
+  },
+  {
+    "id": "Rooms_RecentlyUpdated",
+    "sectionType": 0,
+    "sectionSubType": "Rooms_RecentlyUpdated",
+    "source": "CarouselEndpoint",
+    "sourceMetadata": "recentlyupdated",
+    "displayMetadata": "{\"DisplayTitle\":\"Recently Updated\",\"supportsDedupe\":\"true\",\"numRows\":\"1\",\"sizePerPlatform\":\"\",\"backgroundColor\":\"\",\"horizontalScrollEnabled\":\"false\"}"
+  },
+  {
+    "id": "Rooms_Favorites",
+    "sectionType": 0,
+    "sectionSubType": "Rooms_PlayerFavorites",
+    "source": "MyFavorites",
+    "sourceMetadata": null,
+    "displayMetadata": "{\"DisplayTitle\":\"Favorites\",\"supportsDedupe\":\"false\",\"numRows\":\"1\",\"sizePerPlatform\":\"\",\"backgroundColor\":\"\",\"horizontalScrollEnabled\":\"false\"}"
+  },
+  {
+    "id": "Rooms_TopEarning_PlayHighlight",
+    "sectionType": 0,
+    "sectionSubType": "Rooms_TopEarning",
+    "source": "PlaylistById",
+    "sourceMetadata": "65380152",
+    "displayMetadata": "{\"DisplayTitle\":\"Top Earning\",\"supportsDedupe\":\"false\",\"numRows\":\"1\",\"sizePerPlatform\":\"\",\"backgroundColor\":\"\",\"horizontalScrollEnabled\":\"false\"}"
+  },
+  {
+    "id": "Rooms_CreatorsYouFollow",
+    "sectionType": 0,
+    "sectionSubType": "Rooms_PlayerSubscriptions",
+    "source": "MySubscriptions",
+    "sourceMetadata": null,
+    "displayMetadata": "{\"DisplayTitle\":\"From Creators You Follow\",\"supportsDedupe\":\"false\",\"numRows\":\"1\",\"sizePerPlatform\":\"\",\"backgroundColor\":\"\",\"horizontalScrollEnabled\":\"false\"}"
+  },
+  {
+    "id": "Rooms_R2Econ",
+    "sectionType": 0,
+    "sectionSubType": "Rooms_StateOfTheArt",
+    "source": "PlaylistById",
+    "sourceMetadata": "1876634643426420466",
+    "displayMetadata": "{\"DisplayTitle\":\"State of the Art\",\"supportsDedupe\":\"false\",\"numRows\":\"1\",\"sizePerPlatform\":\"\",\"backgroundColor\":\"\",\"horizontalScrollEnabled\":\"false\",\"unsupportedPlatforms\":[\"Switch\"]}"
+  },
+  {
+    "id": "Rooms_Roleplay_AlgoEndpoint_PlayHighlight",
+    "sectionType": 0,
+    "sectionSubType": "Rooms_Roleplay",
+    "source": "CarouselEndpoint",
+    "sourceMetadata": "roleplay_algoendpoint",
+    "displayMetadata": "{\"DisplayTitle\":\"Roleplay\",\"supportsDedupe\":\"true\",\"numRows\":\"1\",\"sizePerPlatform\":\"\",\"backgroundColor\":\"\",\"horizontalScrollEnabled\":\"false\"}"
+  },
+  {
+    "id": "Rooms_Casual_AlgoEndpoint_PlayHighlight",
+    "sectionType": 0,
+    "sectionSubType": "Rooms_Casual",
+    "source": "CarouselEndpoint",
+    "sourceMetadata": "casual_algoendpoint",
+    "displayMetadata": "{\"DisplayTitle\":\"Casual\",\"supportsDedupe\":\"true\",\"numRows\":\"1\",\"sizePerPlatform\":\"\",\"backgroundColor\":\"\",\"horizontalScrollEnabled\":\"false\"}"
+  },
+  {
+    "id": "Rooms_Horror_AlgoEndpoint_PlayHighlight",
+    "sectionType": 0,
+    "sectionSubType": "Rooms_Horror",
+    "source": "CarouselEndpoint",
+    "sourceMetadata": "horror_algoendpoint",
+    "displayMetadata": "{\"DisplayTitle\":\"Horror\",\"supportsDedupe\":\"true\",\"numRows\":\"1\",\"sizePerPlatform\":\"\",\"backgroundColor\":\"\",\"horizontalScrollEnabled\":\"false\"}"
+  },
+  {
+    "id": "Rooms_Battle_AlgoEndpoint_PlayHighlight",
+    "sectionType": 0,
+    "sectionSubType": "Rooms_Battle",
+    "source": "CarouselEndpoint",
+    "sourceMetadata": "battle_algoendpoint",
+    "displayMetadata": "{\"DisplayTitle\":\"Battle\",\"supportsDedupe\":\"true\",\"numRows\":\"1\",\"sizePerPlatform\":\"\",\"backgroundColor\":\"\",\"horizontalScrollEnabled\":\"false\"}"
+  },
+  {
+    "id": "Rooms_Explore_AlgoEndpoint_PlayHighlight",
+    "sectionType": 0,
+    "sectionSubType": "Rooms_Exploration",
+    "source": "CarouselEndpoint",
+    "sourceMetadata": "explore_algoendpoint",
+    "displayMetadata": "{\"DisplayTitle\":\"Explore\",\"supportsDedupe\":\"true\",\"numRows\":\"1\",\"sizePerPlatform\":\"\",\"backgroundColor\":\"\",\"horizontalScrollEnabled\":\"false\"}"
+  },
+  {
+    "id": "Rooms_Quests_AlgoEndpoint_PlayHighlight",
+    "sectionType": 0,
+    "sectionSubType": "Rooms_Quests",
+    "source": "CarouselEndpoint",
+    "sourceMetadata": "quests_algoendpoint",
+    "displayMetadata": "{\"DisplayTitle\":\"Quests\",\"supportsDedupe\":\"true\",\"numRows\":\"1\",\"sizePerPlatform\":\"\",\"backgroundColor\":\"\",\"horizontalScrollEnabled\":\"false\"}"
+  },
+  {
+    "id": "Rooms_Hangout_AlgoEndpoint_PlayHighlight",
+    "sectionType": 0,
+    "sectionSubType": "Rooms_Hangout",
+    "source": "CarouselEndpoint",
+    "sourceMetadata": "hangout_algoendpoint",
+    "displayMetadata": "{\"DisplayTitle\":\"Hangout\",\"supportsDedupe\":\"true\",\"numRows\":\"1\",\"sizePerPlatform\":\"\",\"backgroundColor\":\"\",\"horizontalScrollEnabled\":\"false\"}"
+  }
+]

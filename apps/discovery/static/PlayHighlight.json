@@ -1,0 +1,74 @@
+[
+  {
+    "id": "Rooms_RoomBanner_SketchyShowdown",
+    "sectionType": 6,
+    "sectionSubType": "RoomBanner",
+    "source": "2477031627165896495",
+    "sourceMetadata": "2477031627165896495",
+    "displayMetadata": null
+  },
+  {
+    "id": "Rooms_ForYou_PlayHighlight",
+    "sectionType": 0,
+    "sectionSubType": "Rooms_ForYou",
+    "source": "CarouselEndpoint",
+    "sourceMetadata": "foryou",
+    "displayMetadata": "{\"DisplayTitle\":\"Recommended For You\",\"supportsDedupe\":\"true\",\"numRows\":\"2\",\"sizePerPlatform\":\"\",\"backgroundColor\":\"#F3DDCE\",\"horizontalScrollEnabled\":\"false\"}"
+  },
+  {
+    "id": "Friendship_New_Users",
+    "sectionType": 0,
+    "sectionSubType": "Rooms_Friendship",
+    "source": "PlaylistById",
+    "sourceMetadata": "7732248245192312892",
+    "displayMetadata": "{\"DisplayTitle\":\"Fun with Friends\",\"supportsDedupe\":\"false\",\"numRows\":\"1\",\"sizePerPlatform\":\"\",\"backgroundColor\":\"\",\"horizontalScrollEnabled\":\"false\", \"accountAgeMinDays\":0, \"accountAgeMaxDays\":3}"
+  },
+  {
+    "id": "Rooms_StaffPicks_PlayHighlight",
+    "sectionType": 0,
+    "sectionSubType": "Rooms_Featured",
+    "source": "CarouselEndpoint",
+    "sourceMetadata": "staffpicks",
+    "displayMetadata": "{\"DisplayTitle\":\"Featured This Week\",\"supportsDedupe\":\"false\",\"numRows\":\"1\",\"sizePerPlatform\":\"all=highlight_scale_150\",\"backgroundColor\":\"\",\"horizontalScrollEnabled\":\"false\"}"
+  },
+  {
+    "id": "Rooms_RRO_PlayHighlight",
+    "sectionType": 0,
+    "sectionSubType": "Rooms_RRO",
+    "source": "Hot",
+    "sourceMetadata": "rro",
+    "displayMetadata": "{\"DisplayTitle\":\"Rec Room Originals\",\"supportsDedupe\":\"false\",\"numRows\":\"1\",\"sizePerPlatform\":\"\",\"backgroundColor\":\"\",\"horizontalScrollEnabled\":\"false\"}"
+  },
+  {
+    "id": "Rooms_MostPopular",
+    "sectionType": 0,
+    "sectionSubType": "Rooms_MostPopular",
+    "source": "Hot",
+    "sourceMetadata": null,
+    "displayMetadata": "{\"DisplayTitle\":\"Trending\",\"supportsDedupe\":\"true\",\"numRows\":\"1\"}"
+  },
+  {
+    "id": "Events_CreatorWorkshops_New_Users",
+    "sectionType": 5,
+    "sectionSubType": "Creator_Workshop_New_Users",
+    "source": "ClubEventsById",
+    "sourceMetadata": "69",
+    "displayMetadata": "{\"DisplayTitle\":\"Creative Workshops\",\"supportsDedupe\":\"false\",\"numRows\":\"1\",\"sizePerPlatform\":\"\",\"backgroundColor\":\"\",\"horizontalScrollEnabled\":\"false\",\"excludeJuniors\":\"true\",\"unsupportedPlatforms\":[\"Switch\"],\"accountAgeMaxDays\":3}"
+  },
+  {
+    "id": "Discovery_FeaturedCreator",
+    "sectionType": 13,
+    "sectionSubType": "featured_creator",
+    "source": "PlayerCreatedRooms",
+    "sourceMetadata": "1",
+    "displayMetadata": "{\"DisplayTitle\":\"Featured Creator\", \"descriptionText\":\"Making moments you can play again and again!\",\"itemCount\":\"4\", \"unsupportedPlatforms\":[\"Switch\"]}"
+  },
+  {
+    "id": "Rooms_WeLove",
+    "sectionType": 0,
+    "sectionSubType": "Rooms_WeLove",
+    "source": "CarouselEndpoint",
+    "sourceMetadata": "inkshowcase",
+    "displayMetadata": "{\"DisplayTitle\":\"Rooms We Love\",\"supportsDedupe\":\"false\",\"numRows\":\"1\",\"sizePerPlatform\":\"\",\"backgroundColor\":\"\",\"horizontalScrollEnabled\":\"false\"}"
+  }
+]

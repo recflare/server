@@ -110,13 +110,29 @@ export const ChatThreadWithMessagesDto = z.object({
 })
 
 /**
- * The bare ChatResult integer several actions answer with (HTTP 200 either way): 0
- * success, 1 invalid arguments, 3 membership not found (which doubles as "no such
- * thread"), 4 player already on the thread.
+ * The bare ChatResult integer several actions answer with (HTTP 200 either way). The
+ * client's enum in full, recovered from the build — it is served NUMERICALLY, there being
+ * no by-name formatter on the client side:
+ *
+ * 0 Success · 1 InvalidArguments · 2 ThreadNotFound · 3 MembershipNotFound ·
+ * 4 PlayerAlreadyOnThread · 5 CannotMessagePlayer · 6 InvalidCharacters ·
+ * 7 RecentlyLeftThread · 8 ThreadTooLarge · 9 InsufficientPermission ·
+ * 10 TooManyAffiliationThreads · 11 UnderModeration · 12 MessageNotFound ·
+ * 13 InvalidThreadJoinType · 14 PlayerBanned ·
+ * 15 CannotMessagePlayerDueToLocalPrivacySetting ·
+ * 16 CannotMessagePlayerDueToRemotePrivacySetting ·
+ * 17 SuccessWithPartialPlayersAddedToThreadDueToPrivacySetting ·
+ * 18 CannotAddPlayersToThreadDueToPrivacySetting ·
+ * 19 CannotConvertDirectMessageChatToGroupChatDueToPrivacySetting
+ *
+ * Only 0, 1, 3 and 4 are reachable on this server; the rest are recorded so a route that
+ * needs one answers the number the client actually branches on.
  */
 export const ChatResult = z
 	.int()
-	.describe('0 success · 1 invalid arguments · 3 membership not found · 4 already on thread')
+	.describe(
+		'ChatResult, numeric: 0 Success · 1 InvalidArguments · 2 ThreadNotFound · 3 MembershipNotFound · 4 PlayerAlreadyOnThread · 5 CannotMessagePlayer · 6 InvalidCharacters · 7 RecentlyLeftThread · 8 ThreadTooLarge · 9 InsufficientPermission · 10 TooManyAffiliationThreads · 11 UnderModeration · 12 MessageNotFound · 13 InvalidThreadJoinType · 14 PlayerBanned · 15 CannotMessagePlayerDueToLocalPrivacySetting · 16 CannotMessagePlayerDueToRemotePrivacySetting · 17 SuccessWithPartialPlayersAddedToThreadDueToPrivacySetting · 18 CannotAddPlayersToThreadDueToPrivacySetting · 19 CannotConvertDirectMessageChatToGroupChatDueToPrivacySetting'
+	)
 
 /**
  * `POST /thread` — the reference's wrapper: the created (or resolved) thread plus the
@@ -137,6 +153,43 @@ export const SendMessageResponse = z.object({
 	chatResult: ChatResult,
 	chatThread: ChatThreadWithMessagesDto.nullable(),
 })
+
+/**
+ * `GET /settings/partyinvite` — how long a party invite link stays usable, in minutes. A
+ * bare single-key object, not an envelope: the whole body is this one setting.
+ */
+export const PartyInviteSettings = z.object({
+	InviteLinkLifetimeInMinutes: z
+		.int()
+		.describe('Minutes a party invite link stays valid before it lapses'),
+})
+
+/**
+ * `GET /thread/chatPrivacySetting` — who may start a chat with the caller. camelCase, unlike
+ * the PascalCase thread DTOs, and the two settings are the `ChatPrivacy` enum served
+ * NUMERICALLY (0 Friends · 1 Favorites · 2 NoOne): this client build carries no by-name enum
+ * formatter, so a string would decode as nothing.
+ *
+ * Reported, not enforced. Nothing on this server stores a per-player privacy setting or
+ * checks one — `GET /thread/checkCanSendDirectMessageWithPrivacySetting` allows every DM —
+ * so these are the values the client renders its privacy screen from.
+ */
+export const ChatPrivacySettings = z.object({
+	playerId: z.int().describe('The caller — read from the token, not from the query'),
+	directMessagePrivacySetting: z
+		.int()
+		.describe('Who may DM the caller: 0 Friends · 1 Favorites · 2 NoOne'),
+	groupChatPrivacySetting: z
+		.int()
+		.describe('Who may add the caller to a group chat: 0 Friends · 1 Favorites · 2 NoOne'),
+})
+
+/**
+ * `GET /thread/party` — STUB. The real shape hasn't been observed off a live client, so
+ * the route answers an empty object and this schema says so rather than guessing at
+ * fields. Fill both in together once the real response is captured.
+ */
+export const PartyThread = z.object({}).describe('Stub — always empty; the real shape is unknown')
 
 /** `GET /` — the liveness probe. */
 export const ServiceStatus = z.object({

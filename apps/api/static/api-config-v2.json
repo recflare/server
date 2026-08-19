@@ -369,5 +369,18 @@
 		"MicSpamSamplePercentageForForceMuteToEnd": 0.2,
 		"MicSpamWarningStateVolumeMultiplier": 0.25
 	},
-	"ShareBaseUrl": "https://www.rec.example.com/{0}"
+	"ShareBaseUrl": "https://www.rec.example.com/{0}",
+	"StorefrontConfig": {
+		"MinPlayerLevelForGifting": 5,
+		"LatestStoreBadgeDateTime": "2020-01-01T00:00:00Z"
+	},
+	"ConfigTable": [
+		{ "Key": "Gift.DropChance", "Value": "1" },
+		{ "Key": "Gift.XP", "Value": "0.5" }
+	],
+	"PhotonConfig": {
+		"CloudRegion": "us",
+		"CrcCheckEnabled": false,
+		"EnableServerTracingAfterDisconnect": false
+	}
 }

@@ -39,6 +39,28 @@ export type Env = SharedHonoEnv & {
 	 */
 	ROOM_REDIRECTS?: string
 	/**
+	 * The Photon Realtime application id the client connects to, and the app the Photon auth
+	 * token is minted for (`GET /player/connection-info`). Optional, and EMPTY when unset:
+	 * this repo ships no Photon application, so a deployment that wants working networking
+	 * has to name its own.
+	 *
+	 * Not a secret — the client is handed all three ids in the clear — so these are plain
+	 * vars rather than Secrets Store entries.
+	 */
+	PHOTON_REALTIME_APP_ID?: string
+	/** The Photon Voice application id. Optional; see {@link Env.PHOTON_REALTIME_APP_ID}. */
+	PHOTON_VOICE_APP_ID?: string
+	/** The Photon Chat application id. Optional; see {@link Env.PHOTON_REALTIME_APP_ID}. */
+	PHOTON_CHAT_APP_ID?: string
+	/**
+	 * The Photon region every session is pinned to — both the region named in the connection
+	 * info and the one stamped on every room instance, which must agree. Optional; unlike the
+	 * app ids this DOES default (`us`, us-east1 in the QoS list), because an instance stamped
+	 * with an empty region is one the client can't connect to. One deployment, one region:
+	 * the QoS pings the client reports are ranked but never acted on here.
+	 */
+	PHOTON_REGION?: string
+	/**
 	 * Which linked arms a ban is enforced through, as a comma-separated list out of `ip`
 	 * and `platform` — or `off` for neither. Unset means BOTH: a ban reaches the accounts
 	 * that share a proven platform identity or an IP with the banned one, which is what

@@ -376,6 +376,95 @@ describe('thread storage', () => {
 	})
 })
 
+// The party thread is a stub until its real shape is observed off a live client; these
+// pin down only what the stub promises — auth, and an object body rather than a 404.
+describe('GET /settings/partyinvite', () => {
+	it('answers the invite-link lifetime as a bare single-key object', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/settings/partyinvite`, {
+			headers: await bearer(885001),
+		})
+		expect(res.status).toBe(200)
+		// One key, no `{ success, error, value }` envelope around it.
+		expect(await res.json()).toEqual({ InviteLinkLifetimeInMinutes: 60 })
+	})
+
+	it('401s without a token', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/settings/partyinvite`)
+		expect(res.status).toBe(401)
+	})
+})
+
+describe('GET /thread/party', () => {
+	it('answers an empty object', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/thread/party?maxCount=1&mode=0`, {
+			headers: await bearer(883001),
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({})
+	})
+
+	it('401s without a token', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/thread/party?maxCount=1&mode=0`)
+		expect(res.status).toBe(401)
+	})
+})
+
+describe('GET /thread/chatPrivacySetting', () => {
+	it('reports Friends for both settings, keyed to the caller', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/thread/chatPrivacySetting`, {
+			headers: await bearer(886001),
+		})
+		expect(res.status).toBe(200)
+		// camelCase, and the enum by NUMBER (0 = Friends) — this build has no by-name enum
+		// formatter, so a string would decode as nothing.
+		expect(await res.json()).toEqual({
+			playerId: 886001,
+			directMessagePrivacySetting: 0,
+			groupChatPrivacySetting: 0,
+		})
+	})
+
+	it('reads playerId off the token, not a query param', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/thread/chatPrivacySetting?playerId=999999`, {
+			headers: await bearer(886002),
+		})
+		expect(((await res.json()) as { playerId: number }).playerId).toBe(886002)
+	})
+
+	it('401s without a token', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/thread/chatPrivacySetting`)
+		expect(res.status).toBe(401)
+	})
+})
+
+describe('GET /thread/checkCanSendDirectMessageWithPrivacySetting', () => {
+	const path = `${ORIGIN}/thread/checkCanSendDirectMessageWithPrivacySetting`
+
+	it('always allows the DM, as a bare ChatResult integer', async () => {
+		const res = await SELF.fetch(`${path}?receivingPlayerId=205`, {
+			headers: await bearer(884001),
+		})
+		expect(res.status).toBe(200)
+		expect(res.headers.get('content-type')).toContain('application/json')
+		// The whole body is the ChatResult — 0 is Success. NOT a boolean: the client
+		// instantiates its response wrapper with the enum, so `true` would decode as nothing.
+		expect(await res.text()).toBe('0')
+	})
+
+	it('answers the same for any player, and with no player named', async () => {
+		// `receivingPlayerId` is ignored — nothing here stores a privacy setting to refuse on.
+		for (const query of ['?receivingPlayerId=205', '?receivingPlayerId=999999', '']) {
+			const res = await SELF.fetch(`${path}${query}`, { headers: await bearer(884002) })
+			expect(await res.text()).toBe('0')
+		}
+	})
+
+	it('401s without a token', async () => {
+		const res = await SELF.fetch(`${path}?receivingPlayerId=205`)
+		expect(res.status).toBe(401)
+	})
+})
+
 describe('POST /thread/withmembers', () => {
 	async function withMembers(caller: number, body: string) {
 		return SELF.fetch(`${ORIGIN}/thread/withmembers`, {
@@ -760,9 +849,9 @@ describe('ChatMessageReceived push', () => {
 
 		const sent = await hub.getByName('global').takeSent()
 		expect(sent.map((n) => n.playerId).sort((a, b) => a - b)).toEqual([caller, 886002, 886003])
-		expect(
-			sent.every((n) => n.notificationType === NotificationType.ChatMessageReceived)
-		).toBe(true)
+		expect(sent.every((n) => n.notificationType === NotificationType.ChatMessageReceived)).toBe(
+			true
+		)
 		expect(sent[0]!.data).toEqual({
 			chatMessageId: chatThread.latestMessage.chatMessageId,
 			chatThreadId: chatThread.chatThreadId,
@@ -984,9 +1073,7 @@ describe('POST /thread/:id', () => {
 	it('pushes ChatMessageReceived to every member', async () => {
 		const hub = env.RECFLARE_NOTIFICATIONS_HUB as unknown as {
 			getByName(name: string): {
-				takeSent(): Promise<
-					Array<{ playerId: number; notificationType: NotificationType }>
-				>
+				takeSent(): Promise<Array<{ playerId: number; notificationType: NotificationType }>>
 			}
 		}
 		const caller = 889005
@@ -996,9 +1083,9 @@ describe('POST /thread/:id', () => {
 		await send(caller, `/thread/${chatThreadId}`)
 		const sent = await hub.getByName('global').takeSent()
 		expect(sent.map((n) => n.playerId).sort((a, b) => a - b)).toEqual([caller, 889006])
-		expect(
-			sent.every((n) => n.notificationType === NotificationType.ChatMessageReceived)
-		).toBe(true)
+		expect(sent.every((n) => n.notificationType === NotificationType.ChatMessageReceived)).toBe(
+			true
+		)
 	})
 
 	it('reports invalid arguments for blank contents without storing anything', async () => {
@@ -1301,7 +1388,11 @@ describe('openapi', () => {
 		expect([...documented].sort()).toEqual([
 			'DELETE /thread/{id}/leave',
 			'GET /',
+			'GET /settings/partyinvite',
 			'GET /thread',
+			'GET /thread/chatPrivacySetting',
+			'GET /thread/checkCanSendDirectMessageWithPrivacySetting',
+			'GET /thread/party',
 			'GET /thread/{id}',
 			'GET /thread/{id}/message',
 			'POST /thread',

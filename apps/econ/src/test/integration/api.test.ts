@@ -8,6 +8,7 @@ import {
 	getOwnedInventionIds,
 	getProgression,
 	INVENTORY_INVENTION_SCHEMA_DDL,
+	OUTFIT_SCHEMA_DDL,
 	PROGRESSION_SCHEMA_DDL,
 	RECEIVED_GIFT_SCHEMA_DDL,
 } from '@repo/domain'
@@ -33,7 +34,6 @@ import { CHALLENGE_GIFT_SCHEMA_DDL, CHALLENGE_STATUS_SCHEMA_DDL } from '../../ch
 import { CONSUMABLE_SCHEMA_DDL, grantConsumable } from '../../consumables-db'
 import { EQUIPMENT_SCHEMA_DDL, grantEquipment } from '../../equipment-db'
 import { INVENTORY_SCHEMA_DDL } from '../../inventory-db'
-import { OUTFIT_SCHEMA_DDL } from '../../outfit-db'
 import { REWARD_STATUS_SCHEMA_DDL } from '../../reward-db'
 
 import type { Env } from '../../context'
@@ -195,10 +195,15 @@ describe('econ endpoints', () => {
 		expect(body[0]).toHaveProperty('AvatarItemDesc')
 	})
 
-	test('GET /api/avatar/v1/defaultbaseavataritems is an empty stub (no auth)', async () => {
+	test('GET /api/avatar/v1/defaultbaseavataritems returns the base items (no auth)', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/api/avatar/v1/defaultbaseavataritems`)
 		expect(res.status).toBe(200)
-		expect(await res.json()).toEqual([])
+		const body = (await res.json()) as Array<Record<string, unknown>>
+		expect(body.map((i) => i.AvatarItemId)).toEqual([2184, 2918])
+		// The client keys these off IsBaseAvatarItem, and the trailing comma in the desc
+		// is part of the item descriptor — both are served verbatim.
+		expect(body.every((i) => i.IsBaseAvatarItem === true)).toBe(true)
+		expect(body[0]?.AvatarItemDesc).toBe('c5d70cb4-71dd-4fe4-b719-34fe2073c611,')
 	})
 
 	test('GET /api/avatar/v4/items 401s without a token', async () => {
@@ -206,16 +211,34 @@ describe('econ endpoints', () => {
 		expect(res.status).toBe(401)
 	})
 
-	test('GET /api/avatar/v4/items returns the item catalog with a valid token', async () => {
+	test('GET /api/avatar/v4/items serves the catalog in the camelCase v4 shape', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/api/avatar/v4/items`, {
 			headers: await bearer(),
 		})
 		expect(res.status).toBe(200)
-		const body = (await res.json()) as unknown[]
-		expect(Array.isArray(body)).toBe(true)
+		const body = (await res.json()) as Array<Record<string, unknown>>
 		expect(body.length).toBeGreaterThan(0)
-		expect(body[0]).toHaveProperty('AvatarItemDesc')
-		expect(body[0]).toHaveProperty('FriendlyName')
+		// Every key of the DTO is present on every item, and nothing PascalCase leaks
+		// through from the stored/bundled records.
+		for (const item of body) {
+			expect(Object.keys(item).sort()).toEqual([
+				'avatarItemDesc',
+				'avatarItemId',
+				'avatarItemType',
+				'friendlyName',
+				'isBaseAvatarItem',
+				'rarity',
+				'tagList',
+				'tooltip',
+			])
+		}
+		expect(typeof body[0]?.avatarItemDesc).toBe('string')
+		expect(typeof body[0]?.friendlyName).toBe('string')
+		// The catalog carries no ids, tags or base flag — those default rather than
+		// being invented.
+		expect(body[0]?.avatarItemId).toBe(0)
+		expect(body[0]?.tagList).toBe('')
+		expect(body[0]?.isBaseAvatarItem).toBe(false)
 	})
 
 	test('GET /api/avatar/v2 401s without a token', async () => {
@@ -397,14 +420,53 @@ describe('econ endpoints', () => {
 		expect(body.isCompleted).toBe(false)
 	})
 
-	test('GET /api/checklist/v1/current 401s without a token, returns [] with one', async () => {
-		const anon = await exports.default.fetch(`${ORIGIN}/api/checklist/v1/current`)
-		expect(anon.status).toBe(401)
-		const res = await exports.default.fetch(`${ORIGIN}/api/checklist/v1/current`, {
-			headers: await bearer(),
+	test('GET /api/checklist/v1|v2/current 401s without a token, serves the NUX list with one', async () => {
+		const expected = [
+			{ Order: 0, Objective: 38, Count: 1, CreditAmount: 25 },
+			{ Order: 1, Objective: 32, Count: 1, CreditAmount: 25 },
+			{ Order: 2, Objective: 2, Count: 1, CreditAmount: 25 },
+			{ Order: 3, Objective: 30, Count: 1, CreditAmount: 25 },
+			{ Order: 4, Objective: 6, Count: 1, CreditAmount: 25 },
+		]
+		// Both version paths are live and serve the same list.
+		for (const path of ['/api/checklist/v1/current', '/api/checklist/v2/current']) {
+			const anon = await exports.default.fetch(`${ORIGIN}${path}`)
+			expect(anon.status).toBe(401)
+			const res = await exports.default.fetch(`${ORIGIN}${path}`, { headers: await bearer() })
+			expect(res.status).toBe(200)
+			expect(await res.json()).toEqual(expected)
+		}
+	})
+
+	test('POST /api/checklist/v1|v2/complete 401s without a token, grants nothing with one', async () => {
+		for (const path of ['/api/checklist/v1/complete', '/api/checklist/v2/complete']) {
+			const anon = await exports.default.fetch(`${ORIGIN}${path}`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ ItemIndex: 1 }),
+			})
+			expect(anon.status).toBe(401)
+
+			const res = await exports.default.fetch(`${ORIGIN}${path}`, {
+				method: 'POST',
+				headers: { ...(await bearer('33')), 'Content-Type': 'application/json' },
+				body: JSON.stringify({ ItemIndex: 1 }),
+			})
+			expect(res.status).toBe(200)
+			expect(await res.json()).toEqual({
+				BalanceUpdates: [{ UpdateResponse: 303, Data: [] }],
+				Balance: 0,
+				CurrencyType: 2,
+				BalanceType: -2,
+			})
+		}
+
+		// Stubbed, so completing rows does not move the balance — re-posting cannot farm
+		// tokens, and the checklist still lists every row.
+		const bal = await exports.default.fetch(`${ORIGIN}/api/storefronts/v4/balance/2`, {
+			headers: await bearer('33'),
 		})
-		expect(res.status).toBe(200)
-		expect(await res.json()).toEqual([])
+		expect(await bal.json()).toEqual([{ CurrencyType: 2, Platform: -2, Balance: 10000 }])
 	})
 
 	test('GET /api/itemWishlists/v1/wishlist/me 401s without a token, returns [] with one', async () => {
@@ -415,6 +477,23 @@ describe('econ endpoints', () => {
 		})
 		expect(res.status).toBe(200)
 		expect(await res.json()).toEqual([])
+	})
+
+	test('GET /api/itemWishlists/v1/wishlist/:accountId 401s without a token, returns []', async () => {
+		const anon = await exports.default.fetch(`${ORIGIN}/api/itemWishlists/v1/wishlist/207`)
+		expect(anon.status).toBe(401)
+
+		const res = await exports.default.fetch(`${ORIGIN}/api/itemWishlists/v1/wishlist/207`, {
+			headers: await bearer(),
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
+
+		// `me` is still its own route, not read as an account id.
+		const mine = await exports.default.fetch(`${ORIGIN}/api/itemWishlists/v1/wishlist/me`, {
+			headers: await bearer(),
+		})
+		expect(mine.status).toBe(200)
 	})
 
 	test('GET /api/avatar/v3/saved 401s without a token, returns [] with one', async () => {
@@ -571,6 +650,41 @@ describe('econ endpoints', () => {
 		)
 		expect(res.status).toBe(200)
 		expect(await res.json()).toEqual([])
+	})
+
+	// The room-economy stubs. One table-driven test: they're the same empty-list answer,
+	// and what's worth pinning is that every path the client asks for on room entry is
+	// registered — an unregistered one 404s and stalls the room load.
+	test('the room-economy endpoints all return []', async () => {
+		for (const path of [
+			'/econ/roomInventory/room/92',
+			'/econ/roomInventory/room/92/player',
+			'/econ/roomInventoryItemTags/room/92',
+			'/econ/roomOffer/room/92',
+			'/econ/roomOffer/room/92/purchaseCounts',
+			'/econ/roomGiftDropShops/room/92',
+			'/api/ugcPurchasables/v1/items/room/92',
+		]) {
+			const res = await exports.default.fetch(`${ORIGIN}${path}`)
+			expect(res.status, path).toBe(200)
+			expect(await res.json(), path).toEqual([])
+		}
+	})
+
+	test('GET /econ/roomEconConfig/:roomId echoes the room and disables sorting tabs', async () => {
+		const anon = await exports.default.fetch(`${ORIGIN}/econ/roomEconConfig/92`)
+		expect(anon.status).toBe(401)
+
+		const res = await exports.default.fetch(`${ORIGIN}/econ/roomEconConfig/92`, {
+			headers: await bearer(),
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ RoomId: 92, EnableSortingTabs: false })
+
+		const bad = await exports.default.fetch(`${ORIGIN}/econ/roomEconConfig/nope`, {
+			headers: await bearer(),
+		})
+		expect(bad.status).toBe(400)
 	})
 
 	test('GET /api/consumables/v2/getUnlocked 401s without a token, returns []', async () => {
@@ -816,9 +930,9 @@ describe('econ endpoints', () => {
 		const items = await exports.default.fetch(`${ORIGIN}/api/avatar/v4/items`, {
 			headers: await bearer('20'),
 		})
-		const list = (await items.json()) as Array<{ AvatarItemDesc: string; FriendlyName: string }>
-		expect(list[0].FriendlyName).toBe('Bowtie (White)')
-		expect(list[0].AvatarItemDesc).toBe(gift.AvatarItemDesc)
+		const list = (await items.json()) as Array<{ avatarItemDesc: string; friendlyName: string }>
+		expect(list[0].friendlyName).toBe('Bowtie (White)')
+		expect(list[0].avatarItemDesc).toBe(gift.AvatarItemDesc)
 
 		// And a pending gift box is waiting to be opened.
 		const gifts = await exports.default.fetch(`${ORIGIN}/api/avatar/v2/gifts`, {
@@ -899,8 +1013,8 @@ describe('econ endpoints', () => {
 		const items = await exports.default.fetch(`${ORIGIN}/api/avatar/v4/items`, {
 			headers: await bearer('25'),
 		})
-		const list = (await items.json()) as Array<{ FriendlyName: string }>
-		expect(list.every((i) => i.FriendlyName !== 'Supreme Pizza')).toBe(true)
+		const list = (await items.json()) as Array<{ friendlyName: string }>
+		expect(list.every((i) => i.friendlyName !== 'Supreme Pizza')).toBe(true)
 
 		// Buying it again stacks: a second instance, count summed to 2.
 		expect((await buy()).status).toBe(200)
@@ -966,8 +1080,8 @@ describe('econ endpoints', () => {
 		const items = await exports.default.fetch(`${ORIGIN}/api/avatar/v4/items`, {
 			headers: await bearer('31'),
 		})
-		const list = (await items.json()) as Array<{ FriendlyName: string }>
-		expect(list.every((i) => i.FriendlyName !== 'Disc Skin (Coop)')).toBe(true)
+		const list = (await items.json()) as Array<{ friendlyName: string }>
+		expect(list.every((i) => i.friendlyName !== 'Disc Skin (Coop)')).toBe(true)
 
 		expect(first[0].Favorited).toBe(false)
 
@@ -1066,8 +1180,359 @@ describe('econ endpoints', () => {
 		const items = await exports.default.fetch(`${ORIGIN}/api/avatar/v4/items`, {
 			headers: await bearer('23'),
 		})
-		const list = (await items.json()) as Array<{ FriendlyName: string }>
-		expect(list.every((i) => i.FriendlyName !== 'Bowtie (White)')).toBe(true)
+		const list = (await items.json()) as Array<{ friendlyName: string }>
+		expect(list.every((i) => i.friendlyName !== 'Bowtie (White)')).toBe(true)
+	})
+
+	// ---- POST /api/items/bulkpurchase ------------------------------------------------
+	// The shopping bag: many lines, one storefront, one currency, one debit. Its response is
+	// NOT buyItem's — it is the `{ Success, Error, error_id, Value }` envelope, `Value.Balance`
+	// is the RESULTING total rather than the change, and each `BalanceUpdates` entry carries
+	// its own `UpdateResponse` (0 OK, 2 NotEnoughCredit, 4 NoItemAvailable, 5
+	// CouponNotApplicable, 6 RequestedPriceDoesNotMatch, 7 RequestedAmountNotAllowed).
+
+	/** The shape every bulk-purchase response answers with. */
+	type BulkBody = {
+		Success: boolean
+		Error: string | null
+		error_id: string | null
+		Value: {
+			Balance: number
+			CurrencyType: number
+			Platform: number
+			BalanceUpdates: Array<{
+				UpdateResponse: number
+				Data: {
+					GiftPackage: Record<string, unknown> | null
+					PurchasableItemId: number | null
+					CustomAvatarItem: null
+				}
+			}>
+		} | null
+	}
+
+	/** A bag line, in the shape the client posts one. */
+	const line = (numberId: number, requestedPrice: number, extra: Record<string, unknown> = {}) => ({
+		ItemPurchaseMethodId: { Type: 0, NumberId: numberId, Guid: null },
+		RequestedPrice: requestedPrice,
+		Gift: null,
+		CouponConsumablePlayerMappingId: null,
+		DuplicateItemCount: 1,
+		...extra,
+	})
+
+	const bulkPurchase = async (sub: string, body: Record<string, unknown>) =>
+		exports.default.fetch(`${ORIGIN}/api/items/bulkpurchase`, {
+			method: 'POST',
+			headers: { ...(await bearer(sub)), 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				StorefrontType: 3,
+				CurrencyType: 2,
+				BypassGiftPackages: false,
+				AllowPartialSuccess: true,
+				ShoppingBagId: null,
+				...body,
+			}),
+		})
+
+	/** The `UpdateResponse` of every entry, in request order. */
+	const codes = (body: BulkBody) => body.Value!.BalanceUpdates.map((u) => u.UpdateResponse)
+
+	test('POST /api/items/bulkpurchase 401s without a token', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/items/bulkpurchase`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				PurchaseItemRequests: [line(10, 200)],
+				StorefrontType: 3,
+				CurrencyType: 2,
+			}),
+		})
+		expect(res.status).toBe(401)
+	})
+
+	test('POST /api/items/bulkpurchase debits the bag once and grants every line', async () => {
+		// Account 90: fresh, so its first balance touch grants the 10000 default. Three donuts
+		// (a consumable, 100 each — consumables are the only thing that stacks) and one dress
+		// (an avatar item, 200) — 500 in total.
+		await drainFrames()
+		const res = await bulkPurchase('90', {
+			PurchaseItemRequests: [line(2182, 100, { DuplicateItemCount: 3 }), line(10, 200)],
+			ShoppingBagId: 'bag-1',
+		})
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as BulkBody
+		expect(body.Success).toBe(true)
+		expect(body.Error).toBe(null)
+		expect(body.error_id).toBe(null)
+		const value = body.Value!
+		// `Balance` here is the RESULTING total (10000 - 500), unlike buyItem's change. The
+		// bucket is -2, the one `GET /balance` reports — the reference server's 4
+		// (RecNetPurchased) would read as a second balance the client adds to the real one.
+		expect(value.Balance).toBe(9500)
+		expect(value.CurrencyType).toBe(2)
+		expect(value.Platform).toBe(-2)
+
+		// ONE entry per REQUESTED item — three donuts are one line, so one entry — in order.
+		expect(value.BalanceUpdates).toHaveLength(2)
+		expect(codes(body)).toEqual([0, 0])
+		expect(value.BalanceUpdates.map((u) => u.Data.PurchasableItemId)).toEqual([2182, 10])
+		expect(value.BalanceUpdates.every((u) => u.Data.CustomAvatarItem === null)).toBe(true)
+		// The box each line produced, as `GiftPackage` carries it: 20 keys, the receiver in
+		// `PlayerId`, a self-buy attributed to the "Coach" account (1), and the platform MASK in
+		// `Platform` — the balance bucket is the `BalanceType` beside it.
+		const box = value.BalanceUpdates[0].Data.GiftPackage!
+		expect(Object.keys(box)).toEqual([
+			'Id',
+			'PlayerId',
+			'FromPlayerId',
+			'ConsumableItemDesc',
+			'AvatarItemType',
+			'AvatarItemDesc',
+			'CustomAvatarItemId',
+			'EquipmentPrefabName',
+			'EquipmentModificationGuid',
+			'CurrencyType',
+			'Currency',
+			'Xp',
+			'GiftContext',
+			'GiftRarity',
+			'Message',
+			'Signature',
+			'IsSignatureValid',
+			'Platform',
+			'PlatformsToSpawnOn',
+			'BalanceType',
+		])
+		expect(box.Id).toBeGreaterThan(0)
+		expect(box.PlayerId).toBe(90)
+		expect(box.FromPlayerId).toBe(1)
+		expect(box.ConsumableItemDesc).not.toBe('')
+		expect(box.Platform).toBe(-1)
+		expect(box.BalanceType).toBe(-2)
+		expect(value.BalanceUpdates[1].Data.GiftPackage!.AvatarItemDesc).not.toBe('')
+
+		// ONE frame for the whole bag, setting the account-wide bucket to the resulting total —
+		// the same 9500 the body reports, so the two agree instead of compounding.
+		expect(await drainFrames()).toEqual([
+			{
+				accountId: 90,
+				notificationType: NotificationType.StorefrontBalancePurchase,
+				payload: {
+					BalanceAddType: 1400,
+					Delta: -500,
+					Balance: 9500,
+					Platform: -2,
+					CurrencyType: 2,
+				},
+			},
+		])
+		expect(
+			await getBalance(env.DB, 90, CurrencyType.RecCenterTokens, DEFAULT_STARTING_TOKENS)
+		).toBe(9500)
+
+		// Everything landed: the dress is owned, all three donuts stacked into the one box's
+		// grant, and each LINE left one gift box.
+		const items = await exports.default.fetch(`${ORIGIN}/api/avatar/v4/items`, {
+			headers: await bearer('90'),
+		})
+		const list = (await items.json()) as Array<{ friendlyName: string }>
+		expect(list[0].friendlyName).toBe('Babydoll Dress (Blue)')
+		const unlocked = await exports.default.fetch(`${ORIGIN}/api/consumables/v2/getUnlocked`, {
+			headers: await bearer('90'),
+		})
+		const consumables = (await unlocked.json()) as Array<{ Count: number }>
+		expect(consumables[0].Count).toBe(3)
+		const gifts = await exports.default.fetch(`${ORIGIN}/api/avatar/v2/gifts`, {
+			headers: await bearer('90'),
+		})
+		const pending = (await gifts.json()) as Array<{ Id: number }>
+		expect(pending.map((g) => g.Id)).toEqual(
+			value.BalanceUpdates.map((u) => u.Data.GiftPackage!.Id)
+		)
+	})
+
+	test('POST /api/items/bulkpurchase buys the good lines when partial success is allowed', async () => {
+		// The second line's price no longer matches the catalog (200, not 1). The bag still
+		// succeeds — that entry just comes back non-OK, which is what AllowPartialSuccess means.
+		const res = await bulkPurchase('91', {
+			PurchaseItemRequests: [line(10, 200), line(80, 1)],
+		})
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as BulkBody
+		expect(body.Success).toBe(true)
+		expect(body.Error).toBe(null)
+		expect(body.Value!.Balance).toBe(9800)
+		// 6 = RequestedPriceDoesNotMatch. The failed line still names the item it asked for.
+		expect(codes(body)).toEqual([0, 6])
+		expect(body.Value!.BalanceUpdates[1].Data).toEqual({
+			GiftPackage: null,
+			PurchasableItemId: 80,
+			CustomAvatarItem: null,
+		})
+		expect(
+			await getBalance(env.DB, 91, CurrencyType.RecCenterTokens, DEFAULT_STARTING_TOKENS)
+		).toBe(9800)
+	})
+
+	test('POST /api/items/bulkpurchase charges nothing when a line fails and partial success is off', async () => {
+		await drainFrames()
+		const res = await bulkPurchase('92', {
+			AllowPartialSuccess: false,
+			PurchaseItemRequests: [line(10, 200), line(80, 1)],
+		})
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as BulkBody
+		expect(body.Success).toBe(false)
+		expect(body.Error).toBe('Price has changed')
+		expect(body.Value).toBe(null)
+		// Untouched: no debit, no item, and no frame for a purchase that did not happen.
+		expect(
+			await getBalance(env.DB, 92, CurrencyType.RecCenterTokens, DEFAULT_STARTING_TOKENS)
+		).toBe(10000)
+		const items = await exports.default.fetch(`${ORIGIN}/api/avatar/v4/items`, {
+			headers: await bearer('92'),
+		})
+		const list = (await items.json()) as Array<{ friendlyName: string }>
+		expect(list.every((i) => i.friendlyName !== 'Babydoll Dress (Blue)')).toBe(true)
+		expect(await drainFrames()).toEqual([])
+	})
+
+	test('POST /api/items/bulkpurchase takes the lines that fit, in request order', async () => {
+		// Leave account 93 with 250 tokens: enough for the first 200-token line, not both.
+		await getBalance(env.DB, 93, CurrencyType.RecCenterTokens, DEFAULT_STARTING_TOKENS)
+		expect(
+			await spendCurrency(env.DB, 93, CurrencyType.RecCenterTokens, 9750, DEFAULT_STARTING_TOKENS)
+		).toBe(true)
+		const res = await bulkPurchase('93', {
+			PurchaseItemRequests: [line(10, 200), line(80, 200)],
+		})
+		const body = (await res.json()) as BulkBody
+		expect(body.Success).toBe(true)
+		expect(body.Value!.Balance).toBe(50)
+		// 2 = NotEnoughCredit for the line the balance no longer covered.
+		expect(codes(body)).toEqual([0, 2])
+		expect(body.Value!.BalanceUpdates[1].Data.GiftPackage).toBe(null)
+		expect(
+			await getBalance(env.DB, 93, CurrencyType.RecCenterTokens, DEFAULT_STARTING_TOKENS)
+		).toBe(50)
+	})
+
+	test('POST /api/items/bulkpurchase fails the whole bag it cannot afford when partial success is off', async () => {
+		await getBalance(env.DB, 94, CurrencyType.RecCenterTokens, DEFAULT_STARTING_TOKENS)
+		expect(
+			await spendCurrency(env.DB, 94, CurrencyType.RecCenterTokens, 9750, DEFAULT_STARTING_TOKENS)
+		).toBe(true)
+		const res = await bulkPurchase('94', {
+			AllowPartialSuccess: false,
+			PurchaseItemRequests: [line(10, 200), line(80, 200)],
+		})
+		const body = (await res.json()) as BulkBody
+		// Even the line that would have fitted is refused: all of it or none.
+		expect(body.Success).toBe(false)
+		expect(body.Error).toBe('Insufficient balance')
+		expect(body.Value).toBe(null)
+		expect(
+			await getBalance(env.DB, 94, CurrencyType.RecCenterTokens, DEFAULT_STARTING_TOKENS)
+		).toBe(250)
+	})
+
+	test('POST /api/items/bulkpurchase grants without gift boxes when BypassGiftPackages is set', async () => {
+		const res = await bulkPurchase('95', {
+			BypassGiftPackages: true,
+			PurchaseItemRequests: [line(10, 200)],
+		})
+		const body = (await res.json()) as BulkBody
+		expect(body.Success).toBe(true)
+		expect(body.Value!.Balance).toBe(9800)
+		// No box was created, so there is none to hand back — the capture's null GiftPackage.
+		expect(body.Value!.BalanceUpdates[0]).toEqual({
+			UpdateResponse: 0,
+			Data: { GiftPackage: null, PurchasableItemId: 10, CustomAvatarItem: null },
+		})
+		const gifts = await exports.default.fetch(`${ORIGIN}/api/avatar/v2/gifts`, {
+			headers: await bearer('95'),
+		})
+		expect((await gifts.json()) as unknown[]).toEqual([])
+		// Ownership never depended on the box: the item is owned all the same.
+		const items = await exports.default.fetch(`${ORIGIN}/api/avatar/v4/items`, {
+			headers: await bearer('95'),
+		})
+		const list = (await items.json()) as Array<{ friendlyName: string }>
+		expect(list[0].friendlyName).toBe('Babydoll Dress (Blue)')
+	})
+
+	test('POST /api/items/bulkpurchase reports per line what it cannot sell', async () => {
+		await drainFrames()
+		const res = await bulkPurchase('96', {
+			PurchaseItemRequests: [
+				// A guid-keyed (UGC) item — nothing here sells one, and it has no NumberId to echo.
+				line(0, 200, {
+					ItemPurchaseMethodId: { Type: 1, NumberId: null, Guid: 'a3f1-not-a-catalog-item' },
+				}),
+				// Nothing issues coupons, so a line claiming one is refused rather than charged full
+				// price for a discount it thinks it applied.
+				line(10, 200, { CouponConsumablePlayerMappingId: 4242 }),
+				line(999999, 200),
+				line(10, 200, { DuplicateItemCount: 0 }),
+				// An avatar item is owned once — a second copy would grant nothing and charge for it.
+				line(80, 200, { DuplicateItemCount: 2 }),
+				// The catalog prices this item in RecCenterTokens only.
+				line(2182, 100),
+				// …and one that works, so the bag is a partial success rather than a refusal.
+				line(10, 200),
+			],
+			CurrencyType: 2,
+		})
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as BulkBody
+		expect(body.Success).toBe(true)
+		// 4 NoItemAvailable, 5 CouponNotApplicable, 4 NoItemAvailable, 7/7
+		// RequestedAmountNotAllowed, 0 OK (the donuts do price in tokens), 0 OK.
+		expect(codes(body)).toEqual([4, 5, 4, 7, 7, 0, 0])
+		expect(body.Value!.BalanceUpdates[0].Data.PurchasableItemId).toBe(null)
+		// Only the two OK lines were charged (100 + 200).
+		expect(body.Value!.Balance).toBe(9700)
+		expect(await drainFrames()).toHaveLength(1)
+	})
+
+	test('POST /api/items/bulkpurchase refuses a bag where nothing sells', async () => {
+		const res = await bulkPurchase('97', {
+			CurrencyType: CurrencyType.LaserTagTickets,
+			PurchaseItemRequests: [line(10, 200)],
+		})
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as BulkBody
+		// Nothing was bought, so this is a refusal rather than a bag of non-OK entries.
+		expect(body.Success).toBe(false)
+		expect(body.Error).toBe('Currency type not available for this item')
+		expect(body.Value).toBe(null)
+	})
+
+	test('POST /api/items/bulkpurchase 400s on a request it cannot evaluate', async () => {
+		// Same envelope on a 400, so a client that only parses this shape still reads the error.
+		const empty = await bulkPurchase('98', { PurchaseItemRequests: [] })
+		expect(empty.status).toBe(400)
+		const emptyBody = (await empty.json()) as BulkBody
+		expect(emptyBody).toMatchObject({ Success: false, error_id: null, Value: null })
+		expect(emptyBody.Error).toBe('PurchaseItemRequests must be a non-empty array')
+		// A room-scoped currency is not an account balance we can debit.
+		const roomCurrency = await bulkPurchase('98', {
+			CurrencyType: CurrencyType.RoomCurrency,
+			PurchaseItemRequests: [line(10, 200)],
+		})
+		expect(roomCurrency.status).toBe(400)
+		expect(((await roomCurrency.json()) as BulkBody).Error).toBe('Currency type is not spendable')
+		// Over `Econ.BulkPurchaseCap` (200 copies) — the same cap the client reads from its
+		// game config. Consumables are what can be asked for in that quantity.
+		const over = await bulkPurchase('98', {
+			PurchaseItemRequests: [line(2182, 100, { DuplicateItemCount: 201 })],
+		})
+		expect(over.status).toBe(400)
+		expect(((await over.json()) as BulkBody).Error).toBe('A bulk purchase is capped at 200 items')
+		expect(
+			await getBalance(env.DB, 98, CurrencyType.RecCenterTokens, DEFAULT_STARTING_TOKENS)
+		).toBe(10000)
 	})
 
 	/**
@@ -1263,8 +1728,8 @@ describe('econ endpoints', () => {
 		const items = await exports.default.fetch(`${ORIGIN}/api/avatar/v4/items`, {
 			headers: await bearer('24'),
 		})
-		const list = (await items.json()) as Array<{ FriendlyName: string }>
-		expect(list.some((i) => i.FriendlyName === 'Bowtie (White)')).toBe(true)
+		const list = (await items.json()) as Array<{ friendlyName: string }>
+		expect(list.some((i) => i.friendlyName === 'Bowtie (White)')).toBe(true)
 
 		// Opening it again is a harmless no-op — still 200.
 		const again = await exports.default.fetch(`${ORIGIN}/api/avatar/v2/gifts/consume/`, {
@@ -1670,9 +2135,10 @@ describe('econ endpoints', () => {
 		const items = await exports.default.fetch(`${ORIGIN}/api/avatar/v4/items`, {
 			headers: await bearer('76'),
 		})
-		const owned = (await items.json()) as Array<{ AvatarItemDesc: string }>
+		// v4 serves the camelCase DTO, unlike the PascalCase records on the gift box.
+		const owned = (await items.json()) as Array<{ avatarItemDesc: string }>
 		if ((boxes[0]?.AvatarItemDesc ?? '') !== '') {
-			expect(owned.map((i) => i.AvatarItemDesc)).toContain(boxes[0]?.AvatarItemDesc)
+			expect(owned.map((i) => i.avatarItemDesc)).toContain(boxes[0]?.AvatarItemDesc)
 		}
 
 		// A second box can't roll the same prize: "an item that you don't have" excludes what
@@ -1882,8 +2348,9 @@ describe('econ endpoints', () => {
 		const items = await exports.default.fetch(`${ORIGIN}/api/avatar/v4/items`, {
 			headers: await bearer('82'),
 		})
-		const owned = (await items.json()) as Array<{ AvatarItemDesc: string }>
-		expect(owned.map((i) => i.AvatarItemDesc)).toContain(clothingBox?.AvatarItemDesc)
+		// v4 serves the camelCase DTO, unlike the PascalCase records on the gift box.
+		const owned = (await items.json()) as Array<{ avatarItemDesc: string }>
+		expect(owned.map((i) => i.avatarItemDesc)).toContain(clothingBox?.AvatarItemDesc)
 		expect((await drainFrames()).map((f) => f.notificationType)).toEqual([
 			NotificationType.GiftPackageReceivedImmediate,
 			NotificationType.PlayerProgressionLevelUpdate,
@@ -1943,11 +2410,100 @@ describe('econ endpoints', () => {
 		expect(await res.json()).toEqual([])
 	})
 
+	test('GET /api/subscriptionseasons/v1/seasons/current returns []', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/subscriptionseasons/v1/seasons/current`)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
+	})
+
 	const getSubscription = async (headers: Record<string, string> = {}) =>
 		exports.default.fetch(`${ORIGIN}/api/CampusCard/v1/UpdateAndGetSubscription`, {
 			method: 'POST',
 			headers,
 		})
+
+	// Fixed values, and no auth: the client reads this while assembling the RR+ page, so a
+	// 401 would only be a way for that load to stall.
+	test('GET /api/incentivizedreferrals/progress reports an untouched referral track', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/incentivizedreferrals/progress`, {
+			headers: await bearer('207'),
+		})
+		expect(res.status).toBe(200)
+		// The payload is nested under `value`, unlike econ's flat balance bodies.
+		expect(await res.json()).toEqual({
+			success: true,
+			value: { ReferralsVerifiedCount: 0, PlayerReferralRewards: [] },
+		})
+	})
+
+	test('GET /api/incentivizedreferrals/progress 401s without a bearer token', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/incentivizedreferrals/progress`)
+		expect(res.status).toBe(401)
+		expect(await res.text()).toBe('')
+	})
+
+	test('GET /api/influencerpartnerprogram/influencers lists nobody', async () => {
+		const res = await exports.default.fetch(
+			`${ORIGIN}/api/influencerpartnerprogram/influencers?take=1000`,
+			{ headers: await bearer('207') }
+		)
+		expect(res.status).toBe(200)
+		// An object around the list, not a bare array. Note this is a 200 while its
+		// single-account sibling below answers 404 — "nobody is" is a complete answer to
+		// "who is?", where "are you?" is answered by the 404 itself.
+		expect(await res.json()).toEqual({ InfluencerIds: [] })
+	})
+
+	test('GET /api/influencerpartnerprogram/influencers 401s without a bearer token', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/influencerpartnerprogram/influencers`)
+		expect(res.status).toBe(401)
+	})
+
+	test('GET /api/influencerpartnerprogram/influencer 404s with an empty JSON body', async () => {
+		const res = await exports.default.fetch(
+			`${ORIGIN}/api/influencerpartnerprogram/influencer?accountId=206`,
+			{ headers: await bearer('206') }
+		)
+		// 404 IS the answer — "not an influencer" — and the body is empty, not `{}` or null,
+		// with the content type the reference sends.
+		expect(res.status).toBe(404)
+		expect(res.headers.get('content-type')).toContain('application/json')
+		expect(await res.text()).toBe('')
+	})
+
+	test('GET /api/influencerpartnerprogram/influencer 401s without a bearer token', async () => {
+		// Auth is checked before the 404, so an unauthenticated caller is told that, not that
+		// they aren't an influencer.
+		const res = await exports.default.fetch(`${ORIGIN}/api/influencerpartnerprogram/influencer`)
+		expect(res.status).toBe(401)
+		expect(await res.text()).toBe('')
+	})
+
+	test('GET /api/makerai/checkfreetrialeligibility answers a bare false', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/makerai/checkfreetrialeligibility`, {
+			headers: await bearer('206'),
+		})
+		expect(res.status).toBe(200)
+		expect(res.headers.get('content-type')).toContain('application/json')
+		// The whole body is the boolean — not `{ value: false }`, not an envelope.
+		expect(await res.text()).toBe('false')
+	})
+
+	test('GET /api/makerai/checkfreetrialeligibility 401s without a bearer token', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/makerai/checkfreetrialeligibility`)
+		expect(res.status).toBe(401)
+		expect(await res.text()).toBe('')
+	})
+
+	test('GET /api/CampusCard/v1/SignUpBonus returns the running bonus, unauthenticated', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/CampusCard/v1/SignUpBonus`)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({
+			RRPlusSignUpBonusId: 3,
+			MinFreeItemsPrice: 6000,
+			MaxFreeItemsPrice: 10000,
+		})
+	})
 
 	test('POST /api/CampusCard/v1/UpdateAndGetSubscription gives a developer a Gold year', async () => {
 		const res = await getSubscription(await bearer('205', ['gameClient', 'developer']))
@@ -2019,6 +2575,7 @@ describe('econ endpoints', () => {
 			)
 		)
 		expect([...documented].sort()).toEqual([
+			'GET /api/CampusCard/v1/SignUpBonus',
 			'GET /api/avatar/v1/defaultbaseavataritems',
 			'GET /api/avatar/v1/defaultunlocked',
 			'GET /api/avatar/v2',
@@ -2028,10 +2585,16 @@ describe('econ endpoints', () => {
 			'GET /api/avatar/v4/items',
 			'GET /api/challenge/v2/getCurrent',
 			'GET /api/checklist/v1/current',
+			'GET /api/checklist/v2/current',
 			'GET /api/consumables/v2/getUnlocked',
 			'GET /api/equipment/v2/getUnlocked',
 			'GET /api/gamerewards/v1/pending',
+			'GET /api/incentivizedreferrals/progress',
+			'GET /api/influencerpartnerprogram/influencer',
+			'GET /api/influencerpartnerprogram/influencers',
 			'GET /api/itemWishlists/v1/wishlist/me',
+			'GET /api/itemWishlists/v1/wishlist/{accountId}',
+			'GET /api/makerai/checkfreetrialeligibility',
 			'GET /api/objectives/v1/cleargroup',
 			'GET /api/objectives/v1/myprogress',
 			'GET /api/roomconsumables/v1/roomConsumable/room/{roomId}',
@@ -2044,15 +2607,27 @@ describe('econ endpoints', () => {
 			'GET /api/storefronts/v2/buyInvention',
 			'GET /api/storefronts/v3/giftdropstore/{id}',
 			'GET /api/storefronts/v4/balance/{currencyType}',
+			'GET /api/subscriptionseasons/v1/seasons/current',
+			'GET /api/ugcPurchasables/v1/items/room/{roomId}',
 			'GET /econ/customAvatarItems/v1/owned',
+			'GET /econ/roomEconConfig/{roomId}',
+			'GET /econ/roomGiftDropShops/room/{roomId}',
+			'GET /econ/roomInventory/room/{roomId}',
+			'GET /econ/roomInventory/room/{roomId}/player',
+			'GET /econ/roomInventoryItemTags/room/{roomId}',
+			'GET /econ/roomOffer/room/{roomId}',
+			'GET /econ/roomOffer/room/{roomId}/purchaseCounts',
 			'POST /api/CampusCard/v1/UpdateAndGetSubscription',
 			'POST /api/avatar/v2/gifts/consume',
 			'POST /api/avatar/v2/set',
 			'POST /api/avatar/v3/saved/set',
 			'POST /api/avatar/v4/saved/set',
 			'POST /api/challenge/v2/updateProgress',
+			'POST /api/checklist/v1/complete',
+			'POST /api/checklist/v2/complete',
 			'POST /api/consumables/v1/consume',
 			'POST /api/gamerewards/v1/request',
+			'POST /api/items/bulkpurchase',
 			'POST /api/objectives/v1/cleargroup',
 			'POST /api/objectives/v1/updateobjective',
 			'POST /api/storefronts/v2/buyItem',

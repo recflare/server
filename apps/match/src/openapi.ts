@@ -140,14 +140,24 @@ export const PlayerDto = z.object({
 })
 
 /**
- * The matchmake result envelope. `errorCode` 0 with a `roomInstance` is success;
- * a non-zero code (e.g. 20 NoSuchRoom) comes with `roomInstance: null`.
+ * The matchmake result envelope. Code 0 with a `roomInstance` is success; a non-zero
+ * code (e.g. 20 NoSuchRoom) comes with `roomInstance: null`.
+ *
+ * `result` and `errorCode` are the same code under two names: `result` is what the
+ * client reads, `errorCode` is what this server has always sent (and what its own tests
+ * read), so both are served and they always agree. `correlationId` echoes the
+ * `CorrelationId` the request was tagged with — without it the client never matches the
+ * response to the attempt and fails with "Unable to connect to game session".
  */
 export const MatchmakeResponse = z.object({
+	result: z.int().describe('The join-result code the client checks first; same as errorCode'),
 	errorCode: z
 		.int()
 		.describe('0 = success; 20 = NoSuchRoom; 55 = banned from the room (the one non-opaque code)'),
 	roomInstance: RoomInstanceDto.nullable(),
+	correlationId: z
+		.string()
+		.describe('Echoes the request’s CorrelationId; all-zero GUID when it sent none'),
 })
 
 /**
@@ -169,6 +179,65 @@ export const AvoidJuniorsRequest = z.object({
 
 /** `POST /player/exclusivelogin` — a bare error code. */
 export const ExclusiveLoginResponse = z.object({ errorCode: z.int().describe('Always 0') })
+
+/**
+ * The networking feature flags the client reads off its connection info — verbatim
+ * from the reference server. The client changes how it replicates based on these, so
+ * they are not free to tune. `shouldUseGameServerNetworking` is the load-bearing one:
+ * true points the client at a local game server (127.0.0.1:7777) instead of Photon.
+ */
+export const ConnectionExperiments = z.object({
+	networkTransformSyncInterval: z.number(),
+	shouldUseUnreliableOnChange: z.boolean(),
+	shouldAvoidDiscontinuityRPCs: z.boolean(),
+	shouldAvoidRedundantDiscontinuity: z.boolean(),
+	r2RuntimeStaticBaking: z.boolean(),
+	r2AutoEmbodiment: z.boolean(),
+	r2RuntimeStaticBakingMinShapeThreshold: z.int(),
+	r2UseCheapReplicas: z.boolean(),
+	shouldUseGameServerNetworking: z
+		.boolean()
+		.describe('true connects to a local game server instead of Photon'),
+})
+
+/**
+ * `GET /player/connection-info` — the realtime (Photon) credentials, in a
+ * `{ success, value, error }` envelope. The applications and region are fixed for
+ * recflare; what varies per caller is `photonAuthToken` (minted for them on the spot)
+ * and `photonRoomId`, the Photon room of the instance their presence says they're in
+ * — the same name every other player in that instance is handed. There's no separate
+ * voice server, so both voice fields are null. `photonRegion` matches the one stamped
+ * on every room instance, so the two can't disagree.
+ */
+export const ConnectionInfo = z.object({
+	photonAuthToken: z.string().describe('Short-lived HS256 token identifying the caller to Photon'),
+	photonRealtimeAppId: z.string().describe('Photon Realtime application id'),
+	photonVoiceAppId: z.string().describe('Photon Voice application id'),
+	photonChatAppId: z.string().describe('Photon Chat application id'),
+	photonRegion: z.string().describe('Region id, matching a room instance’s `photonRegion`'),
+	photonRoomId: z.string().describe('The caller’s current instance; empty when they’re in none'),
+	voiceConnectionInfo: z.literal('').describe('Empty — no separate voice server'),
+	voiceServerId: z.literal('').describe('Empty — no separate voice server'),
+	experiments: ConnectionExperiments,
+})
+
+/** `GET /player/connection-info` — the connection info in the client's standard envelope. */
+export const ConnectionInfoResponse = z.object({
+	success: z.literal(true),
+	value: ConnectionInfo,
+	error: z.null(),
+})
+
+/**
+ * One QoS probe target (`GET /player/qos`) — a region the client pings to measure
+ * latency, then reports back through `PUT /player/photonregionpings`. A bare array,
+ * not the `{ success, value, error }` envelope. `id` is the region id the pings are
+ * keyed by; `address` is `host:port`, not a URL.
+ */
+export const QosRegion = z.object({
+	id: z.string().describe('Region id, e.g. `us-east1`'),
+	address: z.string().describe('`host:port` of the probe endpoint'),
+})
 
 /**
  * The session `LoginLock` GUID form field. The client posts it on every presence
@@ -200,10 +269,26 @@ export const NotifyDisconnectRequest = z.object({
 })
 
 /**
+ * The `CorrelationId` every matchmake carries — a GUID the client generates per attempt
+ * and expects back on the response (see `MatchmakeResponse`). Posted in the form body;
+ * the field is matched case-insensitively and a query param is accepted too, for the
+ * matchmakes that post no body at all.
+ *
+ * This is the whole body of the target-less matchmakes (`/matchmake/dorm`,
+ * `/matchmake/none`, `/matchmake/player/:id`, `/matchmake/instance/:id`), which is why
+ * it's a schema of its own; the room matchmakes extend it. Other fields the client sends
+ * (`LoginLock`, `MaxPersistenceVersion`, `VoiceServerVersion`,
+ * `BypassMovementModeRestriction`) are accepted and ignored.
+ */
+export const CorrelationIdRequest = z.object({
+	CorrelationId: z.string().optional().describe('Per-attempt GUID; echoed on the response'),
+})
+
+/**
  * The `JoinMode` form field the matchmake routes read (`2` = a private instance;
  * anything else = public). Posted as a urlencoded/multipart body.
  */
-export const JoinModeRequest = z.object({
+export const JoinModeRequest = CorrelationIdRequest.extend({
 	JoinMode: z.string().optional().describe('"2" requests a private instance'),
 })
 
@@ -211,16 +296,84 @@ export const JoinModeRequest = z.object({
  * The room-matchmake form body (`/matchmake/room/:roomId[/:subRoomId]`). Beyond
  * `JoinMode` the 2023 client posts `AdditionalPlayerIds` — the caller's party — so each
  * of them is invited (a game invite) into the instance the leader lands in. It's a
- * repeated field (one id each, not comma-separated). Other fields the client sends
- * (`LoginLock`, `MaxPersistenceVersion`, `BypassMovementModeRestriction`) are accepted
- * and ignored.
+ * repeated field (one id each, not comma-separated). `CorrelationId` rides along as it
+ * does on every matchmake. Other fields the client sends (`LoginLock`,
+ * `MaxPersistenceVersion`, `VoiceServerVersion`, `BypassMovementModeRestriction`) are
+ * accepted and ignored.
  */
-export const MatchmakeRoomRequest = z.object({
+export const MatchmakeRoomRequest = CorrelationIdRequest.extend({
 	JoinMode: z.string().optional().describe('"2" requests a private instance'),
 	AdditionalPlayerIds: z
 		.string()
 		.optional()
 		.describe('Party members to invite into the room; repeated once per id'),
+})
+
+/**
+ * The v2 room-matchmake body (`/matchmake/v2/room/:roomId[/:subRoomId]`). Unlike the 2023
+ * client's urlencoded form, the newer client posts JSON with real types: `JoinMode` is a
+ * number, and `AdditionalPlayerIds` is an array — `null`, not `[]`, when the player is
+ * alone. Only `JoinMode`, `AdditionalPlayerIds` and `CorrelationId` are read; the rest are
+ * accepted and ignored, and are recorded here because they are what the client actually
+ * sends.
+ */
+export const MatchmakeRoomV2Request = z.object({
+	CorrelationId: z.string().optional().describe('Per-attempt GUID; echoed on the response'),
+	JoinMode: z.int().optional().describe('2 requests a private instance'),
+	AdditionalPlayerIds: z
+		.array(z.int())
+		.nullable()
+		.optional()
+		.describe('Party members to invite into the room; null when the player is alone'),
+	InviteMode: z.int().optional(),
+	ShouldKeepPlayerWithParty: z.boolean().optional(),
+	BypassMovementModeRestriction: z.boolean().optional(),
+	MaxPersistenceVersion: z.int().optional(),
+	Ugc1SubVersion: z.int().optional(),
+	Ugc2SubVersion: z.int().optional(),
+	VoiceServerVersion: z.string().optional(),
+	LoginLock: z.string().optional(),
+	ClientJoinData: z.string().nullable().optional(),
+	PlayerScores: z.unknown().optional(),
+})
+
+/**
+ * The v2 client's room instance: PascalCase, and a SUBSET of `RoomInstanceDto`. The
+ * reference server's v2 response carries no `DataBlob` and no Photon coordinates at all,
+ * and adds `MatchmakingPolicy` — this mirrors it field for field. The instance behind it
+ * is the same row a v1 matchmake answers with; only the projection differs.
+ */
+export const RoomInstanceV2Dto = z.object({
+	RoomInstanceId: z.int(),
+	RoomId: z.int(),
+	SubRoomId: z.int(),
+	Location: z.string().describe('SubRoom Unity scene id; empty is rejected by the client'),
+	EventId: z.int(),
+	ClubId: z.int(),
+	RoomCode: z.string(),
+	Name: z.string(),
+	MaxCapacity: z.int(),
+	IsFull: z.boolean(),
+	IsPrivate: z.boolean(),
+	IsInProgress: z.boolean(),
+	EncryptVoiceChat: z.boolean(),
+	RoomInstanceType: RoomInstanceType,
+	MatchmakingPolicy: z.int().describe('Always 0; this server has no policy to express'),
+})
+
+/**
+ * The v2 matchmake envelope. Same codes and the same correlation-id echo as
+ * `MatchmakeResponse`, but PascalCase and with no `result` twin — the v2 client reads
+ * `ErrorCode`. Refusals answer `RoomInstance: null` with a non-zero `ErrorCode`.
+ */
+export const MatchmakeV2Response = z.object({
+	ErrorCode: z
+		.int()
+		.describe('0 = success; 20 = NoSuchRoom; 55 = banned from the room (the one non-opaque code)'),
+	CorrelationId: z
+		.string()
+		.describe('Echoes the request’s CorrelationId; all-zero GUID when it sent none'),
+	RoomInstance: RoomInstanceV2Dto.nullable(),
 })
 
 /** `POST /invite` form body — invite a player into the caller's room instance. */

@@ -82,6 +82,31 @@ export async function validateAndGetRoles(
 	}
 }
 
+/**
+ * Validate a request's bearer token and return its `rn.ver` claim — the game build the
+ * caller posted to `/connect/token`, stamped by {@link generateToken}. `null` when the
+ * request carries no valid token, and `null` too when a valid token has no `rn.ver` (an
+ * older token, issued before the claim carried the client's own value): callers fall back
+ * to what they stored or to GAME_VERSION rather than writing an empty version, which
+ * breaks the client's presence handling.
+ */
+export async function validateAndGetVersion(
+	request: Request,
+	secret: string
+): Promise<string | null> {
+	const authHeader = request.headers.get('Authorization')
+	if (!authHeader || !authHeader.toLowerCase().startsWith('bearer ')) return null
+
+	const token = authHeader.slice('bearer '.length)
+	try {
+		const payload = await verify(token, secret, 'HS256') // checks exp/nbf/signature
+		const version = payload['rn.ver']
+		return typeof version === 'string' && version !== '' ? version : null
+	} catch {
+		return null
+	}
+}
+
 /** Scopes stamped onto every token (as a claim array). */
 const TOKEN_SCOPES = [
 	'profile',
@@ -108,13 +133,63 @@ const TOKEN_SCOPES = [
  */
 const BASE_ROLES = ['gameClient']
 
+/**
+ * The claims the Photon auth token carries beyond `sub`/`exp`/`aud`, describing who
+ * (and on what) is connecting. All of them go on the wire as STRINGS, including the
+ * numeric ones — that's how the real token encodes them.
+ */
+export interface PhotonAuthClaims {
+	/** The platform-native id (e.g. a SteamID64) — `rn.platid`. */
+	platformId: string
+	/** PlatformType int (0 = Steam) — `rn.plat`. */
+	platform: number
+	/** DeviceClass int (2 = PC/standalone) — `rn.deviceclass`. */
+	deviceClass: number
+	/** The Photon application the token is for — the `aud` claim. */
+	audience: string
+}
+
+/**
+ * Mint the short-lived HS256 token the client hands to Photon as its custom auth
+ * credential (`photonAuthToken` on `GET /player/connection-info`). The claim set
+ * mirrors the real one — `sub`, `rn.platid`, `rn.plat`, `rn.deviceclass`, `rn.env`,
+ * `exp`, `aud` — rather than being a second copy of the login token: it identifies
+ * the connecting player to the realtime server and nothing else, so none of the
+ * scopes or roles from {@link generateToken} belong on it.
+ *
+ * Signed with the same shared `JWT_SECRET` as every other token here. A real Photon
+ * Cloud application would verify this against a secret configured in its dashboard;
+ * self-hosted, nothing verifies it yet — so treat it as identifying, not authorizing.
+ * `rn.env` is `prod` because that's what the client is built against, regardless of
+ * which environment this worker is running in.
+ */
+export async function generatePhotonAuthToken(
+	accountId: number,
+	claims: PhotonAuthClaims,
+	secret: string
+): Promise<string> {
+	return sign(
+		{
+			sub: String(accountId),
+			'rn.platid': claims.platformId,
+			'rn.plat': String(claims.platform),
+			'rn.deviceclass': String(claims.deviceClass),
+			'rn.env': 'prod',
+			exp: Math.floor(Date.now() / 1000) + TOKEN_TTL_SECONDS,
+			aud: claims.audience,
+		},
+		secret
+	)
+}
+
 export async function generateToken(
 	accountId: string,
 	platformId: string,
 	platform: number,
 	secret: string,
 	extraRoles: string[] = [],
-	privileges: string[] = []
+	privileges: string[] = [],
+	version: string = GAME_VERSION
 ): Promise<string> {
 	const now = Math.floor(Date.now() / 1000)
 	// The client reads `role`/`scope` (and expects a well-formed iss/aud) to
@@ -133,7 +208,11 @@ export async function generateToken(
 			idp: 'local',
 			platform,
 			platform_id: platformId,
-			'rn.ver': GAME_VERSION,
+			// The CLIENT's build, as it posted it to /connect/token (`ver`) — not this
+			// server's GAME_VERSION, which is only the fallback for a grant that names none
+			// (a refresh, or a caller that isn't the game). Presence reads it back off the
+			// token, so a player's reported version is the build they are actually running.
+			'rn.ver': version,
 			'rn.plat': platform,
 			role: [...BASE_ROLES, ...extraRoles],
 			// `rn.privilege` LOOKS like a scope but is a claim: the client reads it out of

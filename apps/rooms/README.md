@@ -32,6 +32,11 @@ deserializer for that call — not a choice, and not something to unify:
 Both answer HTTP 200 even for a rejection: the client reads the flag, not the status.
 Only a missing or invalid token is a real 401, and only the owner/co-owner gate is a 403.
 
+Reads are the exception: they carry no envelope at all. A paged read (the save history at
+`…/subrooms/{subRoomId}/saves` and its lighter `…/saves/no_unity_assets` twin) is a bare
+`{ Results, TotalResults, TotalCount }` wrapper — `TotalResults` and `TotalCount` are the
+same number, because the client's paged DTO and the reference disagree on the name.
+
 ## Development
 
 ### Run in dev mode

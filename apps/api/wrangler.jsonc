@@ -32,6 +32,16 @@
 			"bucket_name": "recflare-cdn"
 		}
 	],
+	// Per-player settings KV, owned by the `playersettings` worker. Read AND written here,
+	// for the photo-tagging preference (`/api/players/v1/playerPhotoTaggingSetting`), which
+	// is one key in that same bag rather than storage of its own. The "local" id placeholder
+	// is replaced with the real id from RECFLARE_KV at deploy time.
+	"kv_namespaces": [
+		{
+			"binding": "RECFLARE_PLAYER_SETTINGS",
+			"id": "local"
+		}
+	],
 	// Cross-worker binding to the SignalR notifications hub DO (owned/migrated by
 	// the `notify` worker). We only invoke its RPC methods; no migration here.
 	"durable_objects": {

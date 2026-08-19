@@ -21,7 +21,14 @@ import {
 	updateAccount,
 	verifyPassword,
 } from '@repo/domain'
-import { intVar, logger, withCleanSpec, withDefaultCors, withNotFound, withOnError } from '@repo/hono-helpers'
+import {
+	intVar,
+	logger,
+	withCleanSpec,
+	withDefaultCors,
+	withNotFound,
+	withOnError,
+} from '@repo/hono-helpers'
 import { generateToken, TOKEN_TTL_SECONDS, validateAndGetAccountId } from '@repo/jwt'
 
 // The account-wide ban lives on a `report` row, whose table the api worker owns; its db
@@ -38,6 +45,7 @@ import {
 	OAuthError,
 	PlatformIdsRequest,
 	PlatformType,
+	RestrictionDto,
 	roleLookup,
 	TokenRequest,
 	TokenResponse,
@@ -434,7 +442,14 @@ const app = new Hono<App>()
 	// id, so the client can offer them on the login screen (and post one back as a
 	// cached_login grant). No linked account → [], and the client falls back to a
 	// fresh login / create_account.
-	.get(
+	//
+	// GET or POST: the 2023 build asks with a GET, the 2025 build (20250424.01) POSTs
+	// the same path with a form body — `deviceId`, `platformAuth` (a JSON blob holding
+	// the platform's session ticket and app id) and `time`. The body is READ BY NOTHING
+	// here; both methods answer the same list off the path params, so a newer client
+	// gets its picker. Verifying that ticket is the eventual point of the POST.
+	.on(
+		['GET', 'POST'],
 		'/cachedlogin/forplatformid/:platform/:id',
 		describeRoute({
 			tags: ['Cached login'],
@@ -449,6 +464,10 @@ const app = new Hono<App>()
 				'APKs: with no Meta SDK they have no real identity to ask about and stall on an',
 				'empty picker. It consults nothing and returns one canned, non-redeemable entry',
 				'with `requirePassword: true`, sending the build to username/password login.',
+				'Older clients GET this; the 20250424.01 build POSTs it with a',
+				'`deviceId` / `platformAuth` / `time` form body attesting the platform session.',
+				'That body is accepted and ignored — both methods answer identically from the',
+				'path params.',
 			].join(' '),
 			parameters: [
 				{
@@ -650,6 +669,19 @@ const app = new Hono<App>()
 			const deviceClassInt =
 				typeof body.device_class === 'string' ? Number.parseInt(body.device_class, 10) : NaN
 			const deviceClass = Number.isNaN(deviceClassInt) ? 0 : deviceClassInt
+
+			// The client's own build (`ver`, e.g. `20250718.01`), stamped into the token's
+			// `rn.ver` claim so everything downstream reports the build the player is ACTUALLY
+			// running rather than this server's GAME_VERSION — `match` reads it back off the
+			// token when it writes presence. Unverified like the device fields, and only ever
+			// echoed, never trusted for a decision (the version CHECK is `api`'s
+			// `/api/versioncheck/v4`, against its own list).
+			//
+			// A grant that posts none — a refresh, or a caller that isn't the game — leaves it
+			// undefined and generateToken falls back to GAME_VERSION. An empty string is
+			// treated as absent for the same reason: presence must never carry an empty
+			// version, which breaks the client's handling of it.
+			const version = typeof body.ver === 'string' && body.ver !== '' ? body.ver : undefined
 
 			// The client's real IP, per Cloudflare (the client can't spoof CF-Connecting-IP —
 			// the edge sets it — unlike X-Forwarded-For, which is why we don't read that).
@@ -1022,7 +1054,8 @@ const app = new Hono<App>()
 				platform,
 				jwtSecret,
 				accountRoles(roleAccount),
-				accountPrivileges(roleAccount)
+				accountPrivileges(roleAccount),
+				version
 			)
 			// Issue a fresh, persisted refresh token (single-use; the client redeems it via
 			// grant_type=refresh_token). A refresh grant thus rotates its token.
@@ -1082,6 +1115,40 @@ const app = new Hono<App>()
 			const ok = await setPasswordHash(c.env.DB, id, await hashPassword(newPassword))
 			if (!ok) return c.body(null, 404)
 			return c.json({ success: true })
+		}
+	)
+
+	// The moderation restrictions on the caller's account — chat mutes and the like. STUB:
+	// nothing here issues restrictions, so every caller is unrestricted and the list is
+	// empty. An EMPTY ARRAY is the normal unrestricted answer, not null and not a 404: the
+	// client clears and refills its list from this, and acts on a record simply being
+	// present (plus its `EndDate`), so `[]` is a complete answer rather than a placeholder.
+	//
+	// When this is wired up, the display strings are free text — the client matches none of
+	// them — so only `EndDate` and the record's presence need to be right. See
+	// `RestrictionDto`.
+	.get(
+		'/privileges/me/restrictions',
+		describeRoute({
+			tags: ['Account'],
+			summary: 'The caller’s moderation restrictions',
+			description: [
+				'The restrictions in force on the caller’s account (a chat mute, say), as a bare array.',
+				'Always EMPTY here — nothing on this server issues restrictions — and an empty array is',
+				'the normal unrestricted answer, not null. The client refills its list from this and',
+				'acts on a record being present and its `EndDate`; the `Name`/`Description`/',
+				'`DisplayReason` strings are display text it matches nothing against.',
+			].join(' '),
+			security: [{ bearerAuth: [] }],
+			responses: {
+				200: json(RestrictionDto.array(), 'The caller’s restrictions — always empty'),
+				401: { description: 'Missing or invalid bearer token (empty body)' },
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return c.body(null, 401)
+			return c.json([])
 		}
 	)
 

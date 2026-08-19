@@ -28,6 +28,75 @@ describe('cdn endpoints', () => {
 		expect(body[0]).toHaveProperty('Title')
 	})
 
+	// The config directory is served by filename through the ASSETS binding, so a file
+	// dropped into `static/config/` is reachable without touching the worker.
+	test.each(['RRPlusConfig_v3', 'SkuConfig_v1'])(
+		'GET /config/%s serves the file from static/config',
+		async (name) => {
+			const res = await exports.default.fetch(`${ORIGIN}/config/${name}`)
+			expect(res.status).toBe(200)
+			expect(res.headers.get('content-type')).toContain('application/json')
+			expect((await res.text()).length).toBeGreaterThan(0)
+		}
+	)
+
+	// Not everything in the directory is JSON: a config may be an opaque blob named by
+	// GUID, which is served as-is under its own name.
+	test('GET /config/:name serves an extension-less binary config', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/config/1b057e6e-979d-4f30-8856-a386f77c90da`)
+		expect(res.status).toBe(200)
+		expect((await res.arrayBuffer()).byteLength).toBeGreaterThan(0)
+	})
+
+	// The game configs name these files WITH the extension (`Econ.MakerAI.DayPass.Config`
+	// is `"SkuConfig_v1.json"`), so both spellings have to land on the same file.
+	test('GET /config/:name accepts the .json suffix', async () => {
+		const bare = await exports.default.fetch(`${ORIGIN}/config/SkuConfig_v1`)
+		const suffixed = await exports.default.fetch(`${ORIGIN}/config/SkuConfig_v1.json`)
+		expect(suffixed.status).toBe(200)
+		expect(await suffixed.text()).toBe(await bare.text())
+	})
+
+	// Byte-for-byte: RRPlusConfig_v3.json opens with a UTF-8 BOM, as the real CDN served
+	// it. Re-serializing the file (or parsing and re-emitting it) would strip those bytes.
+	test('GET /config/RRPlusConfig_v3 keeps the file’s bytes, BOM included', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/config/RRPlusConfig_v3`)
+		const bytes = new Uint8Array(await res.arrayBuffer())
+		expect(Array.from(bytes.slice(0, 3))).toEqual([0xef, 0xbb, 0xbf])
+		// `text()` decodes the BOM away, so the remainder still parses as the config.
+		expect(JSON.parse(new TextDecoder().decode(bytes))).toHaveProperty('BenefitLists')
+	})
+
+	test('GET /config/:name 404s a config that is not published', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/config/NoSuchConfig`)
+		expect(res.status).toBe(404)
+	})
+
+	// The name reaches the binding as a filename, so anything that could climb out of
+	// `static/config/` is refused before it gets there. (A bare `..` never arrives: the
+	// URL is normalized to `/` before routing, which is the liveness probe.)
+	test.each(['%2e%2e%2floading-screen-tip-data.json', 'sub%2Fdir', '.hidden', 'Sku.Config'])(
+		'GET /config/%s 404s rather than reaching the asset server',
+		async (name) => {
+			const res = await exports.default.fetch(`${ORIGIN}/config/${name}`)
+			expect(res.status).toBe(404)
+		}
+	)
+
+	// `run_worker_first` keeps the asset server from answering ahead of the Worker: the
+	// tip data is an asset too (`static/loading-screen-tip-data.json`), and it must stay
+	// unreachable at that path — its route is `/config/LoadingScreenTipData`.
+	test('assets are not served at their own paths', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/loading-screen-tip-data.json`)
+		expect(res.status).toBe(404)
+	})
+
+	test('GET /config/LoadingScreenTipData still wins over the wildcard', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/config/LoadingScreenTipData`)
+		expect(res.status).toBe(200)
+		expect(Array.isArray(await res.json())).toBe(true)
+	})
+
 	test('GET /sigs/:sigName 404s when the blob is absent', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/sigs/does-not-exist`)
 		expect(res.status).toBe(404)
@@ -39,6 +108,40 @@ describe('cdn endpoints', () => {
 		expect(res.status).toBe(200)
 		expect(res.headers.get('content-type')).toBe('application/octet-stream')
 		expect(new Uint8Array(await res.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3, 4]))
+	})
+
+	// Every file this worker hands back carries the same 30-day Cache-Control — the R2
+	// blobs, the configs served through the ASSETS binding, and the bundled tip data.
+	test('every served file carries the 30-day Cache-Control', async () => {
+		const CACHE_CONTROL = `public, max-age=${86400 * 30}`
+		await env.CDN_ASSETS.put('room/2026-02-03/cached', new Uint8Array([1, 2, 3]))
+
+		for (const path of [
+			'/room/2026-02-03/cached',
+			'/config/RRPlusConfig_v3.json',
+			'/config/LoadingScreenTipData',
+		]) {
+			const res = await exports.default.fetch(`${ORIGIN}${path}`)
+			expect(res.status, path).toBe(200)
+			expect(res.headers.get('cache-control'), path).toBe(CACHE_CONTROL)
+		}
+
+		// A ranged read is still a served file, and a 304 has to carry it too — otherwise a
+		// revalidation would answer "no change" with no instruction on how long that holds.
+		const ranged = await exports.default.fetch(`${ORIGIN}/room/2026-02-03/cached`, {
+			headers: { Range: 'bytes=0-1' },
+		})
+		expect(ranged.status).toBe(206)
+		expect(ranged.headers.get('cache-control')).toBe(CACHE_CONTROL)
+
+		const etag = (await exports.default.fetch(`${ORIGIN}/room/2026-02-03/cached`)).headers.get(
+			'etag'
+		)
+		const revalidated = await exports.default.fetch(`${ORIGIN}/room/2026-02-03/cached`, {
+			headers: { 'If-None-Match': etag ?? '' },
+		})
+		expect(revalidated.status).toBe(304)
+		expect(revalidated.headers.get('cache-control')).toBe(CACHE_CONTROL)
 	})
 
 	test('GET /sigs/:sigName honors a Range request with 206', async () => {
@@ -191,6 +294,7 @@ describe('cdn endpoints', () => {
 		expect([...documented].sort()).toEqual([
 			'GET /',
 			'GET /config/LoadingScreenTipData',
+			'GET /config/{name}',
 			'GET /data/{id}',
 			'GET /invention/{dataBlob}',
 			'GET /room/{dataBlob}',

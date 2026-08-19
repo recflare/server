@@ -2,9 +2,12 @@ import { Hono } from 'hono'
 import { describeRoute } from 'hono-openapi'
 
 import {
+	CURRENT_OUTFIT_SLOT,
+	getOutfit,
 	inventionDescriptionRejection,
 	inventionNameRejection,
 	inventionTagRejection,
+	setOutfit,
 } from '@repo/domain'
 
 import { authedId, unauthorized } from '../http'
@@ -31,6 +34,7 @@ import {
 import {
 	AUTHED,
 	BareBoolean,
+	BulkCustomAvatarItemsRequest,
 	CustomAvatarItemsPage,
 	ErrorResponse,
 	form,
@@ -46,6 +50,10 @@ import {
 	json,
 	JsonArray,
 	jsonBody,
+	LegacyAvatarItemSaves,
+	OutfitSaveResponse,
+	OutfitsMeRequest,
+	OutfitsMeResponse,
 	pageParams,
 	SaveInventionRequest,
 	SetTagsRequest,
@@ -156,6 +164,28 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 		}
 	)
 
+	// A batch lookup of LOCKED avatar items — the items the client shows greyed out, so it
+	// posts the ids it wants the locked state for. Nothing here locks avatar items (the
+	// catalogs `econ` serves are all unlocked), so nothing comes back and the client renders
+	// none as locked. Unlike its custom-item sibling above this one is NOT auth-gated: the
+	// reference answers the empty array outright, without validating a token first.
+	.post(
+		'/api/avatar/v1/lockeditems/bulk',
+		describeRoute({
+			tags: ['Avatar'],
+			summary: 'Locked avatar items in bulk',
+			description:
+				'Resolves a batch of avatar-item ids to the ones that are LOCKED for the caller, as ' +
+				'a bare array. Nothing on this server locks avatar items, so it is always `[]` and ' +
+				'the posted ids are not parsed — a miss is not an error, the client simply renders ' +
+				'nothing as locked.\n\n' +
+				'No auth, matching the reference, which returns the empty array without checking a ' +
+				'token — in contrast to `/api/customAvatarItems/v1/bulk`, which validates one first.',
+			responses: { 200: json(JsonArray, 'The locked items — always empty here') },
+		}),
+		(c) => c.json([])
+	)
+
 	// Custom avatar item gates — real Rec Room client endpoints with no backing
 	// implementation yet; we enable them. Flip to `false` to disable the
 	// corresponding flow. `isCreationAllowedForAccount` wraps its answer in the
@@ -218,6 +248,42 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 		(c) => c.json([])
 	)
 
+	// A batch lookup of custom avatar items by id. The reference filters a static catalog
+	// down to the posted ids and returns the MATCHES AS A BARE ARRAY — not the
+	// `{ Results, TotalResults }` page its catalog file is written in, and not a 404 for
+	// ids it doesn't hold. Nothing stores custom items here (the reference's own catalog
+	// ships empty too), so every id misses and the array is empty.
+	//
+	// Auth-gated, and the token is checked before anything else, as the reference does.
+	.post(
+		'/api/customAvatarItems/v1/bulk',
+		describeRoute({
+			tags: ['Avatar'],
+			summary: 'Custom avatar items in bulk',
+			description:
+				'Resolves a batch of custom-avatar-item ids to their items: the posted ' +
+				'`customAvatarItemIds` filtered against the catalog, returned as a BARE ARRAY of ' +
+				'the ones that matched. Not the `{ Results, TotalResults }` page the sibling ' +
+				'custom-item reads serve — the reference keeps its catalog in that shape but ' +
+				'answers this route with the filtered array alone.\n\n' +
+				'A miss is not an error: unknown ids are simply absent from the response, and the ' +
+				'client reads the items it got back rather than the ids it asked for. Nothing ' +
+				'stores custom items here, so every id misses and this is always `[]` — which is ' +
+				'why the posted ids are not parsed.',
+			security: AUTHED,
+			requestBody: form(BulkCustomAvatarItemsRequest, 'The custom-avatar-item ids to resolve'),
+			responses: {
+				200: json(JsonArray, 'The matching items — always empty here'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+			return c.json([])
+		}
+	)
+
 	// Custom avatar items created by a given account. No storage yet → an empty
 	// paginated result (matches the econ `customAvatarItems/v1/owned` shape).
 	.get(
@@ -232,6 +298,147 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 			responses: { 200: json(CustomAvatarItemsPage, 'An empty page') },
 		}),
 		(c) => c.json({ Results: [], TotalResults: 0 })
+	)
+
+	// The client asks which legacy avatar items have been rebuilt as custom items, so it
+	// can render the custom version instead. Nothing stores custom items yet, so nothing
+	// has a save — an empty list means "use the legacy items as-is".
+	.post(
+		'/api/customAvatarItems/GetCustomAvatarItemCurrentSavesForLegacyAvatarItems',
+		describeRoute({
+			tags: ['Avatar'],
+			summary: 'Custom-item saves for legacy avatar items',
+			description:
+				'Given a set of legacy avatar items, the custom-item saves that replace them, keyed ' +
+				'by the legacy item’s `AvatarItemDesc`. Nothing stores custom items yet, so the map ' +
+				'is always empty — which the client reads as “render the legacy items as-is”. The ' +
+				'request body is ignored.\n\n' +
+				'The value shape is the official one, recorded here for documentation; we never ' +
+				'emit one until custom items are stored.',
+			responses: { 200: json(LegacyAvatarItemSaves, 'An empty map') },
+		}),
+		(c) => c.json({ customAvatarItemSavesByAvatarItemDesc: {} })
+	)
+
+	// The newer outfit read, on a bare (un-prefixed) path. Auth-gated. The outfit the
+	// player is wearing is slot 0 of the shared `outfit` table (the same table the `econ`
+	// worker's saved-outfit slots live in); a player who has never saved gets the
+	// brand-new-account envelope instead.
+	.get(
+		'/outfits/me',
+		describeRoute({
+			tags: ['Avatar'],
+			summary: 'The caller’s outfit',
+			description:
+				'The newer outfit read, on a bare un-prefixed path. Served from slot 0 of the shared ' +
+				'`outfit` table — the newer client treats slot 0 as the outfit currently worn — and ' +
+				'handed back exactly as it was saved, since the payload’s heavy fields are the ' +
+				'client’s own JSON-in-a-string documents.\n\n' +
+				'A player who has never saved gets the brand-new-account envelope: all-null ' +
+				'`LegacyData`, no `Selections`, `DataVersion` 9.',
+			security: AUTHED,
+			responses: {
+				200: json(OutfitsMeResponse, 'The stored outfit, or the empty envelope'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const outfit = await getOutfit(c.env.DB, id, CURRENT_OUTFIT_SLOT)
+			if (outfit !== null) return c.json(outfit)
+
+			return c.json({
+				LegacyData: {
+					SelectionsV1: null,
+					SelectionsV2: null,
+					FaceFeatures: null,
+					SkinColor: null,
+					HairColor: null,
+				},
+				Selections: [],
+				DataVersion: 9,
+				CustomizationSettings: null,
+				ThumbnailFileName: null,
+				Name: null,
+				Accessibility: 0,
+				Slot: 0,
+			})
+		}
+	)
+
+	// Saving an outfit through the same bare path — into the slot the body names, which
+	// is slot 0 for the outfit being worn. Stored verbatim: the heavy fields are the
+	// client's own JSON-in-a-string documents, and re-encoding risks changing a payload
+	// it has to parse back.
+	//
+	// Answers the bare `{ Success, Error, error_id }` envelope — no `Value` key, and NOT the
+	// outfit that was just saved: the client keeps what it sent and only reads whether the
+	// save worked.
+	.put(
+		'/outfits/me',
+		describeRoute({
+			tags: ['Avatar'],
+			summary: 'Save the caller’s outfit',
+			description:
+				'Saves into the shared `outfit` table, in the slot the body names — slot 0 being the ' +
+				'outfit worn, which is what the GET reads. Re-saving a slot overwrites it.\n\n' +
+				'The payload is stored verbatim: its heavy fields (`SelectionsV2`, `FaceFeatures`, ' +
+				'`CustomizationSettings`) are whole JSON documents encoded as strings by the ' +
+				'client’s own serializer, so nothing here parses or re-encodes them.\n\n' +
+				'The response is the base envelope with no `Value` key — three keys, and the outfit ' +
+				'is not echoed back. The mixed casing (`Success`/`Error` but `error_id`) is the ' +
+				'reference’s, not a typo.',
+			security: AUTHED,
+			requestBody: jsonBody(OutfitsMeRequest, 'The outfit to save'),
+			responses: {
+				200: json(OutfitSaveResponse, 'Saved — `{ Success: true, Error: null, error_id: null }`'),
+				400: json(ErrorResponse, 'Unparseable body'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+			if (body === null) return c.json({ error: 'Invalid request body' }, 400)
+
+			// The client sends `Slot`; a body without one saves the worn outfit.
+			const outfit = {
+				...body,
+				Slot: typeof body.Slot === 'number' ? body.Slot : CURRENT_OUTFIT_SLOT,
+			}
+			await setOutfit(c.env.DB, id, outfit)
+			return c.json({ Success: true, Error: null, error_id: null })
+		}
+	)
+
+	// The caller's outfit wardrobe. An empty list for now — the outfits saved through
+	// `PUT /outfits/me` are in the shared `outfit` table already, but which of them
+	// belong in this list (and in what shape) has not been pinned down, so it answers []
+	// rather than guessing.
+	.get(
+		'/outfits/me/saved',
+		describeRoute({
+			tags: ['Avatar'],
+			summary: 'The caller’s saved outfits',
+			description:
+				'The wardrobe behind the newer outfit screen. Empty for now: the outfits saved ' +
+				'through `PUT /outfits/me` are in the shared `outfit` table, but which of them this ' +
+				'list should carry, and in what shape, is not pinned down yet.',
+			security: AUTHED,
+			responses: {
+				200: json(JsonArray, 'An empty list'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+			return c.json([])
+		}
 	)
 
 	// A single invention by id (`?inventionId=…`). Returns the stored RRInvention,
@@ -718,6 +925,33 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 			const take = Number.parseInt(c.req.query('take') ?? '50', 10) || 50
 			return c.json(await getFeaturedInventions(c.env.DB, skip, take))
 		}
+	)
+
+	// Inventions by particular creators (`?id=207&id=…`) — what the client fills a creator's
+	// shelf, and the "from creators you follow" row, from.
+	//
+	// STUB: an empty list for now. It is the honest answer rather than a placeholder, since
+	// the client reads it as "this creator has published nothing" and renders an empty
+	// shelf, where a 404 would read as a row that failed to load. When it becomes real it is
+	// a filter on the invention table's creator column, the same feed shape as `toptoday`
+	// and `featured` above — `id` is repeatable, and `skip`/`take` page it.
+	.get(
+		'/api/inventions/v1/fromcreators',
+		describeRoute({
+			tags: ['Inventions'],
+			summary: 'Inventions by particular creators (stub)',
+			description:
+				'The published inventions of the accounts named by `id` (repeatable), newest first — ' +
+				'a creator’s shelf, and the "from creators you follow" row. STUB: always an empty ' +
+				'array for now, which the client renders as "nothing published" rather than as a ' +
+				'failed load. `id`, `skip` and `take` are accepted and, for the moment, ignored.',
+			parameters: [
+				intQuery('id', 'Creator account id; repeatable. Accepted and ignored by the stub'),
+				...pageParams(100),
+			],
+			responses: { 200: json(InventionDto.array(), 'Empty — nothing is served here yet') },
+		}),
+		(c) => c.json([])
 	)
 
 	// Invention search/browse: published inventions matching `value` (matched against

@@ -14,6 +14,7 @@ import {
 	ModerationBlockDetails,
 	SuccessErrorEnvelope,
 	UNAUTHORIZED_RESPONSE,
+	VoteToKickReason,
 } from '../openapi'
 import { createReport } from '../reports-db'
 import { createWarning } from '../warnings-db'
@@ -57,15 +58,44 @@ const asFloat = (v: string | undefined): number | null => {
 	return Number.isNaN(n) ? null : n
 }
 
+/**
+ * The vote-to-kick reasons, in the order the client renders them. `ReportCategory` is the
+ * category the report a carried vote files: 102 hate, 101 sexual content, 103 griefing,
+ * and 6 for the game-conduct reasons, which are kick-worthy without being a policy
+ * violation of their own.
+ */
+const VOTE_TO_KICK_REASONS = [
+	{ Reason: 'Discriminatory language', ReportCategory: 102 },
+	{ Reason: 'Discriminatory behavior', ReportCategory: 102 },
+	{ Reason: 'Threats or encouraging suicide', ReportCategory: 102 },
+	{ Reason: 'Toxic behavior', ReportCategory: 102 },
+	{ Reason: 'Sexual behavior in public', ReportCategory: 101 },
+	{ Reason: 'Sexual language in public', ReportCategory: 101 },
+	{ Reason: 'Non-consensual sexual behavior', ReportCategory: 101 },
+	{ Reason: 'Player in walls or floor', ReportCategory: 103 },
+	{ Reason: 'Friendly fire', ReportCategory: 103 },
+	{ Reason: 'Microphone spam', ReportCategory: 103 },
+	{ Reason: 'Abusing bugs or exploits', ReportCategory: 103 },
+	{ Reason: 'Spawn camping', ReportCategory: 103 },
+	{ Reason: 'Inactive in games (AFK)', ReportCategory: 6 },
+	{ Reason: 'Prefab swapping', ReportCategory: 6 },
+	{ Reason: 'Not following game rules', ReportCategory: 6 },
+] as const
+
 // ---- Player reporting ------------------------------------------------------
 export const moderationRoutes = new Hono<App>({ strict: false })
 	// Whether the caller is currently blocked (banned / timed out / host-kicked). Bans
 	// are stored (a report row with `banned` set) and enforced at matchmake and at login,
-	// but this endpoint is not wired to them, so it's always the "not blocked" answer.
-	// `ReportCategory` is -1 (no category) rather than 0, which is a real category;
-	// `Message` is null, not an empty string — the client distinguishes "no message"
-	// from a blank one.
-	.get(
+	// but this endpoint is not wired to them, so it's always the "not blocked" answer —
+	// the reference server's stub `ReturnModerationBlockDetails()`.
+	// `ReportCategory` is `Unknown` (-1) rather than 0, which is a real category;
+	// `Message` is null, not the empty string that stub sends — the client distinguishes
+	// "no message" from a blank one. `IsVoiceModAutoban`/`TimeoutStartedAt` are on the
+	// DTO but left unset there, so they go out with their C# defaults.
+	// The newer client POSTs this with no body despite it being a pure read; it answers
+	// GET too, so the path is reachable from either build.
+	.on(
+		['GET', 'POST'],
 		'/api/PlayerReporting/v1/moderationBlockDetails',
 		describeRoute({
 			tags: ['Moderation'],
@@ -73,11 +103,13 @@ export const moderationRoutes = new Hono<App>({ strict: false })
 			description:
 				'Ban / timeout / host-kick state for the caller. Bans are stored (a `report` row ' +
 				'with `banned` set) and enforced at matchmake and at login, but this endpoint is ' +
-				'not wired to them, so it is always the “not blocked” answer. Two details matter ' +
-				'to the client: ' +
-				'`ReportCategory` is -1 (no category) rather than 0, which is a real category, and ' +
-				'`Message` is null rather than an empty string — the client distinguishes “no ' +
-				'message” from a blank one.',
+				'not wired to them, so it is always the “not blocked” answer, following the ' +
+				'reference server’s stub: `ReportCategory` is `Unknown` (-1) rather than 0, which ' +
+				'is a real category, and `Message` is null rather than the empty string that stub ' +
+				'sends — the client distinguishes “no message” from a blank one. ' +
+				'`IsVoiceModAutoban` and `TimeoutStartedAt` are on the DTO but unset by that ' +
+				'stub, so they carry their defaults. Answers GET or POST: the newer client POSTs ' +
+				'it with no body.',
 			responses: { 200: json(ModerationBlockDetails, 'Always “not blocked”') },
 		}),
 		(c) =>
@@ -93,18 +125,69 @@ export const moderationRoutes = new Hono<App>({ strict: false })
 				TimeoutStartedAt: null,
 			})
 	)
+	// The reasons the client offers when a player starts a vote-to-kick. Order matters —
+	// the client renders them in the order they arrive — and the list is grouped by the
+	// `ReportCategory` the resulting report is filed under, hate first, then sexual
+	// content, then griefing, then the game-conduct reasons. Fixed and the same for
+	// everyone, but auth-gated all the same, as the reference is.
 	.get(
 		'/api/PlayerReporting/v1/voteToKickReasons',
 		describeRoute({
 			tags: ['Moderation'],
 			summary: 'Vote-to-kick reasons',
 			description:
-				'The reasons offered when starting a vote-to-kick. Not hydrated yet, so the list ' +
-				'is empty.',
-			responses: { 200: json(JsonArray, 'An empty list') },
+				'The reasons offered when starting a vote-to-kick, each with the `ReportCategory` ' +
+				'the report is filed under if the vote carries: 102 hate, 101 sexual content, 103 ' +
+				'griefing, 6 game conduct. A fixed list, in the order the client renders it.',
+			security: AUTHED,
+			responses: {
+				200: json(VoteToKickReason.array(), 'The reasons, in render order'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+			return c.json(VOTE_TO_KICK_REASONS)
+		}
+	)
+	// The client asking whether IT should run its referee moderation — the in-client
+	// review flow a player with referee standing gets shown. Deliberately `false` for
+	// everyone: this is an archival server, and the referee program is one of the live
+	// moderation systems it does not run. Answering true would put the client into a flow
+	// with no cases behind it. A POST despite being a pure read, which is how the client
+	// asks.
+	.post(
+		'/api/PlayerReporting/v1/referee',
+		describeRoute({
+			tags: ['Moderation'],
+			summary: 'Whether the caller is a referee',
+			description:
+				'A bare JSON `false` — no envelope. The game client asks this to decide whether to ' +
+				'run its referee moderation flow. Always false: the referee program is switched ' +
+				'off here rather than unimplemented, since this server is archival.',
+			responses: { 200: json(BareBoolean, 'Always `false` — the program is off') },
+		}),
+		(c) => c.json(false)
+	)
+	// The referee's own case files — the reviews assigned to them. Empty for the same
+	// reason the flag above is false: the program is off, so no case is ever assigned. A
+	// caller reaching this at all has gone past that flag, so the empty list is a second
+	// line of defence rather than the normal path. A GET, unlike its POSTing neighbours
+	// in this flow.
+	.get(
+		'/api/referee/files',
+		describeRoute({
+			tags: ['Moderation'],
+			summary: 'Referee case files',
+			description:
+				'The moderation cases assigned to the caller as a referee. Always empty — the ' +
+				'referee program is switched off here (see `/api/PlayerReporting/v1/referee`), so ' +
+				'nothing is ever assigned.',
+			responses: { 200: json(JsonArray, 'An empty list — no cases are ever assigned') },
 		}),
 		(c) => c.json([])
-	) // TODO: hydrate from JSON/vtkreasons.json
+	)
 	.post(
 		'/api/PlayerReporting/v1/hile',
 		describeRoute({

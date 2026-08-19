@@ -138,6 +138,14 @@ export const BacktraceConfig = z.object({
 })
 
 /**
+ * `GET /statsigUserProperties` — the reference server answers this with a single
+ * `success` carrying its `StatsigEnabled` config value, a BOOL rather than an int.
+ */
+export const StatsigUserProperties = z.object({
+	success: z.boolean().describe('The Statsig-enabled flag (true)'),
+})
+
+/**
  * `GET /api/config/v2` — the big client config blob (a static asset), with
  * `ShareBaseUrl` derived from the deploy-time base domain.
  */
@@ -145,7 +153,13 @@ export const ApiConfigV2 = JsonObject.describe(
 	'The static client config, plus a ShareBaseUrl templated from the deploy domain'
 )
 
-/** `GET /api/versioncheck/v4` — whether the client's `?v=` build matches GAME_VERSION. */
+/**
+ * `GET /api/versioncheck/islandedversions` — builds islanded onto their own matchmaking
+ * pool. Always empty here.
+ */
+export const IslandedVersions = z.array(z.string())
+
+/** `GET /api/versioncheck/v4` — whether the client's `?v=` build is one we serve. */
 export const VersionCheck = z.object({
 	VersionStatus: z.int().describe('0 = current, 1 = client on a different build'),
 	UpdateNotificationStage: z.int(),
@@ -197,6 +211,17 @@ export const SendMultipleMessagesRequest = z.object({
 		.optional()
 		.describe('The Message-model type, e.g. `20`. Passed through unmapped; defaults to 0'),
 	Data: z.string().optional().describe('The message payload; often empty'),
+})
+
+/**
+ * `POST /api/messages/v1/friendOnlineStatus` — how many of the caller's friends are
+ * online, wrapped in the client's `{ success, value }` envelope.
+ */
+export const FriendOnlineCountResponse = z.object({
+	success: z.boolean(),
+	value: z.object({
+		FriendsOnlineCount: z.int().describe('Friends with live presence right now'),
+	}),
 })
 
 /** The `{ Success, Message }` ack the flag toggles answer with. */
@@ -411,10 +436,116 @@ export const GenerateGiftRequest = z.object({
 	Xp: z.string().optional(),
 })
 
+/**
+ * `POST /api/customAvatarItems/v1/bulk` form body. A repeated form field, not a JSON
+ * array: the reference binds `[FromForm] List<string>`, so the client posts
+ * `customAvatarItemIds=a&customAvatarItemIds=b`.
+ */
+export const BulkCustomAvatarItemsRequest = z.object({
+	customAvatarItemIds: z
+		.array(z.string())
+		.describe('The ids to resolve; repeat the field once per id'),
+})
+
 /** A paginated custom-avatar-item page (no storage yet, so always empty). */
 export const CustomAvatarItemsPage = z.object({
 	Results: JsonArray,
 	TotalResults: z.int(),
+})
+
+/**
+ * One custom-item save — the rebuilt version of a legacy avatar item. This is the
+ * official shape, recorded for documentation: nothing stores custom items yet, so we
+ * never actually emit one of these.
+ */
+export const CustomAvatarItemSave = z.object({
+	customAvatarItemSaveId: z.int().describe('The save’s id'),
+	customAvatarItemId: z.string().describe('Guid of the custom item this save belongs to'),
+	unityAssetId: z.string().describe('Guid of the built Unity asset'),
+	createdAt: z.string().describe('ISO 8601 timestamp'),
+	thumbnailFileName: z.string(),
+	additionalConfiguration: z.string(),
+	unityAsset: z.string(),
+	unityAssetHash: z.string(),
+})
+
+/**
+ * The custom-item saves that replace a set of legacy avatar items, keyed by the legacy
+ * item's `AvatarItemDesc`. Nothing stores custom items yet, so the map is always empty —
+ * the value shape is documented rather than served.
+ */
+export const LegacyAvatarItemSaves = z.object({
+	customAvatarItemSavesByAvatarItemDesc: z.record(z.string(), CustomAvatarItemSave),
+})
+
+/**
+ * `GET /outfits/me` — the outfit envelope. Either the outfit stored in slot 0, served
+ * back exactly as it was saved, or (for a player who has never saved) the brand-new-
+ * account form, where every field that would carry an outfit is null/empty and
+ * `DataVersion` is 9.
+ */
+export const OutfitsMeResponse = z.object({
+	LegacyData: z.object({
+		SelectionsV1: z.string().nullable().describe('Semicolon-delimited legacy descriptors'),
+		SelectionsV2: z.string().nullable().describe('JSON-in-a-string: `{ selections: [...] }`'),
+		FaceFeatures: z.string().nullable().describe('JSON-in-a-string'),
+		SkinColor: z.string().nullable(),
+		HairColor: z.string().nullable(),
+	}),
+	Selections: JsonArray,
+	DataVersion: z.int().describe('9 in the new-account envelope; whatever was saved otherwise'),
+	CustomizationSettings: z
+		.string()
+		.nullable()
+		.describe('JSON-in-a-string: the same outfit in the newer structured form'),
+	ThumbnailFileName: z.string().nullable(),
+	Name: z.string().nullable(),
+	Accessibility: z.int(),
+	Slot: z.int().describe('0 — the outfit being worn'),
+})
+
+/**
+ * `PUT /outfits/me` JSON body — the outfit the client is saving, in the newer envelope.
+ * The heavy fields are JSON-in-a-string, exactly as the client serialises them:
+ * `SelectionsV2` and `CustomizationSettings` are whole documents encoded as strings, and
+ * `FaceFeatures` likewise. Note the two formats overlap: `LegacyData` carries the old
+ * flat descriptors while `CustomizationSettings` carries the same outfit in the new
+ * structured form, and the client sends both. `Selections` arrives empty — the actual
+ * selections are inside those strings.
+ */
+export const OutfitsMeRequest = z.object({
+	DataVersion: z.int().describe('The client’s outfit format version (2 in observed saves)'),
+	LegacyData: z.object({
+		SelectionsV1: z.string().nullable().describe('Semicolon-delimited legacy descriptors'),
+		SelectionsV2: z.string().nullable().describe('JSON-in-a-string: `{ selections: [...] }`'),
+		FaceFeatures: z.string().nullable().describe('JSON-in-a-string'),
+		SkinColor: z.string().nullable(),
+		HairColor: z.string().nullable(),
+	}),
+	CustomizationSettings: z
+		.string()
+		.nullable()
+		.describe('JSON-in-a-string: the same outfit in the newer structured form'),
+	Selections: JsonArray.describe('Empty in observed saves'),
+	Slot: z.int(),
+	Name: z.string().nullable(),
+	Accessibility: z.int(),
+	ThumbnailFileName: z.string().nullable(),
+})
+
+/**
+ * `PUT /outfits/me` — the base envelope, with NO `Value` key: three keys and that is the
+ * whole body. The save answers only whether it worked; the client keeps the outfit it just
+ * sent rather than re-rendering from a response, so nothing here echoes the outfit back.
+ *
+ * Note the mixed casing — `Success` and `Error` are PascalCase, `error_id` is snake_case.
+ * That is what the reference sends, and the client's decoder matches on the exact names, so
+ * do not "tidy" it into one convention.
+ */
+export const OutfitSaveResponse = z.object({
+	Success: z.boolean(),
+	Error: z.string().nullable().describe('Null on success'),
+	error_id: z.string().nullable().describe('Null on success. snake_case, unlike its siblings'),
 })
 
 /** The `{ success, value }` envelope `isCreationAllowedForAccount` wraps its answer in. */
@@ -582,13 +713,27 @@ export const PlayerEventsPage = z.object({
 // ---- Moderation ------------------------------------------------------------
 
 /**
- * `GET /api/PlayerReporting/v1/moderationBlockDetails` — always the "not blocked"
- * answer (no ban storage yet). `ReportCategory` is -1 (no category) rather than 0,
- * which is a real category; `Message` is null, not an empty string — the client
- * distinguishes "no message" from a blank one.
+ * One row of `GET /api/PlayerReporting/v1/voteToKickReasons` — the label the client puts
+ * on a vote-to-kick button, and the report category the kick is filed under if it passes.
+ */
+export const VoteToKickReason = z.object({
+	Reason: z.string().describe('The label shown on the button'),
+	ReportCategory: z
+		.int()
+		.describe('The category the resulting report is filed under: 101, 102, 103 or 6'),
+})
+
+/**
+ * `GET|POST /api/PlayerReporting/v1/moderationBlockDetails` — always the "not blocked"
+ * answer (no ban storage yet), mirroring the reference server's stub
+ * `ReturnModerationBlockDetails()`. `ReportCategory` is `Unknown` (-1) rather than 0,
+ * which is a real category, and `Message` is null — the client distinguishes "no
+ * message" from a blank one, so we send null where the reference sends an empty string.
+ * `IsVoiceModAutoban`/`TimeoutStartedAt` are on the DTO but unset by that stub, so
+ * they carry their C# defaults (false / null).
  */
 export const ModerationBlockDetails = z.object({
-	ReportCategory: z.int().describe('-1 = no category (0 is a real one)'),
+	ReportCategory: z.int().describe('-1 = ReportCategory.Unknown (0 is a real category)'),
 	Duration: z.int(),
 	GameSessionId: z.int(),
 	IsBan: z.boolean(),
@@ -688,6 +833,29 @@ export const SavedImageDto = z.object({
 })
 
 /**
+ * `GET /api/images/v6` — an image's metadata by bucket key. A third projection of the same
+ * row: renamed like `ImagesPlayer` (`SavedImageId`/`SavedImageType`, no `TaggedPlayerIds`)
+ * but carrying `ClubId`, and with no nullable fields — `RoomId`, `PlayerEventId` and
+ * `ClubId` are 0 where the row holds null, `Description` is `""`. Don't unify it with the
+ * other two.
+ */
+export const ImageMetadataDto = z.object({
+	SavedImageId: z.int(),
+	ImageName: z.string().describe('The bucket key the img worker serves it back by'),
+	PlayerId: z.int(),
+	RoomId: z.int().describe('0 when the photo was not taken in a room'),
+	PlayerEventId: z.int().describe('0 when it belongs to no event'),
+	ClubId: z.int().describe('Always 0 — nothing here associates an image with a club'),
+	Description: z.string().describe('Empty string, never null'),
+	Accessibility: z.int(),
+	AccessibilityLocked: z.boolean(),
+	SavedImageType: z.int().describe('1 = share camera, 3 = room, 4 = profile, …'),
+	CreatedAt: z.string(),
+	CheerCount: z.int(),
+	CommentCount: z.int(),
+})
+
+/**
  * The client's `ImagesPlayer` projection — the same record with `Id` → `SavedImageId`,
  * `Type` → `SavedImageType` and no `TaggedPlayerIds`. The player photo lists and feed
  * MUST serve this: the raw SavedImage renders blank thumbnails.
@@ -745,11 +913,39 @@ export const UploadImageResponse = z.object({
 /** `DELETE /api/images/v1/deletesaved` JSON body. */
 export const DeleteImageRequest = z.object({ ImageName: z.string() })
 
+/**
+ * `POST /api/images/v5/cheered/bulk` form body — the saved-image ids to report cheer state
+ * for, as a REPEATED `id` field (`id=651&id=570&…`), one value per id. The client sends a
+ * whole photo-grid page this way, around a hundred ids at a time.
+ */
+export const CheeredBulkRequest = z.object({
+	id: z.string().describe('Repeated once per image id; each value may also be comma-separated'),
+})
+
 /** `POST /api/images/v1/cheer` JSON body. */
 export const CheerImageRequest = z.object({
 	SavedImageId: z.int(),
 	Cheer: z.boolean().describe('True to cheer, false to un-cheer'),
 })
+
+/**
+ * `PUT /api/players/v1/playerPhotoTaggingSetting` JSON body — who may tag the caller in
+ * photos. The value is an opaque enum ordinal: it is stored and served back untouched, so
+ * whatever the client means by a given number survives a round trip without this server
+ * needing to know the enum.
+ */
+export const PhotoTaggingSettingRequest = z.object({
+	Setting: z.int().describe('The preference’s enum ordinal, stored verbatim'),
+})
+
+/**
+ * `GET|PUT /api/players/v1/playerPhotoTaggingSetting` — a BARE JSON integer, not an
+ * envelope and not a `{ value }` wrapper. Both routes answer the setting the player now
+ * has: the reference's GET and its PUT both `Ok(...)` the stored value.
+ */
+export const PhotoTaggingSettingResponse = z
+	.int()
+	.describe('The caller’s photo-tagging preference; 0 until they set one')
 
 /** The bare `{ success: true }` ack the image writes answer with. */
 export const SuccessResponse = z.object({ success: z.boolean() })

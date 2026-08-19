@@ -1,0 +1,32 @@
+{
+	"name": "lists",
+	"version": "0.1.0",
+	"private": true,
+	"sideEffects": false,
+	"type": "module",
+	"scripts": {
+		"build:wrangler": "run-wrangler-build",
+		"check:lint": "run-oxlint",
+		"check:types": "run-tsc",
+		"check:workers-types": "run-wrangler-types --check",
+		"deploy": "run-wrangler-deploy",
+		"dev": "run-wrangler-dev",
+		"fix:workers-types": "run-wrangler-types",
+		"test": "run-vitest"
+	},
+	"dependencies": {
+		"@repo/domain": "workspace:*",
+		"@repo/hono-helpers": "workspace:*",
+		"@repo/jwt": "workspace:*",
+		"hono": "4.12.27",
+		"workers-tagged-logger": "1.0.1"
+	},
+	"devDependencies": {
+		"@cloudflare/vitest-pool-workers": "0.16.20",
+		"@repo/tools": "workspace:*",
+		"@repo/typescript-config": "workspace:*",
+		"@types/node": "26.0.1",
+		"vitest": "4.1.9",
+		"wrangler": "4.105.0"
+	}
+}

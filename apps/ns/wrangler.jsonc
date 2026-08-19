@@ -15,6 +15,7 @@
 	"vars": {
 		"ENVIRONMENT": "development", // overridden during deployment
 		"SENTRY_RELEASE": "unknown", // overridden during deployment
-		"DOMAIN": "rec.example.com" // base domain; overridden during deployment
+		"DOMAIN": "rec.example.com", // base domain; overridden during deployment
+		"SUBDOMAINS": "{}" // per-service subdomain overrides; overridden during deployment
 	}
 }

@@ -5,6 +5,7 @@ import { beforeAll, describe, expect, test } from 'vitest'
 import '../../auth.app'
 
 import {
+	GAME_VERSION,
 	getAccountsByDeviceId,
 	hashPassword,
 	PRESENCE_SCHEMA_DDL,
@@ -420,6 +421,59 @@ describe('auth worker routes', () => {
 		])
 	})
 
+	// The 20250424.01 build POSTs the picker lookup with a platform-attestation form body
+	// instead of GETting it. Nothing reads that body yet, so both methods must answer the
+	// same list — otherwise the newer client's login screen comes up empty.
+	test('POST /cachedlogin/forplatformid answers exactly what the GET answers', async () => {
+		const steamId = '76561197962463211'
+		await env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
+			.bind(
+				JSON.stringify({
+					accountId: 31381,
+					username: 'SteamPlayer2025',
+					platform: 0,
+					platformId: steamId,
+					lastLoginTime: '2026-08-13T04:21:34.768Z',
+				})
+			)
+			.run()
+		await linkPlatformIdentity(env.DB, 31381, 0, steamId)
+
+		// The body as the live client sends it: device id, the platform session ticket, a
+		// timestamp. All ignored for now.
+		const body = new URLSearchParams({
+			deviceId: '69640e6ae1b54ae5b0ca8eeb4a8872ec6cf8fd88',
+			platformAuth: JSON.stringify({ Ticket: '140000009C5F501B447424FF', AppId: '471710' }),
+			time: '2026-08-13T04:21:34.7684754Z',
+		}).toString()
+		const posted = await exports.default.fetch(`${ORIGIN}/cachedlogin/forplatformid/0/${steamId}`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body,
+		})
+		expect(posted.status).toBe(200)
+		const expected = [
+			{
+				platform: 0,
+				platformId: steamId,
+				accountId: 31381,
+				lastLoginTime: '2026-08-13T04:21:34.768Z',
+				requirePassword: false,
+			},
+		]
+		expect(await posted.json()).toEqual(expected)
+		expect(await cachedLogins(0, steamId)).toEqual(expected)
+	})
+
+	// A POST with no body at all still resolves — the client's body is never consulted.
+	test('POST /cachedlogin/forplatformid/1/1 still returns the canned Oculus entry', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/cachedlogin/forplatformid/1/1`, {
+			method: 'POST',
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toMatchObject([{ accountId: 1, requirePassword: true }])
+	})
+
 	test('one account, a Steam and a Meta identity: both pickers offer it', async () => {
 		// The point of the link table. The same account is reachable from the PC and from
 		// the headset, and each picker reports the identity IT was asked about — that's
@@ -524,6 +578,25 @@ describe('auth worker routes', () => {
 		// No privileges to carry, so the claim is absent rather than an empty array.
 		expect(payload['rn.privilege']).toBeUndefined()
 		expect(payload.scope).toContain('rn.api')
+	})
+
+	// `rn.ver` is the CLIENT's build, from the `ver` it posts here — presence in `match`
+	// reads it back off the token, so this is what a player is reported as running.
+	test('POST /connect/token stamps the posted ver into rn.ver', async () => {
+		const payload = await tokenFor(`account_id=42&password=${LOGIN_PASSWORD}&ver=20250718.01`)
+		expect(payload['rn.ver']).toBe('20250718.01')
+	})
+
+	// A grant that names no build — a refresh, or a caller that isn't the game — falls
+	// back to the server's GAME_VERSION rather than stamping an empty claim, which would
+	// leave presence carrying an empty version.
+	test('POST /connect/token falls back to GAME_VERSION with no ver', async () => {
+		expect((await tokenFor(`account_id=42&password=${LOGIN_PASSWORD}`))['rn.ver']).toBe(
+			GAME_VERSION
+		)
+		expect((await tokenFor(`account_id=42&password=${LOGIN_PASSWORD}&ver=`))['rn.ver']).toBe(
+			GAME_VERSION
+		)
 	})
 
 	test('POST /connect/token stamps developer/moderator roles into the token', async () => {
@@ -1058,6 +1131,23 @@ describe('auth worker routes', () => {
 		expect(await rotate.json()).toEqual({ success: true })
 	})
 
+	test('GET /privileges/me/restrictions is an empty array for an unrestricted caller', async () => {
+		const token = await accessTokenFor('grant_type=create_account&platform_id=steam-restrict1')
+		const res = await exports.default.fetch(`${ORIGIN}/privileges/me/restrictions`, {
+			headers: { Authorization: `Bearer ${token}` },
+		})
+		expect(res.status).toBe(200)
+		// [] is the normal unrestricted answer — not null, not a 404: the client refills its
+		// list from this and acts on a record being present.
+		expect(await res.text()).toBe('[]')
+	})
+
+	test('GET /privileges/me/restrictions 401s without a token', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/privileges/me/restrictions`)
+		expect(res.status).toBe(401)
+		expect(await res.text()).toBe('')
+	})
+
 	test('GET /role/developer/:id returns a bare false for an un-flagged account', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/role/developer/42`)
 		expect(res.status).toBe(200)
@@ -1119,9 +1209,11 @@ describe('auth worker routes', () => {
 		expect([...documented].sort()).toEqual([
 			'GET /cachedlogin/forplatformid/{platform}/{id}',
 			'GET /eac/challenge',
+			'GET /privileges/me/restrictions',
 			'GET /role/developer/{id}',
 			'GET /role/moderator/{id}',
 			'POST /account/me/changepassword',
+			'POST /cachedlogin/forplatformid/{platform}/{id}',
 			'POST /cachedlogin/forplatformids',
 			'POST /connect/token',
 		])

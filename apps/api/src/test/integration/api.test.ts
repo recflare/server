@@ -14,11 +14,15 @@ import {
 	LEVEL_REQUIRED_XP,
 	LEVEL_REWARDS,
 	MAX_LEVEL,
+	OUTFIT_SCHEMA_DDL,
+	PRESENCE_SCHEMA_DDL,
+	PRESENCE_TTL_SECONDS,
 	PROGRESSION_SCHEMA_DDL,
 	RELATIONSHIP_SCHEMA_DDL,
 	ROOM_SCHEMA_DDL,
 	seedRoomWithSubRooms,
 	SUBROOM_SCHEMA_DDL,
+	SUPPORTED_GAME_VERSIONS,
 } from '@repo/domain'
 
 import '../../api.app'
@@ -106,6 +110,12 @@ beforeAll(async () => {
 
 	// Relationships table (owned by the api worker) — friendship endpoints use it.
 	for (const stmt of RELATIONSHIP_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+
+	// Presence (owned by the rooms worker) — the online-friend count joins onto it.
+	for (const stmt of PRESENCE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+
+	// Outfit table (owned by the econ worker) — /outfits/me reads and writes slot 0.
+	for (const stmt of OUTFIT_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 
 	// Inventions table (owned by the api worker) — invention save/mine use it.
 	for (const stmt of INVENTIONS_SCHEMA_DDL) await env.DB.prepare(stmt).run()
@@ -197,9 +207,27 @@ describe('public endpoints', () => {
 		expect(await res.json()).toMatchObject({ VersionStatus: 0 })
 	})
 
+	test('GET /api/versioncheck/v4 reports current for every supported build', async () => {
+		for (const version of SUPPORTED_GAME_VERSIONS) {
+			const res = await exports.default.fetch(`${ORIGIN}/api/versioncheck/v4?v=${version}`)
+			expect(await res.json(), version).toMatchObject({ VersionStatus: 0 })
+		}
+	})
+
 	test('GET /api/versioncheck/v4 flags a mismatched build', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/api/versioncheck/v4?v=19990101`)
 		expect(await res.json()).toMatchObject({ VersionStatus: 1 })
+	})
+
+	test('GET /api/versioncheck/v4 flags a client that sends no build', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/versioncheck/v4`)
+		expect(await res.json()).toMatchObject({ VersionStatus: 1 })
+	})
+
+	test('GET /api/versioncheck/islandedversions is empty', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/versioncheck/islandedversions`)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
 	})
 
 	test('GET /api/relationships/v2/get returns empty array for a player with none', async () => {
@@ -250,23 +278,76 @@ describe('public endpoints', () => {
 		expect(words[0]).toEqual({ Id: 1, Difficulty: 0, EN_US: 'David Bowie' })
 	})
 
-	test('GET /api/PlayerReporting/v1/moderationBlockDetails reports "not blocked"', async () => {
-		const res = await exports.default.fetch(
-			`${ORIGIN}/api/PlayerReporting/v1/moderationBlockDetails`
-		)
-		expect(res.status).toBe(200)
-		// ReportCategory -1 = no category (0 is a real one), and Message is null.
-		expect(await res.json()).toEqual({
-			ReportCategory: -1,
-			Duration: 0,
-			GameSessionId: 0,
-			IsBan: false,
-			IsHostKick: false,
-			IsVoiceModAutoban: false,
-			Message: null,
-			PlayerIdReporter: null,
-			TimeoutStartedAt: null,
+	// The client POSTs this with no body, despite it being a pure read; the route answers
+	// GET as well, and both methods serve the same body.
+	test.each(['GET', 'POST'])(
+		'%s /api/PlayerReporting/v1/moderationBlockDetails reports "not blocked"',
+		async (method) => {
+			const res = await exports.default.fetch(
+				`${ORIGIN}/api/PlayerReporting/v1/moderationBlockDetails`,
+				{ method }
+			)
+			expect(res.status).toBe(200)
+			// ReportCategory -1 = Unknown (0 is a real category). Message is null, not the
+			// reference stub's empty string — the client tells "no message" from a blank one.
+			expect(await res.json()).toEqual({
+				ReportCategory: -1,
+				Duration: 0,
+				GameSessionId: 0,
+				IsBan: false,
+				IsHostKick: false,
+				IsVoiceModAutoban: false,
+				Message: null,
+				PlayerIdReporter: null,
+				TimeoutStartedAt: null,
+			})
+		}
+	)
+
+	// A fixed list, in render order — the client shows the buttons in the order they
+	// arrive, so the order is part of the contract, not just the contents.
+	test('GET /api/PlayerReporting/v1/voteToKickReasons serves the reasons in order', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/PlayerReporting/v1/voteToKickReasons`, {
+			headers: await bearer(),
 		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([
+			{ Reason: 'Discriminatory language', ReportCategory: 102 },
+			{ Reason: 'Discriminatory behavior', ReportCategory: 102 },
+			{ Reason: 'Threats or encouraging suicide', ReportCategory: 102 },
+			{ Reason: 'Toxic behavior', ReportCategory: 102 },
+			{ Reason: 'Sexual behavior in public', ReportCategory: 101 },
+			{ Reason: 'Sexual language in public', ReportCategory: 101 },
+			{ Reason: 'Non-consensual sexual behavior', ReportCategory: 101 },
+			{ Reason: 'Player in walls or floor', ReportCategory: 103 },
+			{ Reason: 'Friendly fire', ReportCategory: 103 },
+			{ Reason: 'Microphone spam', ReportCategory: 103 },
+			{ Reason: 'Abusing bugs or exploits', ReportCategory: 103 },
+			{ Reason: 'Spawn camping', ReportCategory: 103 },
+			{ Reason: 'Inactive in games (AFK)', ReportCategory: 6 },
+			{ Reason: 'Prefab swapping', ReportCategory: 6 },
+			{ Reason: 'Not following game rules', ReportCategory: 6 },
+		])
+	})
+
+	test('GET /api/PlayerReporting/v1/voteToKickReasons is auth-gated', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/PlayerReporting/v1/voteToKickReasons`)
+		expect(res.status).toBe(401)
+	})
+
+	test('POST /api/PlayerReporting/v1/referee says the caller is not one', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/PlayerReporting/v1/referee`, {
+			method: 'POST',
+		})
+		expect(res.status).toBe(200)
+		// A bare boolean, not an envelope or a list.
+		expect(await res.json()).toBe(false)
+	})
+
+	test('GET /api/referee/files has no cases', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/referee/files`)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
 	})
 
 	// Unauthenticated by design — the client posts this before it has an account, so
@@ -443,6 +524,189 @@ describe('public endpoints', () => {
 		expect(await res.json()).toEqual({ Results: [], TotalResults: 0 })
 	})
 
+	// Nothing locks avatar items here, so the array is empty and the posted ids are never
+	// parsed. Unlike the custom-item bulk below, this one takes no token — the reference
+	// answers outright.
+	test('POST /api/avatar/v1/lockeditems/bulk returns [] without auth', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/avatar/v1/lockeditems/bulk`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify(['a', 'b']),
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
+	})
+
+	// A BARE ARRAY of the items that matched — not the `{ Results, TotalResults }` page
+	// the sibling custom-item reads serve. Nothing stores custom items, so every id
+	// misses, and a miss is an absent entry rather than an error.
+	test('POST /api/customAvatarItems/v1/bulk returns the matching items as an array', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/customAvatarItems/v1/bulk`, {
+			method: 'POST',
+			headers: {
+				'content-type': 'application/x-www-form-urlencoded',
+				...(await bearer()),
+			},
+			// Repeated form field, as `[FromForm] List<string>` binds it.
+			body: new URLSearchParams([
+				['customAvatarItemIds', 'a'],
+				['customAvatarItemIds', 'b'],
+			]),
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
+	})
+
+	// The ids are never parsed (nothing could match), so a missing body is still a 200
+	// rather than the 400 a body-reading handler would produce.
+	test('POST /api/customAvatarItems/v1/bulk ignores the body', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/customAvatarItems/v1/bulk`, {
+			method: 'POST',
+			headers: await bearer(),
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
+	})
+
+	test('POST /api/customAvatarItems/v1/bulk is auth-gated', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/customAvatarItems/v1/bulk`, {
+			method: 'POST',
+		})
+		expect(res.status).toBe(401)
+	})
+
+	test('POST /api/customAvatarItems/GetCustomAvatarItemCurrentSavesForLegacyAvatarItems returns an empty map', async () => {
+		const res = await exports.default.fetch(
+			`${ORIGIN}/api/customAvatarItems/GetCustomAvatarItemCurrentSavesForLegacyAvatarItems`,
+			{
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ AvatarItemIds: [1, 2, 3] }),
+			}
+		)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ customAvatarItemSavesByAvatarItemDesc: {} })
+	})
+
+	test('GET /outfits/me 401s without a token, serves the empty envelope for a new player', async () => {
+		const anon = await exports.default.fetch(`${ORIGIN}/outfits/me`)
+		expect(anon.status).toBe(401)
+		// Account 77 never saves an outfit, so it keeps getting the new-account envelope.
+		const res = await exports.default.fetch(`${ORIGIN}/outfits/me`, { headers: await bearer('77') })
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({
+			LegacyData: {
+				SelectionsV1: null,
+				SelectionsV2: null,
+				FaceFeatures: null,
+				SkinColor: null,
+				HairColor: null,
+			},
+			Selections: [],
+			DataVersion: 9,
+			CustomizationSettings: null,
+			ThumbnailFileName: null,
+			Name: null,
+			Accessibility: 0,
+			Slot: 0,
+		})
+	})
+
+	test('PUT /outfits/me saves into slot 0; GET reads it back verbatim', async () => {
+		// The client's own payload, trimmed to one selection: the point is that the heavy
+		// JSON-in-a-string fields survive the round trip as strings, unparsed.
+		const outfit = {
+			DataVersion: 2,
+			LegacyData: {
+				SelectionsV1: '193a3bf9-abc0-4d78-8d63-92046908b1c5,,0',
+				SelectionsV2:
+					'{"selections":[{"PrefabGuid":"193a3bf9-abc0-4d78-8d63-92046908b1c5","CombinationGuid":"","BodyPart":0}]}',
+				FaceFeatures: '{"ver":7,"eyeId":"Aeu0yxJXG0qCOLZW5Tcu7A","hideEars":false}',
+				SkinColor: 'Dc6StLFk60u5iUTrb3_C3w',
+				HairColor: 'UAT0OaWEkUG-mWDIyiX1Kg',
+			},
+			CustomizationSettings: '{"AvatarVersion":2,"AvatarBodyType":0}',
+			Selections: [],
+			Slot: 0,
+			Name: null,
+			Accessibility: 1,
+			ThumbnailFileName: null,
+		}
+
+		const anon = await exports.default.fetch(`${ORIGIN}/outfits/me`, {
+			method: 'PUT',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify(outfit),
+		})
+		expect(anon.status).toBe(401)
+
+		const res = await exports.default.fetch(`${ORIGIN}/outfits/me`, {
+			method: 'PUT',
+			headers: { ...(await bearer()), 'content-type': 'application/json' },
+			body: JSON.stringify(outfit),
+		})
+		expect(res.status).toBe(200)
+		// The save answers the base envelope — three keys, no `Value`, and NOT the outfit
+		// just sent. Note the mixed casing: `Success`/`Error` but `error_id`.
+		expect(await res.json()).toEqual({ Success: true, Error: null, error_id: null })
+
+		// The read serves it back byte-for-byte — the JSON-in-a-string fields are still
+		// strings, not re-encoded objects.
+		const read = await exports.default.fetch(`${ORIGIN}/outfits/me`, { headers: await bearer() })
+		expect(await read.json()).toEqual(outfit)
+
+		// Re-saving overwrites slot 0 rather than adding a second row.
+		const changed = { ...outfit, LegacyData: { ...outfit.LegacyData, SkinColor: 'changed' } }
+		await exports.default.fetch(`${ORIGIN}/outfits/me`, {
+			method: 'PUT',
+			headers: { ...(await bearer()), 'content-type': 'application/json' },
+			body: JSON.stringify(changed),
+		})
+		const reread = await exports.default.fetch(`${ORIGIN}/outfits/me`, { headers: await bearer() })
+		expect(await reread.json()).toEqual(changed)
+		const rows = await env.DB.prepare(
+			'SELECT COUNT(*) AS n FROM outfit WHERE account_id = 42'
+		).first<{ n: number }>()
+		expect(rows?.n).toBe(1)
+
+		// A save naming another slot does not touch what the caller is wearing.
+		await exports.default.fetch(`${ORIGIN}/outfits/me`, {
+			method: 'PUT',
+			headers: { ...(await bearer()), 'content-type': 'application/json' },
+			body: JSON.stringify({ ...changed, Slot: 3, Name: 'slot three' }),
+		})
+		const worn = await exports.default.fetch(`${ORIGIN}/outfits/me`, { headers: await bearer() })
+		expect(((await worn.json()) as { Name: string | null }).Name).toBe(null)
+	})
+
+	test('GET /outfits/me/saved 401s without a token, returns [] with one', async () => {
+		const anon = await exports.default.fetch(`${ORIGIN}/outfits/me/saved`)
+		expect(anon.status).toBe(401)
+		// Empty even for account 42, which saved an outfit through PUT /outfits/me above.
+		const res = await exports.default.fetch(`${ORIGIN}/outfits/me/saved`, {
+			headers: await bearer(),
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
+	})
+
+	test('PUT /outfits/me 400s on an unparseable body', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/outfits/me`, {
+			method: 'PUT',
+			headers: { ...(await bearer()), 'content-type': 'application/json' },
+			body: 'not json',
+		})
+		expect(res.status).toBe(400)
+	})
+
+	test('GET /api/progressionEvents/active is an empty list (no auth)', async () => {
+		// The client reads an empty list as "no event running" and skips the event UI; a 404
+		// would stall its load instead.
+		const res = await exports.default.fetch(`${ORIGIN}/api/progressionEvents/active`)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
+	})
+
 	test('GET /api/rooms/v1/filters returns an object with filter arrays', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/api/rooms/v1/filters`)
 		expect(res.status).toBe(200)
@@ -465,6 +729,12 @@ describe('public endpoints', () => {
 		const cats = await exports.default.fetch(`${ORIGIN}/api/keepsakes/categories`)
 		expect(cats.status).toBe(200)
 		expect(await cats.json()).toEqual({ Results: [], TotalResults: 0 })
+	})
+
+	test('POST /statsigUserProperties returns the StatsigEnabled flag', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/statsigUserProperties`, { method: 'POST' })
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ success: true })
 	})
 
 	test('GET /voice/config returns an object', async () => {
@@ -1322,6 +1592,26 @@ describe('public endpoints', () => {
 		).toBe(403)
 	})
 
+	test('GET /api/inventions/v1/fromcreators is an empty feed for now', async () => {
+		// A stub: the client renders an empty array as "this creator has published nothing",
+		// where a 404 would read as a row that failed to load.
+		const res = await exports.default.fetch(
+			`${ORIGIN}/api/inventions/v1/fromcreators?id=207&skip=0&take=100`
+		)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
+
+		// The params are accepted and ignored, including a repeated `id` and none at all.
+		expect(
+			await (
+				await exports.default.fetch(`${ORIGIN}/api/inventions/v1/fromcreators?id=1&id=2`)
+			).json()
+		).toEqual([])
+		expect(
+			await (await exports.default.fetch(`${ORIGIN}/api/inventions/v1/fromcreators`)).json()
+		).toEqual([])
+	})
+
 	test('GET /api/inventions/v1/toptoday + v1/featured serve the invention feeds', async () => {
 		const ids = async (res: Response): Promise<number[]> =>
 			((await res.json()) as SavedInvention[]).map((i) => i.InventionId)
@@ -1423,6 +1713,17 @@ describe('public endpoints', () => {
 		expect(pure.status).toBe(200)
 		expect(await pure.json()).toEqual({ IsPure: true })
 	})
+})
+
+describe('account', () => {
+	test.each(['email', 'phone', 'anything'])(
+		'GET /iam/me/channels/%s is an empty list',
+		async (type) => {
+			const res = await exports.default.fetch(`${ORIGIN}/iam/me/channels/${type}`)
+			expect(res.status).toBe(200)
+			expect(await res.json()).toEqual([])
+		}
+	)
 })
 
 describe('auth-gated endpoints', () => {
@@ -1747,10 +2048,11 @@ describe('images', () => {
 		// A metadata row was created, and it's readable by name via /api/images/v6.
 		const meta = (await (
 			await exports.default.fetch(`${ORIGIN}/api/images/v6?name=${ImageName}`)
-		).json()) as { ImageName: string; PlayerId: number; Id: number; CheerCount: number }
+		).json()) as { ImageName: string; PlayerId: number; SavedImageId: number; CheerCount: number }
 		expect(meta.ImageName).toBe(ImageName)
 		expect(meta.PlayerId).toBe(42)
-		expect(typeof meta.Id).toBe('number')
+		// `SavedImageId`, not `Id` — v6 renames like the player lists do.
+		expect(typeof meta.SavedImageId).toBe('number')
 		expect(meta.CheerCount).toBe(0)
 	})
 
@@ -1820,6 +2122,52 @@ describe('images', () => {
 		expect(await feed('?take=lots')).toBe(10)
 	})
 
+	test('GET /api/images/v5/bulk resolves image records by id, in request order', async () => {
+		const one = await createImage(env.DB, { imageName: 'bulkone.jpg', playerId: 7101 })
+		const two = await createImage(env.DB, { imageName: 'bulktwo.jpg', playerId: 7102 })
+		// Not public: a bulk lookup must not hand this back, or sequential ids would make
+		// every private photo readable by anyone who counts.
+		const hidden = await createImage(env.DB, {
+			imageName: 'bulkhidden.jpg',
+			playerId: 7103,
+			accessibility: 0,
+		})
+
+		const bulk = async (query: string) =>
+			(await (await exports.default.fetch(`${ORIGIN}/api/images/v5/bulk${query}`)).json()) as Array<
+				Record<string, unknown>
+			>
+
+		// Request order, not id order — the client lines the answers up with what it asked for.
+		const both = await bulk(`?ids=${two.Id}&ids=${one.Id}`)
+		expect(both.map((i) => i.Id)).toEqual([two.Id, one.Id])
+		// The RAW SavedImage: `Id`/`Type`, and TaggedPlayerIds present — not the
+		// SavedImageId/SavedImageType projection the player photo lists serve.
+		expect(both[0]).toMatchObject({
+			Id: two.Id,
+			Type: two.Type,
+			ImageName: 'bulktwo.jpg',
+			PlayerId: 7102,
+			TaggedPlayerIds: [],
+		})
+
+		// An unknown id and a non-public one are absent rather than errors or holes, so the
+		// answer can be shorter than the request.
+		expect((await bulk(`?ids=${one.Id}&ids=999999&ids=${hidden.Id}`)).map((i) => i.Id)).toEqual([
+			one.Id,
+		])
+
+		// No ids at all is an empty array.
+		expect(await bulk('')).toEqual([])
+
+		// More ids than D1 will bind in one query (100) — the lookup has to split.
+		const many = [...Array.from({ length: 130 }, (_, i) => 800000 + i), one.Id, two.Id]
+		expect((await bulk(`?${many.map((id) => `ids=${id}`).join('&')}`)).map((i) => i.Id)).toEqual([
+			one.Id,
+			two.Id,
+		])
+	})
+
 	test('POST /api/images/v1/cheer persists, syncs CheerCount, and the bulk lookup reflects it', async () => {
 		// Seed an image to cheer.
 		// Its own player id: 700's photos are asserted on exactly in the player-list test.
@@ -1868,6 +2216,68 @@ describe('images', () => {
 		expect(await cheerCount()).toBe(0)
 	})
 
+	test('GET|PUT /api/players/v1/playerPhotoTaggingSetting round-trips the preference', async () => {
+		const path = `${ORIGIN}/api/players/v1/playerPhotoTaggingSetting`
+		const read = async (sub: string) => exports.default.fetch(path, { headers: await bearer(sub) })
+		const write = async (sub: string, body: unknown) =>
+			exports.default.fetch(path, {
+				method: 'PUT',
+				headers: { ...(await bearer(sub)), 'Content-Type': 'application/json' },
+				body: JSON.stringify(body),
+			})
+
+		// Both are auth-gated.
+		expect((await exports.default.fetch(path)).status).toBe(401)
+		expect((await exports.default.fetch(path, { method: 'PUT' })).status).toBe(401)
+
+		// A player who has never set one reads 0 — a bare integer, not an envelope.
+		const initial = await read('710')
+		expect(initial.status).toBe(200)
+		expect(await initial.text()).toBe('0')
+
+		// The PUT answers the stored value, and the GET agrees afterwards.
+		expect(await (await write('710', { Setting: 2 })).text()).toBe('2')
+		expect(await (await read('710')).text()).toBe('2')
+
+		// It's stored under `playerPhotoTaggingSetting` in the player's settings bag...
+		const stored = await env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(
+			'player:710',
+			'json'
+		)
+		expect(stored?.playerPhotoTaggingSetting).toBe('2')
+
+		// ...and the write MERGES: the player's other settings survive it.
+		await env.RECFLARE_PLAYER_SETTINGS.put(
+			'player:711',
+			JSON.stringify({ 'Recroom.OOBE': '77', playerPhotoTaggingSetting: '1' })
+		)
+		expect(await (await read('711')).text()).toBe('1')
+		await write('711', { Setting: 0 })
+		expect(
+			await env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>('player:711', 'json')
+		).toEqual({ 'Recroom.OOBE': '77', playerPhotoTaggingSetting: '0' })
+
+		// The setting is per-player.
+		expect(await (await read('710')).text()).toBe('2')
+
+		// A body with no readable Setting leaves the stored value alone rather than writing 0
+		// — and answers what the player still has.
+		expect(await (await write('710', { Nothing: true })).text()).toBe('2')
+		expect(await (await read('710')).text()).toBe('2')
+
+		// A form body and the lowercase spelling both parse, as does a numeric string.
+		const form = await exports.default.fetch(path, {
+			method: 'PUT',
+			headers: {
+				...(await bearer('710')),
+				'Content-Type': 'application/x-www-form-urlencoded',
+			},
+			body: new URLSearchParams({ setting: '3' }).toString(),
+		})
+		expect(await form.text()).toBe('3')
+		expect(await (await read('710')).text()).toBe('3')
+	})
+
 	test('GET /api/images/v5/cheered/bulk reports per-id cheer state for the caller (auth-gated)', async () => {
 		const img = await createImage(env.DB, { imageName: 'bulkcheer.jpg', playerId: 701 })
 		const other = 999999
@@ -1907,6 +2317,72 @@ describe('images', () => {
 			headers: await bearer('42'),
 		})
 		expect(await empty.json()).toEqual([])
+
+		// The client POSTs the ids as a form body of repeated `id` fields — a photo grid asks
+		// about a whole page at once, far more than belongs in a URL. Same answer as the GET.
+		const posted = await exports.default.fetch(`${ORIGIN}/api/images/v5/cheered/bulk`, {
+			method: 'POST',
+			headers: {
+				...(await bearer('42')),
+				'Content-Type': 'application/x-www-form-urlencoded',
+			},
+			body: `id=${img.Id}&id=${other}`,
+		})
+		expect(posted.status).toBe(200)
+		expect(await posted.json()).toEqual([
+			{ SavedImageId: img.Id, IsCheered: true },
+			{ SavedImageId: other, IsCheered: false },
+		])
+		expect(
+			(await exports.default.fetch(`${ORIGIN}/api/images/v5/cheered/bulk`, { method: 'POST' }))
+				.status
+		).toBe(401)
+
+		// A full page of ids: D1 caps a query at 100 bound parameters and the player id takes
+		// one, so the lookup has to split rather than fail — the client really does send ~100.
+		const page = [img.Id, ...Array.from({ length: 120 }, (_, i) => 900000 + i)]
+		const fullPage = await exports.default.fetch(`${ORIGIN}/api/images/v5/cheered/bulk`, {
+			method: 'POST',
+			headers: {
+				...(await bearer('42')),
+				'Content-Type': 'application/x-www-form-urlencoded',
+			},
+			body: page.map((imageId) => `id=${imageId}`).join('&'),
+		})
+		expect(fullPage.status).toBe(200)
+		const entries = (await fullPage.json()) as Array<{ SavedImageId: number; IsCheered: boolean }>
+		// One entry per requested id, in request order, and the cheer still resolves from the
+		// far side of the split.
+		expect(entries).toHaveLength(page.length)
+		expect(entries.map((e) => e.SavedImageId)).toEqual(page)
+		expect(entries[0]).toEqual({ SavedImageId: img.Id, IsCheered: true })
+		expect(entries.filter((e) => e.IsCheered)).toHaveLength(1)
+	})
+
+	test('GET /api/images/v6 serves the metadata projection, nothing nullable', async () => {
+		const img = await createImage(env.DB, {
+			imageName: 'v6shape.jpg',
+			playerId: 7301,
+			// No room, no event, no description: all three are null on the row.
+		})
+		const res = await exports.default.fetch(`${ORIGIN}/api/images/v6?name=v6shape.jpg`)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({
+			SavedImageId: img.Id,
+			ImageName: 'v6shape.jpg',
+			PlayerId: 7301,
+			// Nulls on the row come out as 0 / "" — the client's DTO has no null to put there.
+			RoomId: 0,
+			PlayerEventId: 0,
+			ClubId: 0,
+			Description: '',
+			Accessibility: 1,
+			AccessibilityLocked: false,
+			SavedImageType: 1,
+			CreatedAt: img.CreatedAt,
+			CheerCount: 0,
+			CommentCount: 0,
+		})
 	})
 
 	test('GET /api/images/v6 400s without a name and 404s for an unknown one', async () => {
@@ -1940,18 +2416,35 @@ describe('images', () => {
 		const meta = (await (
 			await exports.default.fetch(`${ORIGIN}/api/images/v6?name=${ImageName}`)
 		).json()) as {
-			Type: number
+			SavedImageType: number
 			RoomId: number
 			Accessibility: number
+			PlayerEventId: number
+			ClubId: number
+			Description: string
+		}
+		expect(meta.SavedImageType).toBe(1)
+		expect(meta.RoomId).toBe(777)
+		expect(meta.Accessibility).toBe(2)
+		// v6 carries no TaggedPlayerIds — the upload still records them, which the stored row
+		// below proves. Nothing on this projection is nullable: a "none" event reads 0, not
+		// null, and the club (which nothing here sets) reads 0 too.
+		expect(meta).not.toHaveProperty('TaggedPlayerIds')
+		expect(meta.PlayerEventId).toBe(0)
+		expect(meta.ClubId).toBe(0)
+		expect(meta.Description).toBe('')
+
+		// The tagged players and the null event id, as actually stored.
+		const row = await env.DB.prepare('SELECT data FROM image WHERE image_name = ?1')
+			.bind(ImageName)
+			.first<{ data: string }>()
+		const stored = JSON.parse(row!.data) as {
 			TaggedPlayerIds: number[]
 			PlayerEventId: number | null
 		}
-		expect(meta.Type).toBe(1)
-		expect(meta.RoomId).toBe(777)
-		expect(meta.Accessibility).toBe(2)
-		expect(meta.TaggedPlayerIds).toEqual([5, 6])
-		// playerEventId 0 means "none" → stored as null.
-		expect(meta.PlayerEventId).toBeNull()
+		expect(stored.TaggedPlayerIds).toEqual([5, 6])
+		// playerEventId 0 means "none" → stored as null, and serialized back out as 0.
+		expect(stored.PlayerEventId).toBeNull()
 	})
 
 	test('POST /api/images/v4/uploadsaved records a profile thumbnail on the account', async () => {
@@ -2530,6 +3023,95 @@ describe('relationships', () => {
 		const sent = await sentNotifications()
 		expect(sent).toHaveLength(2)
 		for (const n of sent) expect(n.data.RelationshipType).toBe(3)
+	})
+})
+
+describe('friend online count', () => {
+	// Presence is written by the `match` worker, so it's seeded straight into the table
+	// here. `roomInstance` null is lobby presence — signed in, not in a room.
+	async function setPresence(accountId: number, secondsLeft = PRESENCE_TTL_SECONDS) {
+		await env.DB.prepare('INSERT OR REPLACE INTO presence (data) VALUES (?1)')
+			.bind(
+				JSON.stringify({
+					accountId,
+					roomInstance: null,
+					statusVisibility: 0,
+					deviceClass: 0,
+					vrMovementMode: 0,
+					platform: 0,
+					appVersion: GAME_VERSION,
+					expiresAt: Math.floor(Date.now() / 1000) + secondsLeft,
+				})
+			)
+			.run()
+	}
+
+	async function friendOnlineCount(sub: string): Promise<number> {
+		const res = await exports.default.fetch(`${ORIGIN}/api/messages/v1/friendOnlineStatus`, {
+			method: 'POST',
+			headers: await bearer(sub),
+		})
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as { success: boolean; value: { FriendsOnlineCount: number } }
+		expect(body.success).toBe(true)
+		return body.value.FriendsOnlineCount
+	}
+
+	// Make `a` and `b` friends the way the client does.
+	async function befriend(a: string, b: number) {
+		await exports.default.fetch(`${ORIGIN}/api/relationships/v2/addfriend?id=${b}`, {
+			headers: await bearer(a),
+		})
+	}
+
+	test('POST /api/messages/v1/friendOnlineStatus is auth-gated', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/messages/v1/friendOnlineStatus`, {
+			method: 'POST',
+		})
+		expect(res.status).toBe(401)
+	})
+
+	test('counts only friends who are online, from either side of the row', async () => {
+		// 900 is friends with 901 (as requester) and with 902 (as target).
+		await befriend('900', 901)
+		await befriend('902', 900)
+		// A pending request and a stranger, both online — neither is a friendship.
+		await exports.default.fetch(`${ORIGIN}/api/relationships/v2/sendfriendrequest?id=903`, {
+			headers: await bearer('900'),
+		})
+
+		expect(await friendOnlineCount('900')).toBe(0)
+
+		// Both friends online, plus noise: the caller themselves, the pending request, and
+		// an unrelated player.
+		await setPresence(900)
+		await setPresence(901)
+		await setPresence(902)
+		await setPresence(903)
+		await setPresence(904)
+		expect(await friendOnlineCount('900')).toBe(2)
+
+		// One friend goes offline; the other still counts.
+		await env.DB.prepare('DELETE FROM presence WHERE account_id = ?1').bind(901).run()
+		expect(await friendOnlineCount('900')).toBe(1)
+	})
+
+	test('expired presence does not count, and unfriending drops the count', async () => {
+		await befriend('910', 911)
+		await setPresence(911, -1)
+		expect(await friendOnlineCount('910')).toBe(0)
+
+		await setPresence(911)
+		expect(await friendOnlineCount('910')).toBe(1)
+
+		await exports.default.fetch(`${ORIGIN}/api/relationships/v2/removefriend?id=911`, {
+			headers: await bearer('910'),
+		})
+		expect(await friendOnlineCount('910')).toBe(0)
+	})
+
+	test('a player with no relationships counts zero', async () => {
+		expect(await friendOnlineCount('920')).toBe(0)
 	})
 })
 
@@ -3594,12 +4176,14 @@ describe('openapi', () => {
 			'GET /api/images/v3/feed/player/{playerId}',
 			'GET /api/images/v4/player/{playerId}',
 			'GET /api/images/v4/room/{roomId}',
+			'GET /api/images/v5/bulk',
 			'GET /api/images/v5/cheered/bulk',
 			'GET /api/images/v5/player/{playerId}',
 			'GET /api/images/v6',
 			'GET /api/inventions/v1',
 			'GET /api/inventions/v1/details',
 			'GET /api/inventions/v1/featured',
+			'GET /api/inventions/v1/fromcreators',
 			'GET /api/inventions/v1/fulllineageowner',
 			'GET /api/inventions/v1/personaldetails/{inventionId}',
 			'GET /api/inventions/v1/room',
@@ -3628,9 +4212,12 @@ describe('openapi', () => {
 			'GET /api/playerevents/v1/tagfilters',
 			'GET /api/playerevents/v1/{eventId}',
 			'GET /api/playerevents/v1/{eventId}/responses',
+			'GET /api/players/v1/playerPhotoTaggingSetting',
 			'GET /api/players/v1/progression/{id}',
 			'GET /api/players/v2/progression/bulk',
+			'GET /api/progressionEvents/active',
 			'GET /api/quickPlay/v1/getandclear',
+			'GET /api/referee/files',
 			'GET /api/relationships/mutualfriends',
 			'GET /api/relationships/v1/favorite',
 			'GET /api/relationships/v1/ignore',
@@ -3646,19 +4233,30 @@ describe('openapi', () => {
 			'GET /api/roomkeys/v1/mine',
 			'GET /api/roomkeys/v1/room',
 			'GET /api/rooms/v1/filters',
+			'GET /api/versioncheck/islandedversions',
 			'GET /api/versioncheck/v4',
+			'GET /iam/me/channels/{type}',
+			'GET /outfits/me',
+			'GET /outfits/me/saved',
 			'GET /voice/config',
 			'POST /api/PlayerReporting/v1/deviceId',
 			'POST /api/PlayerReporting/v1/hile',
+			'POST /api/PlayerReporting/v1/moderationBlockDetails',
+			'POST /api/PlayerReporting/v1/referee',
 			'POST /api/PlayerReporting/v3/create',
+			'POST /api/avatar/v1/lockeditems/bulk',
 			'POST /api/avatar/v2/gifts/generate',
+			'POST /api/customAvatarItems/GetCustomAvatarItemCurrentSavesForLegacyAvatarItems',
+			'POST /api/customAvatarItems/v1/bulk',
 			'POST /api/gamesight/event',
 			'POST /api/images/v1/cheer',
 			'POST /api/images/v4/uploadsaved',
+			'POST /api/images/v5/cheered/bulk',
 			'POST /api/inventions/v1/settags',
 			'POST /api/inventions/v1/update',
 			'POST /api/inventions/v1/updateprice',
 			'POST /api/inventions/v6/save',
+			'POST /api/messages/v1/friendOnlineStatus',
 			'POST /api/messages/v1/sendMultiple',
 			'POST /api/messages/v2/send',
 			'POST /api/playerReputation/v1/bulk',
@@ -3685,6 +4283,9 @@ describe('openapi', () => {
 			'POST /api/sanitize/v1',
 			'POST /api/sanitize/v1/isPure',
 			'POST /api/v1/progression/bulk',
+			'POST /statsigUserProperties',
+			'PUT /api/players/v1/playerPhotoTaggingSetting',
+			'PUT /outfits/me',
 		])
 
 		// Every operation carries a summary — an undescribed one renders as a bare path.

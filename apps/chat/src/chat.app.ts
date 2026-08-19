@@ -10,6 +10,7 @@ import { getThreadMessages } from './message-db'
 import {
 	AUTHED,
 	ChatMessageDto,
+	ChatPrivacySettings,
 	ChatResult,
 	ChatThreadDto,
 	ChatThreadWithMessagesDto,
@@ -20,6 +21,8 @@ import {
 	json,
 	messageCountParam,
 	NOT_A_MEMBER_RESPONSE,
+	PartyInviteSettings,
+	PartyThread,
 	RenameThreadRequest,
 	SendMessageRequest,
 	SendMessageResponse,
@@ -85,13 +88,33 @@ async function formMessageCount(c: Context<App>, fallback: number): Promise<numb
 }
 
 /**
- * What a chat action reports back to the client alongside its payload — the reference's
- * ChatResult. Only success and "bad arguments" are reachable here.
+ * What a chat action reports back to the client — the reference's ChatResult, usually
+ * alongside a payload but sometimes (the DM privacy check) as the whole body. Only these
+ * four of the enum's twenty values are reachable here; `ChatResult` in openapi.ts records
+ * the rest, including the 15/16 privacy refusals nothing on this server can answer.
  */
 const CHAT_SUCCESS = 0
 const CHAT_INVALID_ARGUMENTS = 1
 const CHAT_MEMBERSHIP_NOT_FOUND = 3
 const CHAT_PLAYER_ALREADY_ON_THREAD = 4
+
+/**
+ * How long a party invite link stays usable, in minutes (`GET /settings/partyinvite`).
+ * The reference's value. Nothing here stores invite links, so this is what the client
+ * counts down with rather than a lifetime this server enforces.
+ */
+const PARTY_INVITE_LIFETIME_MINUTES = 60
+
+/**
+ * Who may start a chat with a player — the client's `ChatPrivacy` enum, served numerically
+ * like every other enum on this build. `Friends` is what a fresh account reports, and what
+ * every account reports here: nothing stores a per-player setting yet.
+ */
+const ChatPrivacy = {
+	Friends: 0,
+	Favorites: 1,
+	NoOne: 2,
+} as const
 
 /** The hub is a single global Durable Object instance, as every worker addresses it. */
 const HUB_INSTANCE = 'global'
@@ -423,6 +446,166 @@ const app = new Hono<App>()
 				chatThread: thread,
 				chatResult: posted === null ? CHAT_INVALID_ARGUMENTS : CHAT_SUCCESS,
 			})
+		}
+	)
+
+	// How long a party invite link lives. Server-side config the client reads to stamp its
+	// own invite links, not per-player state — one hour, which is the reference's value.
+	//
+	// A bare single-key object: `{ InviteLinkLifetimeInMinutes }` and nothing else, no
+	// `{ success, error, value }` envelope. Nothing here expires links (there is no invite
+	// link store), so this is the number the client shows and counts down with rather than
+	// a lifetime this server enforces.
+	.get(
+		'/settings/partyinvite',
+		describeRoute({
+			tags: ['Threads'],
+			summary: 'Party invite settings',
+			description: [
+				'How long a party invite link stays usable, in minutes, as a bare single-key object —',
+				'no envelope. 60 here, the reference’s value. Nothing on this server stores or expires',
+				'invite links, so the client is the only thing that acts on it.',
+			].join(' '),
+			security: AUTHED,
+			responses: {
+				200: json(PartyInviteSettings, 'The invite-link lifetime'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return c.body(null, 401)
+			return c.json({ InviteLinkLifetimeInMinutes: PARTY_INVITE_LIFETIME_MINUTES })
+		}
+	)
+
+	// The party thread (`/thread/party?maxCount=1&mode=0`). STUB: the response shape is
+	// unknown — it hasn't been observed off a live client — so this answers an empty
+	// object, which parses as "no party" rather than failing the client's deserializer the
+	// way a 404 or a bare array would. `maxCount` and `mode` are accepted and ignored.
+	// Replace the body once the real shape is captured.
+	.get(
+		'/thread/party',
+		describeRoute({
+			tags: ['Threads'],
+			summary: 'The caller’s party thread (stub)',
+			description: [
+				'STUB — the response shape has not been observed off a live client, so this answers an',
+				'empty object `{}`, which parses as "no party" rather than failing the client’s',
+				'deserializer the way a 404 or a bare array would. `maxCount` and `mode` are accepted and',
+				'ignored. Replace the body once the real shape is captured.',
+			].join(' '),
+			security: AUTHED,
+			parameters: [
+				{
+					name: 'maxCount',
+					in: 'query',
+					required: false,
+					description: 'Page size the client sends (1). Ignored by the stub',
+					schema: { type: 'integer' },
+				},
+				{
+					name: 'mode',
+					in: 'query',
+					required: false,
+					description: 'Unknown mode selector the client sends (0). Ignored by the stub',
+					schema: { type: 'integer' },
+				},
+			],
+			responses: {
+				200: json(PartyThread, 'Always `{}` — the stub carries no party'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return c.body(null, 401)
+			return c.json({})
+		}
+	)
+
+	// The caller's chat privacy settings — who may DM them, and who may pull them into a
+	// group chat. Both report `Friends`, which is the reference's default and the safer of
+	// the two directions to be wrong in: it describes a player as more private than the
+	// server actually enforces, rather than less.
+	//
+	// REPORTED, NOT ENFORCED. Nothing here stores a per-player setting or checks one — the
+	// DM check below allows every message regardless — so this is what the client renders on
+	// its privacy screen. Wire the two together if this ever becomes real: a screen that says
+	// "Friends" while anyone can message you is worse than one that says nothing.
+	//
+	// `playerId` comes off the TOKEN, not a query param: the answer is about the caller.
+	.get(
+		'/thread/chatPrivacySetting',
+		describeRoute({
+			tags: ['Threads'],
+			summary: 'The caller’s chat privacy settings',
+			description: [
+				'Who may direct-message the caller and who may add them to a group chat, as the',
+				'`ChatPrivacy` enum by NUMBER (0 Friends · 1 Favorites · 2 NoOne). Both are `Friends`',
+				'here — nothing stores a per-player setting — and nothing enforces them either: the',
+				'DM check allows every message. `playerId` is the caller, read from the token.',
+			].join(' '),
+			security: AUTHED,
+			responses: {
+				200: json(ChatPrivacySettings, 'The caller’s settings — always Friends/Friends'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return c.body(null, 401)
+			return c.json({
+				playerId: id,
+				directMessagePrivacySetting: ChatPrivacy.Friends,
+				groupChatPrivacySetting: ChatPrivacy.Friends,
+			})
+		}
+	)
+
+	// May the caller DM this player? Asked before the client opens a new direct message, so
+	// it can grey the button out rather than let the send fail. Always 0 (Success): nothing
+	// here stores the who-can-message-me privacy setting the name refers to, so there is no
+	// setting to refuse on.
+	//
+	// The body is a bare ChatResult INTEGER — the client instantiates its response wrapper
+	// with the ChatResult enum, not a bool, so `true` decodes as nothing. The refusals this
+	// endpoint would otherwise answer are 15 (blocked by the caller's own privacy setting)
+	// and 16 (blocked by the other player's); everything else in the enum belongs to the
+	// thread actions. It is served numerically: this client build carries no by-name enum
+	// formatter.
+	.get(
+		'/thread/checkCanSendDirectMessageWithPrivacySetting',
+		describeRoute({
+			tags: ['Threads'],
+			summary: 'May the caller DM this player?',
+			description: [
+				'Whether the caller may open a direct message with `receivingPlayerId`, as a bare',
+				'ChatResult integer — 0 (Success) means allowed; a real refusal would be 15 (the',
+				'caller’s own privacy setting) or 16 (the other player’s). Always 0 here: this server',
+				'stores no who-can-message-me privacy setting, so there is nothing to refuse on.',
+				'`receivingPlayerId` is accepted and ignored; the answer is the same for every player,',
+				'and the client asks again for the next one.',
+			].join(' '),
+			security: AUTHED,
+			parameters: [
+				{
+					name: 'receivingPlayerId',
+					in: 'query',
+					required: false,
+					description: 'The player the caller wants to message. Accepted and ignored.',
+					schema: { type: 'integer' },
+				},
+			],
+			responses: {
+				200: json(ChatResult, 'Always 0 (Success) — the DM is allowed'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return c.body(null, 401)
+			return c.json(CHAT_SUCCESS)
 		}
 	)
 

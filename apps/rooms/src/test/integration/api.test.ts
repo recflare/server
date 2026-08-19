@@ -34,10 +34,22 @@ function b64url(input: ArrayBuffer | string): string {
 }
 // `roles` mints the `role` claim the auth worker stamps from an account's flags; left
 // off, the token carries none — what a plain player's looks like to the role gates.
-async function bearer(sub: string, roles?: string[]): Promise<Record<string, string>> {
+async function bearer(
+	sub: string,
+	roles?: string[],
+	// The client build the token was minted for (`rn.ver`), which is what
+	// `/featuredrooms/current` gates on. Omitted by default, like a token from a grant that
+	// posted no `ver`.
+	version?: string
+): Promise<Record<string, string>> {
 	const now = Math.floor(Date.now() / 1000)
 	const signingInput = `${b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))}.${b64url(
-		JSON.stringify({ sub, exp: now + 3600, ...(roles && { role: roles }) })
+		JSON.stringify({
+			sub,
+			exp: now + 3600,
+			...(roles && { role: roles }),
+			...(version && { 'rn.ver': version }),
+		})
 	)}`
 	const key = await crypto.subtle.importKey(
 		'raw',
@@ -89,6 +101,18 @@ beforeAll(async () => {
 	// Seed each room and split its subrooms into the subroom table (mirrors 0007's backfill).
 	for (const r of importRooms) await seedRoomWithSubRooms(env.DB, r as Record<string, unknown>)
 
+	// Accounts table (owned by the auth worker) — provisioning a dorm reads the username
+	// to name the room. Seed the player `dormroom/me` provisions a fresh dorm for.
+	await env.DB.prepare(
+		`CREATE TABLE IF NOT EXISTS account (
+			data TEXT NOT NULL,
+			account_id INTEGER GENERATED ALWAYS AS (json_extract(data, '$.accountId')) VIRTUAL
+		)`
+	).run()
+	await env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
+		.bind(JSON.stringify({ accountId: 999, username: 'Dormer' }))
+		.run()
+
 	// Relationship table (owned by the api worker) — `visitedby/:playerId` reads it to
 	// check the caller is a friend of the player whose history they're asking for.
 	await env.DB.prepare(
@@ -129,6 +153,44 @@ describe('rooms endpoints', () => {
 		expect(body.SubRooms[0].UnitySceneId).toBe('76d98498-60a1-430c-ab76-b54a29b7a163')
 	})
 
+	// Neither is stored — the seed blobs predate both keys — so they are defaulted on read.
+	// The client's room DTO always carries them, and an ABSENT key is not the same as a
+	// zero/null one to its parser.
+	it('GET /rooms/:id carries BoostCount and CurrentSnapshotId', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/rooms/1`)
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as Record<string, unknown>
+		expect(body).toHaveProperty('BoostCount', 0)
+		expect(body).toHaveProperty('CurrentSnapshotId', null)
+	})
+
+	// Pinned whole: these are the numbers the client's publish UI counts against, and
+	// `error: null` / `error_id` is a different envelope from the room mutations' — a
+	// "cleanup" that unified the two would break the client silently.
+	it('GET /publishState/configs returns the republish limits', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/publishState/configs`)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({
+			value: {
+				UpdateMaxCount: 3,
+				UpdateRollingWindowInDays: 365,
+				UpdateExpirationInDays: 30,
+				UpdateCooldownInDays: 45,
+			},
+			success: true,
+			error_id: null,
+			error: null,
+		})
+	})
+
+	// Stub. Registered (not 404) matters more than the body: the client asks for this on
+	// room entry, and an unregistered path stalls the load rather than erroring visibly.
+	it('GET /rooms/:id/experience/player returns [] for any room', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/rooms/92/experience/player`)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
+	})
+
 	it('GET /rooms/:id 404s for a room not in D1', async () => {
 		const res = await SELF.fetch(`${ORIGIN}/rooms/99999`)
 		expect(res.status).toBe(404)
@@ -163,6 +225,62 @@ describe('rooms endpoints', () => {
 		expect(body.map((r) => r.Name)).toEqual(['RecCenter'])
 	})
 
+	it('POST /rooms/bulk takes repeated id fields in a form body', async () => {
+		const post = async (body: string) =>
+			SELF.fetch(`${ORIGIN}/rooms/bulk`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+				body,
+			})
+
+		// The client's form: one `id` per room, plus the filter. An id that isn't in D1 is
+		// simply absent, so the answer can be shorter than the request.
+		const res = await post('id=1&id=2&id=999999&excludePrivateRooms=False')
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as Array<{ RoomId: number; Name: string }>
+		expect(body.map((r) => r.Name).sort()).toEqual(['DormRoom', 'RecCenter'])
+
+		// Comma-separated values inside an `id` work too, as they do on the GET.
+		const commas = (await (await post('id=1,2')).json()) as Array<{ Name: string }>
+		expect(commas.map((r) => r.Name).sort()).toEqual(['DormRoom', 'RecCenter'])
+
+		// `excludePrivateRooms=True` drops the non-public rooms — the dorm here.
+		const publicOnly = (await (await post('id=1&id=2&excludePrivateRooms=True')).json()) as Array<{
+			Name: string
+			Accessibility: number
+		}>
+		expect(publicOnly.map((r) => r.Name)).toEqual(['RecCenter'])
+		expect(publicOnly.every((r) => r.Accessibility === 1)).toBe(true)
+
+		// No ids is an empty array, not a 400 — unlike the GET, which needs an `id` or `name`.
+		expect(await (await post('excludePrivateRooms=False')).json()).toEqual([])
+
+		// D1 binds one parameter per id and caps a query at 100, so a longer list is refused
+		// rather than split — a caller asking about more than a hundred rooms at once has lost
+		// track of what it is rendering.
+		const idList = (n: number) => Array.from({ length: n }, (_, i) => 500000 + i)
+		expect(
+			(
+				await post(
+					idList(100)
+						.map((id) => `id=${id}`)
+						.join('&')
+				)
+			).status
+		).toBe(200)
+		const overCap = await post(
+			idList(101)
+				.map((id) => `id=${id}`)
+				.join('&')
+		)
+		expect(overCap.status).toBe(400)
+		expect(await overCap.json()).toBe('At most 100 room ids may be looked up at once')
+
+		// The GET form has the same cap, counting the ids inside its comma-separated `id`.
+		const overCapGet = await SELF.fetch(`${ORIGIN}/rooms/bulk?id=${idList(101).join(',')}`)
+		expect(overCapGet.status).toBe(400)
+	})
+
 	it('GET /rooms/ownedby/me is auth-gated and scoped to the caller', async () => {
 		// No token → 401, no stub-account fallback (would otherwise leak account 1).
 		const noAuth = await SELF.fetch(`${ORIGIN}/rooms/ownedby/me`)
@@ -179,6 +297,49 @@ describe('rooms endpoints', () => {
 			await SELF.fetch(`${ORIGIN}/rooms/ownedby/me`, { headers: await bearer('999') })
 		).json()) as unknown[]
 		expect(other).toEqual([])
+	})
+
+	it('GET /dormroom/me serves the caller’s dorm id, not the room', async () => {
+		// No token → 401. Without this the endpoint would hand out (and provision) a dorm
+		// for whichever account a fallback picked.
+		const noAuth = await SELF.fetch(`${ORIGIN}/dormroom/me`)
+		expect(noAuth.status).toBe(401)
+
+		// Account 1 owns the seeded dorm (RoomId 1). The body is that id ALONE — a bare
+		// JSON number, not the room and not an object wrapping the id.
+		const res = await SELF.fetch(`${ORIGIN}/dormroom/me`, { headers: await bearer('1') })
+		expect(res.status).toBe(200)
+		expect(await res.json()).toBe(1)
+
+		// It is the id of a room that really is the caller's dorm — the caller fetches the
+		// room itself from /rooms/{id}.
+		const room = (await (await SELF.fetch(`${ORIGIN}/rooms/1`)).json()) as {
+			RoomId: number
+			IsDorm: boolean
+			CreatorAccountId: number
+		}
+		expect(room).toMatchObject({ RoomId: 1, IsDorm: true, CreatorAccountId: 1 })
+
+		// A player who has never entered their dorm gets one provisioned rather than a
+		// 404 — the get-or-create still happens, only the payload shrank. And it belongs
+		// to THEM, not the template dorm they were cloned from.
+		const fresh = (await (
+			await SELF.fetch(`${ORIGIN}/dormroom/me`, { headers: await bearer('999') })
+		).json()) as number
+		expect(typeof fresh).toBe('number')
+		expect(fresh).not.toBe(1)
+
+		const provisioned = (await (await SELF.fetch(`${ORIGIN}/rooms/${fresh}`)).json()) as {
+			IsDorm: boolean
+			CreatorAccountId: number
+		}
+		expect(provisioned).toMatchObject({ IsDorm: true, CreatorAccountId: 999 })
+
+		// Idempotent: the second call is the same dorm, not a second one.
+		const again = (await (
+			await SELF.fetch(`${ORIGIN}/dormroom/me`, { headers: await bearer('999') })
+		).json()) as number
+		expect(again).toBe(fresh)
 	})
 
 	// The website's "My rooms" list is a browser calling this worker from another origin,
@@ -246,6 +407,102 @@ describe('rooms endpoints', () => {
 		expect(publicList.some((r) => r.Name === 'MyUnpublishedRoom')).toBe(false)
 	})
 
+	it('GET /rooms/contributedby/me lists rooms the caller has a role in, not their own', async () => {
+		const seed = (data: Record<string, unknown>) =>
+			env.DB.prepare('INSERT INTO room (data) VALUES (?1)').bind(JSON.stringify(data)).run()
+
+		// A room somebody else made, where 820 is a co-owner...
+		await seed({
+			RoomId: 30401,
+			Name: 'ContribCoOwner',
+			CreatorAccountId: 821,
+			Accessibility: 1,
+			SubRooms: [],
+			Roles: [
+				{ AccountId: 821, Role: 255 },
+				{ AccountId: 820, Role: 30 },
+			],
+		})
+		// ...one where they're only a host (every tier counts, not just owner-level)...
+		await seed({
+			RoomId: 30402,
+			Name: 'ContribHost',
+			CreatorAccountId: 821,
+			// Unpublished: a contributor works on the room before it goes public, so
+			// accessibility is not filtered here.
+			Accessibility: 0,
+			SubRooms: [],
+			Roles: [{ AccountId: 820, Role: 10 }],
+		})
+		// ...one they created themselves, whose Roles name them as Creator...
+		await seed({
+			RoomId: 30403,
+			Name: 'ContribOwn',
+			CreatorAccountId: 820,
+			Accessibility: 1,
+			SubRooms: [],
+			Roles: [{ AccountId: 820, Role: 255 }],
+		})
+		// ...one they have nothing to do with, and one with no Roles key at all (the older
+		// seeded rooms have none — json_each must drop them, not error).
+		await seed({
+			RoomId: 30404,
+			Name: 'ContribOther',
+			CreatorAccountId: 821,
+			Accessibility: 1,
+			SubRooms: [],
+			Roles: [{ AccountId: 822, Role: 30 }],
+		})
+		await seed({ RoomId: 30405, Name: 'ContribNoRoles', CreatorAccountId: 821, SubRooms: [] })
+
+		const res = await SELF.fetch(`${ORIGIN}/rooms/contributedby/me`, {
+			headers: await bearer('820'),
+		})
+		expect(res.status).toBe(200)
+		const rooms = (await res.json()) as Array<{ RoomId: number; Name: string }>
+		// A bare array of the canonical room DTO — no envelope, no paging wrapper.
+		expect(Array.isArray(rooms)).toBe(true)
+		expect(rooms.map((r) => r.RoomId).sort((a, b) => a - b)).toEqual([30401, 30402])
+		// The caller's OWN room is excluded, or this would just repeat createdby/me.
+		expect(rooms.some((r) => r.RoomId === 30403)).toBe(false)
+		expect(rooms[0]).toMatchObject({ Name: expect.any(String), Accessibility: expect.any(Number) })
+
+		// A player who contributes to nothing gets an empty array, not a 404.
+		const none = await SELF.fetch(`${ORIGIN}/rooms/contributedby/me`, {
+			headers: await bearer('829'),
+		})
+		expect(await none.json()).toEqual([])
+
+		// Auth-scoped: `me` is the token, so no token is a 401.
+		expect((await SELF.fetch(`${ORIGIN}/rooms/contributedby/me`)).status).toBe(401)
+
+		// The DB is shared across this file, and these are the only player-made public rooms
+		// in it — leaving them behind changes what the `new`/`community` room feeds serve.
+		await env.DB.prepare('DELETE FROM room WHERE room_id BETWEEN 30401 AND 30405').run()
+	})
+
+	it('GET /rooms/:roomId/experience serves the fixed XP settings, no auth', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/rooms/2/experience`)
+		expect(res.status).toBe(200)
+		// A bare two-key object — no `{ success, error, value }` envelope around it. Disabled:
+		// no room awards XP here, and DailyLimit is the cap that would apply if one did.
+		expect(await res.json()).toEqual({ Enabled: false, DailyLimit: 1000 })
+
+		// Nothing is stored per room, so every room answers the same — including one that
+		// doesn't exist, which is never looked up.
+		expect(await (await SELF.fetch(`${ORIGIN}/rooms/77/experience`)).json()).toEqual({
+			Enabled: false,
+			DailyLimit: 1000,
+		})
+		expect(await (await SELF.fetch(`${ORIGIN}/rooms/99999/experience`)).json()).toEqual({
+			Enabled: false,
+			DailyLimit: 1000,
+		})
+
+		// The id is digits-only, like the other room-scoped routes.
+		expect((await SELF.fetch(`${ORIGIN}/rooms/abc/experience`)).status).toBe(404)
+	})
+
 	it('GET /rooms/ownedby/:id returns an account public rooms (no auth)', async () => {
 		const res = await SELF.fetch(`${ORIGIN}/rooms/ownedby/1`)
 		expect(res.status).toBe(200)
@@ -274,6 +531,46 @@ describe('rooms endpoints', () => {
 		const body = (await res.json()) as { Results: Array<{ Name: string }>; TotalResults: number }
 		expect(body.TotalResults).toBeGreaterThanOrEqual(1)
 		expect(body.Results.some((r) => r.Name === 'RecCenter')).toBe(true)
+	})
+
+	it('GET /rooms/autocomplete_search suggests names and tags as plain strings', async () => {
+		const suggest = async (query: string, extra = '') =>
+			(await (
+				await SELF.fetch(
+					`${ORIGIN}/rooms/autocomplete_search?query=${encodeURIComponent(query)}${extra}`
+				)
+			).json()) as string[]
+
+		// A bare array of STRINGS — not rooms, not an envelope.
+		const rec = await suggest('rec', '&take=4&searchSessionId=abc-123')
+		expect(Array.isArray(rec)).toBe(true)
+		for (const s of rec) expect(typeof s).toBe('string')
+		expect(rec).toContain('RecCenter')
+		expect(rec.length).toBeLessThanOrEqual(4)
+
+		// Every suggestion finds something when submitted — the point of the endpoint.
+		for (const term of rec) {
+			const found = (await (
+				await SELF.fetch(`${ORIGIN}/rooms/search?query=${encodeURIComponent(term)}`)
+			).json()) as { TotalResults: number }
+			expect(found.TotalResults, `"${term}" must find rooms`).toBeGreaterThan(0)
+		}
+
+		// Tags are suggested with their `#`, and a `#` query suggests tags only.
+		const tags = await suggest('#rro')
+		expect(tags).toEqual(['#rro'])
+		expect(tags.every((t) => t.startsWith('#'))).toBe(true)
+
+		// `take` caps the list; an empty query suggests nothing rather than everything.
+		expect((await suggest('e', '&take=2')).length).toBeLessThanOrEqual(2)
+		expect(await suggest('')).toEqual([])
+		expect(await suggest('zzzznothingmatchesthis')).toEqual([])
+
+		// Deterministic: the same query suggests the same things in the same order.
+		expect(await suggest('rec')).toEqual(rec)
+
+		// Dorms are excluded, exactly as they are from search.
+		expect(await suggest('dormroom')).toEqual([])
 	})
 
 	it('GET /rooms/search excludes dorms and respects pagination shape', async () => {
@@ -580,9 +877,7 @@ describe('rooms endpoints', () => {
 	it('GET /rooms/hot?tag=community serves rooms the Coach account did not create', async () => {
 		type Feed = { Results: Array<{ Name: string }>; TotalResults: number }
 		const feed = async (): Promise<Feed> =>
-			(await (
-				await SELF.fetch(`${ORIGIN}/rooms/hot?tag=community&skip=0&take=100`)
-			).json()) as Feed
+			(await (await SELF.fetch(`${ORIGIN}/rooms/hot?tag=community&skip=0&take=100`)).json()) as Feed
 		const names = async (): Promise<string[]> => (await feed()).Results.map((r) => r.Name)
 
 		// No room carries a `community` tag, and every seeded room belongs to Coach
@@ -672,13 +967,13 @@ describe('rooms endpoints', () => {
 		expect(body.length).toBeLessThanOrEqual(3)
 	})
 
-	// Skipped: the endpoint is disabled. Serving it broke the client — the other room
-	// listings started failing with NREs, apparently because the featured-room load
-	// corrupts the client's room cache — so the route is registered under an `XXX`
-	// prefix (see rooms.app.ts) and this path 404s. The handler and its test are kept
-	// intact for whenever the cause is found; un-prefix the route to re-enable both.
-	it.skip('GET /featuredrooms/current returns a featured-room group of public rooms', async () => {
-		const res = await SELF.fetch(`${ORIGIN}/featuredrooms/current`)
+	// Served only to the client builds that render it — the 2023 client's other room
+	// listings start failing with NREs when it gets this payload, which is why the route
+	// was parked entirely for a while (see FEATURED_ROOMS_VERSIONS in rooms.app.ts).
+	it('GET /featuredrooms/current serves the group to a supported client build', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/featuredrooms/current`, {
+			headers: await bearer('1', undefined, '20250718.01'),
+		})
 		expect(res.status).toBe(200)
 		const body = (await res.json()) as {
 			FeaturedRoomGroupId: number
@@ -694,6 +989,20 @@ describe('rooms endpoints', () => {
 		expect(body.Rooms.every((r) => typeof r.RoomName === 'string')).toBe(true)
 		// The dorm (RoomId 1) is non-public, so it's never featured.
 		expect(body.Rooms.some((r) => r.RoomId === 1)).toBe(false)
+	})
+
+	it('GET /featuredrooms/current withholds the group from other client builds', async () => {
+		// The 2023 build gets the 404 it got while the route was parked — the state in which
+		// its room listings work. Same for a token with no `rn.ver` at all.
+		for (const version of ['20230414', '20231207', undefined]) {
+			const res = await SELF.fetch(`${ORIGIN}/featuredrooms/current`, {
+				headers: await bearer('1', undefined, version),
+			})
+			expect(res.status, `build ${version}`).toBe(404)
+		}
+
+		// And no token at all is a 401, not a 404: the build is read off the token.
+		expect((await SELF.fetch(`${ORIGIN}/featuredrooms/current`)).status).toBe(401)
 	})
 
 	it('GET /rooms/:id/similar returns { Results, TotalResults } of tag-sharing rooms (excluding self)', async () => {
@@ -1182,6 +1491,46 @@ describe('rooms endpoints', () => {
 		})
 		// Nothing was written by any of the refusals.
 		expect(await bansOf(2)).toHaveLength(2)
+	})
+
+	it('GET /Room_server/rooms/:id/bans/:playerId/isBanned answers the real ban state', async () => {
+		const isBanned = async (roomId: number, playerId: number, sub = '300') =>
+			SELF.fetch(`${ORIGIN}/Room_server/rooms/${roomId}/bans/${playerId}/isBanned`, {
+				headers: await bearer(sub),
+			})
+
+		// Auth-gated, but any authenticated caller may ask — a ban is not a secret from the
+		// player it stops.
+		expect((await SELF.fetch(`${ORIGIN}/Room_server/rooms/2/bans/205/isBanned`)).status).toBe(401)
+
+		// Nobody is banned from room 3.
+		const clean = await isBanned(3, 4242)
+		expect(clean.status).toBe(200)
+		// `success` says the CHECK ran; `value` is the answer. Note `error_id` is present and
+		// `error` is null — not the room mutations' `{ success, error, value }` with `""`.
+		expect(await clean.json()).toEqual({
+			success: true,
+			error: null,
+			error_id: null,
+			value: false,
+		})
+
+		// Ban someone from room 3, and the same call now says so.
+		await env.DB.prepare(
+			'INSERT INTO room_ban (room_id, banned_player_id, ban_mask, banned_by_account_id, created_at)' +
+				" VALUES (?1, ?2, 0, 1, '2026-01-01T00:00:00Z')"
+		)
+			.bind(3, 4242)
+			.run()
+		expect(await (await isBanned(3, 4242)).json()).toMatchObject({ success: true, value: true })
+
+		// The ban is per (room, player): another room and another player are unaffected.
+		expect(await (await isBanned(2, 4242)).json()).toMatchObject({ value: false })
+		expect(await (await isBanned(3, 4243)).json()).toMatchObject({ value: false })
+
+		await env.DB.prepare('DELETE FROM room_ban WHERE room_id = ?1 AND banned_player_id = ?2')
+			.bind(3, 4242)
+			.run()
 	})
 
 	it('POST /rooms/:id/bans kicks the banned player', async () => {
@@ -2826,6 +3175,80 @@ describe('rooms endpoints', () => {
 		await clearPresence(999)
 	})
 
+	it('GET /rooms/:id/subrooms/:sid/saves/no_unity_assets lists the same history, lighter', async () => {
+		const get = async (path: string, sub?: string) =>
+			SELF.fetch(`${ORIGIN}${path}`, sub === undefined ? {} : { headers: await bearer(sub) })
+		const light = '/rooms/2/subrooms/2/saves/no_unity_assets'
+
+		const res = await get(light, '1')
+		expect(res.status).toBe(200)
+		const page = (await res.json()) as {
+			Results: Array<Record<string, unknown>>
+			TotalResults: number
+			TotalCount: number
+		}
+		// The same history the full list serves — same rows, same order, same counts.
+		const full = (await (await get('/rooms/2/subrooms/2/saves', '1')).json()) as {
+			Results: Array<{ SubRoomDataSaveId: number; DataBlob: string }>
+			TotalResults: number
+		}
+		expect(page.TotalResults).toBe(full.TotalResults)
+		expect(page.TotalCount).toBe(page.TotalResults)
+		expect(page.Results.map((r) => r.SubRoomDataSaveId)).toEqual(
+			full.Results.map((r) => r.SubRoomDataSaveId)
+		)
+
+		// The lighter row: the Unity-asset PAYLOADS are gone (and `Tags` with them), the asset
+		// IDs stay, and `UnityAssetId` is present-and-null rather than omitted.
+		const row = page.Results[0]!
+		expect(Object.keys(row)).toEqual([
+			'SubRoomDataSaveId',
+			'SubRoomId',
+			'UnityAssetId',
+			'ReferencedUnityAssetIds',
+			'DataBlob',
+			'DataBlobHash',
+			'PersistenceVersion',
+			'OMVersion',
+			'SavedByAccountId',
+			'SavedOnPlatform',
+			'SavedOnDeviceClass',
+			'Description',
+			'ModerationState',
+			'CreatedAt',
+			'UgcSubVersion',
+		])
+		expect(row.UnityAssetId).toBe(null)
+		expect(row.ReferencedUnityAssetIds).toEqual([])
+		expect(row.SubRoomId).toBe(2)
+		expect(row.DataBlob).toBe(full.Results[0]!.DataBlob)
+
+		// skip/take page it the same way.
+		const paged = (await (await get(`${light}?skip=1&take=1`, '1')).json()) as {
+			Results: Array<{ SubRoomDataSaveId: number }>
+			TotalResults: number
+		}
+		expect(paged.Results).toHaveLength(1)
+		expect(paged.Results[0]!.SubRoomDataSaveId).toBe(full.Results[1]!.SubRoomDataSaveId)
+		expect(paged.TotalResults).toBe(full.TotalResults)
+
+		// A never-saved subroom pages empty rather than 404ing, as the full list does.
+		expect(await (await get('/rooms/3/subrooms/3/saves/no_unity_assets', '1')).json()).toEqual({
+			Results: [],
+			TotalResults: 0,
+			TotalCount: 0,
+		})
+
+		// Same gate as the list it mirrors — it exposes the same unpublished saves.
+		expect((await get(light)).status).toBe(401)
+		expect((await get(light, '999')).status).toBe(403)
+		expect((await get(light, '2')).status).toBe(403)
+		await putInRoom(999, 2)
+		expect((await get(light, '999')).status).toBe(200)
+		await clearPresence(999)
+		expect((await get(light, '999')).status).toBe(403)
+	})
+
 	it('GET /rooms/:id/subrooms/:sid/saves/:saveId is the detail behind a history row', async () => {
 		const get = async (path: string, sub?: string) =>
 			SELF.fetch(`${ORIGIN}${path}`, sub === undefined ? {} : { headers: await bearer(sub) })
@@ -2910,11 +3333,16 @@ describe('rooms endpoints', () => {
 			'DELETE /rooms/{roomId}/interactionby/me/favorite',
 			'DELETE /rooms/{roomId}/subrooms/{subRoomId}',
 			'GET /',
-			'GET /XXXfeaturedrooms/current',
+			'GET /Room_server/rooms/{roomId}/bans/{playerId}/isBanned',
+			'GET /dormroom/me',
+			'GET /featuredrooms/current',
 			'GET /photon_access_token',
+			'GET /publishState/configs',
 			'GET /rooms',
+			'GET /rooms/autocomplete_search',
 			'GET /rooms/base',
 			'GET /rooms/bulk',
+			'GET /rooms/contributedby/me',
 			'GET /rooms/createdby/me',
 			'GET /rooms/favoritedby/me',
 			'GET /rooms/hot',
@@ -2926,12 +3354,16 @@ describe('rooms endpoints', () => {
 			'GET /rooms/visitedby/{playerId}',
 			'GET /rooms/{roomId}',
 			'GET /rooms/{roomId}/bans',
+			'GET /rooms/{roomId}/experience',
+			'GET /rooms/{roomId}/experience/player',
 			'GET /rooms/{roomId}/interactionby/me',
 			'GET /rooms/{roomId}/playerdata/me',
 			'GET /rooms/{roomId}/similar',
 			'GET /rooms/{roomId}/subrooms/{subRoomId}/saves',
+			'GET /rooms/{roomId}/subrooms/{subRoomId}/saves/no_unity_assets',
 			'GET /rooms/{roomId}/subrooms/{subRoomId}/saves/{saveId}',
 			'GET /roomserver/rooms/createdby/me',
+			'POST /rooms/bulk',
 			'POST /rooms/{roomId}/bans',
 			'POST /rooms/{roomId}/clone',
 			'POST /rooms/{roomId}/subrooms',

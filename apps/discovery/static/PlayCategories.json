@@ -1,0 +1,42 @@
+[
+   {
+      "displayMetadata" : "{\"DisplayTitle\":\"Compete\",\"imageName\": \"roomCatSelect_pvp.jpg\"}",
+      "id" : "pvp_search_roomcategory",
+      "sectionSubType" : "pvp_search",
+      "sectionType" : 11,
+      "source" : "ServerSearch",
+      "sourceMetadata" : "PVP"
+   },
+   {
+      "displayMetadata" : "{\"DisplayTitle\":\"Fun with Friends\",\"imageName\": \"roomCatSelect_roomsWeLove.jpg\"}",
+      "id" : "rooms_friendshiprates",
+      "sectionSubType" : "roomcategories_friendshiprates",
+      "sectionType" : 11,
+      "source" : "PlaylistById",
+      "sourceMetadata" : "7732248245192312892"
+   },
+   {
+      "displayMetadata" : "{\"DisplayTitle\":\"Quest\",\"imageName\": \"roomCatSelect_quest.jpg\"}",
+      "id" : "quest_search_roomcategory",
+      "sectionSubType" : "quest",
+      "sectionType" : 11,
+      "source" : "ServerSearch",
+      "sourceMetadata" : "Quest"
+   },
+   {
+      "displayMetadata" : "{\"DisplayTitle\":\"Horror\",\"imageName\": \"roomCatSelect_horror.jpg\"}",
+      "id" : "horror_search_roomcategory",
+      "sectionSubType" : "horror",
+      "sectionType" : 11,
+      "source" : "ServerSearch",
+      "sourceMetadata" : "Horror"
+   },
+   {
+      "displayMetadata" : "{\"DisplayTitle\":\"Art\",\"imageName\": \"roomCatSelect_art.jpg\"}",
+      "id" : "art_search_roomcategory",
+      "sectionSubType" : "art",
+      "sectionType" : 11,
+      "source" : "ServerSearch",
+      "sourceMetadata" : "Art"
+   }
+]

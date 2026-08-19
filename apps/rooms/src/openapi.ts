@@ -104,7 +104,7 @@ export function stringQuery(name: string, description: string): OpenAPIV3_1.Para
 }
 
 /** An optional integer query parameter. */
-function intQuery(name: string, description: string): OpenAPIV3_1.ParameterObject {
+export function intQuery(name: string, description: string): OpenAPIV3_1.ParameterObject {
 	return { name, in: 'query', required: false, description, schema: { type: 'integer' } }
 }
 
@@ -294,6 +294,13 @@ export const RoomDto = z.object({
 	PublishedAt: z.string(),
 	BecameRRStudioRoomAt: z.string().nullable(),
 	Stats: RoomStatsDto,
+	BoostCount: z
+		.int()
+		.describe('Boosts on the room. Nothing grants boosts here, so always 0 — but present'),
+	CurrentSnapshotId: z
+		.int()
+		.nullable()
+		.describe('The room’s published snapshot. Nothing takes snapshots here, so always null'),
 	RankingContext: z.unknown().nullable(),
 	IsDorm: z.boolean().describe('Auto-provisioned personal room; excluded from every feed'),
 	IsPlacePlay: z.boolean(),
@@ -334,6 +341,35 @@ export const PagedRooms = z.object({
 })
 
 /**
+ * `GET /rooms/autocomplete_search` — the search box's suggestions: a bare array of plain
+ * STRINGS, not rooms and not an envelope. Each is a query the player can submit as-is; a
+ * tag suggestion carries its `#` so submitting it searches by tag.
+ */
+export const SearchSuggestions = z
+	.array(z.string())
+	.describe('Suggested search terms, best match first; empty when nothing matches')
+
+/**
+ * `GET /rooms/{roomId}/experience` — whether players earn XP in a room and how much of it
+ * counts in a day. A bare two-key object, no envelope.
+ *
+ * Nothing here meters per-room XP: progression is the `api` worker's, and it applies no
+ * room-scoped daily cap. So this is the config the client reads, not a limit this server
+ * enforces — the same answer for every room.
+ */
+export const RoomExperience = z.object({
+	Enabled: z.boolean().describe('Whether XP is earned in the room at all. Always false here'),
+	DailyLimit: z.int().describe('XP from this room that counts toward a player’s day'),
+})
+
+/**
+ * `GET /dormroom/me` — the dorm's `RoomId` as a BARE JSON number, not a room and not an
+ * envelope around one. The caller follows it with `GET /rooms/{roomId}` when it wants the
+ * room itself, so sending the whole DTO here was a payload nobody read.
+ */
+export const DormRoomId = z.int().describe('The caller’s dorm RoomId')
+
+/**
  * A room lookup result: the room, or `{}` when nothing matched. The by-id/by-name
  * lookups answer an empty object rather than a 404 — the client reads that as "no room".
  */
@@ -343,6 +379,25 @@ export const RoomLookup = z.union([RoomDto, z.object({})])
 export const MissingLookupParam = z
 	.string()
 	.describe("`\"Either 'id' or 'name' query parameter is required\"`")
+
+/**
+ * `GET /Room_server/rooms/{roomId}/bans/{playerId}/isBanned` — the ban check's envelope.
+ *
+ * NOT the `{ success, error, value }` the room mutations answer with: this one carries an
+ * `error_id` as well, and its `error` is NULL rather than the empty string those use. Same
+ * distinction the client's other envelopes draw, so don't unify them.
+ */
+export const IsBannedEnvelope = z.object({
+	success: z.literal(true).describe('The check ran; whether the player is banned is `value`'),
+	error: z.string().nullable().describe('Null — the check itself does not fail'),
+	error_id: z.string().nullable().describe('Null. Present as a key, unlike the room envelope'),
+	value: z.boolean().describe('Whether that player is banned from that room'),
+})
+
+/** The bare JSON string the bulk lookups answer when the id list is over the cap. */
+export const TooManyLookupIds = z
+	.string()
+	.describe('`"At most 100 room ids may be looked up at once"`')
 
 // ---- Interaction -----------------------------------------------------------
 
@@ -506,6 +561,19 @@ export const CloningRequest = z.object({
 })
 
 /**
+ * `POST /rooms/bulk` form body — the room ids to look up, as a REPEATED `id` field
+ * (`id=888&id=532&…`), one value per id. This is how the client asks for a whole room list
+ * at once (70-odd ids in the wild), which is more than belongs in a query string.
+ */
+export const BulkRoomsRequest = z.object({
+	id: z.string().describe('Repeated once per room id; each value may also be comma-separated'),
+	excludePrivateRooms: z
+		.string()
+		.optional()
+		.describe('`True` drops rooms that are not publicly visible. Default `False`'),
+})
+
+/**
  * `PUT /rooms/{roomId}/restrictions` — the room's platform/movement support flags. Only
  * the fields actually posted are changed, and the names are matched case-insensitively.
  */
@@ -626,14 +694,51 @@ export const SaveSubRoomDataRequest = z.object({
 })
 
 /**
- * `GET /rooms/{roomId}/subrooms/{subRoomId}/saves` — the room-history page. We keep no
- * save history (a save overwrites the subroom's blob inline), so it's always empty.
+ * `GET /rooms/{roomId}/subrooms/{subRoomId}/saves` — the room-history page. Every save
+ * appends a `subroom_save` row rather than overwriting, so this is the subroom's full
+ * history, newest first, paged by `skip`/`take`.
  */
 export const SubRoomSavesPage = z.object({
-	Results: z
-		.array(SubRoomDataSaveDto)
-		.describe('At most one — the current save; we keep no history'),
-	TotalResults: z.int(),
+	Results: z.array(SubRoomDataSaveDto).describe('The page of saves, newest first'),
+	TotalResults: z.int().describe('The whole history’s size, not the page’s'),
+	TotalCount: z.int().describe('Same value as `TotalResults` — the two references disagree'),
+})
+
+/**
+ * One save as `GET …/subrooms/{subRoomId}/saves/no_unity_assets` lists it: the same
+ * PascalCase row as {@link SubRoomDataSaveDto} with the Unity-asset payloads left out —
+ * no `UnitySubAssets`, no `ReferencedUnityAssets`, no `Tags` — keeping only the asset
+ * IDENTIFIERS (`UnityAssetId`, `ReferencedUnityAssetIds`).
+ *
+ * The one field that differs rather than disappearing is `UnityAssetId`: always present
+ * here, null when the save carried none, where the full row emits it only when it did.
+ */
+export const SubRoomDataSaveNoUnityAssetsDto = z.object({
+	SubRoomDataSaveId: z.int(),
+	SubRoomId: z.int(),
+	UnityAssetId: z.string().nullable().describe('Null unless the save carried one'),
+	ReferencedUnityAssetIds: z.array(z.string()).describe('Always empty — we record none'),
+	DataBlob: z.string().describe('The scene-data key the client downloads from the CDN'),
+	DataBlobHash: z.string().nullable(),
+	PersistenceVersion: z.int(),
+	OMVersion: z.int(),
+	SavedByAccountId: z.int().nullable(),
+	SavedOnPlatform: z.int().describe('0 — the save request carries no platform'),
+	SavedOnDeviceClass: z.int().describe('0 — the save request carries no device class'),
+	Description: z.string().describe('The save comment; empty string when none'),
+	ModerationState: z.int(),
+	CreatedAt: z.string(),
+	UgcSubVersion: z.int(),
+})
+
+/**
+ * `GET /rooms/{roomId}/subrooms/{subRoomId}/saves/no_unity_assets` — the same history page
+ * as {@link SubRoomSavesPage}, carrying the lighter rows. A BARE paged wrapper: no
+ * `{ success, error, value }` envelope around it, unlike the room mutations.
+ */
+export const SubRoomSavesNoUnityAssetsPage = z.object({
+	Results: z.array(SubRoomDataSaveNoUnityAssetsDto).describe('The page of saves, newest first'),
+	TotalResults: z.int().describe('The whole history’s size, not the page’s'),
 	TotalCount: z.int().describe('Same value as `TotalResults` — the two references disagree'),
 })
 
@@ -674,4 +779,33 @@ export const PhotonAccessTokenDto = z.object({
 /** `GET /rooms/{roomId}/playerdata/me` — per-room player data. Nothing stores any yet. */
 export const PlayerDataDto = z.object({
 	Data: z.string().describe('Always empty — no per-room player data is stored'),
+})
+
+/**
+ * `GET /rooms/{roomId}/experience/player` — the caller's per-room experience/progression
+ * entries. Stubbed empty; the element shape is unknown until something stores one.
+ */
+export const RoomExperiencePlayer = z
+	.array(z.unknown())
+	.describe('Always empty — no per-room experience is tracked')
+
+/**
+ * `GET /publishState/configs` — the limits the client enforces on republishing a room:
+ * how many updates are allowed in the rolling window, and the cooldown/expiry around
+ * them. Served as fixed values from the reference server.
+ *
+ * The envelope is NOT the `{ success, error, value }` one the room mutations use: `error`
+ * is null rather than `""`, and there's an extra `error_id`. Kept as-is — the client
+ * reads both keys.
+ */
+export const PublishStateConfigsEnvelope = z.object({
+	value: z.object({
+		UpdateMaxCount: z.int().describe('Updates allowed per rolling window'),
+		UpdateRollingWindowInDays: z.int().describe('Length of that window, in days'),
+		UpdateExpirationInDays: z.int().describe('Days before an update expires'),
+		UpdateCooldownInDays: z.int().describe('Days between updates'),
+	}),
+	success: z.literal(true),
+	error_id: z.null(),
+	error: z.null(),
 })

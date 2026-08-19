@@ -4,6 +4,7 @@ import { describeRoute } from 'hono-openapi'
 import {
 	acceptFriendRequest,
 	addFriend,
+	countOnlineFriends,
 	getAccountsByIds,
 	getMutualFriendIds,
 	getRelationshipsForPlayer,
@@ -23,6 +24,7 @@ import {
 	AUTHED,
 	ErrorResponse,
 	form,
+	FriendOnlineCountResponse,
 	intQuery,
 	json,
 	JsonArray,
@@ -621,6 +623,37 @@ export const socialRoutes = new Hono<App>({ strict: false })
 			responses: { 200: json(JsonArray, 'An empty list') },
 		}),
 		(c) => c.json([])
+	)
+	// How many of the caller's friends are online — the friends panel's header count.
+	// Answered from the friend graph joined to live presence, so it agrees with the
+	// friends the panel then lists. Auth-gated: the count is the CALLER's own.
+	.post(
+		'/api/messages/v1/friendOnlineStatus',
+		describeRoute({
+			tags: ['Social'],
+			summary: 'How many friends are online',
+			description:
+				'The caller’s `Friend` relationships joined to live `presence`. Only unexpired ' +
+				'presence counts, and friends in the lobby (no room instance) count too — they ' +
+				'are signed in, just not in a room.\n\n' +
+				'A friend’s `statusVisibility` is not consulted: nothing else in the stack filters ' +
+				'presence on it, so hiding people here would disagree with the list the client ' +
+				'renders underneath the count.\n\n' +
+				'A POST that takes no body — the player is the bearer token.',
+			security: AUTHED,
+			responses: {
+				200: json(FriendOnlineCountResponse, 'The caller’s online-friend count'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+			return c.json({
+				success: true,
+				value: { FriendsOnlineCount: await countOnlineFriends(c.env.DB, id) },
+			})
+		}
 	)
 	.get(
 		'/api/messages/v1/favoriteFriendOnlineStatus',

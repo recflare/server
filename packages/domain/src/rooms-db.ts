@@ -312,6 +312,9 @@ export async function cloneRoom(
 		clonedSubRooms.push(await insertSubRoom(db, newRoomId, { ...sub, CreatorAccountId: accountId }))
 	}
 	cloned.SubRooms = clonedSubRooms
+	// Inherited from the (parsed) source in practice; defaulted here too so a clone is
+	// never the one room shape missing them.
+	attachRoomDtoDefaults(cloned)
 	return cloned
 }
 
@@ -870,12 +873,31 @@ interface RoomRow {
 const ROOM_COLUMNS = 'data, visits'
 
 /**
+ * Two keys on the client's room DTO that nothing here stores, defaulted on every read so
+ * the key is PRESENT rather than absent — the seed blobs and every room written since
+ * predate them, so they can't come from the data:
+ *
+ * - `BoostCount` — how many boosts the room is carrying. No boost feature exists here, so
+ *   it is 0 for every room.
+ * - `CurrentSnapshotId` — the room's published snapshot. Nothing takes snapshots, so it is
+ *   null, which is also what the reference serves for a room that has none.
+ *
+ * Defaulted rather than assigned, so a stored value wins if either is ever really written
+ * (a blob keeps whatever `serializeRoom` last put in it).
+ */
+function attachRoomDtoDefaults(room: Room): void {
+	room.BoostCount ??= 0
+	room.CurrentSnapshotId ??= null
+}
+
+/**
  * Parse a room row: the stored blob with the counters the columns own folded back in.
  * `visits` is a real column, so a room read straight from the DB carries the live count.
  */
 const parseRow = (row: RoomRow): Room => {
 	const room = JSON.parse(row.data) as Room
 	room.Stats = { ...storedStats(room.Stats), VisitCount: row.visits ?? 0 }
+	attachRoomDtoDefaults(room)
 	return room
 }
 
@@ -1476,7 +1498,14 @@ export async function getRoomByName(db: D1Database, name: string): Promise<Room 
 	)
 }
 
-/** Look up multiple rooms by RoomId. */
+/**
+ * Look up multiple rooms by RoomId.
+ *
+ * Every id is bound into one query, so the CALLER must keep the list within D1's cap of 100
+ * bound parameters — `/rooms/bulk` rejects a longer request with a 400 rather than have this
+ * split it, since a client asking about more than a hundred rooms at once is asking the
+ * wrong question.
+ */
 export async function getRoomsByIds(db: D1Database, ids: number[]): Promise<Room[]> {
 	if (ids.length === 0) return []
 	const placeholders = ids.map((_, i) => `?${i + 1}`).join(',')
@@ -1511,6 +1540,36 @@ export async function countRoomsByCreator(db: D1Database, accountId: number): Pr
 		.bind(accountId)
 		.first<{ n: number }>()
 	return row?.n ?? 0
+}
+
+/**
+ * Rooms an account CONTRIBUTES to: the ones whose `Roles` name them (Host, Moderator or
+ * CoOwner), minus the ones they created themselves.
+ *
+ * The creator is excluded deliberately. A room's `Roles` carries its creator too, so
+ * without that filter this list would repeat everything `getRoomsByCreator` already
+ * serves — and the client shows "rooms you own" and "rooms you contribute to" as two
+ * separate lists. Every role tier counts here, unlike {@link canManageRoom}'s
+ * owner-or-co-owner gate: this is "somebody gave you a job in their room", not "you may
+ * administer it".
+ *
+ * Roles live inside the room blob rather than in a table of their own, so the match is a
+ * `json_each` over `$.Roles`. A room with no `Roles` key (or a null one) simply yields no
+ * rows there rather than erroring, so it drops out of the list.
+ */
+export async function getContributedRooms(db: D1Database, accountId: number): Promise<Room[]> {
+	const { results } = await db
+		.prepare(
+			`SELECT ${ROOM_COLUMNS} FROM room
+			 WHERE creator_account_id IS NOT ?1
+			   AND EXISTS (
+			     SELECT 1 FROM json_each(room.data, '$.Roles') AS role
+			     WHERE json_extract(role.value, '$.AccountId') = ?1
+			   )`
+		)
+		.bind(accountId)
+		.all<RoomRow>()
+	return hydrateRooms(db, parseAll(results))
 }
 
 /**
@@ -1738,6 +1797,67 @@ export async function searchRooms(
 		Results: await hydrateRooms(db, rooms.slice(skip, skip + take)),
 		TotalResults: rooms.length,
 	}
+}
+
+/**
+ * Search suggestions for the box the player is typing in
+ * (`GET /rooms/autocomplete_search`) — a list of plain STRINGS, not rooms.
+ *
+ * Everything suggested is something the follow-up `/rooms/search` will actually find,
+ * which is the whole point of the endpoint: a suggestion that returns nothing is worse
+ * than no suggestion. So the candidates are drawn from the two things that search matches
+ * — room NAMES for a plain term, and TAGS for a `#tag` term — over the same public,
+ * non-dorm rooms search itself considers. A tag comes back with its `#` so submitting the
+ * suggestion verbatim searches by tag rather than for a room called "horror".
+ *
+ * A query starting with `#` is asking for tags, so only tags are suggested. Otherwise
+ * names come first (the likelier intent), then tags, and within each, matches that START
+ * with the query come before ones that merely contain it. Ties break alphabetically, so
+ * the same query always suggests the same things in the same order.
+ *
+ * Matching is case-insensitive and suggestions are de-duplicated case-insensitively, but
+ * each is returned in its stored casing — search doesn't care, and the player reads these.
+ * The dataset is small, so this filters in memory like {@link searchRooms}.
+ */
+export async function autocompleteRoomSearch(
+	db: D1Database,
+	query: string,
+	take: number
+): Promise<string[]> {
+	const q = query.trim().toLowerCase()
+	if (q === '' || take <= 0) return []
+
+	const { results } = await db.prepare(`SELECT ${ROOM_COLUMNS} FROM room`).all<RoomRow>()
+	const rooms = parseAll(results).filter((r) => r.IsDorm !== true && r.Accessibility === 1)
+
+	const tagQuery = q.startsWith('#')
+	const term = tagQuery ? q.slice(1) : q
+	if (term === '') return []
+
+	// Lowercased suggestion → [rank, the casing to serve it in]. Lower rank sorts first.
+	const found = new Map<string, [number, string]>()
+	const offer = (value: string, rank: number) => {
+		const key = value.toLowerCase()
+		const existing = found.get(key)
+		if (existing === undefined || existing[0] > rank) found.set(key, [rank, value])
+	}
+
+	for (const room of rooms) {
+		if (!tagQuery && typeof room.Name === 'string') {
+			const name = room.Name.toLowerCase()
+			if (name.startsWith(term)) offer(room.Name, 0)
+			else if (name.includes(term)) offer(room.Name, 1)
+		}
+		for (const tag of roomTags(room)) {
+			if (tag.startsWith(term)) offer(`#${tag}`, tagQuery ? 0 : 2)
+			else if (tag.includes(term)) offer(`#${tag}`, tagQuery ? 1 : 3)
+		}
+	}
+
+	return [...found.entries()]
+		.sort(([aKey, [aRank]], [bKey, [bRank]]) => aRank - bRank || aKey.localeCompare(bKey))
+		.slice(0, take)
+		.map(([, [, value]]) => value)
 }
 
 /**
@@ -2066,5 +2186,7 @@ export async function getOrCreateDormRoom(db: D1Database, accountId: number): Pr
 	await db.prepare('INSERT INTO room (data) VALUES (?1)').bind(serializeRoom(room)).run()
 	const subRoom = await insertSubRoom(db, roomId, { ...templateSub, CreatorAccountId: accountId })
 	room.SubRooms = [subRoom]
+	// The template carries these (it was parsed), but a dorm minted without one wouldn't.
+	attachRoomDtoDefaults(room)
 	return room
 }
