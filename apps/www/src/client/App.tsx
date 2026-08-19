@@ -307,6 +307,21 @@ const coachMessageAll = (messageContent: string): Promise<{ sent?: number }> =>
 		authed: true,
 	})
 
+interface OnlinePlayer {
+        accountId: number
+        username: string
+        displayName: string
+        roomId: number | null
+        roomInstanceId: number | null
+        roomName: string
+}
+
+const fetchOnlinePlayers = (): Promise<{ players: OnlinePlayer[] }> =>
+        call<{ players: OnlinePlayer[] }>('/api/admin/online-players', {
+                authed: true,
+        })
+
+
 /** Minimal history-based router: current pathname + a navigate() that pushes state. */
 function useRouter() {
 	const [path, setPath] = useState(() => window.location.pathname)
@@ -1110,6 +1125,7 @@ function Dashboard({
 			render: () => <EmailForm account={account} onChange={onChange} />,
 		},
 		{ id: 'password', label: 'Password', render: () => <PasswordForm /> },
+                                        { id: 'online-players', label: 'Online Players', render: () => <OnlinePlayersForm /> },
 		...(isAdmin()
 			? [
 					{ id: 'maintenance', label: 'Server maintenance', render: () => <MaintenanceForm /> },
@@ -1148,6 +1164,95 @@ function Dashboard({
 }
 
 /** Admin-only: send a coach/system message to every online player. */
+function OnlinePlayersForm() {
+        const [players, setPlayers] = useState<OnlinePlayer[]>([])
+        const [loading, setLoading] = useState(true)
+        const [error, setError] = useState('')
+
+        const load = useCallback(async () => {
+                setLoading(true)
+                setError('')
+
+                try {
+                        const result = await fetchOnlinePlayers()
+                        setPlayers(result.players ?? [])
+                } catch (e) {
+                        setError(e instanceof Error ? e.message : 'Failed to load online players.')
+                } finally {
+                        setLoading(false)
+                }
+        }, [])
+
+        useEffect(() => {
+                void load()
+        }, [load])
+
+        return (
+                <section className="card">
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem' }}>
+                                <div>
+                                        <h2>Online Players</h2>
+                                        <p className="muted">
+                                                Players with an active presence right now.
+                                        </p>
+                                </div>
+
+                                <button type="button" onClick={() => void load()} disabled={loading}>
+                                        {loading ? 'Refreshing…' : 'Refresh'}
+                                </button>
+                        </div>
+
+                        {error && <p className="error">{error}</p>}
+
+                        {!loading && !error && (
+                                <>
+                                        <p className="big">
+                                                {players.length} online player{players.length === 1 ? '' : 's'}
+                                        </p>
+
+                                        {players.length === 0 ? (
+                                                <p className="muted">Nobody is currently online.</p>
+                                        ) : (
+                                                <div>
+                                                        {players.map((player) => (
+                                                                <div
+                                                                        key={player.accountId}
+                                                                        style={{
+                                                                                display: 'flex',
+                                                                                justifyContent: 'space-between',
+                                                                                alignItems: 'center',
+                                                                                padding: '0.75rem 0',
+                                                                                borderBottom: '1px solid rgba(255,255,255,0.08)',
+                                                                        }}
+                                                                >
+                                                                        <div>
+                                                                                <strong>
+                                                                                        {player.displayName || player.username}
+                                                                                </strong>
+                                                                                <div className="muted">
+                                                                                        @{player.username}
+                                                                                </div>
+                                                                                <div className="muted">
+                                                                                        Room: {player.roomName}
+                                                                                </div>
+                                                                        </div>
+
+                                                                        <div style={{ textAlign: 'right' }}>
+                                                                                <strong>{player.roomName}</strong>
+                                                                                <div className="muted">
+                                                                                        #{player.accountId}
+                                                                                </div>
+                                                                        </div>
+                                                                </div>
+                                                        ))}
+                                                </div>
+                                        )}
+                                </>
+                        )}
+                </section>
+        )
+}
+
 function CoachMessageForm() {
 	const [message, setMessage] = useState('')
 	const { pending, error, done, run } = useAction()

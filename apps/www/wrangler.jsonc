@@ -14,7 +14,7 @@
 		{
 			"binding": "DB",
 			"database_name": "recflare",
-			"database_id": "local"
+			"database_id": "b7569377-8aec-4b39-8ade-4400b8d39bd7"
 		}
 	],
 	// React SPA client build (Vite emits it to dist/www/client). Static assets are
@@ -38,6 +38,7 @@
 	// Horizon Store re-fetches the privacy policy URL to confirm it's live, and dropping
 	// it from this list would serve that fetch the SPA shell instead of the policy.
 	"assets": {
+                "directory": "./dist/client",
 		"binding": "ASSETS",
 		"not_found_handling": "single-page-application",
 		"run_worker_first": ["/api/*", "/docs", "/docs/openapi/*", "/privacy", "/server-status"]
@@ -59,12 +60,12 @@
 	"secrets_store_secrets": [
 		{
 			"binding": "TURNSTILE_SITE_KEY",
-			"store_id": "local",
+			"store_id": "108d4951c92b427a92cf6ef643d14626",
 			"secret_name": "TURNSTILE_SITE_KEY"
 		},
 		{
 			"binding": "TURNSTILE_SECRET_KEY",
-			"store_id": "local",
+			"store_id": "108d4951c92b427a92cf6ef643d14626",
 			"secret_name": "TURNSTILE_SECRET_KEY"
 		}
 	],
@@ -97,6 +98,6 @@
 		// (see run-wrangler-deploy). www serves these to the SPA via `/api/config`, which
 		// is how one client build works for any operator. For local dev, point it at a
 		// deployed domain so the page has real workers to call.
-		"DOMAIN": "rec.example.com"
+		"DOMAIN": "rugnetarchival.xyz"
 	}
 }

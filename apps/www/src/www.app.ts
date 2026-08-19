@@ -1,7 +1,9 @@
 import { Hono } from 'hono'
 import { useWorkersLogger } from 'workers-tagged-logger'
 
-import { countOnlinePlayers } from '@repo/domain/src/presence-db'
+import { countOnlinePlayers, getOnlinePlayerIds, getOnlinePlayerPresence } from '@repo/domain/src/presence-db'
+import { getAccountsByIds } from '@repo/domain/src/accounts-db'
+import { getRoomById } from '@repo/domain/src/rooms-db'
 import { logger, withDefaultCors, withOnError } from '@repo/hono-helpers'
 
 import { authUnreachable } from './auth-messages'
@@ -107,6 +109,47 @@ const app = new Hono<App>()
 	// way it stores the one it gets from calling `/connect/token` itself to sign in. The
 	// account's email, when the player gave one, is saved by the client afterwards with
 	// that token — `create_account` takes no email, and `accounts` owns the field.
+        // ---- Admin: online players --------------------------------------------
+
+        .get('/api/admin/online-players', async (c) => {
+                const presence = await getOnlinePlayerPresence(c.env.DB)
+                const ids = presence.map((p) => p.accountId)
+                const accounts = await getAccountsByIds(c.env.DB, ids)
+
+                const byId = new Map(accounts.map((a) => [a.accountId, a]))
+
+                const roomIds = [...new Set(
+                        presence
+                                .map((p) => p.roomId)
+                                .filter((id): id is number => id !== null)
+                )]
+
+                const rooms = await Promise.all(
+                        roomIds.map(async (roomId) => [roomId, await getRoomById(c.env.DB, roomId)] as const)
+                )
+
+                const roomsById = new Map(rooms)
+
+                return c.json({
+                        players: presence.map((p) => {
+                                const account = byId.get(p.accountId)
+                                const room = p.roomId === null ? null : roomsById.get(p.roomId)
+
+                                return {
+                                        accountId: p.accountId,
+                                        username: account?.username ?? `Player${p.accountId}`,
+                                        displayName:
+                                                account?.displayName ??
+                                                account?.username ??
+                                                `Player${p.accountId}`,
+                                        roomId: p.roomId,
+                                        roomInstanceId: p.roomInstanceId,
+                                        roomName: room?.Name ?? (p.roomId === null ? 'Lobby' : `Room #${p.roomId}`),
+                                }
+                        }),
+                })
+        })
+
 	.post('/api/signup', async (c) => {
 		// No usable keypair means signup is closed rather than unprotected (see turnstile.ts).
 		const keys = await turnstileKeys(c.env)

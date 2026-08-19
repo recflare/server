@@ -159,12 +159,66 @@ export async function countPlayersInInstance(
  * them the same way. Lobby (null-instance) presence IS counted — those players are
  * signed in and playing, they're just not in a room.
  */
+
+
+/**
+ * Return the account IDs of all players with a live presence.
+ */
+export interface OnlinePlayerPresence {
+        accountId: number
+        roomId: number | null
+        roomInstanceId: number | null
+}
+
+export async function getOnlinePlayerPresence(
+        db: D1Database,
+        now = nowSeconds()
+): Promise<OnlinePlayerPresence[]> {
+        const { results } = await db
+                .prepare(
+                        `SELECT
+                                account_id AS accountId,
+                                room_id AS roomId,
+                                room_instance_id AS roomInstanceId
+                         FROM presence
+                         WHERE expires_at > ?1
+                         ORDER BY account_id`
+                )
+                .bind(now)
+                .all<OnlinePlayerPresence>()
+
+        return results
+}
+
+export async function getOnlinePlayerIds(
+        db: D1Database,
+        now = nowSeconds()
+): Promise<number[]> {
+        const { results } = await db
+                .prepare(
+                        `SELECT account_id AS accountId
+                         FROM presence
+                         WHERE expires_at > ?1
+                         ORDER BY account_id`
+                )
+                .bind(now)
+                .all<{ accountId: number }>()
+
+        return results.map((r) => r.accountId)
+}
+
+
+/**
+ * How many players are online right now, anywhere.
+ * Counts only unexpired presence rows. Lobby presence is included.
+ */
 export async function countOnlinePlayers(db: D1Database, now = nowSeconds()): Promise<number> {
-	const row = await db
-		.prepare('SELECT COUNT(*) AS n FROM presence WHERE expires_at > ?1')
-		.bind(now)
-		.first<{ n: number }>()
-	return row?.n ?? 0
+        const row = await db
+                .prepare('SELECT COUNT(*) AS n FROM presence WHERE expires_at > ?1')
+                .bind(now)
+                .first<{ n: number }>()
+
+        return row?.n ?? 0
 }
 
 /**
