@@ -610,29 +610,50 @@ export const PlayerEventDetailsDto = PlayerEventDto.extend({
 	tags: z
 		.array(z.object({ tag: z.string(), type: z.int() }))
 		.optional()
-		.describe('Present only with `includeDetails=True`, and always empty'),
+		.describe('Present only with `includeDetails=True`; the stored `{ tag, type }` pairs'),
 })
 
 /**
- * `GET /api/playerevents/v1` — the browse feed's listing. The same record minus
- * `State`, plus a `BroadcastingRoomInstanceId` (always null — nothing broadcasts an
- * event yet). That's the shape observed on this endpoint; the other reads serve the
- * stored record verbatim, so don't unify the two.
+ * The client's BASE event, 17 keys — what `GET /api/playerevents/v1` serves, and what the
+ * v2 envelope carries once `Tags` is added. The stored record minus `State`, with
+ * `ImageName` as a string (`""`, not null) and a `BroadcastingRoomInstanceId` (always null —
+ * nothing broadcasts an event yet).
+ *
+ * The by-id, bulk and search reads serve the stored RECORD verbatim instead, so don't unify
+ * the two.
  */
-export const PlayerEventListingDto = PlayerEventDto.omit({ State: true }).extend({
+export const PlayerEventBaseDto = PlayerEventDto.omit({ State: true, ImageName: true }).extend({
+	ImageName: z.string().describe('Empty string when the event has no image, never null'),
 	BroadcastingRoomInstanceId: z
 		.int()
 		.nullable()
 		.describe('Always null — no event broadcasts to a room instance yet'),
 })
 
-/** The `{ Result, TagModifyResult, PlayerEvent }` envelope the event writes answer with. */
+/**
+ * The event as the v2 envelope carries it: the stored record MINUS `State`, PLUS `Tags`
+ * (tag names, not the `{ tag, type }` pairs the v1 read's lowercase `tags` serves) and
+ * `BroadcastingRoomInstanceId`. `ImageName` is `""` rather than null when there is no image.
+ */
+export const PlayerEventEnvelopeDto = PlayerEventBaseDto.extend({
+	Tags: z.array(z.string()).describe('The event’s tag names'),
+})
+
+/**
+ * The `{ PlayerEvent, Result, TagModifyResult }` envelope the v2 routes answer with — the
+ * writes and `GET /api/playerevents/v2/{eventId}`.
+ *
+ * `TagModifyResult` reports the tag edit that rides along with a write: `Result` 0 and the
+ * tags the event now carries. It is an object — it was served as null back when no event
+ * tags were stored.
+ */
 export const PlayerEventResultDto = z.object({
+	PlayerEvent: PlayerEventEnvelopeDto,
 	Result: z.int().describe('0 = success'),
-	TagModifyResult: z
-		.null()
-		.describe('Always null — the write carries no tag edit, as no event tags are stored'),
-	PlayerEvent: PlayerEventDto,
+	TagModifyResult: z.object({
+		Result: z.int().describe('0 = success'),
+		Tags: z.array(z.string()).describe('The tags the event now carries'),
+	}),
 })
 
 /**

@@ -17,11 +17,7 @@
  * relational table rather than a JSON blob.
  */
 
-import {
-	glyphLength,
-	MAX_EVENT_DESCRIPTION_LENGTH,
-	MAX_EVENT_NAME_LENGTH,
-} from '@repo/domain'
+import { glyphLength, MAX_EVENT_DESCRIPTION_LENGTH, MAX_EVENT_NAME_LENGTH } from '@repo/domain'
 
 /**
  * Schema DDL (mirror of migrations/0006_event.sql + 0007_event_attendee.sql, sans any
@@ -172,23 +168,42 @@ interface EventRow {
 }
 
 /**
- * The envelope the create/update writes answer with — the event nested under a status,
- * rather than the bare record the read endpoints serve. `Result` is 0 on success.
- *
- * `TagModifyResult` is always null: the real API reports the outcome of the tag edit
- * that rides along with the write, and we store no event tags (see the tag-filter
- * chips, which are static). The field stays present because the client's parser
- * expects it.
+ * The event as the `v2` envelope carries it: {@link PlayerEventBase} plus `Tags`, a plain
+ * array of tag NAMES. (The stored tags are `{ tag, type }` pairs, which is what the v1
+ * read's lowercase `tags` serves.) Defined on top of the base rather than beside it, so the
+ * feed and the envelope cannot drift apart on the fields they share.
  */
-export interface PlayerEventResult {
-	Result: number
-	TagModifyResult: null
-	PlayerEvent: PlayerEvent
+export interface PlayerEventEnvelope extends PlayerEventBase {
+	Tags: string[]
 }
 
-/** Wrap a stored event in the write envelope. */
-export function toEventResult(event: PlayerEvent): PlayerEventResult {
-	return { Result: 0, TagModifyResult: null, PlayerEvent: event }
+/**
+ * The envelope the `v2` routes answer with — the event nested under a status, rather than
+ * the bare record the `v1` reads serve. `Result` is 0 on success.
+ *
+ * `TagModifyResult` reports the tag edit that rides along with a write: its `Result` is 0
+ * and its `Tags` echo the tags the event now carries, which is what the client redraws its
+ * tag chips from. It is an OBJECT — it used to be served as null, back when no event tags
+ * were stored.
+ */
+export interface PlayerEventResult {
+	PlayerEvent: PlayerEventEnvelope
+	Result: number
+	TagModifyResult: { Result: number; Tags: string[] }
+}
+
+/**
+ * Wrap a stored event and its tags in the `v2` envelope. `tags` are the event's stored tag
+ * names — pass what `getEventTags` returns, so the answer reflects what was actually
+ * written rather than what was asked for.
+ */
+export function toEventResult(event: PlayerEvent, tags: EventTag[] = []): PlayerEventResult {
+	const names = tags.map((t) => t.tag)
+	return {
+		PlayerEvent: { Tags: names, ...toEventBase(event) },
+		Result: 0,
+		TagModifyResult: { Result: 0, Tags: names },
+	}
 }
 
 /**
@@ -226,24 +241,28 @@ export interface PlayerEventNotification {
 }
 
 /**
- * The projection the browse feed (`GET /api/playerevents/v1`) serves. PascalCase like
+ * The client's BASE event — the 17-key shape the browse feed (`GET /api/playerevents/v1`)
+ * serves, and the same thing the v2 envelope carries once `Tags` is added. PascalCase like
  * the stored record, but not identical to it — don't unify them:
  *
- * - it drops `State`, which the feed does not carry;
+ * - it drops `State`, which neither the feed nor the envelope carries;
  * - it carries `BroadcastingRoomInstanceId`, which the record has no field for (nothing
- *   broadcasts an event yet, so it is always null).
+ *   broadcasts an event yet, so it is always null);
+ * - its `ImageName` is a string: an event with no image reads `""`, where the record holds
+ *   null.
  *
- * That's the shape observed on this endpoint; the by-id / bulk / search reads serve the
- * stored record verbatim and keep `State`.
+ * The by-id / bulk / search reads serve the stored RECORD verbatim instead, `State` and
+ * nullable `ImageName` included. Two shapes; keep them apart.
  */
-export interface PlayerEventListing extends Omit<PlayerEvent, 'State'> {
+export interface PlayerEventBase extends Omit<PlayerEvent, 'State' | 'ImageName'> {
+	ImageName: string
 	BroadcastingRoomInstanceId: number | null
 }
 
-/** Project a stored event into the browse feed's listing. */
-export function toEventListing(event: PlayerEvent): PlayerEventListing {
+/** Project a stored event into the base shape the feed serves and the envelope wraps. */
+export function toEventBase(event: PlayerEvent): PlayerEventBase {
 	const { State: _State, ...rest } = event
-	return { ...rest, BroadcastingRoomInstanceId: null }
+	return { ...rest, ImageName: event.ImageName ?? '', BroadcastingRoomInstanceId: null }
 }
 
 /** Pad a stored timestamp out to .NET tick precision (seven fractional digits). */
@@ -705,6 +724,27 @@ export async function updateEvent(
 	// here; an explicit `[]` clears them.
 	if (input.tags !== undefined) await setEventTags(db, eventId, input.tags)
 	return updated
+}
+
+/**
+ * Delete an event and everything hanging off it — its RSVPs (`event_attendee`) and its tags
+ * (`event_tag`) — in one batch, so a cancelled event can't leave rows behind that the
+ * attendee counts and the `#tag` search would still find. Event ids are assigned in
+ * sequence and never reused, but orphan rows would still be counted against whatever id
+ * they name.
+ *
+ * Answers the event as it was, so the caller can report what it deleted; `null` when there
+ * was no such event.
+ */
+export async function deleteEvent(db: D1Database, eventId: number): Promise<PlayerEvent | null> {
+	const event = await getEventById(db, eventId)
+	if (event === null) return null
+	await db.batch([
+		db.prepare('DELETE FROM event_attendee WHERE event_id = ?1').bind(eventId),
+		db.prepare('DELETE FROM event_tag WHERE event_id = ?1').bind(eventId),
+		db.prepare('DELETE FROM event WHERE id = ?1').bind(eventId),
+	])
+	return event
 }
 
 /** One event by id, or null when there's no such row. */

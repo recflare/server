@@ -8,6 +8,7 @@ import { logger } from '@repo/hono-helpers'
 import { NotificationType } from '../../../notify/src/notification-types'
 import {
 	createEvent,
+	deleteEvent,
 	eventInputRejection,
 	getEventAttendees,
 	getEventById,
@@ -22,7 +23,7 @@ import {
 	parseEventBody,
 	searchEvents,
 	setEventResponse,
-	toEventListing,
+	toEventBase,
 	toEventNotification,
 	toEventResponse,
 	toEventResult,
@@ -36,10 +37,10 @@ import {
 	json,
 	jsonBody,
 	pageParams,
+	PlayerEventBaseDto,
 	PlayerEventBulkInviteRequest,
 	PlayerEventDetailsDto,
 	PlayerEventDto,
-	PlayerEventListingDto,
 	PlayerEventReportRequest,
 	PlayerEventRequest,
 	PlayerEventRespondRequest,
@@ -145,8 +146,9 @@ async function notifyInvited(
  */
 export const eventRoutes = new Hono<App>({ strict: false })
 	// The player-events browse feed — everything upcoming or running, soonest first. Same
-	// query `/search` runs with no text, but its own projection: this feed drops `State`
-	// and carries a `BroadcastingRoomInstanceId`, so it goes through `toEventListing`.
+	// query `/search` runs with no text, but its own projection: the feed serves the client's
+	// BASE event (17 keys — no `State`, a string `ImageName`, plus `BroadcastingRoomInstanceId`),
+	// which is the v2 envelope's event minus `Tags`. Hence `toEventBase`.
 	.get(
 		'/api/playerevents/v1',
 		describeRoute({
@@ -156,18 +158,19 @@ export const eventRoutes = new Hono<App>({ strict: false })
 				'The default feed on the player-events screen: every event that has not finished ' +
 				'yet — upcoming and running — soonest first, paginated via skip/take. A bare ' +
 				'array.\n\n' +
-				'Each entry is the browse LISTING, not the stored record the by-id, bulk and ' +
-				'search reads serve: it drops `State` and carries ' +
+				'Each entry is the client’s BASE event — the v2 envelope’s event minus `Tags`, 17 ' +
+				'keys — not the stored record the by-id, bulk and search reads serve: it drops ' +
+				'`State`, serves `ImageName` as `""` rather than null, and carries ' +
 				'`BroadcastingRoomInstanceId` (always null — nothing broadcasts an event yet). ' +
 				'That is the shape observed on this endpoint; keep the two projections apart.',
 			parameters: pageParams(50),
-			responses: { 200: json(PlayerEventListingDto.array(), 'The events that have not ended') },
+			responses: { 200: json(PlayerEventBaseDto.array(), 'The events that have not ended') },
 		}),
 		async (c) => {
 			const skip = Number.parseInt(c.req.query('skip') ?? '', 10) || 0
 			const take = Number.parseInt(c.req.query('take') ?? '', 10) || 50
 			const events = await searchEvents(c.env.DB, '', skip, take)
-			return c.json(events.map(toEventListing))
+			return c.json(events.map(toEventBase))
 		}
 	)
 
@@ -399,7 +402,8 @@ export const eventRoutes = new Hono<App>({ strict: false })
 			if (!Number.isInteger(eventId) || !isEventResponseType(type)) return c.body(null, 400)
 
 			const updated = await setEventResponse(c.env.DB, eventId, id, type)
-			return updated === null ? c.body(null, 404) : c.json(toEventResult(updated))
+			if (updated === null) return c.body(null, 404)
+			return c.json(toEventResult(updated, await getEventTags(c.env.DB, eventId)))
 		}
 	)
 
@@ -530,7 +534,7 @@ export const eventRoutes = new Hono<App>({ strict: false })
 			const result = await inviteToEvent(c.env.DB, eventId, invited)
 			// inviteToEvent only returns null when the row vanished, which the read above rules out.
 			await notifyInvited(c, result!.event, result!.added)
-			return c.json(toEventResult(result!.event))
+			return c.json(toEventResult(result!.event, await getEventTags(c.env.DB, eventId)))
 		}
 	)
 
@@ -573,7 +577,91 @@ export const eventRoutes = new Hono<App>({ strict: false })
 			if (eventInputRejection(input) !== null) return c.body(null, 400)
 			const event = await createEvent(c.env.DB, id, input)
 			await notifyEventCreated(c, event, input.tags ?? [])
-			return c.json(toEventResult(event))
+			// Read the tags back rather than echoing what was posted: the envelope reports what
+			// the event now carries, which is what the client redraws its chips from.
+			return c.json(toEventResult(event, await getEventTags(c.env.DB, event.PlayerEventId)))
+		}
+	)
+
+	// Delete an event. Creator-only, and it takes the RSVPs and tags with it — a cancelled
+	// event that left its `event_attendee` rows behind would keep being counted, and its
+	// `event_tag` rows would keep answering `#tag` searches for an event nobody can open.
+	//
+	// Registered for POST and DELETE both: the path spells the verb itself (`/delete/{id}`),
+	// which is how the reference exposes it, and a client that reaches for the HTTP verb
+	// instead should not get a 404 for being right.
+	//
+	// Answers the v2 envelope carrying the event as it WAS, so the caller can report what it
+	// removed; an unknown event is 404, and someone else's is 403.
+	.on(
+		['POST', 'DELETE'],
+		'/api/playerevents/v2/delete/:eventId{[0-9]+}',
+		describeRoute({
+			tags: ['Events'],
+			summary: 'Delete a player event',
+			description:
+				'Deletes an event the caller created, along with its RSVPs and its tags — an event ' +
+				'whose attendee rows outlived it would still be counted, and its tags would still ' +
+				'answer `#tag` searches.\n\n' +
+				'Creator only: anyone else gets 403, and an unknown event 404. Answers the v2 ' +
+				'envelope carrying the event as it was just before it went. Both POST and DELETE ' +
+				'reach it — the path names the verb, which is the form the client uses.',
+			security: AUTHED,
+			parameters: [idParam('eventId', 'Event id')],
+			responses: {
+				200: json(PlayerEventResultDto, 'The event that was deleted'),
+				401: UNAUTHORIZED_RESPONSE,
+				403: { description: 'Not the event’s creator (empty body)' },
+				404: { description: 'No such event (empty body)' },
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const eventId = Number.parseInt(c.req.param('eventId'), 10)
+			const existing = await getEventById(c.env.DB, eventId)
+			if (existing === null) return c.body(null, 404)
+			if (existing.CreatorPlayerId !== id) return c.body(null, 403)
+
+			// Read the tags before the delete takes them, so the envelope can still report what
+			// the event carried.
+			const tags = await getEventTags(c.env.DB, eventId)
+			const deleted = await deleteEvent(c.env.DB, eventId)
+			// deleteEvent only answers null when the row vanished, which the read above rules out.
+			return c.json(toEventResult(deleted!, tags))
+		}
+	)
+
+	// Read one event in the v2 envelope — the same `{ PlayerEvent, Result, TagModifyResult }`
+	// the writes answer, so a client that just created or edited an event and one that is
+	// opening it cold parse the same thing.
+	//
+	// The v1 read next to it stays the BARE record on purpose: it is a different shape for a
+	// different caller (no envelope, `State` present, tags only behind `includeDetails`).
+	// Two shapes of one event; don't unify them.
+	.get(
+		'/api/playerevents/v2/:eventId{[0-9]+}',
+		describeRoute({
+			tags: ['Events'],
+			summary: 'One player event (v2 envelope)',
+			description:
+				'A single event wrapped in the same `{ PlayerEvent, Result, TagModifyResult }` ' +
+				'envelope the v2 writes answer with — `Tags` inline, `BroadcastingRoomInstanceId` ' +
+				'present, no `State`. 404 when there is no such event.\n\n' +
+				'`TagModifyResult` carries the event’s tags here too, even though a read edits ' +
+				'nothing: the client reads its chips out of that field either way.',
+			parameters: [idParam('eventId', 'Event id')],
+			responses: {
+				200: json(PlayerEventResultDto, 'The event in the v2 envelope'),
+				404: { description: 'No such event (empty body)' },
+			},
+		}),
+		async (c) => {
+			const eventId = Number.parseInt(c.req.param('eventId'), 10)
+			const event = await getEventById(c.env.DB, eventId)
+			if (event === null) return c.body(null, 404)
+			return c.json(toEventResult(event, await getEventTags(c.env.DB, eventId)))
 		}
 	)
 
@@ -615,7 +703,7 @@ export const eventRoutes = new Hono<App>({ strict: false })
 			if (eventInputRejection(input) !== null) return c.body(null, 400)
 			const updated = await updateEvent(c.env.DB, eventId, input)
 			// updateEvent only returns null when the row vanished, which the read above rules out.
-			return c.json(toEventResult(updated!))
+			return c.json(toEventResult(updated!, await getEventTags(c.env.DB, eventId)))
 		}
 	)
 

@@ -48,7 +48,7 @@ import { getWarningsAgainst, SCHEMA_DDL as WARNINGS_SCHEMA_DDL } from '../../war
 
 import type { SavedImage } from '@repo/domain'
 import type { Env } from '../../context'
-import type { PlayerEvent, PlayerEventResult } from '../../events-db'
+import type { PlayerEvent, PlayerEventEnvelope, PlayerEventResult } from '../../events-db'
 import type { InventionSaveResult, SavedInvention } from '../../inventions-db'
 
 declare module 'cloudflare:test' {
@@ -3403,7 +3403,9 @@ describe('player events', () => {
 			body: JSON.stringify(body),
 		})
 
-	const create = async (body: unknown, sub = '42'): Promise<PlayerEvent> => {
+	// The write envelope's event, which is NOT the stored record: no `State`, plus `Tags`
+	// and `BroadcastingRoomInstanceId`. Tests that want the record read it back over v1.
+	const create = async (body: unknown, sub = '42'): Promise<PlayerEventEnvelope> => {
 		const res = await post('/api/playerevents/v2', body, sub)
 		expect(res.status).toBe(200)
 		return ((await res.json()) as PlayerEventResult).PlayerEvent
@@ -3412,12 +3414,25 @@ describe('player events', () => {
 	const get = async (path: string, sub?: string): Promise<Response> =>
 		exports.default.fetch(`${ORIGIN}${path}`, sub ? { headers: await bearer(sub) } : undefined)
 
+	/**
+	 * The stored RECORD behind an envelope's event — what the v1 reads serve. The envelope
+	 * drops `State`, adds `Tags`/`BroadcastingRoomInstanceId`, and turns a null `ImageName`
+	 * into `""`, so going back the other way undoes exactly those.
+	 */
+	const asRecord = (
+		event: PlayerEventEnvelope,
+		imageName: string | null = event.ImageName
+	): PlayerEvent => {
+		const { Tags: _tags, BroadcastingRoomInstanceId: _broadcast, ...rest } = event
+		return { ...rest, ImageName: imageName, State: 0 }
+	}
+
 	// The fixture set every test below reads. Times are relative to the run so the
 	// upcoming/live/finished distinction the browse queries make is real.
-	let upcoming: PlayerEvent
-	let clubEvent: PlayerEvent
-	let liveEvent: PlayerEvent
-	let pastEvent: PlayerEvent
+	let upcoming: PlayerEventEnvelope
+	let clubEvent: PlayerEventEnvelope
+	let liveEvent: PlayerEventEnvelope
+	let pastEvent: PlayerEventEnvelope
 
 	beforeAll(async () => {
 		// Posted nested under `PlayerEvent` — the envelope form the client sends back.
@@ -3502,8 +3517,11 @@ describe('player events', () => {
 		})
 		expect(res.status).toBe(401)
 
-		// The stored record carries exactly the client's field set — nothing more.
+		// The envelope's event: the client's field set, plus `Tags` and
+		// `BroadcastingRoomInstanceId`, and WITHOUT `State` — the bare record the v1 read
+		// serves is the one that carries that.
 		expect(upcoming).toEqual({
+			Tags: [],
 			PlayerEventId: upcoming.PlayerEventId,
 			CreatorPlayerId: 42,
 			ImageName: 'e63dcbffe8d14a7696bea7117dc3dd28.jpg',
@@ -3515,12 +3533,12 @@ describe('player events', () => {
 			StartTime: at(HOUR),
 			EndTime: at(2 * HOUR),
 			AttendeeCount: 1,
-			State: 0,
 			Accessibility: 1,
 			IsMultiInstance: false,
 			SupportMultiInstanceRoomChat: true,
 			DefaultBroadcastPermissions: 0,
 			CanRequestBroadcastPermissions: 0,
+			BroadcastingRoomInstanceId: null,
 		})
 		// Timestamps come back at seconds precision, as the client sends them.
 		expect(upcoming.StartTime).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/)
@@ -3565,12 +3583,36 @@ describe('player events', () => {
 	})
 
 	test('POST /api/playerevents/v2 answers the write envelope, not the bare event', async () => {
-		const res = await post('/api/playerevents/v2', { Name: 'Enveloped', RoomId: 3 })
+		const res = await post('/api/playerevents/v2', {
+			Name: 'Enveloped',
+			RoomId: 3,
+			tags: [{ tag: 'music', type: 0 }],
+		})
 		const body = (await res.json()) as PlayerEventResult
 		expect(body.Result).toBe(0)
-		// Always null: no event tags are stored, but the field has to be present.
-		expect(body.TagModifyResult).toBeNull()
 		expect(body.PlayerEvent.Name).toBe('Enveloped')
+		// The tags ride inline on the event AND in TagModifyResult, as NAMES — not the
+		// `{ tag, type }` pairs the v1 read's lowercase `tags` serves.
+		expect(body.PlayerEvent.Tags).toEqual(['music'])
+		expect(body.TagModifyResult).toEqual({ Result: 0, Tags: ['music'] })
+		// No `State`, and the broadcast instance is present and null.
+		expect(body.PlayerEvent).not.toHaveProperty('State')
+		expect(body.PlayerEvent.BroadcastingRoomInstanceId).toBeNull()
+	})
+
+	test('GET /api/playerevents/v2/:eventId serves the same envelope as the write', async () => {
+		const written = await post('/api/playerevents/v2', {
+			Name: 'ReadBack',
+			RoomId: 3,
+			tags: [{ tag: 'music', type: 0 }],
+		})
+		const created = (await written.json()) as PlayerEventResult
+
+		const res = await get(`/api/playerevents/v2/${created.PlayerEvent.PlayerEventId}`)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual(created)
+
+		expect((await get('/api/playerevents/v2/9999999')).status).toBe(404)
 	})
 
 	test('POST /api/playerevents/v2 pushes a PlayerEventCreated notification to the creator', async () => {
@@ -3631,9 +3673,9 @@ describe('player events', () => {
 			RoomId: 0,
 			SubRoomId: null,
 			ClubId: null,
-			ImageName: null,
+			// The envelope's ImageName is a string: the record's null reads as "" here.
+			ImageName: '',
 			AttendeeCount: 1,
-			State: 0,
 			Accessibility: 1,
 			IsMultiInstance: false,
 			SupportMultiInstanceRoomChat: false,
@@ -3647,27 +3689,32 @@ describe('player events', () => {
 	test('GET /api/playerevents/v1/:eventId serves the bare event', async () => {
 		const res = await get(`/api/playerevents/v1/${upcoming.PlayerEventId}`)
 		expect(res.status).toBe(200)
-		// No envelope here — unlike the writes.
-		expect(await res.json()).toEqual(upcoming)
+		// No envelope here — unlike the writes — and the bare RECORD, which carries `State`
+		// and neither `Tags` nor `BroadcastingRoomInstanceId`.
+		const body = await res.json()
+		expect(body).toEqual(asRecord(upcoming))
+		expect(Object.hasOwn(body as object, 'Tags')).toBe(false)
+		expect(Object.hasOwn(body as object, 'State')).toBe(true)
 
 		expect((await get('/api/playerevents/v1/999999')).status).toBe(404)
 	})
 
 	test('GET /api/playerevents/v1/:eventId?includeDetails=True adds only `tags`', async () => {
 		const path = `/api/playerevents/v1/${upcoming.PlayerEventId}`
-		// The flag's whole effect: the lowercase `tags`, empty (no event tags are stored).
+		// The flag's whole effect: the lowercase `tags` — the `{ tag, type }` pairs, not the
+		// envelope's names. This event carries none.
 		expect(await (await get(`${path}?includeDetails=True`)).json()).toEqual({
-			...upcoming,
+			...asRecord(upcoming),
 			tags: [],
 		})
 		// Accepted case-insensitively — the client sends `True`.
 		expect(await (await get(`${path}?includeDetails=true`)).json()).toEqual({
-			...upcoming,
+			...asRecord(upcoming),
 			tags: [],
 		})
 		// Anything else is the bare record, with no `tags` key at all.
-		expect(await (await get(`${path}?includeDetails=False`)).json()).toEqual(upcoming)
-		expect(await (await get(path)).json()).toEqual(upcoming)
+		expect(await (await get(`${path}?includeDetails=False`)).json()).toEqual(asRecord(upcoming))
+		expect(await (await get(path)).json()).toEqual(asRecord(upcoming))
 	})
 
 	test('GET /api/playerevents/v1/bulk answers in request order, skipping unknown ids', async () => {
@@ -3728,7 +3775,29 @@ describe('player events', () => {
 		// The listing projection — no `State`, and a null broadcasting instance — not the
 		// stored record the by-id read serves.
 		const entry = feed.find((e) => e.PlayerEventId === upcoming.PlayerEventId)!
-		expect(entry).toEqual({ ...upcoming, State: undefined, BroadcastingRoomInstanceId: null })
+		expect(entry).toEqual({
+			...asRecord(upcoming),
+			State: undefined,
+			BroadcastingRoomInstanceId: null,
+		})
+
+		// The base event, exactly: the v2 envelope's event minus `Tags`, 17 keys.
+		expect(Object.keys(entry).sort()).toEqual(
+			Object.keys(upcoming)
+				.filter((k) => k !== 'Tags')
+				.sort()
+		)
+		expect(Object.keys(entry)).toHaveLength(17)
+
+		// An event with no image serves `""` here, not the record's null.
+		const imageless = await create({ RoomId: 3, Name: 'No Banner', StartTime: at(HOUR) })
+		const withoutImage = (
+			(await (await get('/api/playerevents/v1?take=50')).json()) as Array<{
+				PlayerEventId: number
+				ImageName: string
+			}>
+		).find((e) => e.PlayerEventId === imageless.PlayerEventId)!
+		expect(withoutImage.ImageName).toBe('')
 		expect(Object.hasOwn(entry, 'State')).toBe(false)
 
 		// Paged like the other feeds.
@@ -4150,9 +4219,9 @@ describe('player events', () => {
 		// Only the name moved; a partial post can't blank out the rest.
 		expect(body.PlayerEvent).toEqual({ ...event, Name: 'Renamed' })
 
-		// And it stuck.
+		// And it stuck — read back as the bare record, which the envelope's event is not.
 		expect(await (await get(`/api/playerevents/v1/${event.PlayerEventId}`)).json()).toEqual(
-			body.PlayerEvent
+			asRecord(body.PlayerEvent, null)
 		)
 	})
 
@@ -4165,8 +4234,71 @@ describe('player events', () => {
 		})
 		const updated = ((await res.json()) as PlayerEventResult).PlayerEvent
 		expect(updated.ClubId).toBeNull()
-		expect(updated.ImageName).toBeNull()
+		// Cleared on the record, which the envelope reports as "" — its ImageName is a string.
+		expect(updated.ImageName).toBe('')
+		expect(
+			((await (await get(`/api/playerevents/v1/${event.PlayerEventId}`)).json()) as PlayerEvent)
+				.ImageName
+		).toBeNull()
 		expect(updated.SubRoomId).toBe(6)
+	})
+
+	test('POST /api/playerevents/v2/delete/:eventId removes the event, its RSVPs and its tags', async () => {
+		const event = await create({
+			RoomId: 3,
+			Name: 'Cancelled',
+			StartTime: at(HOUR),
+			Tags: [{ tag: 'meetup', type: 2 }],
+		})
+		const eventId = event.PlayerEventId
+		// Someone else RSVPs, so there is more than the creator's own row to clean up.
+		await post('/api/playerevents/v1/respond', { PlayerEventId: eventId, Type: 1 }, '43')
+
+		const rows = async (table: string) =>
+			(
+				await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE event_id = ?1`)
+					.bind(eventId)
+					.first<{ n: number }>()
+			)?.n
+		expect(await rows('event_attendee')).toBe(2)
+		expect(await rows('event_tag')).toBe(1)
+
+		// Auth-gated, and creator-only.
+		expect(
+			(
+				await exports.default.fetch(`${ORIGIN}/api/playerevents/v2/delete/${eventId}`, {
+					method: 'POST',
+				})
+			).status
+		).toBe(401)
+		expect((await post(`/api/playerevents/v2/delete/${eventId}`, {}, '43')).status).toBe(403)
+		expect((await post('/api/playerevents/v2/delete/999999', {})).status).toBe(404)
+
+		const res = await post(`/api/playerevents/v2/delete/${eventId}`, {})
+		expect(res.status).toBe(200)
+		// The envelope carries the event as it was, tags included — the caller can report
+		// what it removed.
+		const body = (await res.json()) as PlayerEventResult
+		expect(body.Result).toBe(0)
+		expect(body.PlayerEvent.PlayerEventId).toBe(eventId)
+		expect(body.PlayerEvent.Tags).toEqual(['meetup'])
+
+		// Gone, and nothing left hanging off it: orphan RSVPs would keep being counted and
+		// orphan tags would keep answering `#tag` searches.
+		expect((await get(`/api/playerevents/v1/${eventId}`)).status).toBe(404)
+		expect(await rows('event_attendee')).toBe(0)
+		expect(await rows('event_tag')).toBe(0)
+	})
+
+	test('DELETE /api/playerevents/v2/delete/:eventId works too', async () => {
+		// The path names the verb, but a client reaching for the HTTP one is right as well.
+		const event = await create({ RoomId: 3, Name: 'Also Cancelled', StartTime: at(HOUR) })
+		const res = await exports.default.fetch(
+			`${ORIGIN}/api/playerevents/v2/delete/${event.PlayerEventId}`,
+			{ method: 'DELETE', headers: await bearer('42') }
+		)
+		expect(res.status).toBe(200)
+		expect((await get(`/api/playerevents/v1/${event.PlayerEventId}`)).status).toBe(404)
 	})
 
 	test('POST /api/playerevents/v2/:eventId cannot move ownership or the attendee count', async () => {
@@ -4208,6 +4340,7 @@ describe('openapi', () => {
 		)
 		expect([...documented].sort()).toEqual([
 			'DELETE /api/images/v1/deletesaved',
+			'DELETE /api/playerevents/v2/delete/{eventId}',
 			'GET /api/PlayerReporting/v1/moderationBlockDetails',
 			'GET /api/PlayerReporting/v1/voteToKickReasons',
 			'GET /api/activities/charades/v1/words/{activity}',
@@ -4267,6 +4400,7 @@ describe('openapi', () => {
 			'GET /api/playerevents/v1/tagfilters',
 			'GET /api/playerevents/v1/{eventId}',
 			'GET /api/playerevents/v1/{eventId}/responses',
+			'GET /api/playerevents/v2/{eventId}',
 			'GET /api/players/v1/playerPhotoTaggingSetting',
 			'GET /api/players/v1/progression/{id}',
 			'GET /api/players/v2/progression/bulk',
@@ -4320,6 +4454,7 @@ describe('openapi', () => {
 			'POST /api/playerevents/v1/report',
 			'POST /api/playerevents/v1/respond',
 			'POST /api/playerevents/v2',
+			'POST /api/playerevents/v2/delete/{eventId}',
 			'POST /api/playerevents/v2/{eventId}',
 			'POST /api/players/v1/progression/bulk',
 			'POST /api/players/v2/progression/bulk',
