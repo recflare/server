@@ -19,39 +19,82 @@ import {
 	stringParam,
 	UNAUTHORIZED_RESPONSE,
 } from '../openapi'
-import { containsSwears } from '../sanitize'
+import {
+	censorSwears,
+	containsSwears,
+	DEFAULT_REPLACEMENT_CHAR,
+	removeBlockedCharacters,
+} from '../sanitize'
 
 import type { Context } from 'hono'
 import type { App } from '../context'
 
 /**
- * The text to check, from the JSON body the client posts (`{ "Value": "..." }`). A body
- * that isn't JSON, or carries no `Value`, reads as the empty string — which every caller
- * here treats as "nothing to object to" rather than as a bad request.
+ * A sanitize request, as the client posts it:
+ *
+ * ```json
+ * { "Value": "...", "ReplacementChar": "*", "Context": "RoomChat",
+ *   "Intent": 1, "ruleset": 0, "PreRemoveBlockedCharacters": false }
+ * ```
+ *
+ * Fields are read case-insensitively because the client's own casing isn't consistent —
+ * it sends `ruleset` lowercase among otherwise PascalCase keys, and a reader that trusts
+ * one spelling silently ignores the other.
+ *
+ * `Context` ("RoomChat", and whatever else names the surface being checked), `Intent` and
+ * `ruleset` are read but not acted on: they select among the reference's several
+ * filtering policies and this server has one, so honouring them would mean inventing
+ * differences between them. A body that isn't JSON, or carries no `Value`, reads as the
+ * empty string — nothing to object to, rather than a bad request.
  */
-async function sanitizeValue(c: Context<App>): Promise<string> {
-	const body = await c.req.json<{ Value?: unknown }>().catch(() => ({}) as { Value?: unknown })
-	return typeof body.Value === 'string' ? body.Value : ''
+async function sanitizeRequest(
+	c: Context<App>
+): Promise<{ value: string; replacementChar: string; preRemoveBlockedCharacters: boolean }> {
+	const body = await c.req
+		.json<Record<string, unknown>>()
+		.catch(() => ({}) as Record<string, unknown>)
+	const field = (name: string): unknown => {
+		const key = Object.keys(body).find((k) => k.toLowerCase() === name.toLowerCase())
+		return key === undefined ? undefined : body[key]
+	}
+	const value = field('Value')
+	const replacementChar = field('ReplacementChar')
+	return {
+		value: typeof value === 'string' ? value : '',
+		replacementChar:
+			typeof replacementChar === 'string' && replacementChar !== ''
+				? replacementChar
+				: DEFAULT_REPLACEMENT_CHAR,
+		preRemoveBlockedCharacters: field('PreRemoveBlockedCharacters') === true,
+	}
 }
 
 // Text sanitization, keepsakes, objectives/events/rewards, and the misc analytics
 // sinks the client hits during load.
 export const gameplayRoutes = new Hono<App>({ strict: false })
-	// Text sanitization (display names, room names, chat). `v1` echoes the input
-	// value back; `isPure` reports the text is clean.
+	// Text sanitization (display names, room names, chat). `v1` masks the swears in the
+	// text and hands it back; `isPure` answers the same question as a yes/no.
 	.post(
 		'/api/sanitize/v1',
 		describeRoute({
 			tags: ['Gameplay'],
 			summary: 'Sanitize a string',
 			description:
-				'Runs display names, room names and chat through the profanity filter. There is ' +
-				'no filter here — the input `Value` is echoed back verbatim as a bare JSON string ' +
-				'(an empty string if the body has no `Value`).',
+				'Masks any swear in the posted `Value` and returns the cleaned text as a bare JSON ' +
+				'string. Each character of a swear becomes the request’s `ReplacementChar` (`*` when ' +
+				'it names none), so the shape of the message survives; text with nothing to object ' +
+				'to comes back untouched. `PreRemoveBlockedCharacters` strips control and zero-width ' +
+				'characters first — the ones used to break a word up so a filter misses it. ' +
+				'`Context`, `Intent` and `ruleset` are accepted and ignored: they pick among the ' +
+				'reference’s filtering policies, and this server has one.',
 			requestBody: jsonBody(SanitizeRequest, 'The text to clean'),
-			responses: { 200: json(BareString, 'The input text, unchanged (a bare JSON string)') },
+			responses: { 200: json(BareString, 'The cleaned text (a bare JSON string)') },
 		}),
-		async (c) => c.json(await sanitizeValue(c))
+		async (c) => {
+			const { value, replacementChar, preRemoveBlockedCharacters } = await sanitizeRequest(c)
+			const text = preRemoveBlockedCharacters ? removeBlockedCharacters(value) : value
+			return c.json(censorSwears(text, replacementChar))
+		}
 	)
 	// The yes/no form of the filter, and the one that actually filters: the client asks
 	// this before it accepts a display name, a room name or an invention title. Auth-gated,
@@ -77,7 +120,8 @@ export const gameplayRoutes = new Hono<App>({ strict: false })
 		async (c) => {
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
-			return c.json({ IsPure: !containsSwears(await sanitizeValue(c)) })
+			const { value } = await sanitizeRequest(c)
+			return c.json({ IsPure: !containsSwears(value) })
 		}
 	)
 

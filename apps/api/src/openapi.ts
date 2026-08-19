@@ -553,8 +553,28 @@ export const SuccessValueEnvelope = z.object({ success: z.boolean(), value: z.nu
 
 // ---- Gameplay --------------------------------------------------------------
 
-/** `POST /api/sanitize/v1` JSON body — the text to clean. */
-export const SanitizeRequest = z.object({ Value: z.string() })
+/**
+ * `POST /api/sanitize/v1` (and `/isPure`) JSON body. Only `Value` is acted on, plus
+ * `ReplacementChar` and `PreRemoveBlockedCharacters` on the sanitize route; the rest are
+ * what the client sends, kept here so the spec shows a real request.
+ */
+export const SanitizeRequest = z.object({
+	Value: z.string().describe('The text to clean or check'),
+	ReplacementChar: z
+		.string()
+		.optional()
+		.describe('The mask a swear’s characters are replaced with. Defaults to `*`'),
+	PreRemoveBlockedCharacters: z
+		.boolean()
+		.optional()
+		.describe('Strip control and zero-width characters before filtering'),
+	Context: z.string().optional().describe('The surface being checked, e.g. `RoomChat`. Ignored'),
+	Intent: z.int().optional().describe('Reference filtering intent. Ignored'),
+	ruleset: z
+		.int()
+		.optional()
+		.describe('Reference ruleset — lowercase, as the client sends it. Ignored'),
+})
 
 /** `POST /api/sanitize/v1/isPure` — whether the text is free of profanity. */
 export const IsPureResponse = z.object({ IsPure: z.boolean() })

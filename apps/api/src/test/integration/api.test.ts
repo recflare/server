@@ -150,11 +150,22 @@ function b64url(input: ArrayBuffer | string): string {
 
 // `roles` mints the `role` claim the auth worker stamps from an account's flags; left
 // off, the token carries none, which is what a plain player's looks like to the
-// role-gated routes.
-async function bearer(sub = '42', roles?: string[]): Promise<Record<string, string>> {
+// role-gated routes. `version` mints the `rn.ver` claim auth stamps from the build the
+// client posted at login; left off, the token carries none, like one issued before the
+// claim existed.
+async function bearer(
+	sub = '42',
+	roles?: string[],
+	version?: string
+): Promise<Record<string, string>> {
 	const now = Math.floor(Date.now() / 1000)
 	const signingInput = `${b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))}.${b64url(
-		JSON.stringify({ sub, exp: now + 3600, ...(roles && { role: roles }) })
+		JSON.stringify({
+			sub,
+			exp: now + 3600,
+			...(roles && { role: roles }),
+			...(version && { 'rn.ver': version }),
+		})
 	)}`
 	const key = await crypto.subtle.importKey(
 		'raw',
@@ -222,6 +233,44 @@ describe('public endpoints', () => {
 	test('GET /api/versioncheck/v4 flags a client that sends no build', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/api/versioncheck/v4`)
 		expect(await res.json()).toMatchObject({ VersionStatus: 1 })
+	})
+
+	// Two catalogs, picked off the token's `rn.ver`: a build newer than GAME_VERSION gets
+	// the 2025 one. `Avatars.AdvancedFaceCustomizationEnabled` is a key only that catalog
+	// has, so its presence identifies which body was served.
+	const gameConfigKeys = async (version?: string) => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/gameconfigs/v1/all`, {
+			headers: version === undefined ? {} : await bearer('42', undefined, version),
+		})
+		expect(res.status).toBe(200)
+		return new Set(((await res.json()) as Array<{ Key: string }>).map((e) => e.Key))
+	}
+	const KEY_2025_ONLY = 'Avatars.AdvancedFaceCustomizationEnabled'
+
+	test('GET /api/gameconfigs/v1/all serves the 2025 catalog to a newer build', async () => {
+		for (const version of ['20250718.01', '20250424.01', '20231207']) {
+			expect(await gameConfigKeys(version), version).toContain(KEY_2025_ONLY)
+		}
+	})
+
+	test('GET /api/gameconfigs/v1/all serves the 2023 catalog to the target build', async () => {
+		expect(await gameConfigKeys(GAME_VERSION)).not.toContain(KEY_2025_ONLY)
+	})
+
+	test('GET /api/gameconfigs/v1/all serves the 2023 catalog to an older build', async () => {
+		expect(await gameConfigKeys('20220101')).not.toContain(KEY_2025_ONLY)
+	})
+
+	test('GET /api/gameconfigs/v1/all falls back to the 2023 catalog without a token', async () => {
+		// No token, and a token with no `rn.ver`: neither is evidence of a newer client, so
+		// both get the body this route has always served.
+		expect(await gameConfigKeys()).not.toContain(KEY_2025_ONLY)
+		const res = await exports.default.fetch(`${ORIGIN}/api/gameconfigs/v1/all`, {
+			headers: await bearer('42'),
+		})
+		expect(((await res.json()) as Array<{ Key: string }>).map((e) => e.Key)).not.toContain(
+			KEY_2025_ONLY
+		)
 	})
 
 	test('GET /api/versioncheck/islandedversions is empty', async () => {
@@ -1700,14 +1749,68 @@ describe('public endpoints', () => {
 		expect(await ids(featuredPage)).toEqual([202])
 	})
 
-	test('POST /api/sanitize/v1 echoes the value', async () => {
-		const san = await exports.default.fetch(`${ORIGIN}/api/sanitize/v1`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ Value: 'hello world' }),
+	describe('POST /api/sanitize/v1', () => {
+		const sanitize = async (body: Record<string, unknown>) =>
+			exports.default.fetch(`${ORIGIN}/api/sanitize/v1`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(body),
+			})
+
+		test('masks a swear one character at a time, keeping the rest of the text', async () => {
+			// The body verbatim from the client, unread fields included — `ruleset` is
+			// lowercase among PascalCase keys, which is what the reader has to tolerate.
+			const res = await sanitize({
+				Value: 'fuck',
+				ReplacementChar: '*',
+				Context: 'RoomChat',
+				Intent: 1,
+				ruleset: 0,
+				PreRemoveBlockedCharacters: false,
+			})
+			expect(res.status).toBe(200)
+			expect(await res.json()).toBe('****')
+
+			// The shape of the message survives: only the swear is masked, and it comes back
+			// the length it went in.
+			expect(await (await sanitize({ Value: 'what the fuck man' })).json()).toBe(
+				'what the **** man'
+			)
 		})
-		expect(san.status).toBe(200)
-		expect(await san.json()).toBe('hello world')
+
+		test('leaves clean text alone', async () => {
+			expect(await (await sanitize({ Value: 'Grape Escape' })).json()).toBe('Grape Escape')
+			expect(await (await sanitize({ Value: '' })).json()).toBe('')
+			expect(await (await sanitize({})).json()).toBe('')
+		})
+
+		test('honours ReplacementChar, defaulting to *', async () => {
+			expect(await (await sanitize({ Value: 'fuck', ReplacementChar: '#' })).json()).toBe('####')
+			// No ReplacementChar, and an empty one, both fall back rather than deleting the word.
+			expect(await (await sanitize({ Value: 'fuck' })).json()).toBe('****')
+			expect(await (await sanitize({ Value: 'fuck', ReplacementChar: '' })).json()).toBe('****')
+		})
+
+		test('masks the whole word a swear is part of', async () => {
+			expect(await (await sanitize({ Value: 'a$$hole' })).json()).toBe('*******')
+			expect(await (await sanitize({ Value: 'this is fucking cool' })).json()).toBe(
+				'this is ******* cool'
+			)
+		})
+
+		test('masks a swear spaced out letter by letter', async () => {
+			expect(await (await sanitize({ Value: 'f u c k off' })).json()).toBe('******* off')
+		})
+
+		test('PreRemoveBlockedCharacters strips the characters used to break a word up', async () => {
+			// A zero-width space inside the word: left alone it is text the filter reads as
+			// two harmless halves, so the client asks for it to go first.
+			const value = 'fu\u200Bck'
+			expect(await (await sanitize({ Value: value })).json()).toBe(value)
+			expect(
+				await (await sanitize({ Value: value, PreRemoveBlockedCharacters: true })).json()
+			).toBe('****')
+		})
 	})
 
 	describe('POST /api/sanitize/v1/isPure', () => {
