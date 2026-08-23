@@ -143,6 +143,14 @@ inconsistency here without checking the client first.
   The payload shapes are recovered from the client's own decoder in
   `apps/notify/src/notification-payloads.ts` — build frames against those interfaces (econ
   does) so a renamed key fails the build instead of silently vanishing on the wire.
+- Every matchmake response (`match`: `/matchmake/*`, refusals and the ban middleware's
+  included) must echo the request's `CorrelationId` back as `correlationId` — the client
+  tags each attempt with a GUID and fails with "Unable to connect to game session" if it
+  can't match the response to the attempt. A request that names none gets the all-zero
+  `Guid.Empty` rather than null: the client's field is a non-nullable Guid. The code is
+  served under TWO names, `result` (what the client reads) and `errorCode` (what this
+  server has always sent); they are the same number and must never disagree, which is why
+  everything answers through `matchmakeResult` rather than building the envelope by hand.
 - Accessibility is sent as the `RoomAccessibility` enum NAME on
   `rooms` `PUT /rooms/:id/subrooms/:sid/accessibility` (`accessibility=Private`), not the
   ordinal the room-level `/rooms/:id/accessibility` takes. The enum has five members

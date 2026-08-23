@@ -170,6 +170,14 @@ export const TokenRequest = z.object({
 		.optional()
 		.describe('Client-chosen, unverified. Recorded on the account, never trusted'),
 	device_class: z.string().optional().describe('Integer string; defaults to 0'),
+	ver: z
+		.string()
+		.optional()
+		.describe(
+			'The client’s build, e.g. `20250718.01`. Stamped into the token’s `rn.ver` claim and ' +
+				'read back by `match` when it writes presence, so a player reports the build they ' +
+				'are running. Absent (or empty) falls back to the server’s GAME_VERSION'
+		),
 })
 
 /** `POST /account/me/changepassword` form body. */
@@ -192,6 +200,47 @@ export const ChangePasswordResponse = z.object({
  * Both return a BARE JSON boolean rather than an object — the client reads the whole
  * body as a bool — and 404 an unknown player, mirroring the reference API.
  */
+/**
+ * The report category a moderation restriction was issued under, by value. Recorded in
+ * full from the client's enum so a restriction this server starts issuing can name the
+ * right one; nothing here reads it back.
+ *
+ * -1 Moderator · 0 Unknown · 1 DEPRECATED_MicrophoneAbuse · 2 Harassment · 3 Cheating ·
+ * 4 DEPRECATED_ImmatureBehavior · 5 AFK · 6 Misc · 7 Underage · 10 VoteKick ·
+ * 11 MisleadingPurchases · 100 CoC_Underage · 101 CoC_Sexual · 102 CoC_Discrimination ·
+ * 103 CoC_Trolling · 104 CoC_NameOrProfile · 200 InappropriateClothing ·
+ * 1000 IssuingInaccurateReports · 1100 RoomInventoryItems · 1101 InappropriateRooms ·
+ * 1102 InappropriateInventions · 1103 RoomOffers · 1200 Spam
+ */
+export const ReportCategory = z
+	.int()
+	.describe(
+		'ReportCategory: -1 Moderator · 0 Unknown · 1 DEPRECATED_MicrophoneAbuse · 2 Harassment · 3 Cheating · 4 DEPRECATED_ImmatureBehavior · 5 AFK · 6 Misc · 7 Underage · 10 VoteKick · 11 MisleadingPurchases · 100 CoC_Underage · 101 CoC_Sexual · 102 CoC_Discrimination · 103 CoC_Trolling · 104 CoC_NameOrProfile · 200 InappropriateClothing · 1000 IssuingInaccurateReports · 1100 RoomInventoryItems · 1101 InappropriateRooms · 1102 InappropriateInventions · 1103 RoomOffers · 1200 Spam'
+	)
+
+/**
+ * One moderation restriction on an account — a chat mute, say — as
+ * `GET /privileges/me/restrictions` lists them.
+ *
+ * `Name`, `Description` and `DisplayReason` are free display text: the client clears and
+ * refills its list from these and matches none of them against anything, so the wording is
+ * this server's to choose. What the client acts on is a record being PRESENT, and its
+ * `EndDate` — null for a restriction that never lifts.
+ */
+export const RestrictionDto = z.object({
+	AccountId: z.int().describe('The restricted account'),
+	Name: z.string().describe('Display name of the restriction, e.g. `Chat Mute`. Free text'),
+	Description: z.string().describe('What the player may no longer do. Free text'),
+	EndDate: z
+		.string()
+		.nullable()
+		.describe('When it lifts (ISO 8601 UTC); null for one that never does'),
+	AssociatedAccountId: z.int().nullable().describe('The other account involved, when there is one'),
+	AssociatedAccountUsername: z.string().nullable(),
+	ReportCategory: ReportCategory.nullable().describe('The category it was issued under'),
+	DisplayReason: z.string().nullable().describe('Reason shown to the player. Free text'),
+})
+
 export function roleLookup(role: 'developer' | 'moderator') {
 	return {
 		tags: ['Roles'],

@@ -1,0 +1,245 @@
+{
+  "Version": 0,
+  "SkuConfigs": [
+    {
+      "SkuId": 183,
+      "Name": "{{MakerAIDayPassName}}",
+      "Description": "{{MakerAIName}} springs to life for {{MakerAIHours}} hours* of creative collaboration!\n\nJust equip your {{MakerPenName}} in any Rooms 2.0 room you own (including Dorms with Maker AI), and your holographic helper can...\n• <b>Create images and patterns</b> on canvases\n• <b>Make objects come to life</b> through AI-generated circuits\n• <b>Generate objects</b> from the {{MakerPenName}} inventory \n• <u><link=\"ID\">Learn more about upcoming features</link> </u>",
+      "ThumbnailImageName": "img/makerAI_thumb_01.png",
+      "DetailsImageName": "img/makerAI_storeDetailsPromo_01.png",
+      "ShowSkuDetails": true,
+      "Footer": {
+        "Text": "* {{SubjectToDayPassUsageLimits}}",
+        "ExternalUrl": "{{LearnMoreAboutUsageLimitsUrl}}"
+      },
+      "DialogConfigs": {
+        "PurchaseSuccess": {
+          "Title": "Day Pass Purchased",
+          "Text": "Up to 24 hours of {{MakerAIName}} access has been added to your account. The clock starts now, so go equip your Maker Pen in one of your R2 rooms to get started!",
+          "SpriteName": "icon_MakerAI",
+          "Buttons": [
+            {
+              "Text": "Explore my R2 Rooms",
+              "Type": "Primary",
+              "OnClick": "GoToCreate"
+            }
+          ],
+          "Footer": {
+            "Text": "{{LearnMoreAboutUsageLimits}}",
+            "ExternalUrl": "{{LearnMoreAboutUsageLimitsUrl}}"
+          }
+        },
+        "UpsellAnnouncement": {
+          "Title": "Make Rooms Magical",
+          "Text": "Be among the first to try Maker AI in R2 rooms! Our new Day Pass extends beyond RR+ subscribers and dorms, empowering everyone to unleash their imagination.",
+          "SpriteName": "icon_MakerAI",
+          "Buttons": [
+            {
+              "Text": "Unlock This Deal",
+              "Type": "Primary",
+              "OnClick": "GoToDayPass"
+            }
+          ],
+          "Cooldown": 10080
+        },
+        "UsageLimitReached": {
+          "Title": "Energy Drained",
+          "Text": "{{MakerAIName}} hit our day pass usage limits and settled down for a power nap. Ready to wake it up with a fresh Day Pass?",
+          "SpriteName": "icon_MakerAI",
+          "Buttons": [
+            {
+              "Text": "Wake Up Maker AI",
+              "Type": "Primary",
+              "OnClick": "GoToDayPass"
+            },
+            {
+              "Text": "Continue without Maker AI",
+              "Type": "Secondary",
+              "OnClick": "DismissDialog"
+            }
+          ],
+          "Footer": {
+            "Text": "{{LearnMoreAboutUsageLimits}}",
+            "ExternalUrl": "{{LearnMoreAboutUsageLimitsUrl}}"
+          }
+        },
+        "TimeLimitReached": {
+          "Title": "Time's Up!",
+          "Text": "{{MakerAIName}} hit the day pass time limit and settled down for a power nap. Ready to wake it up with a fresh Day Pass?",
+          "SpriteName": "icon_MakerAI",
+          "Buttons": [
+            {
+              "Text": "Wake Up Maker AI",
+              "Type": "Primary",
+              "OnClick": "GoToDayPass"
+            },
+            {
+              "Text": "Continue without Maker AI",
+              "Type": "Secondary",
+              "OnClick": "DismissDialog"
+            }
+          ],
+          "Footer": {
+            "Text": "{{LearnMoreAboutUsageLimits}}",
+            "ExternalUrl": "{{LearnMoreAboutUsageLimitsUrl}}"
+          }
+        },
+        "UsageLimitWarning": {
+          "Title": "Energy Running Low",
+          "Text": "Heads up, Maker AI is nearing day pass usage limits and will need a power nap soon. Grab another day pass to keep the magic flowing uninterrupted!",
+          "SpriteName": "icon_MakerAI",
+          "Buttons": [
+            {
+              "Text": "Add More Energy",
+              "Type": "Primary",
+              "OnClick": "GoToDayPass"
+            },
+            {
+              "Text": "Ignore",
+              "Type": "Secondary",
+              "OnClick": "DismissDialog"
+            }
+          ],
+          "Footer": {
+            "Text": "{{LearnMoreAboutUsageLimits}}",
+            "ExternalUrl": "{{LearnMoreAboutUsageLimitsUrl}}"
+          }
+        },
+        "TimeLimitWarning": {
+          "Title": "Time Running Low",
+          "Text": "Heads up, {{MakerAIName}} has about <b>1 hour left</b> before it needs a recharge. Grab another day pass to keep the magic flowing uninterrupted!",
+          "SpriteName": "icon_MakerAI",
+          "Buttons": [
+            {
+              "Text": "Add More Time",
+              "Type": "Primary",
+              "OnClick": "GoToDayPass"
+            },
+            {
+              "Text": "Ignore",
+              "Type": "Secondary",
+              "OnClick": "DismissDialog"
+            }
+          ],
+          "Footer": {
+            "Text": "{{LearnMoreAboutUsageLimits}}",
+            "ExternalUrl": "{{LearnMoreAboutUsageLimitsUrl}}"
+          }
+        },
+        "ComingSoonToMakerAI": {
+          "Title": "Coming Soon to {{MakerAIName}}",
+          "Text": "There are some things Maker AI doesn't know how to do yet, and we're working on it!\n\nThis includes...\n•understanding circuits you've edited manually\n•generating objects out of basic shapes\n•placing objects relative to other objects\n\nSo, <b>\"put the lamp next to the couch\"</b> or <b>\"fix this bug in my circuit\"</b> will be confusing to Maker AI (for now).",
+          "SpriteName": "icon_MakerAI",
+          "Buttons": []
+        },
+        "ChatError": {
+          "Title": "Ready to create?",
+          "Text": "Your building bestie is taking a power nap. Wake it up with a fresh {{MakerAIDayPassName}}!",
+          "SpriteName": "icon_MakerAI",
+          "Buttons": [
+            {
+              "Text": "Wake up Maker AI",
+              "Type": "Primary",
+              "OnClick": "GoToDayPass"
+            }
+          ]
+        },
+        "PurchaseConfirmation": {
+          "Title": "Up to {{MakerAIHours}} Hours of Power!",
+          "Text": "Once a day pass is purchased, its timer keeps running even when you're not playing. The pass can't be paused or refunded even if you hit usage limits early. \n\n<size=75%><i>{{PlatformConfirmationMessage}}</i></size>",
+          "SpriteName": "icon_MakerAI",
+          "Buttons": [
+            {
+              "Text": "Accept & Continue to Payment",
+              "Type": "Primary",
+              "OnClick": "PositiveEvent"
+            }
+          ],
+          "Footer": {
+            "Text": "By pressing \"Accept & Continue to Payment\", I expressly agree that access to {{MakerAIName}} will begin immediately, and I acknowledge that I will lose my right to cancel or get a refund once access starts— even if it expires early due to <u>usage limits</u>.",
+            "ExternalUrl": "{{LearnMoreAboutUsageLimitsUrl}}"
+          }
+        },
+        "DayPassActiveBanner": {
+          "Title": "Day Pass Active",
+          "Text": "You currently have {{MakerAITimeLeftDynamic}} of {{MakerAIName}} access. If you buy another pass now, you'll get an additional {{MakerAIHours}} hours.",
+          "SpriteName": "icon_hourglass",
+          "Buttons": []
+        },
+        "MakerAIUsageLimits": {
+          "Title": "{{MakerAIName}} Usage Limits and Conditions",
+          "Text": "<b>Why does Maker AI have usage limits?</b>\nMaker AI is a powerful tool that allows everyone to create, but every action has a cost. Usage limits ensure we can continue to offer Maker AI to everyone.\n\n<b>What are the usage limits?</b>\nWe limit day passes to many hundreds of simple requests or many dozens of our most expensive requests (e.g., images and circuits). Don’t worry—this should only affect less than 1–5% of users. \n\n<b>What happens if I hit these limits?</b>\n•If it looks like you are getting close, we will provide a warning that you're approaching the limit.\n• If you exceed the limit, your day pass will end early. You will be able to buy another pass and continue working.\n\nWe appreciate your understanding as we work to make this tool available to all.\n\n<u><link=\"{{LearnMoreAboutUsageLimitsUrl}}\">Learn More</link></u>",
+          "SpriteName": "icon_MakerAI",
+          "Buttons": []
+        },
+        "FreeTrialConfirmation": {
+          "Title": "Try {{MakerAIName}} for free",
+          "Text": "Get up to {{MakerAIFreeTrialDurationDynamic}} of {{MakerAIName}} in an R2 room you own, free of charge.\n\nOnce your free trial starts, its timer keeps running even when you're not playing. It can't be paused or reactivated even if you hit usage limits early.",
+          "SpriteName": "icon_MakerAI",
+          "Buttons": [
+            {
+              "Text": "Accept & Start Free Trial",
+              "Type": "Primary",
+              "OnClick": "PositiveEvent"
+            }
+          ],
+          "Footer": {
+            "Text": "By pressing \"Accept & Start Free Trial\", I expressly agree that access to {{MakerAIName}} will begin immediately, and I acknowledge that I will lose my right to cancel once access starts—even if it expires early due to <u>usage limits</u>.",
+            "ExternalUrl": "{{LearnMoreAboutUsageLimitsUrl}}"
+          }
+        },
+        "FreeTrialSuccess": {
+          "Title": "Free Trial Activated",
+          "Text": "Up to {{MakerAIFreeTrialDurationDynamic}} of {{MakerAIName}} access has been added to your account, free of charge. The clock starts now, so go equip your {{MakerPenName}} in one of your R2 rooms to get started.",
+          "SpriteName": "icon_MakerAI",
+          "Buttons": [
+            {
+              "Text": "Explore my R2 Rooms",
+              "Type": "Primary",
+              "OnClick": "GoToCreate"
+            }
+          ],
+          "Footer": {
+            "Text": "{{LearnMoreAboutUsageLimits}}",
+            "ExternalUrl": "{{LearnMoreAboutUsageLimitsUrl}}"
+          }
+        },
+        "ActivateFreeTrialError": {
+          "Title": "Something Went Wrong",
+          "Text": "A problem occurred while attempting to activate your free trial, try again in a few minutes. If the problem persists, you can contact us at <u>https://recroom.zendesk.com</u>.",
+          "SpriteName": "icon_MakerAI",
+          "Buttons": [
+            {
+              "Text": "Ok",
+              "Type": "Primary",
+              "OnClick": "DismissDialog"
+            }
+          ]
+        },
+        "FreeTrialAnnouncement": {
+          "Title": "Creation for Everyone",
+          "Text": "Get up to {{MakerAIFreeTrialDurationDynamic}} of {{MakerAIName}} in an R2 room you own, free of charge. No strings attached—just pure creative power to generate images, circuits, and more!",
+          "SpriteName": "icon_MakerAI",
+          "Buttons": [
+            {
+              "Text": "Unlock This Deal",
+              "Type": "Primary",
+              "OnClick": "GoToDayPass"
+            }
+          ],
+          "Cooldown": 10080
+        }
+      }
+    }
+  ],
+  "StringReplacements": {
+    "{{MakerAIName}}": "Maker AI",
+    "{{MakerAIDayPassName}}": "Maker AI Day Pass",
+    "{{DayPassNamePlural}}": "Day Passes",
+    "{{MakerAIHours}}": "24",
+    "{{SubjectToDayPassUsageLimits}}": "Subject to <u>usage limits</u>. Currently unavailable on Playstation and Nintendo Switch.",
+    "{{LearnMoreAboutUsageLimits}}": "<u><link=\"MakerAIUsageLimits\">Learn more about day pass usage limits</link></u>",
+    "{{LearnMoreAboutUsageLimitsUrl}}": "https://rec.net/creator/p/makerai-daypass",
+    "{{MakerPenName}}": "Maker Pen"
+  }
+}

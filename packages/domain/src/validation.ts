@@ -39,6 +39,18 @@ export const MAX_EVENT_NAME_LENGTH = 64
 export const MAX_EVENT_DESCRIPTION_LENGTH = 512
 
 /**
+ * The longest a player event may run — a day, inclusive, so a full 24-hour event is
+ * allowed and anything past it is refused. An event is a scheduled get-together in one
+ * room, not a season: a window of weeks would sit in the browse feed's "upcoming" and
+ * "happening now" rows indefinitely, crowding out everything real.
+ *
+ * Applied to the window a write RESOLVES to, not to the fields it carries — an edit that
+ * moves one bound is checked against the stored other one. See `eventInputRejection` in
+ * the api worker.
+ */
+export const MAX_EVENT_DURATION_MS = 24 * 60 * 60 * 1000
+
+/**
  * Invention limits. A name is a title a player types into the invention-save box and
  * reads back in a browse tile, so it allows the punctuation a title needs — but
  * nothing else, since it is also what invention search matches on. The minimum is real:

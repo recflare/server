@@ -1,0 +1,26 @@
+[
+  {
+    "id": "Highlights",
+    "sectionType": 13,
+    "sectionSubType": "highlights",
+    "source": "Highlights",
+    "sourceMetadata": null,
+    "displayMetadata": "{\"DisplayTitle\":\"Highlights\"}"
+  },
+  {
+    "id": "PlayTabs_Explore_SearchButton",
+    "sectionType": 13,
+    "sectionSubType": "playtabs_explore",
+    "source": "CuratedList",
+    "sourceMetadata": "Discovery.PageSource.PlayExplore",
+    "displayMetadata": "{\"DisplayTitle\":\"Explore\", \"SearchType\":1}"
+  },
+  {
+    "id": "PlayTabs_Library",
+    "sectionType": 13,
+    "sectionSubType": "playtabs_library",
+    "source": "CuratedList",
+    "sourceMetadata": "Discovery.PageSource.PlayLibrary",
+    "displayMetadata": "{\"DisplayTitle\":\"Library\", \"unsupportedPlatforms\":[]}"
+  }
+]

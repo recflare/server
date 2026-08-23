@@ -418,6 +418,34 @@ const app = new Hono<App>()
 		(c) => c.json([])
 	)
 
+	// The same unread lookup over the clubs the player SUBSCRIBES to, rather than the ones
+	// they belong to. `sendAnnouncements=true` asks for the announcement bodies alongside
+	// the clubs; nothing tracks read state yet, so nothing is unread either way and the
+	// flag makes no difference to what we serve.
+	.get(
+		'/announcements/v2/subscription/mine/unread',
+		describeRoute({
+			tags: ['Announcements'],
+			summary: 'The player’s subscribed clubs with unread announcements',
+			description: [
+				'The subscription-side counterpart of `/announcements/v2/mine/unread`. Nothing tracks',
+				'what a player has read yet, so nothing is unread → always `[]`, whatever',
+				'`sendAnnouncements` says.',
+			].join(' '),
+			parameters: [
+				{
+					name: 'sendAnnouncements',
+					in: 'query',
+					required: false,
+					description: 'Whether to include the announcement bodies. Ignored — the list is empty.',
+					schema: { type: 'boolean' },
+				},
+			],
+			responses: { 200: json(JsonArray, 'Always empty for now') },
+		}),
+		(c) => c.json([])
+	)
+
 	// A club's announcements — its noticeboard, newest first. Public. Answers the
 	// envelope, with `LastAnnouncementId` the newest one (null when there are none)
 	// and `LastReadAnnouncementId` 0: nothing tracks read state yet.

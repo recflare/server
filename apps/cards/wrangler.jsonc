@@ -1,0 +1,28 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "cards",
+	"main": "src/cards.app.ts",
+	"compatibility_date": "2026-06-16",
+	"compatibility_flags": ["nodejs_compat"],
+	// Shared Secrets Store holding the HS256 JWT signing key. Every worker binds the
+	// same store as JWT_SECRET so tokens signed by `auth` verify here. The "local"
+	// store_id placeholder is replaced with RECFLARE_SECRETS_STORE at deploy time.
+	"secrets_store_secrets": [
+		{
+			"binding": "JWT_SECRET",
+			"store_id": "local",
+			"secret_name": "JWT_SECRET"
+		}
+	],
+	"upload_source_maps": true,
+	"observability": {
+		"logs": {
+			"enabled": true,
+			"head_sampling_rate": 1 // 100%
+		}
+	},
+	"vars": {
+		"ENVIRONMENT": "development", // overridden during deployment
+		"SENTRY_RELEASE": "unknown" // overridden during deployment
+	}
+}

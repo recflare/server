@@ -62,8 +62,9 @@ export const NOT_A_MEMBER_RESPONSE = {
 
 /**
  * A chat message as stored and served (see message-db.ts). `contents` is the client's own
- * envelope (`{"Type":0,"Version":1,"Data":"hello"}`) — stored verbatim and served back
- * untouched, so new message types need no schema change. A `senderPlayerId` of -5 is the
+ * envelope (`{"Type":0,"Version":1,"Data":"hello"}`) — served back exactly as it was
+ * stored, and stored as it was sent but for the profanity mask over `Data`, so new
+ * message types need no schema change. A `senderPlayerId` of -5 is the
  * system pseudo-player the "started a chat" / "left" notices are posted as.
  */
 export const ChatMessageDto = z.object({
@@ -110,13 +111,29 @@ export const ChatThreadWithMessagesDto = z.object({
 })
 
 /**
- * The bare ChatResult integer several actions answer with (HTTP 200 either way): 0
- * success, 1 invalid arguments, 3 membership not found (which doubles as "no such
- * thread"), 4 player already on the thread.
+ * The bare ChatResult integer several actions answer with (HTTP 200 either way). The
+ * client's enum in full, recovered from the build — it is served NUMERICALLY, there being
+ * no by-name formatter on the client side:
+ *
+ * 0 Success · 1 InvalidArguments · 2 ThreadNotFound · 3 MembershipNotFound ·
+ * 4 PlayerAlreadyOnThread · 5 CannotMessagePlayer · 6 InvalidCharacters ·
+ * 7 RecentlyLeftThread · 8 ThreadTooLarge · 9 InsufficientPermission ·
+ * 10 TooManyAffiliationThreads · 11 UnderModeration · 12 MessageNotFound ·
+ * 13 InvalidThreadJoinType · 14 PlayerBanned ·
+ * 15 CannotMessagePlayerDueToLocalPrivacySetting ·
+ * 16 CannotMessagePlayerDueToRemotePrivacySetting ·
+ * 17 SuccessWithPartialPlayersAddedToThreadDueToPrivacySetting ·
+ * 18 CannotAddPlayersToThreadDueToPrivacySetting ·
+ * 19 CannotConvertDirectMessageChatToGroupChatDueToPrivacySetting
+ *
+ * Only 0, 1, 3 and 4 are reachable on this server; the rest are recorded so a route that
+ * needs one answers the number the client actually branches on.
  */
 export const ChatResult = z
 	.int()
-	.describe('0 success · 1 invalid arguments · 3 membership not found · 4 already on thread')
+	.describe(
+		'ChatResult, numeric: 0 Success · 1 InvalidArguments · 2 ThreadNotFound · 3 MembershipNotFound · 4 PlayerAlreadyOnThread · 5 CannotMessagePlayer · 6 InvalidCharacters · 7 RecentlyLeftThread · 8 ThreadTooLarge · 9 InsufficientPermission · 10 TooManyAffiliationThreads · 11 UnderModeration · 12 MessageNotFound · 13 InvalidThreadJoinType · 14 PlayerBanned · 15 CannotMessagePlayerDueToLocalPrivacySetting · 16 CannotMessagePlayerDueToRemotePrivacySetting · 17 SuccessWithPartialPlayersAddedToThreadDueToPrivacySetting · 18 CannotAddPlayersToThreadDueToPrivacySetting · 19 CannotConvertDirectMessageChatToGroupChatDueToPrivacySetting'
+	)
 
 /**
  * `POST /thread` — the reference's wrapper: the created (or resolved) thread plus the
@@ -137,6 +154,45 @@ export const SendMessageResponse = z.object({
 	chatResult: ChatResult,
 	chatThread: ChatThreadWithMessagesDto.nullable(),
 })
+
+/**
+ * `GET /settings/partyinvite` — how long a party invite link stays usable, in minutes. A
+ * bare single-key object, not an envelope: the whole body is this one setting.
+ */
+export const PartyInviteSettings = z.object({
+	InviteLinkLifetimeInMinutes: z
+		.int()
+		.describe('Minutes a party invite link stays valid before it lapses'),
+})
+
+/**
+ * `GET|PUT /thread/chatPrivacySetting` — who may start a chat with the caller. camelCase,
+ * unlike the PascalCase thread DTOs, and the two settings are the `ChatPrivacy` enum served
+ * NUMERICALLY (0 Friends · 1 Favorites · 2 NoOne): this client build carries no by-name enum
+ * formatter, so a string would decode as nothing. Note the asymmetry with the PUT, which
+ * sends the enum by NAME (`directMessagePrivacySetting=Favorites`).
+ *
+ * STORED, NOT ENFORCED. The PUT keeps the player's choice in the `playersettings` KV and this
+ * is what the client renders its privacy screen from, but nothing checks it —
+ * `GET /thread/checkCanSendDirectMessageWithPrivacySetting` still allows every DM, since this
+ * server has no friends/favorites list to test a sender against.
+ */
+export const ChatPrivacySettings = z.object({
+	playerId: z.int().describe('The caller — read from the token, not from the query'),
+	directMessagePrivacySetting: z
+		.int()
+		.describe('Who may DM the caller: 0 Friends · 1 Favorites · 2 NoOne'),
+	groupChatPrivacySetting: z
+		.int()
+		.describe('Who may add the caller to a group chat: 0 Friends · 1 Favorites · 2 NoOne'),
+})
+
+/**
+ * `GET /thread/party` — STUB. The real shape hasn't been observed off a live client, so
+ * the route answers an empty object and this schema says so rather than guessing at
+ * fields. Fill both in together once the real response is captured.
+ */
+export const PartyThread = z.object({}).describe('Stub — always empty; the real shape is unknown')
 
 /** `GET /` — the liveness probe. */
 export const ServiceStatus = z.object({
@@ -159,8 +215,8 @@ export const CreateThreadRequest = z.object({
 		.optional()
 		.describe(
 			[
-				'The client envelope, stored verbatim and unparsed. Blank/absent opens the thread',
-				'without posting a message and reports chatResult 1',
+				'The client envelope, stored as sent but for the profanity mask over its `Data`.',
+				'Blank/absent opens the thread without posting a message and reports chatResult 1',
 			].join(' ')
 		),
 })
@@ -183,7 +239,8 @@ export const SendMessageRequest = z.object({
 		.string()
 		.describe(
 			[
-				'The client envelope (Type/Version/Data), stored verbatim. Blank or missing stores',
+				'The client envelope (Type/Version/Data). Stored as sent except for `Data`, which',
+				'comes back with any profanity masked one `*` per character. Blank or missing stores',
 				'nothing and reports chatResult 1, still with the thread attached',
 			].join(' ')
 		),
@@ -202,6 +259,27 @@ export const SnoozeThreadRequest = z.object({
 	snooze: z
 		.string()
 		.describe('`True`/`False` as the client spells it (`1`/`yes` also count as true)'),
+})
+
+/**
+ * `PUT /thread/chatPrivacySetting` form body. The client sends ONE of the two fields per
+ * call — it PUTs whichever row of its privacy screen the player just changed — so a field
+ * that isn't in the body leaves that setting as it was rather than resetting it.
+ *
+ * The value is the `ChatPrivacy` enum by NAME (`Favorites`), which is how the client spells
+ * it here even though the GET answers with the ordinal; the ordinal is accepted too.
+ */
+export const ChatPrivacySettingRequest = z.object({
+	directMessagePrivacySetting: z
+		.string()
+		.optional()
+		.describe('Who may DM the caller: `Friends` · `Favorites` · `NoOne` (or 0 · 1 · 2)'),
+	groupChatPrivacySetting: z
+		.string()
+		.optional()
+		.describe(
+			'Who may add the caller to a group chat: `Friends` · `Favorites` · `NoOne` (or 0 · 1 · 2)'
+		),
 })
 
 /** `PUT|POST /thread/:id/favorite` form body. */

@@ -14,11 +14,15 @@ import {
 	LEVEL_REQUIRED_XP,
 	LEVEL_REWARDS,
 	MAX_LEVEL,
+	OUTFIT_SCHEMA_DDL,
+	PRESENCE_SCHEMA_DDL,
+	PRESENCE_TTL_SECONDS,
 	PROGRESSION_SCHEMA_DDL,
 	RELATIONSHIP_SCHEMA_DDL,
 	ROOM_SCHEMA_DDL,
 	seedRoomWithSubRooms,
 	SUBROOM_SCHEMA_DDL,
+	SUPPORTED_GAME_VERSIONS,
 } from '@repo/domain'
 
 import '../../api.app'
@@ -40,11 +44,12 @@ import {
 	isPlayerBanned,
 	SCHEMA_DDL as REPORTS_SCHEMA_DDL,
 } from '../../reports-db'
+import { charadesWordsFor } from '../../routes/gameplay'
 import { getWarningsAgainst, SCHEMA_DDL as WARNINGS_SCHEMA_DDL } from '../../warnings-db'
 
 import type { SavedImage } from '@repo/domain'
 import type { Env } from '../../context'
-import type { PlayerEvent, PlayerEventResult } from '../../events-db'
+import type { EventTag, PlayerEvent, PlayerEventEnvelope, PlayerEventResult } from '../../events-db'
 import type { InventionSaveResult, SavedInvention } from '../../inventions-db'
 
 declare module 'cloudflare:test' {
@@ -107,6 +112,12 @@ beforeAll(async () => {
 	// Relationships table (owned by the api worker) — friendship endpoints use it.
 	for (const stmt of RELATIONSHIP_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 
+	// Presence (owned by the rooms worker) — the online-friend count joins onto it.
+	for (const stmt of PRESENCE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+
+	// Outfit table (owned by the econ worker) — /outfits/me reads and writes slot 0.
+	for (const stmt of OUTFIT_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+
 	// Inventions table (owned by the api worker) — invention save/mine use it.
 	for (const stmt of INVENTIONS_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 
@@ -140,11 +151,22 @@ function b64url(input: ArrayBuffer | string): string {
 
 // `roles` mints the `role` claim the auth worker stamps from an account's flags; left
 // off, the token carries none, which is what a plain player's looks like to the
-// role-gated routes.
-async function bearer(sub = '42', roles?: string[]): Promise<Record<string, string>> {
+// role-gated routes. `version` mints the `rn.ver` claim auth stamps from the build the
+// client posted at login; left off, the token carries none, like one issued before the
+// claim existed.
+async function bearer(
+	sub = '42',
+	roles?: string[],
+	version?: string
+): Promise<Record<string, string>> {
 	const now = Math.floor(Date.now() / 1000)
 	const signingInput = `${b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))}.${b64url(
-		JSON.stringify({ sub, exp: now + 3600, ...(roles && { role: roles }) })
+		JSON.stringify({
+			sub,
+			exp: now + 3600,
+			...(roles && { role: roles }),
+			...(version && { 'rn.ver': version }),
+		})
 	)}`
 	const key = await crypto.subtle.importKey(
 		'raw',
@@ -197,9 +219,65 @@ describe('public endpoints', () => {
 		expect(await res.json()).toMatchObject({ VersionStatus: 0 })
 	})
 
+	test('GET /api/versioncheck/v4 reports current for every supported build', async () => {
+		for (const version of SUPPORTED_GAME_VERSIONS) {
+			const res = await exports.default.fetch(`${ORIGIN}/api/versioncheck/v4?v=${version}`)
+			expect(await res.json(), version).toMatchObject({ VersionStatus: 0 })
+		}
+	})
+
 	test('GET /api/versioncheck/v4 flags a mismatched build', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/api/versioncheck/v4?v=19990101`)
 		expect(await res.json()).toMatchObject({ VersionStatus: 1 })
+	})
+
+	test('GET /api/versioncheck/v4 flags a client that sends no build', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/versioncheck/v4`)
+		expect(await res.json()).toMatchObject({ VersionStatus: 1 })
+	})
+
+	// Two catalogs, picked off the token's `rn.ver`: a build newer than GAME_VERSION gets
+	// the 2025 one. `Avatars.AdvancedFaceCustomizationEnabled` is a key only that catalog
+	// has, so its presence identifies which body was served.
+	const gameConfigKeys = async (version?: string) => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/gameconfigs/v1/all`, {
+			headers: version === undefined ? {} : await bearer('42', undefined, version),
+		})
+		expect(res.status).toBe(200)
+		return new Set(((await res.json()) as Array<{ Key: string }>).map((e) => e.Key))
+	}
+	const KEY_2025_ONLY = 'Avatars.AdvancedFaceCustomizationEnabled'
+
+	test('GET /api/gameconfigs/v1/all serves the 2025 catalog to a newer build', async () => {
+		for (const version of ['20250718.01', '20250424.01', '20231207']) {
+			expect(await gameConfigKeys(version), version).toContain(KEY_2025_ONLY)
+		}
+	})
+
+	test('GET /api/gameconfigs/v1/all serves the 2023 catalog to the target build', async () => {
+		expect(await gameConfigKeys(GAME_VERSION)).not.toContain(KEY_2025_ONLY)
+	})
+
+	test('GET /api/gameconfigs/v1/all serves the 2023 catalog to an older build', async () => {
+		expect(await gameConfigKeys('20220101')).not.toContain(KEY_2025_ONLY)
+	})
+
+	test('GET /api/gameconfigs/v1/all falls back to the 2023 catalog without a token', async () => {
+		// No token, and a token with no `rn.ver`: neither is evidence of a newer client, so
+		// both get the body this route has always served.
+		expect(await gameConfigKeys()).not.toContain(KEY_2025_ONLY)
+		const res = await exports.default.fetch(`${ORIGIN}/api/gameconfigs/v1/all`, {
+			headers: await bearer('42'),
+		})
+		expect(((await res.json()) as Array<{ Key: string }>).map((e) => e.Key)).not.toContain(
+			KEY_2025_ONLY
+		)
+	})
+
+	test('GET /api/versioncheck/islandedversions is empty', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/versioncheck/islandedversions`)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
 	})
 
 	test('GET /api/relationships/v2/get returns empty array for a player with none', async () => {
@@ -247,26 +325,104 @@ describe('public endpoints', () => {
 		const words = (await res.json()) as Array<{ Id: number; Difficulty: number; EN_US: string }>
 		expect(Array.isArray(words)).toBe(true)
 		expect(words.length).toBeGreaterThan(0)
-		expect(words[0]).toEqual({ Id: 1, Difficulty: 0, EN_US: 'David Bowie' })
+		// Which bank that is depends on the day — the April Fools list replaces the ordinary
+		// one on April 1st — so compare against the same selector the route uses rather than
+		// hard-coding a word here. The two banks' contents are pinned below.
+		expect(words).toEqual(charadesWordsFor())
 	})
 
-	test('GET /api/PlayerReporting/v1/moderationBlockDetails reports "not blocked"', async () => {
-		const res = await exports.default.fetch(
-			`${ORIGIN}/api/PlayerReporting/v1/moderationBlockDetails`
-		)
-		expect(res.status).toBe(200)
-		// ReportCategory -1 = no category (0 is a real one), and Message is null.
-		expect(await res.json()).toEqual({
-			ReportCategory: -1,
-			Duration: 0,
-			GameSessionId: 0,
-			IsBan: false,
-			IsHostKick: false,
-			IsVoiceModAutoban: false,
-			Message: null,
-			PlayerIdReporter: null,
-			TimeoutStartedAt: null,
+	test('serves the April Fools charades words on April 1st and the ordinary list otherwise', () => {
+		// A replacement, not an addition: the joke list stands alone for the day, and its ids
+		// start past the end of the ordinary one rather than overlapping it.
+		const april = charadesWordsFor(new Date('2026-04-01T12:00:00Z'))
+		expect(april[0]).toEqual({ Id: 1258, Difficulty: 10, EN_US: 'Nothing' })
+
+		const ordinary = charadesWordsFor(new Date('2026-04-02T12:00:00Z'))
+		expect(ordinary[0]).toEqual({ Id: 1, Difficulty: 0, EN_US: 'David Bowie' })
+		expect(ordinary.some((w) => w.Id === april[0].Id)).toBe(false)
+
+		// Every other day gets the ordinary list, including the edges of April 1 UTC and the
+		// first of other months.
+		expect(charadesWordsFor(new Date('2026-03-31T23:59:59Z'))).toBe(ordinary)
+		expect(charadesWordsFor(new Date('2026-04-02T00:00:00Z'))).toBe(ordinary)
+		expect(charadesWordsFor(new Date('2026-05-01T12:00:00Z'))).toBe(ordinary)
+		expect(charadesWordsFor(new Date('2026-01-01T12:00:00Z'))).toBe(ordinary)
+
+		// The window is the whole of April 1 in UTC, not local time.
+		expect(charadesWordsFor(new Date('2026-04-01T00:00:00Z'))).toBe(april)
+		expect(charadesWordsFor(new Date('2026-04-01T23:59:59Z'))).toBe(april)
+	})
+
+	// The client POSTs this with no body, despite it being a pure read; the route answers
+	// GET as well, and both methods serve the same body.
+	test.each(['GET', 'POST'])(
+		'%s /api/PlayerReporting/v1/moderationBlockDetails reports "not blocked"',
+		async (method) => {
+			const res = await exports.default.fetch(
+				`${ORIGIN}/api/PlayerReporting/v1/moderationBlockDetails`,
+				{ method }
+			)
+			expect(res.status).toBe(200)
+			// ReportCategory -1 = Unknown (0 is a real category). Message is null, not the
+			// reference stub's empty string — the client tells "no message" from a blank one.
+			expect(await res.json()).toEqual({
+				ReportCategory: -1,
+				Duration: 0,
+				GameSessionId: 0,
+				IsBan: false,
+				IsHostKick: false,
+				IsVoiceModAutoban: false,
+				Message: null,
+				PlayerIdReporter: null,
+				TimeoutStartedAt: null,
+			})
+		}
+	)
+
+	// A fixed list, in render order — the client shows the buttons in the order they
+	// arrive, so the order is part of the contract, not just the contents.
+	test('GET /api/PlayerReporting/v1/voteToKickReasons serves the reasons in order', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/PlayerReporting/v1/voteToKickReasons`, {
+			headers: await bearer(),
 		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([
+			{ Reason: 'Discriminatory language', ReportCategory: 102 },
+			{ Reason: 'Discriminatory behavior', ReportCategory: 102 },
+			{ Reason: 'Threats or encouraging suicide', ReportCategory: 102 },
+			{ Reason: 'Toxic behavior', ReportCategory: 102 },
+			{ Reason: 'Sexual behavior in public', ReportCategory: 101 },
+			{ Reason: 'Sexual language in public', ReportCategory: 101 },
+			{ Reason: 'Non-consensual sexual behavior', ReportCategory: 101 },
+			{ Reason: 'Player in walls or floor', ReportCategory: 103 },
+			{ Reason: 'Friendly fire', ReportCategory: 103 },
+			{ Reason: 'Microphone spam', ReportCategory: 103 },
+			{ Reason: 'Abusing bugs or exploits', ReportCategory: 103 },
+			{ Reason: 'Spawn camping', ReportCategory: 103 },
+			{ Reason: 'Inactive in games (AFK)', ReportCategory: 6 },
+			{ Reason: 'Prefab swapping', ReportCategory: 6 },
+			{ Reason: 'Not following game rules', ReportCategory: 6 },
+		])
+	})
+
+	test('GET /api/PlayerReporting/v1/voteToKickReasons is auth-gated', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/PlayerReporting/v1/voteToKickReasons`)
+		expect(res.status).toBe(401)
+	})
+
+	test('POST /api/PlayerReporting/v1/referee says the caller is not one', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/PlayerReporting/v1/referee`, {
+			method: 'POST',
+		})
+		expect(res.status).toBe(200)
+		// A bare boolean, not an envelope or a list.
+		expect(await res.json()).toBe(false)
+	})
+
+	test('GET /api/referee/files has no cases', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/referee/files`)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
 	})
 
 	// Unauthenticated by design — the client posts this before it has an account, so
@@ -443,6 +599,189 @@ describe('public endpoints', () => {
 		expect(await res.json()).toEqual({ Results: [], TotalResults: 0 })
 	})
 
+	// Nothing locks avatar items here, so the array is empty and the posted ids are never
+	// parsed. Unlike the custom-item bulk below, this one takes no token — the reference
+	// answers outright.
+	test('POST /api/avatar/v1/lockeditems/bulk returns [] without auth', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/avatar/v1/lockeditems/bulk`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify(['a', 'b']),
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
+	})
+
+	// A BARE ARRAY of the items that matched — not the `{ Results, TotalResults }` page
+	// the sibling custom-item reads serve. Nothing stores custom items, so every id
+	// misses, and a miss is an absent entry rather than an error.
+	test('POST /api/customAvatarItems/v1/bulk returns the matching items as an array', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/customAvatarItems/v1/bulk`, {
+			method: 'POST',
+			headers: {
+				'content-type': 'application/x-www-form-urlencoded',
+				...(await bearer()),
+			},
+			// Repeated form field, as `[FromForm] List<string>` binds it.
+			body: new URLSearchParams([
+				['customAvatarItemIds', 'a'],
+				['customAvatarItemIds', 'b'],
+			]),
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
+	})
+
+	// The ids are never parsed (nothing could match), so a missing body is still a 200
+	// rather than the 400 a body-reading handler would produce.
+	test('POST /api/customAvatarItems/v1/bulk ignores the body', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/customAvatarItems/v1/bulk`, {
+			method: 'POST',
+			headers: await bearer(),
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
+	})
+
+	test('POST /api/customAvatarItems/v1/bulk is auth-gated', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/customAvatarItems/v1/bulk`, {
+			method: 'POST',
+		})
+		expect(res.status).toBe(401)
+	})
+
+	test('POST /api/customAvatarItems/GetCustomAvatarItemCurrentSavesForLegacyAvatarItems returns an empty map', async () => {
+		const res = await exports.default.fetch(
+			`${ORIGIN}/api/customAvatarItems/GetCustomAvatarItemCurrentSavesForLegacyAvatarItems`,
+			{
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ AvatarItemIds: [1, 2, 3] }),
+			}
+		)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ customAvatarItemSavesByAvatarItemDesc: {} })
+	})
+
+	test('GET /outfits/me 401s without a token, serves the empty envelope for a new player', async () => {
+		const anon = await exports.default.fetch(`${ORIGIN}/outfits/me`)
+		expect(anon.status).toBe(401)
+		// Account 77 never saves an outfit, so it keeps getting the new-account envelope.
+		const res = await exports.default.fetch(`${ORIGIN}/outfits/me`, { headers: await bearer('77') })
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({
+			LegacyData: {
+				SelectionsV1: null,
+				SelectionsV2: null,
+				FaceFeatures: null,
+				SkinColor: null,
+				HairColor: null,
+			},
+			Selections: [],
+			DataVersion: 9,
+			CustomizationSettings: null,
+			ThumbnailFileName: null,
+			Name: null,
+			Accessibility: 0,
+			Slot: 0,
+		})
+	})
+
+	test('PUT /outfits/me saves into slot 0; GET reads it back verbatim', async () => {
+		// The client's own payload, trimmed to one selection: the point is that the heavy
+		// JSON-in-a-string fields survive the round trip as strings, unparsed.
+		const outfit = {
+			DataVersion: 2,
+			LegacyData: {
+				SelectionsV1: '193a3bf9-abc0-4d78-8d63-92046908b1c5,,0',
+				SelectionsV2:
+					'{"selections":[{"PrefabGuid":"193a3bf9-abc0-4d78-8d63-92046908b1c5","CombinationGuid":"","BodyPart":0}]}',
+				FaceFeatures: '{"ver":7,"eyeId":"Aeu0yxJXG0qCOLZW5Tcu7A","hideEars":false}',
+				SkinColor: 'Dc6StLFk60u5iUTrb3_C3w',
+				HairColor: 'UAT0OaWEkUG-mWDIyiX1Kg',
+			},
+			CustomizationSettings: '{"AvatarVersion":2,"AvatarBodyType":0}',
+			Selections: [],
+			Slot: 0,
+			Name: null,
+			Accessibility: 1,
+			ThumbnailFileName: null,
+		}
+
+		const anon = await exports.default.fetch(`${ORIGIN}/outfits/me`, {
+			method: 'PUT',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify(outfit),
+		})
+		expect(anon.status).toBe(401)
+
+		const res = await exports.default.fetch(`${ORIGIN}/outfits/me`, {
+			method: 'PUT',
+			headers: { ...(await bearer()), 'content-type': 'application/json' },
+			body: JSON.stringify(outfit),
+		})
+		expect(res.status).toBe(200)
+		// The save answers the base envelope — three keys, no `Value`, and NOT the outfit
+		// just sent. Note the mixed casing: `Success`/`Error` but `error_id`.
+		expect(await res.json()).toEqual({ Success: true, Error: null, error_id: null })
+
+		// The read serves it back byte-for-byte — the JSON-in-a-string fields are still
+		// strings, not re-encoded objects.
+		const read = await exports.default.fetch(`${ORIGIN}/outfits/me`, { headers: await bearer() })
+		expect(await read.json()).toEqual(outfit)
+
+		// Re-saving overwrites slot 0 rather than adding a second row.
+		const changed = { ...outfit, LegacyData: { ...outfit.LegacyData, SkinColor: 'changed' } }
+		await exports.default.fetch(`${ORIGIN}/outfits/me`, {
+			method: 'PUT',
+			headers: { ...(await bearer()), 'content-type': 'application/json' },
+			body: JSON.stringify(changed),
+		})
+		const reread = await exports.default.fetch(`${ORIGIN}/outfits/me`, { headers: await bearer() })
+		expect(await reread.json()).toEqual(changed)
+		const rows = await env.DB.prepare(
+			'SELECT COUNT(*) AS n FROM outfit WHERE account_id = 42'
+		).first<{ n: number }>()
+		expect(rows?.n).toBe(1)
+
+		// A save naming another slot does not touch what the caller is wearing.
+		await exports.default.fetch(`${ORIGIN}/outfits/me`, {
+			method: 'PUT',
+			headers: { ...(await bearer()), 'content-type': 'application/json' },
+			body: JSON.stringify({ ...changed, Slot: 3, Name: 'slot three' }),
+		})
+		const worn = await exports.default.fetch(`${ORIGIN}/outfits/me`, { headers: await bearer() })
+		expect(((await worn.json()) as { Name: string | null }).Name).toBe(null)
+	})
+
+	test('GET /outfits/me/saved 401s without a token, returns [] with one', async () => {
+		const anon = await exports.default.fetch(`${ORIGIN}/outfits/me/saved`)
+		expect(anon.status).toBe(401)
+		// Empty even for account 42, which saved an outfit through PUT /outfits/me above.
+		const res = await exports.default.fetch(`${ORIGIN}/outfits/me/saved`, {
+			headers: await bearer(),
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
+	})
+
+	test('PUT /outfits/me 400s on an unparseable body', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/outfits/me`, {
+			method: 'PUT',
+			headers: { ...(await bearer()), 'content-type': 'application/json' },
+			body: 'not json',
+		})
+		expect(res.status).toBe(400)
+	})
+
+	test('GET /api/progressionEvents/active is an empty list (no auth)', async () => {
+		// The client reads an empty list as "no event running" and skips the event UI; a 404
+		// would stall its load instead.
+		const res = await exports.default.fetch(`${ORIGIN}/api/progressionEvents/active`)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
+	})
+
 	test('GET /api/rooms/v1/filters returns an object with filter arrays', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/api/rooms/v1/filters`)
 		expect(res.status).toBe(200)
@@ -465,6 +804,12 @@ describe('public endpoints', () => {
 		const cats = await exports.default.fetch(`${ORIGIN}/api/keepsakes/categories`)
 		expect(cats.status).toBe(200)
 		expect(await cats.json()).toEqual({ Results: [], TotalResults: 0 })
+	})
+
+	test('POST /statsigUserProperties returns the StatsigEnabled flag', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/statsigUserProperties`, { method: 'POST' })
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ success: true })
 	})
 
 	test('GET /voice/config returns an object', async () => {
@@ -1322,6 +1667,26 @@ describe('public endpoints', () => {
 		).toBe(403)
 	})
 
+	test('GET /api/inventions/v1/fromcreators is an empty feed for now', async () => {
+		// A stub: the client renders an empty array as "this creator has published nothing",
+		// where a 404 would read as a row that failed to load.
+		const res = await exports.default.fetch(
+			`${ORIGIN}/api/inventions/v1/fromcreators?id=207&skip=0&take=100`
+		)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
+
+		// The params are accepted and ignored, including a repeated `id` and none at all.
+		expect(
+			await (
+				await exports.default.fetch(`${ORIGIN}/api/inventions/v1/fromcreators?id=1&id=2`)
+			).json()
+		).toEqual([])
+		expect(
+			await (await exports.default.fetch(`${ORIGIN}/api/inventions/v1/fromcreators`)).json()
+		).toEqual([])
+	})
+
 	test('GET /api/inventions/v1/toptoday + v1/featured serve the invention feeds', async () => {
 		const ids = async (res: Response): Promise<number[]> =>
 			((await res.json()) as SavedInvention[]).map((i) => i.InventionId)
@@ -1410,19 +1775,139 @@ describe('public endpoints', () => {
 		expect(await ids(featuredPage)).toEqual([202])
 	})
 
-	test('POST /api/sanitize/v1 echoes the value; isPure reports true', async () => {
-		const san = await exports.default.fetch(`${ORIGIN}/api/sanitize/v1`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ Value: 'hello world' }),
-		})
-		expect(san.status).toBe(200)
-		expect(await san.json()).toBe('hello world')
+	describe('POST /api/sanitize/v1', () => {
+		const sanitize = async (body: Record<string, unknown>) =>
+			exports.default.fetch(`${ORIGIN}/api/sanitize/v1`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(body),
+			})
 
-		const pure = await exports.default.fetch(`${ORIGIN}/api/sanitize/v1/isPure`, { method: 'POST' })
-		expect(pure.status).toBe(200)
-		expect(await pure.json()).toEqual({ IsPure: true })
+		test('masks a swear one character at a time, keeping the rest of the text', async () => {
+			// The body verbatim from the client, unread fields included — `ruleset` is
+			// lowercase among PascalCase keys, which is what the reader has to tolerate.
+			const res = await sanitize({
+				Value: 'fuck',
+				ReplacementChar: '*',
+				Context: 'RoomChat',
+				Intent: 1,
+				ruleset: 0,
+				PreRemoveBlockedCharacters: false,
+			})
+			expect(res.status).toBe(200)
+			expect(await res.json()).toBe('****')
+
+			// The shape of the message survives: only the swear is masked, and it comes back
+			// the length it went in.
+			expect(await (await sanitize({ Value: 'what the fuck man' })).json()).toBe(
+				'what the **** man'
+			)
+		})
+
+		test('leaves clean text alone', async () => {
+			expect(await (await sanitize({ Value: 'Grape Escape' })).json()).toBe('Grape Escape')
+			expect(await (await sanitize({ Value: '' })).json()).toBe('')
+			expect(await (await sanitize({})).json()).toBe('')
+		})
+
+		test('honours ReplacementChar, defaulting to *', async () => {
+			expect(await (await sanitize({ Value: 'fuck', ReplacementChar: '#' })).json()).toBe('####')
+			// No ReplacementChar, and an empty one, both fall back rather than deleting the word.
+			expect(await (await sanitize({ Value: 'fuck' })).json()).toBe('****')
+			expect(await (await sanitize({ Value: 'fuck', ReplacementChar: '' })).json()).toBe('****')
+		})
+
+		test('masks the whole word a swear is part of', async () => {
+			expect(await (await sanitize({ Value: 'a$$hole' })).json()).toBe('*******')
+			expect(await (await sanitize({ Value: 'this is fucking cool' })).json()).toBe(
+				'this is ******* cool'
+			)
+		})
+
+		test('masks a swear spaced out letter by letter', async () => {
+			expect(await (await sanitize({ Value: 'f u c k off' })).json()).toBe('******* off')
+		})
+
+		test('PreRemoveBlockedCharacters strips the characters used to break a word up', async () => {
+			// A zero-width space inside the word: left alone it is text the filter reads as
+			// two harmless halves, so the client asks for it to go first.
+			const value = 'fu\u200Bck'
+			expect(await (await sanitize({ Value: value })).json()).toBe(value)
+			expect(
+				await (await sanitize({ Value: value, PreRemoveBlockedCharacters: true })).json()
+			).toBe('****')
+		})
 	})
+
+	describe('POST /api/sanitize/v1/isPure', () => {
+		const isPure = async (Value?: string, authed = true) =>
+			exports.default.fetch(`${ORIGIN}/api/sanitize/v1/isPure`, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					...(authed ? await bearer('42') : {}),
+				},
+				body: Value === undefined ? undefined : JSON.stringify({ Value }),
+			})
+
+		test('401s without a token', async () => {
+			expect((await isPure('hello', false)).status).toBe(401)
+		})
+
+		test.each([
+			'hello world',
+			'My Cool Room',
+			// The words a substring filter gets wrong. Rejecting these is worse than
+			// missing a swear: the player is told the name is unacceptable and can't
+			// see why.
+			'Grape Escape',
+			'Title Screen',
+			'assassin',
+			'Bass Pro Shop',
+			'analysis of the class',
+			'Scunthorpe United',
+			'shiitake mushrooms',
+			// Nothing to object to in an empty box — the client checks as you type.
+			'',
+		])('%j is pure', async (value) => {
+			const res = await isPure(value)
+			expect(res.status).toBe(200)
+			expect(await res.json()).toEqual({ IsPure: true })
+		})
+
+		test.each([
+			'fuck this',
+			// Leetspeak and symbol substitution are folded back to letters.
+			'sh1t',
+			'a$$hole',
+			'n1gger',
+			// A swear anywhere in the string, not just on its own.
+			'my totally fucking cool room',
+			// Ours, on top of the dataset — see EXTRA_PATTERNS.
+			'kys',
+		])('%j is not pure', async (value) => {
+			const res = await isPure(value)
+			expect(res.status).toBe(200)
+			expect(await res.json()).toEqual({ IsPure: false })
+		})
+
+		test('a body with no Value is pure rather than a bad request', async () => {
+			const res = await isPure()
+			expect(res.status).toBe(200)
+			expect(await res.json()).toEqual({ IsPure: true })
+		})
+	})
+})
+
+describe('account', () => {
+	test.each(['email', 'phone', 'anything'])(
+		'GET /iam/me/channels/%s is an empty list',
+		async (type) => {
+			const res = await exports.default.fetch(`${ORIGIN}/iam/me/channels/${type}`)
+			expect(res.status).toBe(200)
+			expect(await res.json()).toEqual([])
+		}
+	)
 })
 
 describe('auth-gated endpoints', () => {
@@ -1747,10 +2232,11 @@ describe('images', () => {
 		// A metadata row was created, and it's readable by name via /api/images/v6.
 		const meta = (await (
 			await exports.default.fetch(`${ORIGIN}/api/images/v6?name=${ImageName}`)
-		).json()) as { ImageName: string; PlayerId: number; Id: number; CheerCount: number }
+		).json()) as { ImageName: string; PlayerId: number; SavedImageId: number; CheerCount: number }
 		expect(meta.ImageName).toBe(ImageName)
 		expect(meta.PlayerId).toBe(42)
-		expect(typeof meta.Id).toBe('number')
+		// `SavedImageId`, not `Id` — v6 renames like the player lists do.
+		expect(typeof meta.SavedImageId).toBe('number')
 		expect(meta.CheerCount).toBe(0)
 	})
 
@@ -1820,6 +2306,52 @@ describe('images', () => {
 		expect(await feed('?take=lots')).toBe(10)
 	})
 
+	test('GET /api/images/v5/bulk resolves image records by id, in request order', async () => {
+		const one = await createImage(env.DB, { imageName: 'bulkone.jpg', playerId: 7101 })
+		const two = await createImage(env.DB, { imageName: 'bulktwo.jpg', playerId: 7102 })
+		// Not public: a bulk lookup must not hand this back, or sequential ids would make
+		// every private photo readable by anyone who counts.
+		const hidden = await createImage(env.DB, {
+			imageName: 'bulkhidden.jpg',
+			playerId: 7103,
+			accessibility: 0,
+		})
+
+		const bulk = async (query: string) =>
+			(await (await exports.default.fetch(`${ORIGIN}/api/images/v5/bulk${query}`)).json()) as Array<
+				Record<string, unknown>
+			>
+
+		// Request order, not id order — the client lines the answers up with what it asked for.
+		const both = await bulk(`?ids=${two.Id}&ids=${one.Id}`)
+		expect(both.map((i) => i.Id)).toEqual([two.Id, one.Id])
+		// The RAW SavedImage: `Id`/`Type`, and TaggedPlayerIds present — not the
+		// SavedImageId/SavedImageType projection the player photo lists serve.
+		expect(both[0]).toMatchObject({
+			Id: two.Id,
+			Type: two.Type,
+			ImageName: 'bulktwo.jpg',
+			PlayerId: 7102,
+			TaggedPlayerIds: [],
+		})
+
+		// An unknown id and a non-public one are absent rather than errors or holes, so the
+		// answer can be shorter than the request.
+		expect((await bulk(`?ids=${one.Id}&ids=999999&ids=${hidden.Id}`)).map((i) => i.Id)).toEqual([
+			one.Id,
+		])
+
+		// No ids at all is an empty array.
+		expect(await bulk('')).toEqual([])
+
+		// More ids than D1 will bind in one query (100) — the lookup has to split.
+		const many = [...Array.from({ length: 130 }, (_, i) => 800000 + i), one.Id, two.Id]
+		expect((await bulk(`?${many.map((id) => `ids=${id}`).join('&')}`)).map((i) => i.Id)).toEqual([
+			one.Id,
+			two.Id,
+		])
+	})
+
 	test('POST /api/images/v1/cheer persists, syncs CheerCount, and the bulk lookup reflects it', async () => {
 		// Seed an image to cheer.
 		// Its own player id: 700's photos are asserted on exactly in the player-list test.
@@ -1868,6 +2400,68 @@ describe('images', () => {
 		expect(await cheerCount()).toBe(0)
 	})
 
+	test('GET|PUT /api/players/v1/playerPhotoTaggingSetting round-trips the preference', async () => {
+		const path = `${ORIGIN}/api/players/v1/playerPhotoTaggingSetting`
+		const read = async (sub: string) => exports.default.fetch(path, { headers: await bearer(sub) })
+		const write = async (sub: string, body: unknown) =>
+			exports.default.fetch(path, {
+				method: 'PUT',
+				headers: { ...(await bearer(sub)), 'Content-Type': 'application/json' },
+				body: JSON.stringify(body),
+			})
+
+		// Both are auth-gated.
+		expect((await exports.default.fetch(path)).status).toBe(401)
+		expect((await exports.default.fetch(path, { method: 'PUT' })).status).toBe(401)
+
+		// A player who has never set one reads 0 — a bare integer, not an envelope.
+		const initial = await read('710')
+		expect(initial.status).toBe(200)
+		expect(await initial.text()).toBe('0')
+
+		// The PUT answers the stored value, and the GET agrees afterwards.
+		expect(await (await write('710', { Setting: 2 })).text()).toBe('2')
+		expect(await (await read('710')).text()).toBe('2')
+
+		// It's stored under `playerPhotoTaggingSetting` in the player's settings bag...
+		const stored = await env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(
+			'player:710',
+			'json'
+		)
+		expect(stored?.playerPhotoTaggingSetting).toBe('2')
+
+		// ...and the write MERGES: the player's other settings survive it.
+		await env.RECFLARE_PLAYER_SETTINGS.put(
+			'player:711',
+			JSON.stringify({ 'Recroom.OOBE': '77', playerPhotoTaggingSetting: '1' })
+		)
+		expect(await (await read('711')).text()).toBe('1')
+		await write('711', { Setting: 0 })
+		expect(
+			await env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>('player:711', 'json')
+		).toEqual({ 'Recroom.OOBE': '77', playerPhotoTaggingSetting: '0' })
+
+		// The setting is per-player.
+		expect(await (await read('710')).text()).toBe('2')
+
+		// A body with no readable Setting leaves the stored value alone rather than writing 0
+		// — and answers what the player still has.
+		expect(await (await write('710', { Nothing: true })).text()).toBe('2')
+		expect(await (await read('710')).text()).toBe('2')
+
+		// A form body and the lowercase spelling both parse, as does a numeric string.
+		const form = await exports.default.fetch(path, {
+			method: 'PUT',
+			headers: {
+				...(await bearer('710')),
+				'Content-Type': 'application/x-www-form-urlencoded',
+			},
+			body: new URLSearchParams({ setting: '3' }).toString(),
+		})
+		expect(await form.text()).toBe('3')
+		expect(await (await read('710')).text()).toBe('3')
+	})
+
 	test('GET /api/images/v5/cheered/bulk reports per-id cheer state for the caller (auth-gated)', async () => {
 		const img = await createImage(env.DB, { imageName: 'bulkcheer.jpg', playerId: 701 })
 		const other = 999999
@@ -1907,6 +2501,72 @@ describe('images', () => {
 			headers: await bearer('42'),
 		})
 		expect(await empty.json()).toEqual([])
+
+		// The client POSTs the ids as a form body of repeated `id` fields — a photo grid asks
+		// about a whole page at once, far more than belongs in a URL. Same answer as the GET.
+		const posted = await exports.default.fetch(`${ORIGIN}/api/images/v5/cheered/bulk`, {
+			method: 'POST',
+			headers: {
+				...(await bearer('42')),
+				'Content-Type': 'application/x-www-form-urlencoded',
+			},
+			body: `id=${img.Id}&id=${other}`,
+		})
+		expect(posted.status).toBe(200)
+		expect(await posted.json()).toEqual([
+			{ SavedImageId: img.Id, IsCheered: true },
+			{ SavedImageId: other, IsCheered: false },
+		])
+		expect(
+			(await exports.default.fetch(`${ORIGIN}/api/images/v5/cheered/bulk`, { method: 'POST' }))
+				.status
+		).toBe(401)
+
+		// A full page of ids: D1 caps a query at 100 bound parameters and the player id takes
+		// one, so the lookup has to split rather than fail — the client really does send ~100.
+		const page = [img.Id, ...Array.from({ length: 120 }, (_, i) => 900000 + i)]
+		const fullPage = await exports.default.fetch(`${ORIGIN}/api/images/v5/cheered/bulk`, {
+			method: 'POST',
+			headers: {
+				...(await bearer('42')),
+				'Content-Type': 'application/x-www-form-urlencoded',
+			},
+			body: page.map((imageId) => `id=${imageId}`).join('&'),
+		})
+		expect(fullPage.status).toBe(200)
+		const entries = (await fullPage.json()) as Array<{ SavedImageId: number; IsCheered: boolean }>
+		// One entry per requested id, in request order, and the cheer still resolves from the
+		// far side of the split.
+		expect(entries).toHaveLength(page.length)
+		expect(entries.map((e) => e.SavedImageId)).toEqual(page)
+		expect(entries[0]).toEqual({ SavedImageId: img.Id, IsCheered: true })
+		expect(entries.filter((e) => e.IsCheered)).toHaveLength(1)
+	})
+
+	test('GET /api/images/v6 serves the metadata projection, nothing nullable', async () => {
+		const img = await createImage(env.DB, {
+			imageName: 'v6shape.jpg',
+			playerId: 7301,
+			// No room, no event, no description: all three are null on the row.
+		})
+		const res = await exports.default.fetch(`${ORIGIN}/api/images/v6?name=v6shape.jpg`)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({
+			SavedImageId: img.Id,
+			ImageName: 'v6shape.jpg',
+			PlayerId: 7301,
+			// Nulls on the row come out as 0 / "" — the client's DTO has no null to put there.
+			RoomId: 0,
+			PlayerEventId: 0,
+			ClubId: 0,
+			Description: '',
+			Accessibility: 1,
+			AccessibilityLocked: false,
+			SavedImageType: 1,
+			CreatedAt: img.CreatedAt,
+			CheerCount: 0,
+			CommentCount: 0,
+		})
 	})
 
 	test('GET /api/images/v6 400s without a name and 404s for an unknown one', async () => {
@@ -1940,18 +2600,35 @@ describe('images', () => {
 		const meta = (await (
 			await exports.default.fetch(`${ORIGIN}/api/images/v6?name=${ImageName}`)
 		).json()) as {
-			Type: number
+			SavedImageType: number
 			RoomId: number
 			Accessibility: number
+			PlayerEventId: number
+			ClubId: number
+			Description: string
+		}
+		expect(meta.SavedImageType).toBe(1)
+		expect(meta.RoomId).toBe(777)
+		expect(meta.Accessibility).toBe(2)
+		// v6 carries no TaggedPlayerIds — the upload still records them, which the stored row
+		// below proves. Nothing on this projection is nullable: a "none" event reads 0, not
+		// null, and the club (which nothing here sets) reads 0 too.
+		expect(meta).not.toHaveProperty('TaggedPlayerIds')
+		expect(meta.PlayerEventId).toBe(0)
+		expect(meta.ClubId).toBe(0)
+		expect(meta.Description).toBe('')
+
+		// The tagged players and the null event id, as actually stored.
+		const row = await env.DB.prepare('SELECT data FROM image WHERE image_name = ?1')
+			.bind(ImageName)
+			.first<{ data: string }>()
+		const stored = JSON.parse(row!.data) as {
 			TaggedPlayerIds: number[]
 			PlayerEventId: number | null
 		}
-		expect(meta.Type).toBe(1)
-		expect(meta.RoomId).toBe(777)
-		expect(meta.Accessibility).toBe(2)
-		expect(meta.TaggedPlayerIds).toEqual([5, 6])
-		// playerEventId 0 means "none" → stored as null.
-		expect(meta.PlayerEventId).toBeNull()
+		expect(stored.TaggedPlayerIds).toEqual([5, 6])
+		// playerEventId 0 means "none" → stored as null, and serialized back out as 0.
+		expect(stored.PlayerEventId).toBeNull()
 	})
 
 	test('POST /api/images/v4/uploadsaved records a profile thumbnail on the account', async () => {
@@ -2533,6 +3210,95 @@ describe('relationships', () => {
 	})
 })
 
+describe('friend online count', () => {
+	// Presence is written by the `match` worker, so it's seeded straight into the table
+	// here. `roomInstance` null is lobby presence — signed in, not in a room.
+	async function setPresence(accountId: number, secondsLeft = PRESENCE_TTL_SECONDS) {
+		await env.DB.prepare('INSERT OR REPLACE INTO presence (data) VALUES (?1)')
+			.bind(
+				JSON.stringify({
+					accountId,
+					roomInstance: null,
+					statusVisibility: 0,
+					deviceClass: 0,
+					vrMovementMode: 0,
+					platform: 0,
+					appVersion: GAME_VERSION,
+					expiresAt: Math.floor(Date.now() / 1000) + secondsLeft,
+				})
+			)
+			.run()
+	}
+
+	async function friendOnlineCount(sub: string): Promise<number> {
+		const res = await exports.default.fetch(`${ORIGIN}/api/messages/v1/friendOnlineStatus`, {
+			method: 'POST',
+			headers: await bearer(sub),
+		})
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as { success: boolean; value: { FriendsOnlineCount: number } }
+		expect(body.success).toBe(true)
+		return body.value.FriendsOnlineCount
+	}
+
+	// Make `a` and `b` friends the way the client does.
+	async function befriend(a: string, b: number) {
+		await exports.default.fetch(`${ORIGIN}/api/relationships/v2/addfriend?id=${b}`, {
+			headers: await bearer(a),
+		})
+	}
+
+	test('POST /api/messages/v1/friendOnlineStatus is auth-gated', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/messages/v1/friendOnlineStatus`, {
+			method: 'POST',
+		})
+		expect(res.status).toBe(401)
+	})
+
+	test('counts only friends who are online, from either side of the row', async () => {
+		// 900 is friends with 901 (as requester) and with 902 (as target).
+		await befriend('900', 901)
+		await befriend('902', 900)
+		// A pending request and a stranger, both online — neither is a friendship.
+		await exports.default.fetch(`${ORIGIN}/api/relationships/v2/sendfriendrequest?id=903`, {
+			headers: await bearer('900'),
+		})
+
+		expect(await friendOnlineCount('900')).toBe(0)
+
+		// Both friends online, plus noise: the caller themselves, the pending request, and
+		// an unrelated player.
+		await setPresence(900)
+		await setPresence(901)
+		await setPresence(902)
+		await setPresence(903)
+		await setPresence(904)
+		expect(await friendOnlineCount('900')).toBe(2)
+
+		// One friend goes offline; the other still counts.
+		await env.DB.prepare('DELETE FROM presence WHERE account_id = ?1').bind(901).run()
+		expect(await friendOnlineCount('900')).toBe(1)
+	})
+
+	test('expired presence does not count, and unfriending drops the count', async () => {
+		await befriend('910', 911)
+		await setPresence(911, -1)
+		expect(await friendOnlineCount('910')).toBe(0)
+
+		await setPresence(911)
+		expect(await friendOnlineCount('910')).toBe(1)
+
+		await exports.default.fetch(`${ORIGIN}/api/relationships/v2/removefriend?id=911`, {
+			headers: await bearer('910'),
+		})
+		expect(await friendOnlineCount('910')).toBe(0)
+	})
+
+	test('a player with no relationships counts zero', async () => {
+		expect(await friendOnlineCount('920')).toBe(0)
+	})
+})
+
 describe('messages', () => {
 	// The notify DO is stubbed to record every notifyPlayer call (see vitest.config).
 	type Sent = {
@@ -2746,6 +3512,8 @@ describe('mutual friends', () => {
 
 describe('player events', () => {
 	const HOUR = 60 * 60 * 1000
+	/** The longest window a write may store — an event lasts at most a day. */
+	const DAY = 24 * HOUR
 	/**
 	 * Seconds precision, no milliseconds — the form the client sends and reads back.
 	 *
@@ -2766,7 +3534,9 @@ describe('player events', () => {
 			body: JSON.stringify(body),
 		})
 
-	const create = async (body: unknown, sub = '42'): Promise<PlayerEvent> => {
+	// The write envelope's event, which is NOT the stored record: no `State`, plus `Tags`
+	// and `BroadcastingRoomInstanceId`. Tests that want the record read it back over v1.
+	const create = async (body: unknown, sub = '42'): Promise<PlayerEventEnvelope> => {
 		const res = await post('/api/playerevents/v2', body, sub)
 		expect(res.status).toBe(200)
 		return ((await res.json()) as PlayerEventResult).PlayerEvent
@@ -2775,12 +3545,25 @@ describe('player events', () => {
 	const get = async (path: string, sub?: string): Promise<Response> =>
 		exports.default.fetch(`${ORIGIN}${path}`, sub ? { headers: await bearer(sub) } : undefined)
 
+	/**
+	 * The stored RECORD behind an envelope's event — what the v1 reads serve. The envelope
+	 * drops `State`, adds `Tags`/`BroadcastingRoomInstanceId`, and turns a null `ImageName`
+	 * into `""`, so going back the other way undoes exactly those.
+	 */
+	const asRecord = (
+		event: PlayerEventEnvelope,
+		imageName: string | null = event.ImageName
+	): PlayerEvent => {
+		const { Tags: _tags, BroadcastingRoomInstanceId: _broadcast, ...rest } = event
+		return { ...rest, ImageName: imageName, State: 0 }
+	}
+
 	// The fixture set every test below reads. Times are relative to the run so the
 	// upcoming/live/finished distinction the browse queries make is real.
-	let upcoming: PlayerEvent
-	let clubEvent: PlayerEvent
-	let liveEvent: PlayerEvent
-	let pastEvent: PlayerEvent
+	let upcoming: PlayerEventEnvelope
+	let clubEvent: PlayerEventEnvelope
+	let liveEvent: PlayerEventEnvelope
+	let pastEvent: PlayerEventEnvelope
 
 	beforeAll(async () => {
 		// Posted nested under `PlayerEvent` — the envelope form the client sends back.
@@ -2865,8 +3648,11 @@ describe('player events', () => {
 		})
 		expect(res.status).toBe(401)
 
-		// The stored record carries exactly the client's field set — nothing more.
+		// The envelope's event: the client's field set, plus `Tags` and
+		// `BroadcastingRoomInstanceId`, and WITHOUT `State` — the bare record the v1 read
+		// serves is the one that carries that.
 		expect(upcoming).toEqual({
+			Tags: [],
 			PlayerEventId: upcoming.PlayerEventId,
 			CreatorPlayerId: 42,
 			ImageName: 'e63dcbffe8d14a7696bea7117dc3dd28.jpg',
@@ -2878,12 +3664,12 @@ describe('player events', () => {
 			StartTime: at(HOUR),
 			EndTime: at(2 * HOUR),
 			AttendeeCount: 1,
-			State: 0,
 			Accessibility: 1,
 			IsMultiInstance: false,
 			SupportMultiInstanceRoomChat: true,
 			DefaultBroadcastPermissions: 0,
 			CanRequestBroadcastPermissions: 0,
+			BroadcastingRoomInstanceId: null,
 		})
 		// Timestamps come back at seconds precision, as the client sends them.
 		expect(upcoming.StartTime).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/)
@@ -2927,13 +3713,97 @@ describe('player events', () => {
 		expect(((await after.json()) as PlayerEvent).Name).toBe('EditMe')
 	})
 
+	test('the event writes cap the window at 24 hours', async () => {
+		const window = (StartTime: string, EndTime: string) =>
+			post('/api/playerevents/v2', { Name: 'Windowed', RoomId: 3, StartTime, EndTime })
+
+		// A day exactly is allowed — "at most one day", not "under one day".
+		expect((await window(at(0), at(DAY))).status).toBe(200)
+		// A second past it is not.
+		expect((await window(at(0), at(DAY + 1000))).status).toBe(400)
+		expect((await window(at(0), at(30 * DAY))).status).toBe(400)
+
+		// A missing end defaults to an hour after the start, so it can never fail…
+		expect(
+			(await post('/api/playerevents/v2', { Name: 'Open ended', RoomId: 3, StartTime: at(DAY) }))
+				.status
+		).toBe(200)
+		// …but an end alone is measured from now, which can.
+		expect(
+			(await post('/api/playerevents/v2', { Name: 'Far end', RoomId: 3, EndTime: at(2 * DAY) }))
+				.status
+		).toBe(400)
+		expect(
+			(await post('/api/playerevents/v2', { Name: 'Near end', RoomId: 3, EndTime: at(HOUR) }))
+				.status
+		).toBe(200)
+		// A body naming neither is defaulted, as before.
+		expect((await post('/api/playerevents/v2', { Name: 'Untimed', RoomId: 3 })).status).toBe(200)
+
+		// A backwards window is refused too — `end - start` on one running a month
+		// backwards is negative, which would sail past a "no longer than a day" check.
+		expect((await window(at(3 * HOUR), at(HOUR))).status).toBe(400)
+	})
+
+	test('the 24-hour cap is checked on the window a write RESOLVES to', async () => {
+		const event = await create({
+			RoomId: 3,
+			Name: 'Movable',
+			StartTime: at(5 * HOUR),
+			EndTime: at(6 * HOUR),
+		})
+		const path = `/api/playerevents/v2/${event.PlayerEventId}`
+
+		// Moving one bound is measured against the STORED other one, not against a default:
+		// a start dragged two days back leaves a window far longer than a day.
+		expect((await post(path, { StartTime: at(-2 * DAY) })).status).toBe(400)
+		expect((await post(path, { EndTime: at(2 * DAY) })).status).toBe(400)
+		// Both bounds moved together stay inside the cap, so this is fine.
+		expect((await post(path, { StartTime: at(2 * DAY), EndTime: at(2 * DAY + HOUR) })).status).toBe(
+			200
+		)
+		// An edit that says nothing about the times is unaffected.
+		expect((await post(path, { Name: 'Still Movable' })).status).toBe(200)
+
+		// …and a refusal left the event where it was.
+		const stored = (await (
+			await get(`/api/playerevents/v1/${event.PlayerEventId}`)
+		).json()) as PlayerEvent
+		expect(stored.StartTime).toBe(at(2 * DAY))
+		expect(stored.EndTime).toBe(at(2 * DAY + HOUR))
+	})
+
 	test('POST /api/playerevents/v2 answers the write envelope, not the bare event', async () => {
-		const res = await post('/api/playerevents/v2', { Name: 'Enveloped', RoomId: 3 })
+		const res = await post('/api/playerevents/v2', {
+			Name: 'Enveloped',
+			RoomId: 3,
+			tags: [{ tag: 'music', type: 0 }],
+		})
 		const body = (await res.json()) as PlayerEventResult
 		expect(body.Result).toBe(0)
-		// Always null: no event tags are stored, but the field has to be present.
-		expect(body.TagModifyResult).toBeNull()
 		expect(body.PlayerEvent.Name).toBe('Enveloped')
+		// The tags ride inline on the event AND in TagModifyResult, as NAMES — not the
+		// `{ tag, type }` pairs the v1 read's lowercase `tags` serves.
+		expect(body.PlayerEvent.Tags).toEqual(['music'])
+		expect(body.TagModifyResult).toEqual({ Result: 0, Tags: ['music'] })
+		// No `State`, and the broadcast instance is present and null.
+		expect(body.PlayerEvent).not.toHaveProperty('State')
+		expect(body.PlayerEvent.BroadcastingRoomInstanceId).toBeNull()
+	})
+
+	test('GET /api/playerevents/v2/:eventId serves the same envelope as the write', async () => {
+		const written = await post('/api/playerevents/v2', {
+			Name: 'ReadBack',
+			RoomId: 3,
+			tags: [{ tag: 'music', type: 0 }],
+		})
+		const created = (await written.json()) as PlayerEventResult
+
+		const res = await get(`/api/playerevents/v2/${created.PlayerEvent.PlayerEventId}`)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual(created)
+
+		expect((await get('/api/playerevents/v2/9999999')).status).toBe(404)
 	})
 
 	test('POST /api/playerevents/v2 pushes a PlayerEventCreated notification to the creator', async () => {
@@ -2994,9 +3864,9 @@ describe('player events', () => {
 			RoomId: 0,
 			SubRoomId: null,
 			ClubId: null,
-			ImageName: null,
+			// The envelope's ImageName is a string: the record's null reads as "" here.
+			ImageName: '',
 			AttendeeCount: 1,
-			State: 0,
 			Accessibility: 1,
 			IsMultiInstance: false,
 			SupportMultiInstanceRoomChat: false,
@@ -3010,27 +3880,32 @@ describe('player events', () => {
 	test('GET /api/playerevents/v1/:eventId serves the bare event', async () => {
 		const res = await get(`/api/playerevents/v1/${upcoming.PlayerEventId}`)
 		expect(res.status).toBe(200)
-		// No envelope here — unlike the writes.
-		expect(await res.json()).toEqual(upcoming)
+		// No envelope here — unlike the writes — and the bare RECORD, which carries `State`
+		// and neither `Tags` nor `BroadcastingRoomInstanceId`.
+		const body = await res.json()
+		expect(body).toEqual(asRecord(upcoming))
+		expect(Object.hasOwn(body as object, 'Tags')).toBe(false)
+		expect(Object.hasOwn(body as object, 'State')).toBe(true)
 
 		expect((await get('/api/playerevents/v1/999999')).status).toBe(404)
 	})
 
 	test('GET /api/playerevents/v1/:eventId?includeDetails=True adds only `tags`', async () => {
 		const path = `/api/playerevents/v1/${upcoming.PlayerEventId}`
-		// The flag's whole effect: the lowercase `tags`, empty (no event tags are stored).
+		// The flag's whole effect: the lowercase `tags` — the `{ tag, type }` pairs, not the
+		// envelope's names. This event carries none.
 		expect(await (await get(`${path}?includeDetails=True`)).json()).toEqual({
-			...upcoming,
+			...asRecord(upcoming),
 			tags: [],
 		})
 		// Accepted case-insensitively — the client sends `True`.
 		expect(await (await get(`${path}?includeDetails=true`)).json()).toEqual({
-			...upcoming,
+			...asRecord(upcoming),
 			tags: [],
 		})
 		// Anything else is the bare record, with no `tags` key at all.
-		expect(await (await get(`${path}?includeDetails=False`)).json()).toEqual(upcoming)
-		expect(await (await get(path)).json()).toEqual(upcoming)
+		expect(await (await get(`${path}?includeDetails=False`)).json()).toEqual(asRecord(upcoming))
+		expect(await (await get(path)).json()).toEqual(asRecord(upcoming))
 	})
 
 	test('GET /api/playerevents/v1/bulk answers in request order, skipping unknown ids', async () => {
@@ -3091,7 +3966,29 @@ describe('player events', () => {
 		// The listing projection — no `State`, and a null broadcasting instance — not the
 		// stored record the by-id read serves.
 		const entry = feed.find((e) => e.PlayerEventId === upcoming.PlayerEventId)!
-		expect(entry).toEqual({ ...upcoming, State: undefined, BroadcastingRoomInstanceId: null })
+		expect(entry).toEqual({
+			...asRecord(upcoming),
+			State: undefined,
+			BroadcastingRoomInstanceId: null,
+		})
+
+		// The base event, exactly: the v2 envelope's event minus `Tags`, 17 keys.
+		expect(Object.keys(entry).sort()).toEqual(
+			Object.keys(upcoming)
+				.filter((k) => k !== 'Tags')
+				.sort()
+		)
+		expect(Object.keys(entry)).toHaveLength(17)
+
+		// An event with no image serves `""` here, not the record's null.
+		const imageless = await create({ RoomId: 3, Name: 'No Banner', StartTime: at(HOUR) })
+		const withoutImage = (
+			(await (await get('/api/playerevents/v1?take=50')).json()) as Array<{
+				PlayerEventId: number
+				ImageName: string
+			}>
+		).find((e) => e.PlayerEventId === imageless.PlayerEventId)!
+		expect(withoutImage.ImageName).toBe('')
 		expect(Object.hasOwn(entry, 'State')).toBe(false)
 
 		// Paged like the other feeds.
@@ -3513,9 +4410,9 @@ describe('player events', () => {
 		// Only the name moved; a partial post can't blank out the rest.
 		expect(body.PlayerEvent).toEqual({ ...event, Name: 'Renamed' })
 
-		// And it stuck.
+		// And it stuck — read back as the bare record, which the envelope's event is not.
 		expect(await (await get(`/api/playerevents/v1/${event.PlayerEventId}`)).json()).toEqual(
-			body.PlayerEvent
+			asRecord(body.PlayerEvent, null)
 		)
 	})
 
@@ -3528,8 +4425,71 @@ describe('player events', () => {
 		})
 		const updated = ((await res.json()) as PlayerEventResult).PlayerEvent
 		expect(updated.ClubId).toBeNull()
-		expect(updated.ImageName).toBeNull()
+		// Cleared on the record, which the envelope reports as "" — its ImageName is a string.
+		expect(updated.ImageName).toBe('')
+		expect(
+			((await (await get(`/api/playerevents/v1/${event.PlayerEventId}`)).json()) as PlayerEvent)
+				.ImageName
+		).toBeNull()
 		expect(updated.SubRoomId).toBe(6)
+	})
+
+	test('POST /api/playerevents/v2/delete/:eventId removes the event, its RSVPs and its tags', async () => {
+		const event = await create({
+			RoomId: 3,
+			Name: 'Cancelled',
+			StartTime: at(HOUR),
+			Tags: [{ tag: 'meetup', type: 2 }],
+		})
+		const eventId = event.PlayerEventId
+		// Someone else RSVPs, so there is more than the creator's own row to clean up.
+		await post('/api/playerevents/v1/respond', { PlayerEventId: eventId, Type: 1 }, '43')
+
+		const rows = async (table: string) =>
+			(
+				await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE event_id = ?1`)
+					.bind(eventId)
+					.first<{ n: number }>()
+			)?.n
+		expect(await rows('event_attendee')).toBe(2)
+		expect(await rows('event_tag')).toBe(1)
+
+		// Auth-gated, and creator-only.
+		expect(
+			(
+				await exports.default.fetch(`${ORIGIN}/api/playerevents/v2/delete/${eventId}`, {
+					method: 'POST',
+				})
+			).status
+		).toBe(401)
+		expect((await post(`/api/playerevents/v2/delete/${eventId}`, {}, '43')).status).toBe(403)
+		expect((await post('/api/playerevents/v2/delete/999999', {})).status).toBe(404)
+
+		const res = await post(`/api/playerevents/v2/delete/${eventId}`, {})
+		expect(res.status).toBe(200)
+		// The envelope carries the event as it was, tags included — the caller can report
+		// what it removed.
+		const body = (await res.json()) as PlayerEventResult
+		expect(body.Result).toBe(0)
+		expect(body.PlayerEvent.PlayerEventId).toBe(eventId)
+		expect(body.PlayerEvent.Tags).toEqual(['meetup'])
+
+		// Gone, and nothing left hanging off it: orphan RSVPs would keep being counted and
+		// orphan tags would keep answering `#tag` searches.
+		expect((await get(`/api/playerevents/v1/${eventId}`)).status).toBe(404)
+		expect(await rows('event_attendee')).toBe(0)
+		expect(await rows('event_tag')).toBe(0)
+	})
+
+	test('DELETE /api/playerevents/v2/delete/:eventId works too', async () => {
+		// The path names the verb, but a client reaching for the HTTP one is right as well.
+		const event = await create({ RoomId: 3, Name: 'Also Cancelled', StartTime: at(HOUR) })
+		const res = await exports.default.fetch(
+			`${ORIGIN}/api/playerevents/v2/delete/${event.PlayerEventId}`,
+			{ method: 'DELETE', headers: await bearer('42') }
+		)
+		expect(res.status).toBe(200)
+		expect((await get(`/api/playerevents/v1/${event.PlayerEventId}`)).status).toBe(404)
 	})
 
 	test('POST /api/playerevents/v2/:eventId cannot move ownership or the attendee count', async () => {
@@ -3543,6 +4503,204 @@ describe('player events', () => {
 		expect(updated.PlayerEventId).toBe(event.PlayerEventId)
 		expect(updated.CreatorPlayerId).toBe(42)
 		expect(updated.AttendeeCount).toBe(1)
+	})
+
+	// ---- Single-field edits (PUT …/v2/:eventId/:field) -----------------------
+
+	/** A form-encoded single-field edit — the encoding the client sends on these. */
+	const putForm = async (
+		path: string,
+		fields: Record<string, string>,
+		sub: string | null = '42'
+	): Promise<Response> =>
+		exports.default.fetch(`${ORIGIN}${path}`, {
+			method: 'PUT',
+			headers: {
+				...(sub === null ? {} : await bearer(sub)),
+				'content-type': 'application/x-www-form-urlencoded',
+			},
+			body: new URLSearchParams(fields).toString(),
+		})
+
+	const putJson = async (path: string, body: unknown, sub = '42'): Promise<Response> =>
+		exports.default.fetch(`${ORIGIN}${path}`, {
+			method: 'PUT',
+			headers: { ...(await bearer(sub)), 'content-type': 'application/json' },
+			body: JSON.stringify(body),
+		})
+
+	/** The envelope's event out of a 200 from one of the edits. */
+	const edited = async (res: Response): Promise<PlayerEventEnvelope> => {
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as PlayerEventResult
+		expect(body.Result).toBe(0)
+		return body.PlayerEvent
+	}
+
+	test('PUT /api/playerevents/v2/:eventId/time moves either bound independently', async () => {
+		const event = await create({
+			RoomId: 5,
+			Name: 'Reschedulable',
+			StartTime: at(5 * HOUR),
+			EndTime: at(6 * HOUR),
+		})
+		const path = `/api/playerevents/v2/${event.PlayerEventId}/time`
+
+		// The client sends .NET tick precision; it is stored trimmed to seconds.
+		const moved = await edited(
+			await putForm(path, {
+				startTime: at(7 * HOUR).replace('Z', '.0000000Z'),
+				endTime: at(9 * HOUR).replace('Z', '.0000000Z'),
+			})
+		)
+		expect(moved).toEqual({ ...event, StartTime: at(7 * HOUR), EndTime: at(9 * HOUR) })
+
+		// One bound alone keeps the other.
+		const nudged = await edited(await putForm(path, { endTime: at(10 * HOUR) }))
+		expect(nudged.StartTime).toBe(at(7 * HOUR))
+		expect(nudged.EndTime).toBe(at(10 * HOUR))
+
+		// A day exactly is allowed — the cap is "at most a day", not "under a day".
+		const full = await edited(await putForm(path, { endTime: at(7 * HOUR + DAY) }))
+		expect(full.EndTime).toBe(at(7 * HOUR + DAY))
+	})
+
+	test('PUT /api/playerevents/v2/:eventId/time refuses rubbish and a backwards window', async () => {
+		const event = await create({
+			RoomId: 5,
+			Name: 'Fixed Window',
+			StartTime: at(5 * HOUR),
+			EndTime: at(6 * HOUR),
+		})
+		const path = `/api/playerevents/v2/${event.PlayerEventId}/time`
+
+		// Present but unparseable is refused rather than dropped: a reschedule that
+		// silently did nothing is worse than a refusal.
+		expect((await putForm(path, { startTime: 'tomorrowish' })).status).toBe(400)
+		// An end before the start, checked against the STORED bound when only one is sent.
+		expect((await putForm(path, { endTime: at(4 * HOUR) })).status).toBe(400)
+		expect((await putForm(path, { startTime: at(9 * HOUR), endTime: at(8 * HOUR) })).status).toBe(
+			400
+		)
+		// And a window longer than a day, resolved the same way.
+		expect((await putForm(path, { endTime: at(5 * HOUR + DAY + 1000) })).status).toBe(400)
+		expect((await putForm(path, { startTime: at(-DAY) })).status).toBe(400)
+		expect(
+			(await putForm(path, { startTime: at(2 * DAY), endTime: at(2 * DAY + DAY + 1000) })).status
+		).toBe(400)
+		// An empty body changes nothing, and is not an error.
+		expect((await edited(await putForm(path, {}))).StartTime).toBe(at(5 * HOUR))
+		// …and nothing stuck.
+		const stored = (await (
+			await get(`/api/playerevents/v1/${event.PlayerEventId}`)
+		).json()) as PlayerEvent
+		expect(stored.EndTime).toBe(at(6 * HOUR))
+	})
+
+	test('PUT /api/playerevents/v2/:eventId/accessibility takes the enum name', async () => {
+		const event = await create({ RoomId: 5, Name: 'Visible', Accessibility: 1 })
+		const path = `/api/playerevents/v2/${event.PlayerEventId}/accessibility`
+
+		// The NAME is what the client sends here.
+		expect((await edited(await putForm(path, { accessibility: 'Unlisted' }))).Accessibility).toBe(2)
+		// Case-insensitively…
+		expect((await edited(await putForm(path, { accessibility: 'private' }))).Accessibility).toBe(0)
+		// …and the ordinal works too.
+		expect((await edited(await putForm(path, { accessibility: '4' }))).Accessibility).toBe(4)
+
+		// Anything else is refused rather than stored verbatim — guessing a visibility
+		// wrong is what shows a private event to everyone.
+		expect((await putForm(path, { accessibility: 'Secret' })).status).toBe(400)
+		expect((await putForm(path, { accessibility: '9' })).status).toBe(400)
+		expect((await putForm(path, {})).status).toBe(400)
+		expect(
+			((await (await get(`/api/playerevents/v1/${event.PlayerEventId}`)).json()) as PlayerEvent)
+				.Accessibility
+		).toBe(4)
+	})
+
+	test('PUT /api/playerevents/v2/:eventId/tags replaces the whole set from a bare array', async () => {
+		const event = await create({ RoomId: 5, Name: 'Taggable', Tags: ['meetup'] })
+		const path = `/api/playerevents/v2/${event.PlayerEventId}/tags`
+
+		// A bare JSON array, not an object — and a replace, not a merge, so `meetup` goes.
+		const tagged = await edited(await putJson(path, ['tag1', '#Class']))
+		expect(tagged.Tags).toEqual(['class', 'tag1'])
+		// The envelope's TagModifyResult reports the same set the client redraws chips from.
+		const body = (await (await putJson(path, ['workshops'])).json()) as PlayerEventResult
+		expect(body.TagModifyResult).toEqual({ Result: 0, Tags: ['workshops'] })
+
+		// `[]` clears them; a non-array body is refused.
+		expect((await edited(await putJson(path, []))).Tags).toEqual([])
+		expect((await putJson(path, { Tags: ['nope'] })).status).toBe(400)
+		expect(
+			(
+				(await (
+					await get(`/api/playerevents/v1/${event.PlayerEventId}?includeDetails=True`)
+				).json()) as PlayerEvent & { tags: EventTag[] }
+			).tags
+		).toEqual([])
+	})
+
+	test('PUT /api/playerevents/v2/:eventId/description rewrites the blurb; absent clears it', async () => {
+		const event = await create({ RoomId: 5, Name: 'Described', Description: 'The old blurb' })
+		const path = `/api/playerevents/v2/${event.PlayerEventId}/description`
+
+		const written = await edited(
+			await putForm(path, { description: 'fthe description of said event' })
+		)
+		expect(written).toEqual({ ...event, Description: 'fthe description of said event' })
+
+		// An emptied text box sends no field at all, which clears it.
+		expect((await edited(await putForm(path, {}))).Description).toBe('')
+
+		// Capped at the stored length, and refused rather than truncated.
+		expect((await putForm(path, { description: 'd'.repeat(513) })).status).toBe(400)
+		expect((await putForm(path, { description: 'd'.repeat(512) })).status).toBe(200)
+	})
+
+	test('PUT /api/playerevents/v2/:eventId/name retitles, refusing a blank or overlong one', async () => {
+		const event = await create({ RoomId: 5, Name: 'Before' })
+		const path = `/api/playerevents/v2/${event.PlayerEventId}/name`
+
+		const renamed = await edited(
+			await putForm(path, { name: 'an event in the future I should be able to editx' })
+		)
+		expect(renamed).toEqual({
+			...event,
+			Name: 'an event in the future I should be able to editx',
+		})
+		// Stored trimmed.
+		expect((await edited(await putForm(path, { name: '  Padded  ' }))).Name).toBe('Padded')
+
+		// A blank name renders as a blank row, and the whole-event update reads one as
+		// "leave it alone" — so it is refused outright here.
+		expect((await putForm(path, { name: '   ' })).status).toBe(400)
+		expect((await putForm(path, {})).status).toBe(400)
+		expect((await putForm(path, { name: 'n'.repeat(65) })).status).toBe(400)
+		expect((await putForm(path, { name: 'n'.repeat(64) })).status).toBe(200)
+	})
+
+	test('the single-field edits are creator-only, like the whole-event update', async () => {
+		const event = await create({ RoomId: 5, Name: 'Guarded' })
+		const id = event.PlayerEventId
+		for (const [field, fields] of [
+			['time', { startTime: at(8 * HOUR) }],
+			['accessibility', { accessibility: 'Public' }],
+			['description', { description: 'nope' }],
+			['name', { name: 'Hijacked' }],
+		] as Array<[string, Record<string, string>]>) {
+			expect((await putForm(`/api/playerevents/v2/${id}/${field}`, fields, null)).status).toBe(401)
+			// 43 didn't create it.
+			expect((await putForm(`/api/playerevents/v2/${id}/${field}`, fields, '43')).status).toBe(403)
+			expect((await putForm(`/api/playerevents/v2/999999/${field}`, fields)).status).toBe(404)
+		}
+		// The tags edit takes JSON rather than a form, but is gated the same way.
+		expect((await putJson(`/api/playerevents/v2/${id}/tags`, ['nope'], '43')).status).toBe(403)
+		expect((await putJson('/api/playerevents/v2/999999/tags', ['nope'])).status).toBe(404)
+
+		// Nothing moved.
+		expect(await (await get(`/api/playerevents/v1/${id}`)).json()).toEqual(asRecord(event, null))
 	})
 })
 
@@ -3571,6 +4729,7 @@ describe('openapi', () => {
 		)
 		expect([...documented].sort()).toEqual([
 			'DELETE /api/images/v1/deletesaved',
+			'DELETE /api/playerevents/v2/delete/{eventId}',
 			'GET /api/PlayerReporting/v1/moderationBlockDetails',
 			'GET /api/PlayerReporting/v1/voteToKickReasons',
 			'GET /api/activities/charades/v1/words/{activity}',
@@ -3594,12 +4753,14 @@ describe('openapi', () => {
 			'GET /api/images/v3/feed/player/{playerId}',
 			'GET /api/images/v4/player/{playerId}',
 			'GET /api/images/v4/room/{roomId}',
+			'GET /api/images/v5/bulk',
 			'GET /api/images/v5/cheered/bulk',
 			'GET /api/images/v5/player/{playerId}',
 			'GET /api/images/v6',
 			'GET /api/inventions/v1',
 			'GET /api/inventions/v1/details',
 			'GET /api/inventions/v1/featured',
+			'GET /api/inventions/v1/fromcreators',
 			'GET /api/inventions/v1/fulllineageowner',
 			'GET /api/inventions/v1/personaldetails/{inventionId}',
 			'GET /api/inventions/v1/room',
@@ -3628,9 +4789,13 @@ describe('openapi', () => {
 			'GET /api/playerevents/v1/tagfilters',
 			'GET /api/playerevents/v1/{eventId}',
 			'GET /api/playerevents/v1/{eventId}/responses',
+			'GET /api/playerevents/v2/{eventId}',
+			'GET /api/players/v1/playerPhotoTaggingSetting',
 			'GET /api/players/v1/progression/{id}',
 			'GET /api/players/v2/progression/bulk',
+			'GET /api/progressionEvents/active',
 			'GET /api/quickPlay/v1/getandclear',
+			'GET /api/referee/files',
 			'GET /api/relationships/mutualfriends',
 			'GET /api/relationships/v1/favorite',
 			'GET /api/relationships/v1/ignore',
@@ -3646,19 +4811,30 @@ describe('openapi', () => {
 			'GET /api/roomkeys/v1/mine',
 			'GET /api/roomkeys/v1/room',
 			'GET /api/rooms/v1/filters',
+			'GET /api/versioncheck/islandedversions',
 			'GET /api/versioncheck/v4',
+			'GET /iam/me/channels/{type}',
+			'GET /outfits/me',
+			'GET /outfits/me/saved',
 			'GET /voice/config',
 			'POST /api/PlayerReporting/v1/deviceId',
 			'POST /api/PlayerReporting/v1/hile',
+			'POST /api/PlayerReporting/v1/moderationBlockDetails',
+			'POST /api/PlayerReporting/v1/referee',
 			'POST /api/PlayerReporting/v3/create',
+			'POST /api/avatar/v1/lockeditems/bulk',
 			'POST /api/avatar/v2/gifts/generate',
+			'POST /api/customAvatarItems/GetCustomAvatarItemCurrentSavesForLegacyAvatarItems',
+			'POST /api/customAvatarItems/v1/bulk',
 			'POST /api/gamesight/event',
 			'POST /api/images/v1/cheer',
 			'POST /api/images/v4/uploadsaved',
+			'POST /api/images/v5/cheered/bulk',
 			'POST /api/inventions/v1/settags',
 			'POST /api/inventions/v1/update',
 			'POST /api/inventions/v1/updateprice',
 			'POST /api/inventions/v6/save',
+			'POST /api/messages/v1/friendOnlineStatus',
 			'POST /api/messages/v1/sendMultiple',
 			'POST /api/messages/v2/send',
 			'POST /api/playerReputation/v1/bulk',
@@ -3667,6 +4843,7 @@ describe('openapi', () => {
 			'POST /api/playerevents/v1/report',
 			'POST /api/playerevents/v1/respond',
 			'POST /api/playerevents/v2',
+			'POST /api/playerevents/v2/delete/{eventId}',
 			'POST /api/playerevents/v2/{eventId}',
 			'POST /api/players/v1/progression/bulk',
 			'POST /api/players/v2/progression/bulk',
@@ -3685,6 +4862,14 @@ describe('openapi', () => {
 			'POST /api/sanitize/v1',
 			'POST /api/sanitize/v1/isPure',
 			'POST /api/v1/progression/bulk',
+			'POST /statsigUserProperties',
+			'PUT /api/playerevents/v2/{eventId}/accessibility',
+			'PUT /api/playerevents/v2/{eventId}/description',
+			'PUT /api/playerevents/v2/{eventId}/name',
+			'PUT /api/playerevents/v2/{eventId}/tags',
+			'PUT /api/playerevents/v2/{eventId}/time',
+			'PUT /api/players/v1/playerPhotoTaggingSetting',
+			'PUT /outfits/me',
 		])
 
 		// Every operation carries a summary — an undescribed one renders as a bare path.

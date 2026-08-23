@@ -5,6 +5,7 @@ import { useWorkersLogger } from 'workers-tagged-logger'
 import {
 	Accessibility,
 	areFriends,
+	autocompleteRoomSearch,
 	banPlayerFromRoom,
 	canManageRoom,
 	cloneRoom,
@@ -15,10 +16,12 @@ import {
 	deleteSubRoom,
 	findSubRoom,
 	getBaseRooms,
+	getContributedRooms,
 	getFavoritedRooms,
 	getFeaturedRooms,
 	getHotRooms,
 	getInteraction,
+	getOrCreateDormRoom,
 	getPresence,
 	getPublicRoomsByCreator,
 	getRecommendedRooms,
@@ -32,6 +35,7 @@ import {
 	getSubRoomSaveById,
 	getSubRoomSaves,
 	getVisitedRooms,
+	isPlayerBannedFromRoom,
 	modifySubRoom,
 	publishSubRoomSave,
 	removeCheer,
@@ -58,7 +62,7 @@ import {
 	withNotFound,
 	withOnError,
 } from '@repo/hono-helpers'
-import { validateAndGetAccountId, validateAndGetRoles } from '@repo/jwt'
+import { validateAndGetAccountId, validateAndGetRoles, validateAndGetVersion } from '@repo/jwt'
 
 // The notification-type ids the hub carries (owned by the `notify` worker). Imported
 // as a value — the enum has no runtime dependencies.
@@ -68,15 +72,19 @@ import {
 	AUTHED,
 	bannedPlayerIdParam,
 	BanRequest,
+	BulkRoomsRequest,
 	CloneRoomRequest,
 	CloningRequest,
 	CreateSubRoomRequest,
 	DescriptionRequest,
+	DormRoomId,
 	FeaturedRoomGroupDto,
 	FORBIDDEN_RESPONSE,
 	form,
 	ImageRequest,
 	InteractionDto,
+	intQuery,
+	IsBannedEnvelope,
 	json,
 	jsonBody,
 	LoadScreenRequest,
@@ -90,26 +98,32 @@ import {
 	PlayerDataDto,
 	playerIdParam,
 	PublishSaveRequest,
+	PublishStateConfigsEnvelope,
 	RestrictionsRequest,
 	RoleRequest,
 	RoomBanEntryDto,
 	RoomBanEnvelope,
 	RoomDto,
 	RoomEnvelope,
+	RoomExperience,
+	RoomExperiencePlayer,
 	roomIdParam,
 	RoomLookup,
 	RoomResultEnvelope,
 	RoomSaveEnvelope,
 	saveIdParam,
 	SaveSubRoomDataRequest,
+	SearchSuggestions,
 	ServiceStatus,
 	stringQuery,
 	SubRoomAccessibilityRequest,
 	SubRoomDataSaveResponseDto,
 	subRoomIdParam,
 	SubRoomPermissionsRequest,
+	SubRoomSavesNoUnityAssetsPage,
 	SubRoomSavesPage,
 	TagRequest,
+	TooManyLookupIds,
 	UNAUTHORIZED_EMPTY,
 	UNAUTHORIZED_ENVELOPE,
 	UNAUTHORIZED_RESPONSE,
@@ -139,6 +153,28 @@ function firstId(idParam: string): number | undefined {
 }
 
 /** Parse all valid integer ids from a comma-separated `id` query param. */
+/**
+ * How many rooms one bulk lookup may ask about. It is D1's cap on bound parameters, which
+ * `getRoomsByIds` binds one of per id: over it the query fails outright, so the request is
+ * refused with a 400 instead. Splitting the read would work, but a client asking about more
+ * than a hundred rooms in one call has lost track of what it is rendering — better it hears
+ * so than gets served.
+ */
+const MAX_BULK_ROOM_IDS = 100
+
+/** The 400 an over-cap bulk lookup answers, in the bare-string style the other 400 uses. */
+function tooManyIds(c: Context<App>) {
+	return c.json(`At most ${MAX_BULK_ROOM_IDS} room ids may be looked up at once`, 400)
+}
+
+/**
+ * Whether a bulk lookup asked for the public-only filter. The client sends the C# spelling
+ * (`True`/`False`) and absent means False, so anything but a case-insensitive `true` is off.
+ */
+function excludePrivateRooms(value: string | undefined): boolean {
+	return (value ?? '').toLowerCase() === 'true'
+}
+
 function allIds(idParam: string): number[] {
 	return idParam
 		.split(',')
@@ -280,6 +316,34 @@ async function canReadSaves(
 async function authedAccountId(c: Context<App>): Promise<number | null> {
 	return validateAndGetAccountId(c.req.raw, await c.env.JWT_SECRET.get())
 }
+
+/**
+ * The client build this request's token was minted for (`rn.ver`), or null when there's no
+ * valid token. The claim is the build the CLIENT posted at login, not this server's
+ * GAME_VERSION, so it identifies what the player is actually running.
+ *
+ * It is unverified — a client can claim any build — which is fine for the one thing it is
+ * used for here: keeping a payload away from a build it breaks. Lying about your version to
+ * opt IN to a broken room list only breaks your own client.
+ */
+async function authedGameVersion(c: Context<App>): Promise<string | null> {
+	return validateAndGetVersion(c.req.raw, await c.env.JWT_SECRET.get())
+}
+
+/**
+ * The client builds `GET /featuredrooms/current` will serve a group to.
+ *
+ * Serving it to the 2023 client breaks the OTHER room listings — they start failing with
+ * NREs, apparently because the featured-room load corrupts its room cache — so the route
+ * was parked entirely for a while. It works on the 2025 build, so rather than stay parked
+ * it is gated: a build that isn't on this list gets the 404 it got when the path didn't
+ * exist, which is the state everything was known good in.
+ *
+ * An allow-list rather than a "this build or newer" comparison, deliberately: the thing
+ * being asserted is that a build was CHECKED, and a version string that sorts high (a
+ * debug build, say) must not opt itself in. Add a build here once it's been tried.
+ */
+const FEATURED_ROOMS_VERSIONS: ReadonlySet<string> = new Set(['20250718.01'])
 
 /**
  * Operator-granted elevated roles — the ones the auth worker stamps from an account's
@@ -513,6 +577,43 @@ function toSaveResponse(save: Record<string, unknown>) {
 	}
 }
 
+/**
+ * A save row with its Unity-asset payloads left out — what `…/saves/no_unity_assets`
+ * lists. PascalCase like the rows `…/saves` serves, minus the two hydrated asset arrays
+ * (`UnitySubAssets`, `ReferencedUnityAssets`) and `Tags`, keeping only the asset
+ * IDENTIFIERS. The point of the variant is weight: those arrays are the heavy part of a
+ * save row, and a history list doesn't render them.
+ *
+ * `UnityAssetId` is the one field that differs rather than disappearing — always present
+ * and null when the save carried none, where the full row omits the key entirely.
+ *
+ * Built key by key rather than by deleting from the stored save: a save is stored as an
+ * opaque blob, so a future field would otherwise leak into this projection unannounced.
+ */
+function toSaveWithoutUnityAssets(save: Record<string, unknown>) {
+	const str = (v: unknown) => (typeof v === 'string' ? v : null)
+	const num = (v: unknown) => (typeof v === 'number' ? v : null)
+	return {
+		SubRoomDataSaveId: num(save.SubRoomDataSaveId),
+		SubRoomId: num(save.SubRoomId),
+		UnityAssetId: str(save.UnityAssetId),
+		ReferencedUnityAssetIds: Array.isArray(save.ReferencedUnityAssetIds)
+			? save.ReferencedUnityAssetIds
+			: [],
+		DataBlob: str(save.DataBlob) ?? '',
+		DataBlobHash: str(save.DataBlobHash),
+		PersistenceVersion: num(save.PersistenceVersion) ?? 0,
+		OMVersion: num(save.OMVersion) ?? 0,
+		SavedByAccountId: num(save.SavedByAccountId),
+		SavedOnPlatform: num(save.SavedOnPlatform) ?? 0,
+		SavedOnDeviceClass: num(save.SavedOnDeviceClass) ?? 0,
+		Description: str(save.Description) ?? '',
+		ModerationState: num(save.ModerationState) ?? 0,
+		CreatedAt: str(save.CreatedAt) ?? '',
+		UgcSubVersion: num(save.UgcSubVersion) ?? 0,
+	}
+}
+
 /** Client envelope for room mutations: `{ success, error, value }` (lowercase). */
 function roomEnvelope(c: Context<App>, value: unknown, error = '') {
 	return c.json({ success: error === '', error, value })
@@ -541,6 +642,22 @@ async function ownedRoomsExcludingDorm(c: Context<App>) {
 	const rooms = await getRoomsByCreator(c.env.DB, accountId)
 	return c.json(rooms.filter((r) => r.IsDorm !== true))
 }
+
+/** Suggestions `/rooms/autocomplete_search` returns when the client names no `take`. */
+const DEFAULT_SUGGESTION_COUNT = 10
+
+/**
+ * The XP settings every room reports (`GET /rooms/{roomId}/experience`). Constants because
+ * nothing stores them per room and nothing enforces them: the `api` worker's progression
+ * grants XP without a room-scoped daily cap, so these are what the client is told, not a
+ * limit this server applies.
+ *
+ * Disabled, which is the honest answer here — no room awards XP. `DailyLimit` is kept at
+ * the reference's number rather than zeroed: it is the cap that WOULD apply, and the client
+ * reads both keys whatever `Enabled` says.
+ */
+const ROOM_XP_ENABLED = false
+const ROOM_XP_DAILY_LIMIT = 1000
 
 const app = new Hono<App>()
 	.use(
@@ -616,6 +733,10 @@ const app = new Hono<App>()
 	// Room search: `query` is space/`+`-separated terms — `#tag` matches room tags,
 	// plain terms match the name. Public, non-dorm rooms only. Paginated via
 	// skip/take. Returns `{ Results, TotalResults }`.
+	//
+	// `#community` is the one tag term that isn't a tag lookup: it is the browse chip's
+	// pseudo-tag reaching search, and means rooms a PLAYER made rather than the seeded
+	// first-party ones — the same filter `/rooms/hot?tag=community` applies.
 	.get(
 		'/rooms/search',
 		describeRoute({
@@ -624,9 +745,14 @@ const app = new Hono<App>()
 			description: [
 				'Full room search. `query` is space- or `+`-separated terms: a `#tag` term matches the',
 				'room’s tags, a plain term matches its name. Public, non-dorm rooms only.',
+				'`#community` is a pseudo-tag no room carries — it narrows to rooms a player made',
+				'(anything the system Coach account didn’t create), like `/rooms/hot?tag=community`.',
 			].join(' '),
 			parameters: [
-				stringQuery('query', 'Search terms — `#tag` matches tags, plain terms match the name'),
+				stringQuery(
+					'query',
+					'Search terms — `#tag` matches tags, plain terms match the name, `#community` matches player-made rooms'
+				),
 				...pageParams(30),
 			],
 			responses: { 200: json(PagedRooms, 'The matching rooms') },
@@ -636,6 +762,51 @@ const app = new Hono<App>()
 			const skip = Number.parseInt(c.req.query('skip') ?? '0', 10) || 0
 			const take = Number.parseInt(c.req.query('take') ?? '30', 10) || 30
 			return c.json(await searchRooms(c.env.DB, query, skip, take))
+		}
+	)
+
+	// Type-ahead for the search box (`?query=r&take=4&searchSessionId=…`). A bare array of
+	// plain STRINGS — suggestions, not rooms and not an envelope.
+	//
+	// Every suggestion is something `/rooms/search` will actually find, so submitting one
+	// can't come back empty: they're drawn from room names (what a plain search term
+	// matches) and room tags (what a `#tag` term matches), over the same public, non-dorm
+	// rooms search considers. Tags come back with their `#` for that reason.
+	//
+	// `searchSessionId` is the client's own correlation id for a typing session — it ties
+	// the keystrokes and the eventual search together in the reference's analytics. Nothing
+	// here records searches, so it is accepted and ignored.
+	.get(
+		'/rooms/autocomplete_search',
+		describeRoute({
+			tags: ['Discovery'],
+			summary: 'Search suggestions for the search box',
+			description: [
+				'Type-ahead suggestions as a bare array of strings — not rooms, not an envelope.',
+				'Drawn from room names and room tags over the public, non-dorm rooms `/rooms/search`',
+				'searches, so every suggestion is one that finds something when submitted; a tag',
+				'suggestion carries its `#` so it searches by tag. A `query` starting with `#`',
+				'suggests tags only. Matches that START with the query come first, then ones that',
+				'merely contain it, alphabetically within each — the same query always suggests the',
+				'same things. `take` caps the list (4 is what the client asks for);',
+				'`searchSessionId` is the client’s analytics correlation id and is ignored.',
+			].join(' '),
+			parameters: [
+				stringQuery('query', 'What the player has typed so far. `#` prefix suggests tags only'),
+				intQuery('take', 'How many suggestions to return (default 10)'),
+				stringQuery('searchSessionId', 'The client’s typing-session id. Accepted and ignored'),
+			],
+			responses: { 200: json(SearchSuggestions, 'The suggestions, best match first') },
+		}),
+		async (c) => {
+			const take = Number.parseInt(c.req.query('take') ?? '', 10)
+			return c.json(
+				await autocompleteRoomSearch(
+					c.env.DB,
+					c.req.query('query') ?? '',
+					Number.isNaN(take) ? DEFAULT_SUGGESTION_COUNT : take
+				)
+			)
 		}
 	)
 
@@ -730,28 +901,48 @@ const app = new Hono<App>()
 	// Featured rooms — a single always-active group whose `Rooms` are a randomly
 	// ordered set of public, non-dorm rooms. No real curation yet, so `current`
 	// just returns a shuffled list of eligible rooms in the featured-group shape.
-	// @todo This is not working. It somehow causes the other room listings to fail
-	// completely with NREs. I think it is the featured room load that is somehow
-	// corrupting the room cache. I tried sending the normal room shape but that
-	// did not seem to work.
+	//
+	// Gated on the caller's BUILD, not just their token: this payload breaks the 2023
+	// client — its other room listings start failing with NREs, apparently because the
+	// featured-room load corrupts the client's room cache — while the 2025 build renders it
+	// fine. So a build on FEATURED_ROOMS_VERSIONS gets the group and every other build gets
+	// a 404, which is exactly what it got while this path was parked and everything worked.
+	//
+	// Auth-gated for the version, really: the build comes off the token's `rn.ver` claim, so
+	// there is nowhere to read it from without one. Nothing in the answer is per-player.
 	.get(
-		'/XXXfeaturedrooms/current',
+		'/featuredrooms/current',
 		describeRoute({
 			tags: ['Discovery'],
-			summary: 'Featured rooms (parked — the path is deliberately broken)',
+			summary: 'Featured rooms',
 			description: [
 				'A single always-active group of featured rooms: a random shuffle of eligible public',
 				'rooms, since there is no editorial curation yet.',
 				'',
-				'**Parked.** The path the client calls is `/featuredrooms/current`; this is registered',
-				'under an `XXX` prefix so the client never reaches it. Serving it made the OTHER room',
-				'listings fail with NREs in the client, apparently by corrupting its room cache —',
-				'sending the normal room shape instead did not help. It stays registered so the shape',
-				'is documented and the route is one rename away once the cause is found.',
+				'Restricted by CLIENT BUILD. Serving this to the 2023 client breaks its other room',
+				'listings (NREs, apparently from the featured-room load corrupting its room cache), so',
+				'only the builds known to render it — `20250718.01` today — get the group; anything',
+				'else gets a 404, the same answer it got while the route was parked. The build is read',
+				'from the token’s `rn.ver` claim, which is why this needs a token at all: nothing in',
+				'the group itself is per-player.',
 			].join('\n'),
-			responses: { 200: json(FeaturedRoomGroupDto, 'The featured-room group') },
+			security: AUTHED,
+			responses: {
+				200: json(FeaturedRoomGroupDto, 'The featured-room group'),
+				401: UNAUTHORIZED_RESPONSE,
+				404: { description: 'The caller’s client build is not one this is served to' },
+			},
 		}),
 		async (c) => {
+			const accountId = await authedAccountId(c)
+			if (accountId === null) return unauthorized(c)
+
+			const version = await authedGameVersion(c)
+			if (version === null || !FEATURED_ROOMS_VERSIONS.has(version)) {
+				logger.info('featured rooms withheld: unsupported client build', { accountId, version })
+				return c.notFound()
+			}
+
 			return c.json(await getFeaturedRooms(c.env.DB))
 		}
 	)
@@ -765,30 +956,96 @@ const app = new Hono<App>()
 			tags: ['Rooms'],
 			summary: 'Look up several rooms at once',
 			description: [
-				'Rooms by a comma-separated `id` list, or a single `name`. Ids that aren’t in D1 are',
-				'simply absent from the result rather than an error — the client reads an empty result',
-				'as NoSuchRoom.',
+				'Rooms by `id` — repeated `id` params, a comma-separated list, or both — or a single',
+				'`name`. Ids that aren’t in D1 are simply absent from the result rather than an error —',
+				'the client reads an empty result as NoSuchRoom. `excludePrivateRooms=True` drops rooms',
+				'that are not publicly visible, as on the POST.',
 			].join(' '),
 			parameters: [
-				stringQuery('id', 'Comma-separated room ids'),
+				stringQuery('id', 'Room ids — repeated `id` fields, comma-separated, or both'),
 				stringQuery('name', 'A single room name. Ignored when `id` is given'),
+				stringQuery('excludePrivateRooms', 'True drops rooms that are not publicly visible'),
 			],
 			responses: {
 				200: json(RoomDto.array(), 'The rooms that matched (missing ids are omitted)'),
-				400: json(MissingLookupParam, 'Neither `id` nor `name` was supplied'),
+				400: json(
+					MissingLookupParam,
+					'Neither `id` nor `name` was supplied, or more than 100 ids were'
+				),
 			},
 		}),
 		async (c) => {
-			const idParam = c.req.query('id')
+			// `id` repeats (`?id=641&id=657`) as often as it is comma-separated, and the client
+			// spells it both ways — read every occurrence, then split each on commas.
+			const idParams = c.req.queries('id') ?? []
 			const nameParam = c.req.query('name')
-			if (!idParam && !nameParam) {
+			if (idParams.length === 0 && !nameParam) {
 				return c.json("Either 'id' or 'name' query parameter is required", 400)
 			}
-			if (idParam) {
-				return c.json(await getRoomsByIds(c.env.DB, allIds(idParam)))
+			if (idParams.length > 0) {
+				const ids = idParams.flatMap(allIds)
+				if (ids.length > MAX_BULK_ROOM_IDS) return tooManyIds(c)
+				const rooms = await getRoomsByIds(c.env.DB, ids)
+				return c.json(
+					excludePrivateRooms(c.req.query('excludePrivateRooms'))
+						? rooms.filter((r) => r.Accessibility === 1)
+						: rooms
+				)
 			}
 			const room = await getRoomByName(c.env.DB, nameParam ?? '')
 			return c.json(room ? [room] : [])
+		}
+	)
+
+	// The same bulk lookup as a POST, which is the form the client sends: the ids ride in a
+	// form-urlencoded body of repeated `id` fields (`id=888&id=532&…`) rather than a query
+	// string, because it asks for a whole room list at once — 70-odd ids in the wild.
+	//
+	// `excludePrivateRooms=True` drops rooms that are not publicly visible; the client sends
+	// `False`, and absent means False, which is also what the GET does. Note this is a filter
+	// the CALLER asks for, not an access check: a room id is not a secret (the client only
+	// has ids it was already given), and the GET has always answered by id regardless of
+	// accessibility — a player's own unpublished room has to resolve here or it vanishes from
+	// their lists.
+	.post(
+		'/rooms/bulk',
+		describeRoute({
+			tags: ['Rooms'],
+			summary: 'Look up several rooms at once (bulk POST)',
+			description: [
+				'Rooms by id, as a form body of repeated `id` fields — the form the client sends, since',
+				'it asks about a whole room list at once. Ids that aren’t in D1 are simply absent from',
+				'the result rather than an error, so the array can be shorter than the request. At most',
+				'100 ids per call (D1 binds one parameter each); more is a 400.',
+				'',
+				'`excludePrivateRooms=True` drops rooms that are not publicly visible. It is a filter',
+				'the caller asks for, not an access check — like the GET, this answers by id whatever',
+				'the room’s accessibility, which is what makes a player’s own unpublished room resolve.',
+			].join('\n'),
+			requestBody: form(BulkRoomsRequest, 'The room ids, plus the optional filter'),
+			responses: {
+				200: json(RoomDto.array(), 'The rooms that matched (missing ids are omitted)'),
+				400: json(TooManyLookupIds, 'More than 100 ids were asked for'),
+			},
+		}),
+		async (c) => {
+			const body = await c.req.parseBody({ all: true }).catch(() => ({}) as Record<string, unknown>)
+			const field = (name: string): string[] => {
+				const key = Object.keys(body).find((k) => k.toLowerCase() === name.toLowerCase())
+				const value = key === undefined ? [] : body[key]
+				return (Array.isArray(value) ? value : [value]).filter(
+					(v): v is string => typeof v === 'string'
+				)
+			}
+
+			// Repeated fields, and each value may itself be comma-separated — the GET's spelling,
+			// accepted here too so one body shape doesn't have to be guessed at.
+			const ids = field('id').flatMap(allIds)
+			if (ids.length > MAX_BULK_ROOM_IDS) return tooManyIds(c)
+			const rooms = await getRoomsByIds(c.env.DB, ids)
+
+			const excludePrivate = excludePrivateRooms(field('excludePrivateRooms')[0])
+			return c.json(excludePrivate ? rooms.filter((r) => r.Accessibility === 1) : rooms)
 		}
 	)
 
@@ -843,6 +1100,74 @@ const app = new Hono<App>()
 			responses: { 200: json(RoomDto.array(), 'The caller’s rooms'), 401: UNAUTHORIZED_RESPONSE },
 		}),
 		ownedRooms
+	)
+
+	// Rooms the caller works on — the ones they CREATED plus anyone else's that name them in
+	// `Roles` (Host, Moderator or CoOwner). Auth-scoped: `me` resolves from the bearer token,
+	// and there is no query string or body to read.
+	//
+	// Created rooms used to be excluded, on the grounds that a room's `Roles` names its
+	// creator too and the client shows "owned" and "contributed" separately. That left the
+	// list empty for every account that had only built its own rooms — most of them — so it
+	// now overlaps `createdby/me` rather than coming back empty. The dorm stays out, as it
+	// does on `ownedby/me`. Like the other `*by/me` lists it answers a bare array of the
+	// canonical room DTO — no envelope, no paging wrapper — and doesn't filter on
+	// accessibility, since a contributor is working on the room whether or not it's
+	// published.
+	.get(
+		'/rooms/contributedby/me',
+		describeRoute({
+			tags: ['My rooms'],
+			summary: 'Rooms the caller owns or contributes to',
+			description: [
+				'Every room the caller works on, as a bare array: the ones they CREATED plus the ones',
+				'that name them in their `Roles` — Host, Moderator or CoOwner. Overlaps',
+				'`createdby/me` deliberately, so a client rendering one list sees everything; the',
+				'dorm is excluded as it is on `ownedby/me`. Every role tier counts, not only the',
+				'owner-level ones, and accessibility is not filtered: a contributor works on the room',
+				'whether or not it is published.',
+			].join(' '),
+			security: AUTHED,
+			responses: {
+				200: json(RoomDto.array(), 'The rooms the caller owns or contributes to (empty when none)'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const accountId = await authedAccountId(c)
+			if (accountId === null) return unauthorized(c)
+			return c.json(await getContributedRooms(c.env.DB, accountId))
+		}
+	)
+
+	// The caller's own dorm, as its ID ALONE — a bare JSON number, not the room. The
+	// caller follows up with `GET /rooms/{roomId}` when it wants the room itself.
+	//
+	// Gets-or-creates, exactly as entering a dorm does (`match`): the provisioning is the
+	// point of the call as much as the answer is, so a player who has never been to their
+	// dorm gets one minted here rather than a 404, and the id is stable from then on.
+	.get(
+		'/dormroom/me',
+		describeRoute({
+			tags: ['My rooms'],
+			summary: 'The caller’s dorm id',
+			description: [
+				'The `RoomId` of the caller’s personal dorm, as a bare JSON number — NOT the room:',
+				'fetch that from `GET /rooms/{roomId}` with the id this returns.',
+				'',
+				'The dorm is provisioned on first access (cloned from the seeded template dorm), so',
+				'this answers for any authed caller and never 404s, and calling it again returns the',
+				'same id.',
+			].join(' '),
+			security: AUTHED,
+			responses: { 200: json(DormRoomId, 'The caller’s dorm id'), 401: UNAUTHORIZED_RESPONSE },
+		}),
+		async (c) => {
+			const accountId = await authedAccountId(c)
+			if (accountId === null) return unauthorized(c)
+			const dorm = await getOrCreateDormRoom(c.env.DB, accountId)
+			return c.json(Number(dorm.RoomId))
+		}
 	)
 
 	// Public: the rooms a given account owns that are publicly viewable. No auth —
@@ -1632,6 +1957,66 @@ const app = new Hono<App>()
 		}
 	)
 
+	// Is this player banned from this room? The client asks before offering someone a room
+	// action, so it can grey it out rather than let the attempt fail.
+	//
+	// The path is the client's, verbatim: `/Room_server/…`, capitalised and underscored,
+	// unlike the `/roomserver/rooms/createdby/me` alias elsewhere. Hono matches
+	// case-sensitively, so it is registered exactly as the client spells it.
+	//
+	// Answers the `{ success, error, error_id, value }` envelope — NOT the room mutations'
+	// `{ success, error, value }`: this one carries `error_id`, and its `error` is null where
+	// theirs is an empty string. `success` is whether the CHECK ran, not the answer; the
+	// answer is `value`.
+	//
+	// Auth-gated but not owner-gated: a player about to interact with someone needs this, and
+	// a ban is not a secret from the person it would stop.
+	.get(
+		'/Room_server/rooms/:roomId{[0-9]+}/bans/:playerId{[0-9]+}/isBanned',
+		describeRoute({
+			tags: ['Room settings'],
+			summary: 'Whether a player is banned from a room',
+			description: [
+				'Whether `playerId` is banned from `roomId`, read from the same `room_ban` rows the',
+				'ban routes write and `match` refuses matchmakes on — so it answers what would',
+				'actually happen, not a stub.',
+				'',
+				'The envelope is `{ success, error, error_id, value }`: `success` says the check ran,',
+				'`value` is the answer. It is NOT the room mutations’ envelope — that one has no',
+				'`error_id` and uses `""` where this uses null.',
+				'',
+				'Auth-gated, but any authenticated caller may ask: a ban is not a secret from the',
+				'player it stops. The path is the client’s own capitalised `/Room_server/` spelling.',
+			].join('\n'),
+			security: AUTHED,
+			parameters: [
+				roomIdParam,
+				{
+					name: 'playerId',
+					in: 'path',
+					required: true,
+					description: 'The account being asked about',
+					schema: { type: 'string', pattern: '^[0-9]+$' },
+				},
+			],
+			responses: {
+				200: json(IsBannedEnvelope, 'Whether that player is banned from that room'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const accountId = await authedAccountId(c)
+			if (accountId === null) return unauthorized(c)
+
+			const banned = await isPlayerBannedFromRoom(
+				c.env.DB,
+				Number.parseInt(c.req.param('roomId'), 10),
+				Number.parseInt(c.req.param('playerId'), 10)
+			)
+			return c.json({ success: true, error: null, error_id: null, value: banned })
+		}
+	)
+
 	// Lift a player's ban on a room. Same gate as issuing one: auth-gated (401), then the
 	// room's owner/co-owner OR a staff token (403).
 	.delete(
@@ -1987,6 +2372,75 @@ const app = new Hono<App>()
 			const page = saves.slice(from, Number.isNaN(take) || take < 0 ? undefined : from + take)
 
 			return c.json({ Results: page, TotalResults: saves.length, TotalCount: saves.length })
+		}
+	)
+
+	// The same history list, with the Unity-asset payloads left out. The rows are the
+	// `…/saves` rows minus `UnitySubAssets`/`ReferencedUnityAssets`/`Tags` — the heavy part
+	// of a save row, which a history list never renders — keeping the asset IDENTIFIERS.
+	//
+	// It answers a BARE paged wrapper: no `{ success, error, value }` envelope, unlike the
+	// room mutations next door. Same gate, same paging and the same empty page for an
+	// unknown room/subroom as `…/saves`, so the two can be swapped for one another.
+	//
+	// The `:saveId` detail route below is digit-constrained, so `no_unity_assets` can never
+	// be read as a save id whichever order these are declared in.
+	.get(
+		'/rooms/:roomId{[0-9]+}/subrooms/:subRoomId{[0-9]+}/saves/no_unity_assets',
+		describeRoute({
+			tags: ['Subrooms'],
+			summary: 'A subroom’s saves, without their Unity-asset payloads',
+			description: [
+				'The same page as `…/saves`, newest first, carrying the lighter rows: no',
+				'`UnitySubAssets`, no `ReferencedUnityAssets`, no `Tags` — only the asset ids. A BARE',
+				'paged wrapper, with no `{ success, error, value }` envelope around it.',
+				'',
+				'Gated exactly like `…/saves`, and for the same reason: the list includes STAGED',
+				'saves that were never published, so it is the room’s creator or anyone whose live',
+				'presence puts them in the room, and anyone else is a 403.',
+				'',
+				'`TotalResults` and `TotalCount` carry the same number — the client’s paged DTO and',
+				'the reference disagree on the name, so both are emitted.',
+			].join(' '),
+			security: AUTHED,
+			parameters: [
+				roomIdParam,
+				subRoomIdParam,
+				stringQuery('skip', 'How many saves to skip (default 0)'),
+				stringQuery('take', 'How many saves to return (default all)'),
+			],
+			responses: {
+				200: json(SubRoomSavesNoUnityAssetsPage, 'The subroom’s saves, newest first'),
+				401: UNAUTHORIZED_RESPONSE,
+				403: FORBIDDEN_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const accountId = await authedAccountId(c)
+			if (accountId === null) return unauthorized(c)
+
+			const roomId = Number.parseInt(c.req.param('roomId'), 10)
+			const subRoomId = Number.parseInt(c.req.param('subRoomId'), 10)
+			// Scoped through the room so a subroom id from another room can't read its saves.
+			const room = await getRoomById(c.env.DB, roomId)
+			if (!room || !findSubRoom(room, subRoomId)) {
+				return c.json({ Results: [], TotalResults: 0, TotalCount: 0 })
+			}
+			if (!(await canReadSaves(c, room, roomId, accountId))) return c.body(null, 403)
+			const saves = await getSubRoomSaves(c.env.DB, subRoomId)
+
+			const skip = Number.parseInt(c.req.query('skip') ?? '', 10)
+			const take = Number.parseInt(c.req.query('take') ?? '', 10)
+			const from = Number.isNaN(skip) || skip < 0 ? 0 : skip
+			const page = saves.slice(from, Number.isNaN(take) || take < 0 ? undefined : from + take)
+
+			// `TotalResults` counts the whole history, not the page — that is what the client
+			// pages against.
+			return c.json({
+				Results: page.map(toSaveWithoutUnityAssets),
+				TotalResults: saves.length,
+				TotalCount: saves.length,
+			})
 		}
 	)
 
@@ -2611,6 +3065,51 @@ const app = new Hono<App>()
 		(c) => c.json({ Data: '' })
 	)
 
+	// A room's XP settings — whether players earn experience there and how much of it counts
+	// toward their day. Fixed values, the same for every room: progression lives in the `api`
+	// worker and applies no per-room daily cap, so there is nothing room-scoped to read and
+	// nothing here enforces the number. It is what the client displays and meters against.
+	//
+	// A bare two-key object, no `{ success, error, value }` envelope, and no auth — nothing
+	// in the answer is per-player (`experience/player` below is the per-player half). The
+	// room isn't looked up either: the answer would be the same for a room that doesn't
+	// exist, so a lookup would only add a way to fail.
+	.get(
+		'/rooms/:roomId{[0-9]+}/experience',
+		describeRoute({
+			tags: ['Rooms'],
+			summary: 'A room’s XP settings',
+			description: [
+				'Whether players earn XP in the room (`Enabled`) and how much of it counts toward a',
+				'day (`DailyLimit`), as a bare two-key object. Fixed values, and `Enabled` is FALSE —',
+				'no room awards XP here. Progression is the `api` worker’s and applies no per-room',
+				'cap, so nothing is stored per room and nothing enforces the limit; the client is what',
+				'reads it. No auth: the answer is the same for every caller and every room.',
+			].join(' '),
+			parameters: [roomIdParam],
+			responses: { 200: json(RoomExperience, 'The room’s XP settings — always the same') },
+		}),
+		(c) => c.json({ Enabled: ROOM_XP_ENABLED, DailyLimit: ROOM_XP_DAILY_LIMIT })
+	)
+
+	// The caller's per-room experience/progression. Stub → empty list.
+	.get(
+		'/rooms/:roomId{[0-9]+}/experience/player',
+		describeRoute({
+			tags: ['Rooms'],
+			summary: 'The caller’s per-room experience',
+			description: [
+				'Per-room experience/progression for the calling player. Nothing tracks any yet, so',
+				'this is an empty list — which the client reads as “no progress in this room”, where',
+				'a 404 would stall the room load. No auth, matching `playerdata/me`: the answer is',
+				'the same for every caller until something writes here.',
+			].join(' '),
+			parameters: [roomIdParam],
+			responses: { 200: json(RoomExperiencePlayer, 'An empty list') },
+		}),
+		(c) => c.json([])
+	)
+
 	// Single room by id. 404 when the room isn't in D1. Ignores the
 	// include/unityAsset* query params.
 	.get(
@@ -2635,6 +3134,38 @@ const app = new Hono<App>()
 			const room = await getRoomById(c.env.DB, Number.parseInt(c.req.param('roomId'), 10))
 			return room ? c.json(room) : c.notFound()
 		}
+	)
+
+	// The republish limits, verbatim from the reference server. Fixed values, no auth:
+	// the client reads them to render its publish UI, before any room is in play.
+	.get(
+		'/publishState/configs',
+		describeRoute({
+			tags: ['Rooms'],
+			summary: 'Room republish limits',
+			description: [
+				'The limits the client enforces around republishing a room — how many updates are',
+				'allowed per rolling window, and the cooldown and expiry around them. Fixed values',
+				'from the reference server; nothing here enforces them server-side yet, so this is',
+				'what the client shows and gates its own UI on.',
+				'',
+				'Note the envelope differs from the room mutations’: `error` is null (not `""`) and',
+				'there is an extra `error_id`.',
+			].join(' '),
+			responses: { 200: json(PublishStateConfigsEnvelope, 'The republish limits') },
+		}),
+		(c) =>
+			c.json({
+				value: {
+					UpdateMaxCount: 3,
+					UpdateRollingWindowInDays: 365,
+					UpdateExpirationInDays: 30,
+					UpdateCooldownInDays: 45,
+				},
+				success: true,
+				error_id: null,
+				error: null,
+			})
 	)
 
 	// Photon access token + room permissions the client needs to spawn into a room.

@@ -1,0 +1,219 @@
+﻿{
+    "BenefitLists": {
+        "0": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+        ],
+        "1": [
+            0,
+            1,
+            2
+        ],
+        "2": [
+            0,
+            1,
+            2
+        ],
+        "3": [
+            8,
+            9
+        ],
+        "4": [
+            10,
+            11,
+            12
+        ],
+        "5": [
+            13,
+            14,
+            7
+        ]
+    },
+    "BenefitLookup": {
+        "0": {
+            "CustomSpriteName": "Campus_Club_Card_Token_Icon",
+            "DetailedText": "You get a {{Tokens}} token box every month. Due to platform restrictions, you must log in each week in order to claim this reward. If you want to claim this reward on another platform you can, but you must login at least once a month on the platform you became a member on.",
+            "EnabledForPlatforms": -1,
+            "PlatformSpecificDetailedTexts": {
+                "3": "You get a {{Tokens}} token box every month. You must log in at least once during each 30 day period in order to claim this reward."
+            },
+            "RequiresMonetizationEnabled": false,
+            "RequiresPublishingEnabled": false,
+            "ShortText": "{{Tokens}} tokens per month!  ($11 value)",
+            "TitleText": "{{Tokens}} bonus tokens per month ($11 USD in monthly value)"
+        },
+        "1": {
+            "CustomSpriteName": "icon_inventory_item",
+            "DetailedText": "You get a box containing a random 4-star item every week. If you have all 4-star items you will get a 800 token box instead. The week resets at 12 AM UTC on Sundays. Due to platform restrictions, you must login each week in order to claim this reward. If you want to claim this reward on another platform you can, but you must login at least once a month on the platform you became a member on.",
+            "EnabledForPlatforms": -1,
+            "PlatformSpecificDetailedTexts": {
+            },
+            "RequiresMonetizationEnabled": false,
+            "RequiresPublishingEnabled": false,
+            "ShortText": "Weekly 4-star box!",
+            "TitleText": "Free weekly 4-star box"
+        },
+        "10": {
+            "CustomSpriteName": "UI_Menu_Token_Image_50",
+            "DetailedText": "/month. Cancel anytime",
+            "EnabledForPlatforms": -1,
+            "PlatformSpecificDetailedTexts": {
+            },
+            "RequiresMonetizationEnabled": false,
+            "RequiresPublishingEnabled": false,
+            "ShortText": "Join RR+ for Endless Rewards!",
+            "TitleText": "Join RR+ for Endless Rewards!"
+        },
+        "11": {
+            "CustomSpriteName": "icon_currency_coins",
+            "DetailedText": null,
+            "EnabledForPlatforms": -1,
+            "PlatformSpecificDetailedTexts": {
+            },
+            "RequiresMonetizationEnabled": false,
+            "RequiresPublishingEnabled": false,
+            "ShortText": "2X token rewards",
+            "TitleText": "2X token rewards"
+        },
+        "12": {
+            "CustomSpriteName": "icon_RecToken",
+            "DetailedText": null,
+            "EnabledForPlatforms": -1,
+            "PlatformSpecificDetailedTexts": {
+            },
+            "RequiresMonetizationEnabled": false,
+            "RequiresPublishingEnabled": false,
+            "ShortText": "{{Tokens}} monthly tokens",
+            "TitleText": "Monthly Tokens"
+        },
+        "13": {
+            "CustomSpriteName": "icon_currency_dollars",
+            "DetailedText": "Unlock the ability to turn earned tokens into real-world money",
+            "EnabledForPlatforms": -1,
+            "PlatformSpecificDetailedTexts": {
+            },
+            "RequiresMonetizationEnabled": true,
+            "RequiresPublishingEnabled": false,
+            "ShortText": "Unlock the ability to turn earned tokens into real-world money",
+            "TitleText": "Unlock the ability to turn earned tokens into real-world money"
+        },
+        "14": {
+            "CustomSpriteName": "Campus_Club_Card_Token_Icon",
+            "DetailedText": "Get {{Tokens}} every month and a {{RRODiscount}}% discount on eligible items",
+            "EnabledForPlatforms": -1,
+            "PlatformSpecificDetailedTexts": {
+            },
+            "RequiresMonetizationEnabled": false,
+            "RequiresPublishingEnabled": false,
+            "ShortText": "Get {{Tokens}} every month and a {{RRODiscount}}% discount on eligible items",
+            "TitleText": "Monthly Benefits"
+        },
+        "2": {
+            "CustomSpriteName": "PriceTag",
+            "DetailedText": "You get {{RRODiscount}}% off all purchases in Rec Room Original token stores (e.g. the watch, merch booth, mirror, cafe, paintball, etc). This does not include Rec Room Original stores that don’t use tokens (e.g. Laser Tag, Lost Skulls, and Crescendo)\r",
+            "EnabledForPlatforms": -1,
+            "PlatformSpecificDetailedTexts": {
+            },
+            "RequiresMonetizationEnabled": false,
+            "RequiresPublishingEnabled": false,
+            "ShortText": "{{RRODiscount}}% RRO store discount!",
+            "TitleText": "{{RRODiscount}}% discount in Rec Room stores that accept tokens  "
+        },
+        "3": {
+            "CustomSpriteName": "icon_OwnedCostumePieces",
+            "DetailedText": "You get early access to items for a limited time and can claim them for free by logging in while they are in early access.",
+            "EnabledForPlatforms": -1,
+            "PlatformSpecificDetailedTexts": {
+            },
+            "RequiresMonetizationEnabled": false,
+            "RequiresPublishingEnabled": false,
+            "ShortText": "Free, early access to items for a limited time!",
+            "TitleText": "Free, early access to items for a limited time"
+        },
+        "4": {
+            "CustomSpriteName": "Shirt",
+            "DetailedText": "You get {{MemberOutfitSlots}} outfit slots on top of the regular {{NonMemberOutfitSlots}}. Access them via the Saved Outfits button in the Profile section of your watch or on your Dorm room mirror.",
+            "EnabledForPlatforms": -1,
+            "PlatformSpecificDetailedTexts": {
+            },
+            "RequiresMonetizationEnabled": false,
+            "RequiresPublishingEnabled": false,
+            "ShortText": "{{MemberOutfitSlots}} saved outfit slots!",
+            "TitleText": "More saved outfit slots"
+        },
+        "5": {
+            "CustomSpriteName": null,
+            "DetailedText": "You can sell inventions and custom clothing in the watch store and keys, currencies, and consumables in your rooms. You will be paid 70% of all tokens earned through these sales. Those tokens will be held for a week in an escrow account to mitigate fraud, then they’ll be delivered to you the same day as your other RR+ bonus tokens.\r",
+            "EnabledForPlatforms": 511,
+            "PlatformSpecificDetailedTexts": {
+            },
+            "RequiresMonetizationEnabled": true,
+            "RequiresPublishingEnabled": false,
+            "ShortText": "Earn tokens for your creations!",
+            "TitleText": "Earn tokens for your creations"
+        },
+        "6": {
+            "CustomSpriteName": "icon_RecToken",
+            "DetailedText": "Whenever you are offered tokens from a post-activity or first activity of the day reward, you will be offered twice the normal amount.",
+            "EnabledForPlatforms": -1,
+            "PlatformSpecificDetailedTexts": {
+            },
+            "RequiresMonetizationEnabled": false,
+            "RequiresPublishingEnabled": false,
+            "ShortText": "Double token rewards!",
+            "TitleText": "Double token rewards"
+        },
+        "7": {
+            "CustomSpriteName": "icon_Shirt",
+            "DetailedText": "You can create your own custom shirts with the clothing customizer! You can access the clothing customizer in your backpack, and publish shirts which can be purchased and worn.",
+            "EnabledForPlatforms": 511,
+            "PlatformSpecificDetailedTexts": {
+            },
+            "RequiresMonetizationEnabled": false,
+            "RequiresPublishingEnabled": true,
+            "ShortText": "Create your own custom shirts",
+            "TitleText": "Create your own custom shirts"
+        },
+        "8": {
+            "CustomSpriteName": "Campus_Club_Card_Token_Icon",
+            "DetailedText": "",
+            "EnabledForPlatforms": -1,
+            "PlatformSpecificDetailedTexts": {
+            },
+            "RequiresMonetizationEnabled": false,
+            "RequiresPublishingEnabled": false,
+            "ShortText": "Plus {{Tokens}} tokens NOW & monthly!",
+            "TitleText": "Plus {{Tokens}} tokens NOW & monthly!"
+        },
+        "9": {
+            "CustomSpriteName": "icon_Heart",
+            "DetailedText": "Keep saving {{RRODiscount}}% on every RRO order!",
+            "EnabledForPlatforms": -1,
+            "PlatformSpecificDetailedTexts": {
+            },
+            "RequiresMonetizationEnabled": false,
+            "RequiresPublishingEnabled": false,
+            "ShortText": "And much more!",
+            "TitleText": "And much more!"
+        }
+    },
+    "HighlightText": "The best deal in Rec Room!",
+    "MoreDetailsText": "And <u>much more!</u>",
+    "NumberReplacements": {
+        "{{MemberOutfitSlots}}": 200,
+        "{{NonMemberOutfitSlots}}": 16,
+        "{{RRODiscount}}": 10,
+        "{{Tokens}}": 6500
+    },
+    "StringConfigs": {
+        "RRPlusMessageBody": "Thanks for becoming a RR+ member. You now have access to all the member benefits!",
+        "RRPlusMessageTitle": "Welcome to the Club!"
+    },
+    "Version": 3
+}

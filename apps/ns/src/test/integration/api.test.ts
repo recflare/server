@@ -18,6 +18,19 @@ describe('ns endpoints', () => {
 		expect(body).toEqual(buildEndpoints(TEST_DOMAIN))
 	})
 
+	test('a subdomain override redirects that service only', () => {
+		const endpoints = buildEndpoints(TEST_DOMAIN, '{"moderation":"api"}')
+		expect(endpoints.Moderation).toBe(`https://api.${TEST_DOMAIN}`)
+		expect(endpoints.API).toBe(`https://api.${TEST_DOMAIN}`)
+		expect(endpoints.Accounts).toBe(`https://accounts.${TEST_DOMAIN}`)
+	})
+
+	test('a malformed override object is ignored', () => {
+		for (const bad of ['', '{', 'null', '[]', '{"moderation":42}', '{"moderation":""}']) {
+			expect(buildEndpoints(TEST_DOMAIN, bad)).toEqual(buildEndpoints(TEST_DOMAIN))
+		}
+	})
+
 	test('unknown path returns 404', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/nope`)
 		expect(res.status).toBe(404)

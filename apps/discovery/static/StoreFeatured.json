@@ -1,0 +1,106 @@
+[
+  {
+    "id": "StoreItemCarousel_UnifiedCuratedList_InternalMedieval",
+    "sectionType": 4,
+    "sectionSubType": "MedeivalItems",
+    "source": "UnifiedCuratedList",
+    "sourceMetadata": "Internal_Medieval_Items",
+    "displayMetadata": "{\r\n\"DisplayTitle\":\"FairyTale Fashions\"\r\n}"
+  },
+  {
+    "id": "StoreItemCarousel_UnifiedAlgorithmicList_UGCMedievalCarousel",
+    "sectionType": 4,
+    "sectionSubType": "Generic_MedievalCarousel",
+    "source": "UnifiedAlgorithmicList",
+    "sourceMetadata": "summerpartycarousel",
+    "displayMetadata": "{\r\n\"DisplayTitle\":\"Medieval Masterpieces from the Community\"\r\n}"
+  },
+  {
+    "id": "StoreItemCarousel_Storefront_PopUpShop_5",
+    "sectionType": 4,
+    "sectionSubType": "Storefront_PopUpShop5",
+    "source": "Storefront",
+    "sourceMetadata": "PopUpShop_5",
+    "displayMetadata": "{\r\n    \"itemCount\": 5\r\n}"
+  },
+  {
+    "id": "StoreItemCarousel_UnifiedAlgorithmicList_Trending2Row",
+    "sectionType": 4,
+    "sectionSubType": "StoreTrending",
+    "source": "UnifiedAlgorithmicList",
+    "sourceMetadata": "trendingitems",
+    "displayMetadata": "{\r\n\"DisplayTitle\":\"Trending\",\r\n\"numRows\":\"2\"\r\n}"
+  },
+  {
+    "id": "StoreItemCarousel_UnifiedAlgorithmicList_NewItemsFromFeaturedCreators",
+    "sectionType": 4,
+    "sectionSubType": "StoreNewItemsFromFeaturedCreators",
+    "source": "UnifiedAlgorithmicList",
+    "sourceMetadata": "newitemsfromcreators",
+    "displayMetadata": "{\r\n\"DisplayTitle\":\"Featured Creators\",\"numRows\":\"2\"\r\n}"
+  },
+  {
+    "id": "StoreItemCarousel_UnifiedAlgorithmicList_ItemsForYou2Row",
+    "sectionType": 4,
+    "sectionSubType": "Items_ForYou",
+    "source": "UnifiedAlgorithmicList",
+    "sourceMetadata": "itemsforyou",
+    "displayMetadata": "{\r\n\t\"DisplayTitle\":\"Recommended For You\",\"numRows\":\"2\"\r\n}"
+  },
+  {
+    "id": "StoreItemCarousel_UnifiedAlgorithmicList_BestSellers",
+    "sectionType": 4,
+    "sectionSubType": "BestSellingItems",
+    "source": "UnifiedAlgorithmicList",
+    "sourceMetadata": "bestsellingitems",
+    "displayMetadata": "{\r\n\"DisplayTitle\":\"Best Sellers\",\"numRows\":\"2\"\r\n}"
+  },
+  {
+    "id": "StoreItemCarousel_UnifiedCuratedList_RoomieItems",
+    "sectionType": 4,
+    "sectionSubType": "RoomieItems",
+    "source": "UnifiedCuratedList",
+    "sourceMetadata": "StoreItems_Roomie_Collection",
+    "displayMetadata": "{\r\n\"DisplayTitle\":\"Stuff for Roomie\"\r\n}"
+  },
+  {
+    "id": "StoreItemCarousel_Storefront_PopUpShop_17",
+    "sectionType": 4,
+    "sectionSubType": "Storefront_PopUpShop_17",
+    "source": "Storefront",
+    "sourceMetadata": "PopUpShop_17",
+    "displayMetadata": null
+  },
+  {
+    "id": "StoreItemCarousel_UnifiedAlgorithmicList_WishlistCarousel",
+    "sectionType": 4,
+    "sectionSubType": "StoreWishlistCarousel",
+    "source": "UnifiedAlgorithmicList",
+    "sourceMetadata": "wishlistcarousel",
+    "displayMetadata": "{\r\n\"DisplayTitle\":\"Most Wishlisted\"\r\n}"
+  },
+  {
+    "id": "StoreItemCarousel_UnifiedAlgorithmicList_NewSetsForDisplay",
+    "sectionType": 4,
+    "sectionSubType": "NewSetsFromCreators",
+    "source": "UnifiedAlgorithmicList",
+    "sourceMetadata": "featuredsetscarousel",
+    "displayMetadata": "{\r\n\"DisplayTitle\":\"Featured Sets\"\r\n}"
+  },
+  {
+    "id": "CustomAvatarItemCarousel_CuratedList_StoreItemList_WeeklyMashup_FantasyBackpack",
+    "sectionType": 8,
+    "sectionSubType": "CuratedList_StoreItemList_WeeklyMashup_FantasyBackpack",
+    "source": "CuratedList",
+    "sourceMetadata": "CustomAvatarItemCarousel_CuratedList_StoreItemList_WeeklyMashup_FantasyBackpack",
+    "displayMetadata": "{\r\n\t\"DisplayTitle\":\"Fantasy Backpack\"\r\n}"
+  },
+  {
+    "id": "StoreItemCarousel_UnifiedAlgorithmicList_MostGiftedItems",
+    "sectionType": 4,
+    "sectionSubType": "StoreMostGiftedItems",
+    "source": "UnifiedAlgorithmicList",
+    "sourceMetadata": "mostgifteditems",
+    "displayMetadata": "{\r\n\"DisplayTitle\":\"Good for Gifts\"\r\n}"
+  }
+]

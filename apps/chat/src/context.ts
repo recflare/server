@@ -11,6 +11,11 @@ export type Env = SharedHonoEnv & {
 	JWT_SECRET: SecretsStoreSecret
 	/** Shared `recflare` D1 — this worker owns the `message` and thread tables. */
 	DB: D1Database
+	/**
+	 * Per-player settings KV, owned by the `playersettings` worker. Holds the caller's
+	 * chat privacy settings (`/thread/chatPrivacySetting`) alongside their other toggles.
+	 */
+	RECFLARE_PLAYER_SETTINGS: KVNamespace
 	/** The `notify` worker's NotificationsHub DO — pushes ChatMessageReceived to members. */
 	RECFLARE_NOTIFICATIONS_HUB: DurableObjectNamespace<NotificationsHub>
 }

@@ -9,10 +9,11 @@
  * single source of truth for the helpers — both workers import it from
  * `@repo/domain`. Columns marked `[JsonIgnore]` in the reference (owner_account_id,
  * data_blob, allow_new_users, join_disabled) live in the blob but are dropped from
- * the client DTO (`toDto`).
+ * the client DTO (`toDto`) — as does `game_version`, which is this server's own
+ * addition (migrations/0012_room_instance_version.sql) and keys matchmaking so that
+ * only players on the same client build share an instance.
  */
 
-import { RoomInstanceType } from './enums'
 import { countPlayersInInstance, getPlayerIdsByRoomInstance } from './presence-db'
 
 /** Schema DDL (mirror of migrations/0004_room_instance.sql). */
@@ -40,7 +41,8 @@ export const ROOM_INSTANCE_SCHEMA_DDL: string[] = [
 		matchmaking_policy INTEGER GENERATED ALWAYS AS (json_extract(data, '$.matchmakingPolicy')) VIRTUAL,
 		allow_new_users INTEGER GENERATED ALWAYS AS (json_extract(data, '$.allowNewUsers')) VIRTUAL,
 		join_disabled INTEGER GENERATED ALWAYS AS (json_extract(data, '$.joinDisabled')) VIRTUAL,
-		created_at TEXT GENERATED ALWAYS AS (json_extract(data, '$.createdAt')) VIRTUAL
+		created_at TEXT GENERATED ALWAYS AS (json_extract(data, '$.createdAt')) VIRTUAL,
+		game_version TEXT GENERATED ALWAYS AS (json_extract(data, '$.gameVersion')) VIRTUAL
 	)`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_room_instance_id ON room_instance (id)`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_room_instance_photon_room_id ON room_instance (photon_room_id)`,
@@ -86,12 +88,19 @@ export interface RoomInstanceSummary {
 	playerIds: number[]
 }
 
-/** The full stored instance — the DTO plus the JsonIgnore fields (in the blob). */
-interface StoredRoomInstance extends RoomInstanceDto {
+/**
+ * The full stored instance — the DTO plus the fields that live in the blob but never
+ * reach the client: the reference's `[JsonIgnore]` columns, and `gameVersion`, which is
+ * this server's own (see {@link NewRoomInstance.gameVersion}). Exported for the callers
+ * that need one of those — {@link getStoredRoomInstance} is how they read it — since the
+ * DTO deliberately drops them.
+ */
+export interface StoredRoomInstance extends RoomInstanceDto {
 	ownerAccountId: number
 	dataBlob: string
 	allowNewUsers: boolean
 	joinDisabled: boolean
+	gameVersion: string
 }
 
 /** Fields for a new instance; `roomInstanceId` and `createdAt` are assigned here. */
@@ -116,6 +125,14 @@ export interface NewRoomInstance {
 	matchmakingPolicy?: number
 	allowNewUsers?: boolean
 	joinDisabled?: boolean
+	/**
+	 * The game build this session runs — the `rn.ver` of the player whose matchmake
+	 * created it. Players only ever share an instance with others on the same build (see
+	 * {@link getJoinableInstance}), because two builds in one Photon room disagree about
+	 * how the scene and its objects serialize. Omitted (`''`) means "unknown", which
+	 * matches nothing: rows written before the field existed are never joined into.
+	 */
+	gameVersion?: string
 }
 
 /** Project a stored instance to the client DTO (JsonIgnore fields dropped). */
@@ -181,6 +198,7 @@ export async function createRoomInstance(
 		matchmakingPolicy: input.matchmakingPolicy ?? 0,
 		allowNewUsers: input.allowNewUsers ?? true,
 		joinDisabled: input.joinDisabled ?? false,
+		gameVersion: input.gameVersion ?? '',
 		createdAt: new Date().toISOString(),
 	}
 	await db
@@ -197,6 +215,27 @@ export async function getRoomInstance(db: D1Database, id: number): Promise<RoomI
 		.bind(id)
 		.first<{ data: string }>()
 	return row ? toDto(parse(row.data)) : null
+}
+
+/**
+ * The stored instance behind {@link getRoomInstance} — the same row, un-projected, so a
+ * caller can read the fields the client DTO drops (`ownerAccountId`, `gameVersion`, the
+ * join flags). Server-side only: never answer a client with this shape.
+ */
+export async function getStoredRoomInstance(
+	db: D1Database,
+	id: number
+): Promise<StoredRoomInstance | null> {
+	const row = await db
+		.prepare('SELECT data FROM room_instance WHERE id = ?1')
+		.bind(id)
+		.first<{ data: string }>()
+	if (!row) return null
+	const stored = parse(row.data)
+	// A row written before the build stamp existed has no `gameVersion` at all; it reads
+	// as `''` (the "unknown build" the type promises) rather than as undefined, so a
+	// caller comparing builds doesn't have to know the field is younger than the table.
+	return { ...stored, gameVersion: stored.gameVersion || '' }
 }
 
 /**
@@ -304,9 +343,15 @@ export const EMPTY_INSTANCE_GRACE_SECONDS = 300
  * until the following sweep.
  *
  * Instances younger than `graceSeconds` are skipped (see
- * {@link EMPTY_INSTANCE_GRACE_SECONDS}), as are dorms: a dorm is backed by one
- * persistent instance so its Photon room id survives re-entry, and it sits empty
- * whenever the owner is elsewhere.
+ * {@link EMPTY_INSTANCE_GRACE_SECONDS}). Nothing else is: a DORM is swept like any
+ * other room once its owner leaves it empty, and gets a fresh row — a new Photon room —
+ * the next time they walk in. Its persistence is the dorm ROOM and the scene saved in it,
+ * which live on the room, not on a session of it; the row here is worth no more than an
+ * empty Photon room nobody can be pointed at.
+ *
+ * Note that a deleted id is not retired: {@link createRoomInstance} allocates
+ * `MAX(id) + 1`, so sweeping the newest row hands its number to the next instance
+ * created. Nothing may treat an instance id as a durable reference to one session.
  *
  * Returns the ids deleted.
  */
@@ -322,21 +367,29 @@ export async function deleteEmptyRoomInstances(
 		.prepare(
 			`DELETE FROM room_instance
 			 WHERE created_at < ?1
-			   AND room_instance_type != ?2
 			   AND NOT EXISTS (
 			     SELECT 1 FROM presence WHERE presence.room_instance_id = room_instance.id
 			   )
 			 RETURNING json_extract(data, '$.roomInstanceId') AS id`
 		)
-		.bind(createdBefore, RoomInstanceType.Dormroom)
+		.bind(createdBefore)
 		.all<{ id: number }>()
 	return results.map((r) => r.id)
 }
 
 /**
  * The oldest joinable public instance of a room (not private, not full, joins
- * enabled, not already in progress), or null when there's none to join. Used by
- * matchmaking to reuse an existing instance before creating a new one.
+ * enabled, not already in progress) that is running `gameVersion`, or null when
+ * there's none to join. Used by matchmaking to reuse an existing instance before
+ * creating a new one.
+ *
+ * The build is part of the search, not a detail of it — which is why it's a required
+ * argument rather than an optional filter a caller can forget. Two builds in one Photon
+ * room disagree about how the scene and its objects serialize, so a player is only ever
+ * placed with others on their own build; a room busy with players on another build looks
+ * empty here and the caller creates a fresh instance beside them. Instances written
+ * before the field existed carry no version and so match nobody — they are joined into
+ * again only after they empty out and the sweep retires them.
  *
  * A room's subrooms are separate places, so `subRoomId` scopes the search: joining
  * subroom 35 must never drop you into a live instance of subroom 1. Omitting it
@@ -352,10 +405,11 @@ export async function deleteEmptyRoomInstances(
 export async function getJoinableInstance(
 	db: D1Database,
 	roomId: number,
+	gameVersion: string,
 	subRoomId?: number,
 	excludeInstanceId?: number
 ): Promise<RoomInstanceDto | null> {
-	const binds: number[] = [roomId]
+	const binds: Array<number | string> = [roomId, gameVersion]
 	const filters: string[] = []
 	if (subRoomId !== undefined) {
 		binds.push(subRoomId)
@@ -368,7 +422,8 @@ export async function getJoinableInstance(
 	const row = await db
 		.prepare(
 			`SELECT data FROM room_instance
-			 WHERE room_id = ?1 AND is_private = 0 AND is_full = 0 AND join_disabled = 0
+			 WHERE room_id = ?1 AND game_version = ?2
+			   AND is_private = 0 AND is_full = 0 AND join_disabled = 0
 			   AND is_in_progress = 0 ${filters.join(' ')}
 			 ORDER BY id LIMIT 1`
 		)
@@ -377,14 +432,24 @@ export async function getJoinableInstance(
 	return row ? toDto(parse(row.data)) : null
 }
 
-/** All instances of a given room. */
+/**
+ * All instances of a given room — every build's, unless `gameVersion` scopes it to the
+ * sessions running one. An instance belongs to a single client build (see
+ * {@link getJoinableInstance}), so a caller looking for one to place a player in wants
+ * the scoped form; a caller counting or listing what's live wants them all.
+ */
 export async function getRoomInstancesByRoom(
 	db: D1Database,
-	roomId: number
+	roomId: number,
+	gameVersion?: string
 ): Promise<RoomInstanceDto[]> {
 	const { results } = await db
-		.prepare('SELECT data FROM room_instance WHERE room_id = ?1')
-		.bind(roomId)
+		.prepare(
+			`SELECT data FROM room_instance WHERE room_id = ?1${
+				gameVersion === undefined ? '' : ' AND game_version = ?2'
+			}`
+		)
+		.bind(...(gameVersion === undefined ? [roomId] : [roomId, gameVersion]))
 		.all<{ data: string }>()
 	return results.map((r) => toDto(parse(r.data)))
 }

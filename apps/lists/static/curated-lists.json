@@ -1,0 +1,58 @@
+[
+	{
+		"ListId": "624765592684307326",
+		"CreatorAccountId": 1,
+		"Name": "Discovery.PageSource.PlayExplore",
+		"Description": null,
+		"ImageName": "DefaultRoomImage.jpg",
+		"Type": 7,
+		"ItemIds": [
+			"Rooms_New_PlayHighlight_TabsTest_Explore",
+			"RoomCategories_MoodPlaylists_FeelingLucky",
+			"Rooms_RecentlyUpdated_TabsTest_Explore",
+			"Rooms_Battle_AlgoEndpoint_PlayHighlight_TabsTest_Explore",
+			"Rooms_Quests_AlgoEndpoint_PlayHighlight_TabsTest_Explore",
+			"Rooms_Roleplay_AlgoEndpoint_PlayHighlight_TabsTest_Explore",
+			"Rooms_Horror_AlgoEndpoint_PlayHighlight_TabsTest_Explore",
+			"Rooms_Hangout_AlgoEndpoint_PlayHighlight_TabsTest_Explore",
+			"Rooms_Casual_AlgoEndpoint_PlayHighlight_TabsTest_Explore",
+			"Rooms_Explore_AlgoEndpoint_PlayHighlight_TabsTest_Explore"
+		],
+		"Accessibility": 1,
+		"CreatedAt": "2025-04-23T18:27:03.2643786Z"
+	},
+	{
+		"ListId": "5321092632685904804",
+		"CreatorAccountId": 1,
+		"Name": "Discovery.PageSource.PlayLibrary",
+		"Description": null,
+		"ImageName": "DefaultRoomImage.jpg",
+		"Type": 7,
+		"ItemIds": [
+			"Rooms_ContinuePlaying_PlayLibrary",
+			"Rooms_SavedForLater_PlayHighlight",
+			"Rooms_Favorites_PlayLibrary",
+			"Rooms_MyRooms_Play"
+		],
+		"Accessibility": 1,
+		"CreatedAt": "2025-04-23T18:25:31.5308539Z"
+	},
+	{
+		"ListId": "8578579969342570774",
+		"CreatorAccountId": 1,
+		"Name": "RoomCategories.MoodPlaylists.AlgoEndpoint.FeelingLucky",
+		"Description": "I'm Feeling Lucky",
+		"ImageName": "DefaultRoomImage.jpg",
+		"Type": 7,
+		"ItemIds": [
+			"action_algorithmiclist_roomcategory",
+			"hangout_roomcategory_card",
+			"horror_roomcategory_card",
+			"pvp_roomcategory_card",
+			"quests_roomcategory_card",
+			"roleplay_roomcategory_card"
+		],
+		"Accessibility": 1,
+		"CreatedAt": "2024-05-22T05:37:43.7726633Z"
+	}
+]

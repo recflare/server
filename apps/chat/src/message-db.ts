@@ -7,8 +7,9 @@
  * `contents` is the client's envelope, e.g.
  * `{"Type":0,"Version":1,"Data":"This is jordanparki7 from your Oculus friends."}`,
  * where `Type` selects how the client renders `Data` (plain text, an invite, an image
- * …) and `Version` versions that encoding. It is stored verbatim and served back
- * untouched, so new message types need no schema change here.
+ * …) and `Version` versions that encoding. It is served back exactly as stored, and the
+ * writer (`chat.app.ts`) rewrites nothing in it but the profanity mask over `Data`, so
+ * new message types need no schema change here.
  *
  * `chatMessageId` is server-assigned and unique across all threads (AUTOINCREMENT), the
  * way the client expects to be able to reference a message by id alone.

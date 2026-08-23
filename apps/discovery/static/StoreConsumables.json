@@ -1,0 +1,74 @@
+[
+  {
+    "id": "StoreItemCarousel_Storefront_PopUpShop_18",
+    "sectionType": 4,
+    "sectionSubType": "Storefront_PopUpShop_18",
+    "source": "Storefront",
+    "sourceMetadata": "PopUpShop_18",
+    "displayMetadata": null
+  },
+  {
+    "id": "StoreItemCarousel_Storefront_PopUpShop_14",
+    "sectionType": 4,
+    "sectionSubType": "Storefront_PopUpShop_14",
+    "source": "Storefront",
+    "sourceMetadata": "PopUpShop_14",
+    "displayMetadata": "{\r\n    \"itemCount\": 5, \r\n    \"numRows\":\"2\"\r\n}"
+  },
+  {
+    "id": "StoreItemCarousel_Store_FoodItems",
+    "sectionType": 4,
+    "sectionSubType": "Store_FoodItems",
+    "source": "Store",
+    "sourceMetadata": "FoodItems",
+    "displayMetadata": "{\r\n    \"itemCount\": 5, \r\n    \"numRows\":\"2\"\r\n}"
+  },
+  {
+    "id": "StoreItemCarousel_Storefront_PopUpShop_12",
+    "sectionType": 4,
+    "sectionSubType": "Storefront_PopUpShop_12",
+    "source": "Storefront",
+    "sourceMetadata": "PopUpShop_12",
+    "displayMetadata": null
+  },
+  {
+    "id": "StoreItemCarousel_Storefront_PopUpShop_16",
+    "sectionType": 4,
+    "sectionSubType": "Storefront_PopUpShop_16",
+    "source": "Storefront",
+    "sourceMetadata": "PopUpShop_16",
+    "displayMetadata": null
+  },
+  {
+    "id": "StoreItemCarousel_Storefront_PopUpShop_17",
+    "sectionType": 4,
+    "sectionSubType": "Storefront_PopUpShop_17",
+    "source": "Storefront",
+    "sourceMetadata": "PopUpShop_17",
+    "displayMetadata": null
+  },
+  {
+    "id": "StoreItemCarousel_Store_Potions",
+    "sectionType": 4,
+    "sectionSubType": "Store_Potions",
+    "source": "UnifiedCuratedList",
+    "sourceMetadata": "StoreItemList_Potions",
+    "displayMetadata": "{\r\n    \"itemCount\": 5,\r\n    \"DisplayTitle\": \"Potions\"\r\n}"
+  },
+  {
+    "id": "StoreItemCarousel_Store_RandomBoxesItems",
+    "sectionType": 4,
+    "sectionSubType": "Store_RandomBoxesItems",
+    "source": "Store",
+    "sourceMetadata": "RandomBoxesItems",
+    "displayMetadata": "{\r\n    \"itemCount\": 5\r\n}"
+  },
+  {
+    "id": "StoreItemCarousel_Store_KOIconsItems",
+    "sectionType": 4,
+    "sectionSubType": "Store_KOIconsItems",
+    "source": "Store",
+    "sourceMetadata": "KOIconsItems",
+    "displayMetadata": "{\r\n    \"itemCount\": 5\r\n}"
+  }
+]

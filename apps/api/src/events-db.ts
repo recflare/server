@@ -20,6 +20,7 @@
 import {
 	glyphLength,
 	MAX_EVENT_DESCRIPTION_LENGTH,
+	MAX_EVENT_DURATION_MS,
 	MAX_EVENT_NAME_LENGTH,
 } from '@repo/domain'
 
@@ -172,23 +173,42 @@ interface EventRow {
 }
 
 /**
- * The envelope the create/update writes answer with — the event nested under a status,
- * rather than the bare record the read endpoints serve. `Result` is 0 on success.
- *
- * `TagModifyResult` is always null: the real API reports the outcome of the tag edit
- * that rides along with the write, and we store no event tags (see the tag-filter
- * chips, which are static). The field stays present because the client's parser
- * expects it.
+ * The event as the `v2` envelope carries it: {@link PlayerEventBase} plus `Tags`, a plain
+ * array of tag NAMES. (The stored tags are `{ tag, type }` pairs, which is what the v1
+ * read's lowercase `tags` serves.) Defined on top of the base rather than beside it, so the
+ * feed and the envelope cannot drift apart on the fields they share.
  */
-export interface PlayerEventResult {
-	Result: number
-	TagModifyResult: null
-	PlayerEvent: PlayerEvent
+export interface PlayerEventEnvelope extends PlayerEventBase {
+	Tags: string[]
 }
 
-/** Wrap a stored event in the write envelope. */
-export function toEventResult(event: PlayerEvent): PlayerEventResult {
-	return { Result: 0, TagModifyResult: null, PlayerEvent: event }
+/**
+ * The envelope the `v2` routes answer with — the event nested under a status, rather than
+ * the bare record the `v1` reads serve. `Result` is 0 on success.
+ *
+ * `TagModifyResult` reports the tag edit that rides along with a write: its `Result` is 0
+ * and its `Tags` echo the tags the event now carries, which is what the client redraws its
+ * tag chips from. It is an OBJECT — it used to be served as null, back when no event tags
+ * were stored.
+ */
+export interface PlayerEventResult {
+	PlayerEvent: PlayerEventEnvelope
+	Result: number
+	TagModifyResult: { Result: number; Tags: string[] }
+}
+
+/**
+ * Wrap a stored event and its tags in the `v2` envelope. `tags` are the event's stored tag
+ * names — pass what `getEventTags` returns, so the answer reflects what was actually
+ * written rather than what was asked for.
+ */
+export function toEventResult(event: PlayerEvent, tags: EventTag[] = []): PlayerEventResult {
+	const names = tags.map((t) => t.tag)
+	return {
+		PlayerEvent: { Tags: names, ...toEventBase(event) },
+		Result: 0,
+		TagModifyResult: { Result: 0, Tags: names },
+	}
 }
 
 /**
@@ -226,24 +246,28 @@ export interface PlayerEventNotification {
 }
 
 /**
- * The projection the browse feed (`GET /api/playerevents/v1`) serves. PascalCase like
+ * The client's BASE event — the 17-key shape the browse feed (`GET /api/playerevents/v1`)
+ * serves, and the same thing the v2 envelope carries once `Tags` is added. PascalCase like
  * the stored record, but not identical to it — don't unify them:
  *
- * - it drops `State`, which the feed does not carry;
+ * - it drops `State`, which neither the feed nor the envelope carries;
  * - it carries `BroadcastingRoomInstanceId`, which the record has no field for (nothing
- *   broadcasts an event yet, so it is always null).
+ *   broadcasts an event yet, so it is always null);
+ * - its `ImageName` is a string: an event with no image reads `""`, where the record holds
+ *   null.
  *
- * That's the shape observed on this endpoint; the by-id / bulk / search reads serve the
- * stored record verbatim and keep `State`.
+ * The by-id / bulk / search reads serve the stored RECORD verbatim instead, `State` and
+ * nullable `ImageName` included. Two shapes; keep them apart.
  */
-export interface PlayerEventListing extends Omit<PlayerEvent, 'State'> {
+export interface PlayerEventBase extends Omit<PlayerEvent, 'State' | 'ImageName'> {
+	ImageName: string
 	BroadcastingRoomInstanceId: number | null
 }
 
-/** Project a stored event into the browse feed's listing. */
-export function toEventListing(event: PlayerEvent): PlayerEventListing {
+/** Project a stored event into the base shape the feed serves and the envelope wraps. */
+export function toEventBase(event: PlayerEvent): PlayerEventBase {
 	const { State: _State, ...rest } = event
-	return { ...rest, BroadcastingRoomInstanceId: null }
+	return { ...rest, ImageName: event.ImageName ?? '', BroadcastingRoomInstanceId: null }
 }
 
 /** Pad a stored timestamp out to .NET tick precision (seven fractional digits). */
@@ -294,6 +318,21 @@ export function toEventNotification(
  */
 function eventTime(ms: number): string {
 	return new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z')
+}
+
+/**
+ * Normalize one posted timestamp into the stored form, or undefined when it isn't a
+ * usable date.
+ *
+ * Exported for the single-field time edit (`PUT …/v2/{id}/time`), which has to tell an
+ * ABSENT bound — leave the stored one alone — from an unusable one, which it refuses.
+ * {@link parseEventBody} collapses the two, since a create/update posting rubbish for a
+ * time is better off defaulting than failing.
+ */
+export function parseEventTime(raw: unknown): string | undefined {
+	if (typeof raw !== 'string') return undefined
+	const parsed = Date.parse(raw)
+	return Number.isNaN(parsed) ? undefined : eventTime(parsed)
 }
 
 /** An event's tags, alphabetical so a list read is stable. */
@@ -365,26 +404,46 @@ function asInt(value: unknown): number | undefined {
 }
 
 /**
- * Parse a posted event body into an {@link EventInput}.
+ * The window a write would end up storing, resolved the way {@link createEvent} and
+ * {@link updateEvent} resolve it: a bound the body carries wins, otherwise the stored one
+ * (an edit), otherwise the create defaults — now, and an hour later.
  *
- * Accepts the event's fields either at the top level or nested under `PlayerEvent`:
- * the client posts the same envelope it reads back, and both forms are in circulation.
- * A field the body doesn't carry stays undefined (create defaults it, update keeps the
- * stored value); an explicit `null` on one of the nullable ids is preserved so it can
- * clear the value. Timestamps are normalized here, so an unparseable one is dropped
- * rather than stored.
+ * Exists so the duration rule below and the writes themselves can't drift apart on what
+ * "the event's window" means for a body that moves only one bound.
  */
+function resolvedWindow(
+	input: EventInput,
+	existing?: PlayerEvent,
+	now = Date.now()
+): { start: number; end: number } {
+	const start = Date.parse(input.startTime ?? existing?.StartTime ?? eventTime(now))
+	const stored = input.endTime ?? existing?.EndTime
+	return { start, end: stored === undefined ? start + DEFAULT_DURATION_MS : Date.parse(stored) }
+}
+
 /**
  * Why a parsed event body can't be stored, or `null` when it's fine.
  *
- * Length only. An event name is a title, not an identifier — "Building a Better Room
- * Using Trigonometry" is a real one — so the alphanumeric rule the account and room
- * names carry would be wrong here. Absent fields are skipped: an update posts only what
- * it changes, and create defaults a missing name rather than refusing it.
+ * Two rules: the stored lengths, and the window.
  *
- * The name is measured AFTER trimming, matching what create/update actually store.
+ * Lengths are a cap, not a charset — an event name is a title, not an identifier
+ * ("Building a Better Room Using Trigonometry" is a real one), so the alphanumeric rule
+ * the account and room names carry would be wrong here. Absent fields are skipped: an
+ * update posts only what it changes, and create defaults a missing name rather than
+ * refusing it. The name is measured AFTER trimming, matching what the writes store.
+ *
+ * The window is checked on what the write RESOLVES to rather than on the fields the body
+ * carries, which is why `existing` is passed for an edit: moving the start alone still
+ * has to leave a window that ends after it and runs no longer than
+ * {@link MAX_EVENT_DURATION_MS}. A create resolves against the same defaults
+ * {@link createEvent} applies, so a body naming neither bound — or only a start — can
+ * never fail this.
+ *
+ * A backwards window is refused here too. It isn't a duration rule as such, but it's the
+ * hole in one: `end - start` on a window running a month backwards is negative, which
+ * would sail past a "no longer than a day" check.
  */
-export function eventInputRejection(input: EventInput): string | null {
+export function eventInputRejection(input: EventInput, existing?: PlayerEvent): string | null {
 	const name = input.name?.trim()
 	if (name !== undefined && glyphLength(name) > MAX_EVENT_NAME_LENGTH) {
 		return `Event names can be at most ${MAX_EVENT_NAME_LENGTH} characters.`
@@ -394,6 +453,16 @@ export function eventInputRejection(input: EventInput): string | null {
 		glyphLength(input.description) > MAX_EVENT_DESCRIPTION_LENGTH
 	) {
 		return `Event descriptions can be at most ${MAX_EVENT_DESCRIPTION_LENGTH} characters.`
+	}
+
+	const { start, end } = resolvedWindow(input, existing)
+	// Unparseable can't happen from `parseEventBody` (it drops what it can't read) but can
+	// from a stored blob edited by hand; skip the rule rather than refusing an edit that
+	// says nothing about the times.
+	if (Number.isNaN(start) || Number.isNaN(end)) return null
+	if (end < start) return 'An event cannot end before it starts.'
+	if (end - start > MAX_EVENT_DURATION_MS) {
+		return `An event can run for at most ${MAX_EVENT_DURATION_MS / (60 * 60 * 1000)} hours.`
 	}
 	return null
 }
@@ -408,7 +477,7 @@ export function eventInputRejection(input: EventInput): string | null {
  * are lowercased (the search matches them lowercased, and `#Workshops` and `#workshops`
  * are the same chip), a leading `#` is stripped, and blanks/duplicates are dropped.
  */
-function parseEventTags(raw: unknown): EventTag[] | undefined {
+export function parseEventTags(raw: unknown): EventTag[] | undefined {
 	if (!Array.isArray(raw)) return undefined
 	const byTag = new Map<string, EventTag>()
 	for (const entry of raw) {
@@ -425,6 +494,16 @@ function parseEventTags(raw: unknown): EventTag[] | undefined {
 	return [...byTag.values()]
 }
 
+/**
+ * Parse a posted event body into an {@link EventInput}.
+ *
+ * Accepts the event's fields either at the top level or nested under `PlayerEvent`:
+ * the client posts the same envelope it reads back, and both forms are in circulation.
+ * A field the body doesn't carry stays undefined (create defaults it, update keeps the
+ * stored value); an explicit `null` on one of the nullable ids is preserved so it can
+ * clear the value. Timestamps are normalized here, so an unparseable one is dropped
+ * rather than stored.
+ */
 export function parseEventBody(body: unknown): EventInput {
 	const outer = (typeof body === 'object' && body !== null ? body : {}) as Record<string, unknown>
 	const nested = outer.PlayerEvent
@@ -439,12 +518,7 @@ export function parseEventBody(body: unknown): EventInput {
 		if (!has(key)) return undefined
 		return obj[key] === null ? null : asInt(obj[key])
 	}
-	const time = (key: string): string | undefined => {
-		const raw = obj[key]
-		if (typeof raw !== 'string') return undefined
-		const parsed = Date.parse(raw)
-		return Number.isNaN(parsed) ? undefined : eventTime(parsed)
-	}
+	const time = (key: string): string | undefined => parseEventTime(obj[key])
 	const bool = (key: string): boolean | undefined => {
 		const raw = obj[key]
 		if (typeof raw === 'boolean') return raw
@@ -705,6 +779,27 @@ export async function updateEvent(
 	// here; an explicit `[]` clears them.
 	if (input.tags !== undefined) await setEventTags(db, eventId, input.tags)
 	return updated
+}
+
+/**
+ * Delete an event and everything hanging off it — its RSVPs (`event_attendee`) and its tags
+ * (`event_tag`) — in one batch, so a cancelled event can't leave rows behind that the
+ * attendee counts and the `#tag` search would still find. Event ids are assigned in
+ * sequence and never reused, but orphan rows would still be counted against whatever id
+ * they name.
+ *
+ * Answers the event as it was, so the caller can report what it deleted; `null` when there
+ * was no such event.
+ */
+export async function deleteEvent(db: D1Database, eventId: number): Promise<PlayerEvent | null> {
+	const event = await getEventById(db, eventId)
+	if (event === null) return null
+	await db.batch([
+		db.prepare('DELETE FROM event_attendee WHERE event_id = ?1').bind(eventId),
+		db.prepare('DELETE FROM event_tag WHERE event_id = ?1').bind(eventId),
+		db.prepare('DELETE FROM event WHERE id = ?1').bind(eventId),
+	])
+	return event
 }
 
 /** One event by id, or null when there's no such row. */

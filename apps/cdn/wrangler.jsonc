@@ -14,7 +14,23 @@
 	// always answers a `bytes=` request with a 206 and a truthful Content-Range.
 	// The cost is that every asset read hits R2; correctness on these blobs is worth it.
 	"cache": {
-		"enabled": false
+		"enabled": true
+	},
+	// The JSON config files in `static/config/`, uploaded as Workers static assets rather
+	// than bundled into the script, so `/config/:name` serves whatever is published there:
+	// adding a config is dropping in a file (a bundled `import` can't do that — the
+	// bundler has to see every path at build time).
+	//
+	// `run_worker_first: true` because these are the WORKER'S data files, not a site.
+	// Without it the runtime answers any request whose path matches an asset before the
+	// Worker runs, which would both publish every config a second time at
+	// `/config/<name>.json` and put asset routing in front of the R2 routes below. With
+	// it, the Worker sees every request and the files are reachable only through
+	// `/config/:name`.
+	"assets": {
+		"binding": "ASSETS",
+		"directory": "./static",
+		"run_worker_first": true
 	},
 	// CDN binaries (signature blobs + room build data) are stored as R2 objects
 	// and streamed back by key. Keys are prefixed `sigs/` and `room/`.

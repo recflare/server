@@ -4,6 +4,7 @@ import { useWorkersLogger } from 'workers-tagged-logger'
 
 import { withCleanSpec, withDefaultCors, withNotFound, withOnError } from '@repo/hono-helpers'
 
+import { accountRoutes } from './routes/account'
 import { avatarRoutes } from './routes/avatar'
 import { configRoutes } from './routes/config'
 import { eventRoutes } from './routes/events'
@@ -62,6 +63,7 @@ const app = new Hono<App>({ strict: false })
 	.route('/', inventoryRoutes)
 	.route('/', roomRoutes)
 	.route('/', imageRoutes)
+	.route('/', accountRoutes)
 
 // The generated spec. Documentation only — no request is validated against it (see
 // openapi.ts). `hide: true` keeps this route out of its own output.

@@ -8,6 +8,14 @@ export type Env = SharedHonoEnv & {
 	 * for local dev and tests.
 	 */
 	DOMAIN: string
+
+	/**
+	 * Per-service subdomain overrides as a raw JSON object keyed by default subdomain,
+	 * e.g. `{"moderation":"api"}`. The operator's `RECFLARE_SUBDOMAINS`, injected at deploy
+	 * time via `--var SUBDOMAINS`; defaults to `{}` in `wrangler.jsonc`. See
+	 * `parseOverrides` in `endpoints.ts`.
+	 */
+	SUBDOMAINS: string
 }
 
 /** Variables can be extended */

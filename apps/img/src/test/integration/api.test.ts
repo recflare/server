@@ -77,6 +77,25 @@ describe('img endpoints', () => {
 		expect(new Uint8Array(await res.arrayBuffer())).toEqual(IMAGE_BYTES)
 	})
 
+	// Images are served with the same 30-day window `cdn` uses for its blobs, plus
+	// `immutable` — an image never changes under its key, a new one takes a new key.
+	it('every served image carries the 30-day Cache-Control', async () => {
+		const CACHE_CONTROL = `public, max-age=${86400 * 30}, immutable`
+
+		// The stored object, a static asset, and the fallback for a key in neither.
+		for (const path of [`/${R2_KEY}`, `/${CDN_NAME}`, '/does-not-exist-anywhere.jpg']) {
+			const res = await SELF.fetch(`${ORIGIN}${path}`)
+			expect(res.status, path).toBe(200)
+			expect(res.headers.get('cache-control'), path).toBe(CACHE_CONTROL)
+		}
+
+		// And the transformed variant, which is rebuilt rather than streamed. Uses a real
+		// (decodable) JPEG, since a resize has to actually run for this path to be reached.
+		const resized = await SELF.fetch(`${ORIGIN}/3DCharades.jpg?width=128`)
+		expect(resized.status).toBe(200)
+		expect(resized.headers.get('cache-control')).toBe(CACHE_CONTROL)
+	})
+
 	it('serves an extensionless key from the cdn bucket under image/', async () => {
 		const res = await SELF.fetch(`${ORIGIN}/${CDN_NAME}`)
 		expect(res.status).toBe(200)

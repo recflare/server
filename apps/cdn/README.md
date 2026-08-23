@@ -2,7 +2,17 @@
 
 CDN Worker served on the `cdn` subdomain (`cdn.recflare.net`) — a Hono app that streams
 the binary blobs the client downloads while playing out of the shared `recflare-cdn` R2
-bucket, plus the one bundled config file the loading screen reads.
+bucket, plus the JSON config files the client reads from `/config/`.
+
+`/config/:name` serves `static/config/<name>.json` verbatim — `RRPlusConfig_v3` and
+`SkuConfig_v1` today — with or without the `.json` in the path, since the game configs that
+point at these files carry the extension and the client's older config calls don't. `{name}`
+IS the filename: that directory is uploaded as Workers static assets and read through the
+ASSETS binding, so publishing a config is dropping in a file, and `run_worker_first` keeps
+the asset server from answering ahead of the Worker (nothing is reachable at its own asset
+path). The files go out byte-for-byte, BOM included. `/config/LoadingScreenTipData` stays a
+route of its own, bundled rather than an asset, because its file is named differently from
+its path.
 
 Objects are keyed by prefix — `sigs/` (anti-cheat signatures), `room/` (saved room
 scenes, and room images by their bare `ImageName`), `invention/` (invention data) — and

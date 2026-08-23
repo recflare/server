@@ -199,6 +199,36 @@ export async function areFriends(
 	return row !== null
 }
 
+/**
+ * How many of a player's friends are online right now — the friend graph joined to live
+ * `presence`, which is the count the client's friends panel shows. `Friend` rows only,
+ * from either side of the pair, and only unexpired presence (rows outlive the player by
+ * up to the TTL, exactly as every other presence read treats them). Lobby (null-instance)
+ * presence counts: those friends are signed in, just not in a room.
+ *
+ * A friend's `statusVisibility` is deliberately NOT consulted — nothing else in the stack
+ * filters presence on it (the batch `/player` lookup reports it and lets the client
+ * decide), so hiding people here would disagree with the list the panel then renders.
+ */
+export async function countOnlineFriends(
+	db: D1Database,
+	playerId: number,
+	now = Math.floor(Date.now() / 1000)
+): Promise<number> {
+	const row = await db
+		.prepare(
+			`SELECT COUNT(*) AS n FROM relationship r
+			 JOIN presence p
+			   ON p.account_id = CASE WHEN r.requester_id = ?1 THEN r.target_id ELSE r.requester_id END
+			 WHERE r.relationship_type = ?2
+			   AND (r.requester_id = ?1 OR r.target_id = ?1)
+			   AND p.expires_at > ?3`
+		)
+		.bind(playerId, RelationshipType.Friend, now)
+		.first<{ n: number }>()
+	return row?.n ?? 0
+}
+
 /** How many mutual friends the mutual-friends lookup will return at most. */
 export const MUTUAL_FRIENDS_LIMIT = 100
 

@@ -6,6 +6,7 @@ import {
 	deleteImage,
 	getCheeredImageIds,
 	getImageByName,
+	getImagesByIds,
 	getImagesByPlayer,
 	getImagesByRoom,
 	getPlayerFeed,
@@ -14,24 +15,29 @@ import {
 	setImageCheer,
 	SLIDESHOW_LIMIT,
 	SLIDESHOW_MAX_LIMIT,
+	toImageMetadata,
 	toImagesPlayer,
 } from '@repo/domain'
 
 import { authedId, unauthorized } from '../http'
 import {
 	AUTHED,
+	CheeredBulkRequest,
 	CheeredEntry,
 	CheerImageRequest,
 	DeleteImageRequest,
 	ErrorResponse,
 	form,
 	idParam,
+	ImageMetadataDto,
 	ImagesPlayerDto,
 	intQuery,
 	json,
 	JsonArray,
 	jsonBody,
 	pageParams,
+	PhotoTaggingSettingRequest,
+	PhotoTaggingSettingResponse,
 	SavedImageDto,
 	SlideshowResponse,
 	stringQuery,
@@ -41,6 +47,7 @@ import {
 	UploadImageResponse,
 } from '../openapi'
 
+import type { Context } from 'hono'
 import type { App } from '../context'
 
 /** Bucket folder each SavedImageType is stored under; unknown types fall back to `none`. */
@@ -51,6 +58,123 @@ const typeFolder: Record<number, string> = {
 	[SavedImageType.RoomThumbnail]: 'room',
 	[SavedImageType.ProfileThumbnail]: 'profile',
 	[SavedImageType.InventionThumbnail]: 'invention',
+}
+
+/**
+ * The player-settings key the photo-tagging preference is stored under, in the same
+ * per-player bag the `playersettings` worker owns (`player:<id>` → `{ key: value }`). It
+ * gets its own endpoints rather than being written through `/playersettings` because the
+ * client asks for it by name, but there is no separate store behind it — which is why the
+ * write below merges.
+ *
+ * Unlike the loose matching `match` does for `avoidJuniors`, the spelling is exact: nothing
+ * but these two routes reads or writes this key, so there is no client spelling to guess.
+ */
+const PHOTO_TAGGING_KEY = 'playerPhotoTaggingSetting'
+
+/**
+ * The preference a player has before they have ever set one. The value is an opaque enum
+ * ordinal to this server (see `PhotoTaggingSettingRequest`), and 0 is what an unset .NET
+ * enum reads as — the reference's own default.
+ */
+const PHOTO_TAGGING_DEFAULT = 0
+
+/** The player's settings map, or null when they have none / KV is unreachable. */
+async function getPlayerSettings(
+	env: App['Bindings'],
+	accountId: number
+): Promise<Record<string, string> | null> {
+	return env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(
+		`player:${accountId}`,
+		'json'
+	).catch(() => null)
+}
+
+/** The caller's stored photo-tagging preference, or the default when they have none. */
+async function readPhotoTaggingSetting(env: App['Bindings'], accountId: number): Promise<number> {
+	const stored = await getPlayerSettings(env, accountId)
+	const raw = stored?.[PHOTO_TAGGING_KEY]
+	const parsed = Number.parseInt(String(raw ?? ''), 10)
+	return Number.isNaN(parsed) ? PHOTO_TAGGING_DEFAULT : parsed
+}
+
+/**
+ * Write the preference back into the player's settings map.
+ *
+ * The write MERGES, as the `playersettings` worker's own PUT does: the map holds every
+ * setting the player has (OOBE state, tutorial mask, …), so storing this one on its own
+ * would wipe the rest. Read-modify-write on KV isn't atomic, but the same is true there,
+ * and racing writers here means one player toggling two of their own options at once.
+ */
+async function writePhotoTaggingSetting(
+	env: App['Bindings'],
+	accountId: number,
+	setting: number
+): Promise<void> {
+	const stored = (await getPlayerSettings(env, accountId)) ?? {}
+	await env.RECFLARE_PLAYER_SETTINGS.put(
+		`player:${accountId}`,
+		JSON.stringify({ ...stored, [PHOTO_TAGGING_KEY]: String(setting) })
+	)
+}
+
+/**
+ * The posted `Setting`, out of a JSON body (`{ "Setting": 1 }`, what the client sends) or a
+ * form one. Both casings are accepted, and a numeric string parses — the value is an
+ * integer either way. `undefined` when the body carries nothing readable, which the caller
+ * treats as "leave it alone" rather than as a write of 0.
+ */
+async function readPostedSetting(c: Context<App>): Promise<number | undefined> {
+	const body = (c.req.header('content-type') ?? '').includes('application/json')
+		? ((await c.req.json().catch(() => null)) as Record<string, unknown> | null)
+		: await c.req.parseBody().catch(() => null)
+	if (body === null || typeof body !== 'object' || Array.isArray(body)) return undefined
+
+	const raw = (body as Record<string, unknown>).Setting ?? (body as Record<string, unknown>).setting
+	if (typeof raw === 'number') return Number.isFinite(raw) ? Math.trunc(raw) : undefined
+	if (typeof raw !== 'string') return undefined
+	const parsed = Number.parseInt(raw.trim(), 10)
+	return Number.isNaN(parsed) ? undefined : parsed
+}
+
+/**
+ * The saved-image ids a cheer lookup is asking about, from wherever the client put them.
+ *
+ * The client POSTs them as a form body of repeated `id` fields — a photo grid asks about a
+ * whole page at once, ~100 ids, which is more than it wants to hang off a URL — and the
+ * same repeated-field spelling also works as a query string, which is how the GET form of
+ * this route takes them. Both are read, so one handler serves either.
+ *
+ * Each value may itself be a comma-separated list, and unparseable entries are dropped
+ * rather than failing the request: a stray id must not cost the caller the rest of the page.
+ */
+async function cheerLookupIds(c: Context<App>): Promise<number[]> {
+	const raw = [...(c.req.queries('id') ?? [])]
+	if (c.req.method !== 'GET') {
+		const body = await c.req.parseBody({ all: true }).catch(() => ({}) as Record<string, unknown>)
+		const key = Object.keys(body).find((k) => k.toLowerCase() === 'id')
+		const posted = key === undefined ? [] : body[key]
+		for (const value of Array.isArray(posted) ? posted : [posted]) {
+			if (typeof value === 'string') raw.push(value)
+		}
+	}
+	return raw
+		.flatMap((value) => value.split(','))
+		.map((value) => Number.parseInt(value.trim(), 10))
+		.filter((imageId) => !Number.isNaN(imageId))
+}
+
+/**
+ * One `{ SavedImageId, IsCheered }` per requested id, in request order — the shared
+ * handler behind both the GET and the POST form of the bulk cheer lookup. The cheer state
+ * is the CALLER's, so two players asking about the same photo get different answers.
+ */
+async function cheerLookup(c: Context<App>) {
+	const id = await authedId(c)
+	if (id === null) return unauthorized(c)
+	const ids = await cheerLookupIds(c)
+	const cheered = await getCheeredImageIds(c.env.DB, id, ids)
+	return c.json(ids.map((imageId) => ({ SavedImageId: imageId, IsCheered: cheered.has(imageId) })))
 }
 
 // ---- Images ----------------------------------------------------------------
@@ -350,6 +474,44 @@ export const imageRoutes = new Hono<App>({ strict: false })
 		}
 	)
 
+	// Bulk image metadata by id (`?ids=207&ids=106`) — the client resolving a set of photo
+	// ids it already holds. A bare array in REQUEST order, so it can line the records up
+	// with what it asked for; an id with no record (or one that isn't public) is simply
+	// absent, which is why this answers 200 with a short list rather than 404ing the lot.
+	//
+	// Serves the RAW `SavedImage`, like `v6` (metadata by filename) and the room feed — NOT
+	// the `ImagesPlayer` projection the player photo LISTS use. Those are a rendered grid,
+	// where the raw record comes up blank; this is a metadata lookup.
+	//
+	// Public-only, as every image read here is: ids are sequential, so honouring whatever
+	// id is named would hand out private photos to anyone who counts.
+	.get(
+		'/api/images/v5/bulk',
+		describeRoute({
+			tags: ['Images'],
+			summary: 'Image metadata by id, in bulk',
+			description:
+				'The stored `SavedImage` records for the given ids (`?ids=207&ids=106`), as a bare ' +
+				'array in request order. An id with no record, or one that is not public, is absent ' +
+				'from the answer rather than an error — the list can be shorter than the request. ' +
+				'Serves the raw `SavedImage` (as `v6` does), not the `ImagesPlayer` projection the ' +
+				'player photo lists use.',
+			parameters: [
+				intQuery('ids', 'Repeatable; each value may also be a comma-separated list of image ids'),
+			],
+			responses: { 200: json(SavedImageDto.array(), 'The matching records, in request order') },
+		}),
+		async (c) => {
+			const ids =
+				c.req
+					.queries('ids')
+					?.flatMap((raw) => raw.split(','))
+					.map((raw) => Number.parseInt(raw.trim(), 10))
+					.filter((imageId) => !Number.isNaN(imageId)) ?? []
+			return c.json(await getImagesByIds(c.env.DB, ids))
+		}
+	)
+
 	// Image metadata by filename. Returns the stored SavedImage record, or 404 when
 	// there's no metadata row for that name.
 	.get(
@@ -358,11 +520,15 @@ export const imageRoutes = new Hono<App>({ strict: false })
 			tags: ['Images'],
 			summary: 'Image metadata by filename',
 			description:
-				'The stored `SavedImage` record for a bucket key. 404s when the object exists but ' +
-				'has no metadata row.',
+				'An image’s metadata for a bucket key. 404s when the object exists but has no ' +
+				'metadata row.\n\n' +
+				'Its own projection: renamed like the player lists (`SavedImageId`/`SavedImageType`, ' +
+				'no `TaggedPlayerIds`) but carrying `ClubId`, and with nothing nullable — `RoomId`, ' +
+				'`PlayerEventId` and `ClubId` read 0 where the row holds null, `Description` reads ' +
+				'`""`. Three shapes of one row; keep them straight.',
 			parameters: [stringQuery('name', 'The image name (bucket key); required')],
 			responses: {
-				200: json(SavedImageDto, 'The image record'),
+				200: json(ImageMetadataDto, 'The image’s metadata'),
 				400: json(ErrorResponse, 'No name given'),
 				404: { description: 'No metadata for that name' },
 			},
@@ -371,7 +537,7 @@ export const imageRoutes = new Hono<App>({ strict: false })
 			const name = c.req.query('name') ?? ''
 			if (name === '') return c.json({ error: 'name is required' }, 400)
 			const image = await getImageByName(c.env.DB, name)
-			return image ? c.json(image) : c.notFound()
+			return image ? c.json(toImageMetadata(image)) : c.notFound()
 		}
 	)
 
@@ -409,6 +575,10 @@ export const imageRoutes = new Hono<App>({ strict: false })
 	// Whether the caller has cheered each of the given saved-image ids (`?id=55&id=54`,
 	// and each `id` may itself be a comma-separated list). Auth-gated. Returns one
 	// `{ SavedImageId, IsCheered }` per requested id, in order.
+	//
+	// The client actually POSTs this (see below); the GET form is kept because it is the
+	// same lookup and costs one line, and a URL of ids is the easier thing to hand a
+	// browser or a curl.
 	.get(
 		'/api/images/v5/cheered/bulk',
 		describeRoute({
@@ -426,18 +596,96 @@ export const imageRoutes = new Hono<App>({ strict: false })
 				401: UNAUTHORIZED_RESPONSE,
 			},
 		}),
+		cheerLookup
+	)
+
+	// The same lookup as a POST, which is the form the client sends: the ids ride in a
+	// form-urlencoded body of repeated `id` fields (`id=651&id=570&…`) rather than the query
+	// string, because a photo grid asks about a full page at once — around a hundred ids,
+	// more than belongs in a URL. Same auth, same answer, same order.
+	.post(
+		'/api/images/v5/cheered/bulk',
+		describeRoute({
+			tags: ['Images'],
+			summary: 'Which photos the caller has cheered (bulk POST)',
+			description:
+				'One `{ SavedImageId, IsCheered }` per requested id, in request order — the client ' +
+				'fills in the cheer buttons on a photo grid from this. The ids are a form body of ' +
+				'repeated `id` fields (`id=651&id=570&…`), which is how the client sends a page of ' +
+				'~100 at once; the query string is read too, so the GET form of this path answers ' +
+				'identically.',
+			security: AUTHED,
+			requestBody: form(CheeredBulkRequest, 'The image ids, as repeated `id` fields'),
+			responses: {
+				200: json(CheeredEntry.array(), 'One entry per requested id, in order'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		cheerLookup
+	)
+
+	// Who may tag the caller in photos. The preference lives in the player-settings bag
+	// (`playerPhotoTaggingSetting`), not in a store of its own — these two routes exist
+	// because the client asks for it by name rather than through `/playersettings`.
+	//
+	// A bare JSON integer, not an envelope, and an opaque one: the value is an enum ordinal
+	// the client defines, stored and served back untouched, so it round-trips whatever the
+	// client means by it. A player who has never set one reads 0.
+	.get(
+		'/api/players/v1/playerPhotoTaggingSetting',
+		describeRoute({
+			tags: ['Images'],
+			summary: 'The caller’s photo-tagging preference',
+			description:
+				'Who may tag the caller in photos, as a bare JSON integer (the enum ordinal the ' +
+				'client defines — stored and served back untouched). `0` until the player sets one. ' +
+				'Stored as one key in the player-settings bag the `playersettings` worker owns.',
+			security: AUTHED,
+			responses: {
+				200: json(PhotoTaggingSettingResponse, 'The caller’s setting; 0 if never set'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
 		async (c) => {
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
-			const ids =
-				c.req
-					.queries('id')
-					?.flatMap((raw) => raw.split(','))
-					.map((raw) => Number.parseInt(raw.trim(), 10))
-					.filter((imageId) => !Number.isNaN(imageId)) ?? []
-			const cheered = await getCheeredImageIds(c.env.DB, id, ids)
-			return c.json(
-				ids.map((imageId) => ({ SavedImageId: imageId, IsCheered: cheered.has(imageId) }))
-			)
+			return c.json(await readPhotoTaggingSetting(c.env, id))
+		}
+	)
+
+	// Set the caller's photo-tagging preference. Answers the stored value, as the reference
+	// does — the client re-renders the toggle from the response rather than from what it
+	// sent.
+	//
+	// A body with no readable `Setting` leaves the stored preference ALONE and answers it,
+	// rather than writing the 0 an unbound .NET model would have carried: the value is
+	// opaque here, so a guess is indistinguishable from a real choice once it's stored.
+	.put(
+		'/api/players/v1/playerPhotoTaggingSetting',
+		describeRoute({
+			tags: ['Images'],
+			summary: 'Set the caller’s photo-tagging preference',
+			description:
+				'Stores `Setting` as the caller’s photo-tagging preference and answers the stored ' +
+				'value (a bare integer), which is what the client re-renders the toggle from. The ' +
+				'write merges into the player-settings bag, so the player’s other settings are left ' +
+				'alone. `Setting` is also read from a form body, and from a `setting` spelling; a ' +
+				'body carrying no readable value is a no-op that answers the current setting.',
+			security: AUTHED,
+			requestBody: jsonBody(PhotoTaggingSettingRequest, 'The preference to store'),
+			responses: {
+				200: json(PhotoTaggingSettingResponse, 'The setting the caller now has'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const setting = await readPostedSetting(c)
+			if (setting === undefined) return c.json(await readPhotoTaggingSetting(c.env, id))
+
+			await writePhotoTaggingSetting(c.env, id, setting)
+			return c.json(setting)
 		}
 	)

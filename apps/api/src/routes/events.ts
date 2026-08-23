@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { describeRoute } from 'hono-openapi'
 
+import { Accessibility } from '@repo/domain'
 import { logger } from '@repo/hono-helpers'
 
 // The notification-type ids the hub carries (owned by the `notify` worker). Imported
@@ -8,6 +9,7 @@ import { logger } from '@repo/hono-helpers'
 import { NotificationType } from '../../../notify/src/notification-types'
 import {
 	createEvent,
+	deleteEvent,
 	eventInputRejection,
 	getEventAttendees,
 	getEventById,
@@ -20,9 +22,11 @@ import {
 	inviteToEvent,
 	isEventResponseType,
 	parseEventBody,
+	parseEventTags,
+	parseEventTime,
 	searchEvents,
 	setEventResponse,
-	toEventListing,
+	toEventBase,
 	toEventNotification,
 	toEventResponse,
 	toEventResult,
@@ -31,15 +35,19 @@ import {
 import { authedId, queryIds, unauthorized } from '../http'
 import {
 	AUTHED,
+	form,
 	idParam,
 	intQuery,
 	json,
 	jsonBody,
 	pageParams,
+	PlayerEventAccessibilityRequest,
+	PlayerEventBaseDto,
 	PlayerEventBulkInviteRequest,
+	PlayerEventDescriptionRequest,
 	PlayerEventDetailsDto,
 	PlayerEventDto,
-	PlayerEventListingDto,
+	PlayerEventNameRequest,
 	PlayerEventReportRequest,
 	PlayerEventRequest,
 	PlayerEventRespondRequest,
@@ -47,6 +55,8 @@ import {
 	PlayerEventResultDto,
 	PlayerEventsAll,
 	PlayerEventsPage,
+	PlayerEventTagsRequest,
+	PlayerEventTimeRequest,
 	stringQuery,
 	SuccessErrorEnvelope,
 	TagFilters,
@@ -57,7 +67,7 @@ import { createReport } from '../reports-db'
 import type { Context } from 'hono'
 import type { PlayerEventResponsePayload } from '../../../notify/src/notification-payloads'
 import type { App } from '../context'
-import type { EventAttendeeRow, EventTag, PlayerEvent } from '../events-db'
+import type { EventAttendeeRow, EventInput, EventTag, PlayerEvent } from '../events-db'
 
 /** The notifications hub is a single global DO instance (see the `notify` worker). */
 const HUB_INSTANCE = 'global'
@@ -133,6 +143,66 @@ async function notifyInvited(
 }
 
 /**
+ * The shared front half of the single-field event edits (`PUT …/v2/{id}/{field}`):
+ * authenticate, load the event, check the caller created it, then apply whatever patch
+ * `parse` reads out of the body and answer the same `{ Result, TagModifyResult,
+ * PlayerEvent }` envelope the other v2 writes do — the client re-renders the event from
+ * the response rather than refetching it.
+ *
+ * `parse` answers `null` to refuse the body, which becomes the empty-bodied 400 the rest
+ * of this file uses. It gets the stored event so a rule can depend on it (the time edit
+ * checks the new window against the bound it isn't changing).
+ *
+ * These edits are creator-only like the whole-event update, and they go through the same
+ * {@link updateEvent}, so a patch touching one field leaves the rest of the event alone.
+ */
+function editEventField(
+	parse: (c: Context<App>, event: PlayerEvent) => Promise<EventInput | null>
+) {
+	return async (c: Context<App>) => {
+		const id = await authedId(c)
+		if (id === null) return unauthorized(c)
+
+		// `?? ''` only to satisfy the untyped-path signature — the route pattern already
+		// constrains the segment to digits, so it is always there.
+		const eventId = Number.parseInt(c.req.param('eventId') ?? '', 10)
+		const existing = await getEventById(c.env.DB, eventId)
+		if (existing === null) return c.body(null, 404)
+		if (existing.CreatorPlayerId !== id) return c.body(null, 403)
+
+		const input = await parse(c, existing)
+		if (input === null) return c.body(null, 400)
+		const updated = await updateEvent(c.env.DB, eventId, input)
+		// updateEvent only returns null when the row vanished, which the read above rules out.
+		return c.json(toEventResult(updated!, await getEventTags(c.env.DB, eventId)))
+	}
+}
+
+/** The form body of a single-field edit; an unparseable one reads as empty. */
+async function formBody(c: Context<App>): Promise<Record<string, unknown>> {
+	return (await c.req.parseBody().catch(() => ({}))) as Record<string, unknown>
+}
+
+/**
+ * Parse an `accessibility` field into an {@link Accessibility} value. The client sends
+ * the enum NAME here (`accessibility=Unlisted`), as it does on the subroom route in
+ * `rooms`; the ordinal is accepted alongside it. Undefined when the field names nothing
+ * in the enum — which the route refuses rather than defaulting, since guessing a
+ * visibility wrong is the kind of mistake that shows a private event to everyone.
+ */
+function parseEventAccessibility(value: unknown): number | undefined {
+	if (typeof value !== 'string') return undefined
+	const raw = value.trim()
+	const named = Object.entries(Accessibility).find(
+		([name, ordinal]) => typeof ordinal === 'number' && name.toLowerCase() === raw.toLowerCase()
+	)
+	if (named) return named[1] as number
+	if (!/^\d+$/.test(raw)) return undefined
+	const ordinal = Number.parseInt(raw, 10)
+	return ordinal in Accessibility ? ordinal : undefined
+}
+
+/**
  * Player events — scheduled events players and clubs host in a room.
  *
  * D1-backed (the `event` table, owned by this worker; see events-db.ts). The stored
@@ -145,8 +215,9 @@ async function notifyInvited(
  */
 export const eventRoutes = new Hono<App>({ strict: false })
 	// The player-events browse feed — everything upcoming or running, soonest first. Same
-	// query `/search` runs with no text, but its own projection: this feed drops `State`
-	// and carries a `BroadcastingRoomInstanceId`, so it goes through `toEventListing`.
+	// query `/search` runs with no text, but its own projection: the feed serves the client's
+	// BASE event (17 keys — no `State`, a string `ImageName`, plus `BroadcastingRoomInstanceId`),
+	// which is the v2 envelope's event minus `Tags`. Hence `toEventBase`.
 	.get(
 		'/api/playerevents/v1',
 		describeRoute({
@@ -156,18 +227,19 @@ export const eventRoutes = new Hono<App>({ strict: false })
 				'The default feed on the player-events screen: every event that has not finished ' +
 				'yet — upcoming and running — soonest first, paginated via skip/take. A bare ' +
 				'array.\n\n' +
-				'Each entry is the browse LISTING, not the stored record the by-id, bulk and ' +
-				'search reads serve: it drops `State` and carries ' +
+				'Each entry is the client’s BASE event — the v2 envelope’s event minus `Tags`, 17 ' +
+				'keys — not the stored record the by-id, bulk and search reads serve: it drops ' +
+				'`State`, serves `ImageName` as `""` rather than null, and carries ' +
 				'`BroadcastingRoomInstanceId` (always null — nothing broadcasts an event yet). ' +
 				'That is the shape observed on this endpoint; keep the two projections apart.',
 			parameters: pageParams(50),
-			responses: { 200: json(PlayerEventListingDto.array(), 'The events that have not ended') },
+			responses: { 200: json(PlayerEventBaseDto.array(), 'The events that have not ended') },
 		}),
 		async (c) => {
 			const skip = Number.parseInt(c.req.query('skip') ?? '', 10) || 0
 			const take = Number.parseInt(c.req.query('take') ?? '', 10) || 50
 			const events = await searchEvents(c.env.DB, '', skip, take)
-			return c.json(events.map(toEventListing))
+			return c.json(events.map(toEventBase))
 		}
 	)
 
@@ -399,7 +471,8 @@ export const eventRoutes = new Hono<App>({ strict: false })
 			if (!Number.isInteger(eventId) || !isEventResponseType(type)) return c.body(null, 400)
 
 			const updated = await setEventResponse(c.env.DB, eventId, id, type)
-			return updated === null ? c.body(null, 404) : c.json(toEventResult(updated))
+			if (updated === null) return c.body(null, 404)
+			return c.json(toEventResult(updated, await getEventTags(c.env.DB, eventId)))
 		}
 	)
 
@@ -530,7 +603,7 @@ export const eventRoutes = new Hono<App>({ strict: false })
 			const result = await inviteToEvent(c.env.DB, eventId, invited)
 			// inviteToEvent only returns null when the row vanished, which the read above rules out.
 			await notifyInvited(c, result!.event, result!.added)
-			return c.json(toEventResult(result!.event))
+			return c.json(toEventResult(result!.event, await getEventTags(c.env.DB, eventId)))
 		}
 	)
 
@@ -550,6 +623,10 @@ export const eventRoutes = new Hono<App>({ strict: false })
 				'which is what makes `AttendeeCount` start at 1, since that count is derived from ' +
 				'the table. Answers the `{ Result, TagModifyResult, PlayerEvent }` envelope — NOT ' +
 				'the bare event the read endpoints serve.\n\n' +
+				'The window is capped at 24 hours and must end after it starts — an event is a ' +
+				'scheduled get-together, not a season. Since a missing end defaults to an hour ' +
+				'after the start, only a body naming both bounds (or an end alone, which is ' +
+				'measured from now) can fail this.\n\n' +
 				'Also pushes a `PlayerEventCreated` (80) hub notification to the creator, carrying ' +
 				'the event in its camelCase notification projection. A hub failure is logged and ' +
 				'swallowed — the event is already stored by then.',
@@ -557,7 +634,11 @@ export const eventRoutes = new Hono<App>({ strict: false })
 			requestBody: jsonBody(PlayerEventRequest, 'The event to schedule'),
 			responses: {
 				200: json(PlayerEventResultDto, 'The created event'),
-				400: { description: 'Name over 64 or description over 512 characters (empty body)' },
+				400: {
+					description:
+						'Name over 64 or description over 512 characters, or a window that is ' +
+						'backwards or longer than 24 hours (empty body)',
+				},
 				401: UNAUTHORIZED_RESPONSE,
 			},
 		}),
@@ -573,7 +654,91 @@ export const eventRoutes = new Hono<App>({ strict: false })
 			if (eventInputRejection(input) !== null) return c.body(null, 400)
 			const event = await createEvent(c.env.DB, id, input)
 			await notifyEventCreated(c, event, input.tags ?? [])
-			return c.json(toEventResult(event))
+			// Read the tags back rather than echoing what was posted: the envelope reports what
+			// the event now carries, which is what the client redraws its chips from.
+			return c.json(toEventResult(event, await getEventTags(c.env.DB, event.PlayerEventId)))
+		}
+	)
+
+	// Delete an event. Creator-only, and it takes the RSVPs and tags with it — a cancelled
+	// event that left its `event_attendee` rows behind would keep being counted, and its
+	// `event_tag` rows would keep answering `#tag` searches for an event nobody can open.
+	//
+	// Registered for POST and DELETE both: the path spells the verb itself (`/delete/{id}`),
+	// which is how the reference exposes it, and a client that reaches for the HTTP verb
+	// instead should not get a 404 for being right.
+	//
+	// Answers the v2 envelope carrying the event as it WAS, so the caller can report what it
+	// removed; an unknown event is 404, and someone else's is 403.
+	.on(
+		['POST', 'DELETE'],
+		'/api/playerevents/v2/delete/:eventId{[0-9]+}',
+		describeRoute({
+			tags: ['Events'],
+			summary: 'Delete a player event',
+			description:
+				'Deletes an event the caller created, along with its RSVPs and its tags — an event ' +
+				'whose attendee rows outlived it would still be counted, and its tags would still ' +
+				'answer `#tag` searches.\n\n' +
+				'Creator only: anyone else gets 403, and an unknown event 404. Answers the v2 ' +
+				'envelope carrying the event as it was just before it went. Both POST and DELETE ' +
+				'reach it — the path names the verb, which is the form the client uses.',
+			security: AUTHED,
+			parameters: [idParam('eventId', 'Event id')],
+			responses: {
+				200: json(PlayerEventResultDto, 'The event that was deleted'),
+				401: UNAUTHORIZED_RESPONSE,
+				403: { description: 'Not the event’s creator (empty body)' },
+				404: { description: 'No such event (empty body)' },
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const eventId = Number.parseInt(c.req.param('eventId'), 10)
+			const existing = await getEventById(c.env.DB, eventId)
+			if (existing === null) return c.body(null, 404)
+			if (existing.CreatorPlayerId !== id) return c.body(null, 403)
+
+			// Read the tags before the delete takes them, so the envelope can still report what
+			// the event carried.
+			const tags = await getEventTags(c.env.DB, eventId)
+			const deleted = await deleteEvent(c.env.DB, eventId)
+			// deleteEvent only answers null when the row vanished, which the read above rules out.
+			return c.json(toEventResult(deleted!, tags))
+		}
+	)
+
+	// Read one event in the v2 envelope — the same `{ PlayerEvent, Result, TagModifyResult }`
+	// the writes answer, so a client that just created or edited an event and one that is
+	// opening it cold parse the same thing.
+	//
+	// The v1 read next to it stays the BARE record on purpose: it is a different shape for a
+	// different caller (no envelope, `State` present, tags only behind `includeDetails`).
+	// Two shapes of one event; don't unify them.
+	.get(
+		'/api/playerevents/v2/:eventId{[0-9]+}',
+		describeRoute({
+			tags: ['Events'],
+			summary: 'One player event (v2 envelope)',
+			description:
+				'A single event wrapped in the same `{ PlayerEvent, Result, TagModifyResult }` ' +
+				'envelope the v2 writes answer with — `Tags` inline, `BroadcastingRoomInstanceId` ' +
+				'present, no `State`. 404 when there is no such event.\n\n' +
+				'`TagModifyResult` carries the event’s tags here too, even though a read edits ' +
+				'nothing: the client reads its chips out of that field either way.',
+			parameters: [idParam('eventId', 'Event id')],
+			responses: {
+				200: json(PlayerEventResultDto, 'The event in the v2 envelope'),
+				404: { description: 'No such event (empty body)' },
+			},
+		}),
+		async (c) => {
+			const eventId = Number.parseInt(c.req.param('eventId'), 10)
+			const event = await getEventById(c.env.DB, eventId)
+			if (event === null) return c.body(null, 404)
+			return c.json(toEventResult(event, await getEventTags(c.env.DB, eventId)))
 		}
 	)
 
@@ -590,13 +755,20 @@ export const eventRoutes = new Hono<App>({ strict: false })
 				'clear it.\n\n' +
 				'The id, the creator and the attendee count are not editable: ownership doesn’t ' +
 				'transfer and RSVPs aren’t set by hand. Creator only — anyone else gets 403, and ' +
-				'an unknown event is 404. Answers the same envelope as create.',
+				'an unknown event is 404. Answers the same envelope as create.\n\n' +
+				'The 24-hour window cap applies to what the post RESOLVES to, not to what it ' +
+				'carries: moving the start alone still has to leave a window that ends after it ' +
+				'and runs no longer than a day against the STORED end.',
 			security: AUTHED,
 			parameters: [idParam('eventId', 'Event id')],
 			requestBody: jsonBody(PlayerEventRequest, 'The fields to change'),
 			responses: {
 				200: json(PlayerEventResultDto, 'The updated event'),
-				400: { description: 'Name over 64 or description over 512 characters (empty body)' },
+				400: {
+					description:
+						'Name over 64 or description over 512 characters, or a resolved window that ' +
+						'is backwards or longer than 24 hours (empty body)',
+				},
 				401: UNAUTHORIZED_RESPONSE,
 				403: { description: 'Not the event’s creator (empty body)' },
 				404: { description: 'No such event (empty body)' },
@@ -612,11 +784,202 @@ export const eventRoutes = new Hono<App>({ strict: false })
 
 			const body = await c.req.json<unknown>().catch(() => ({}))
 			const input = parseEventBody(body)
-			if (eventInputRejection(input) !== null) return c.body(null, 400)
+			// The stored event is passed so the window rule resolves against the bound this
+			// post isn't moving: an edit that only shifts the start still has to land inside
+			// a day of the end already stored.
+			if (eventInputRejection(input, existing) !== null) return c.body(null, 400)
 			const updated = await updateEvent(c.env.DB, eventId, input)
 			// updateEvent only returns null when the row vanished, which the read above rules out.
-			return c.json(toEventResult(updated!))
+			return c.json(toEventResult(updated!, await getEventTags(c.env.DB, eventId)))
 		}
+	)
+
+	// ---- Single-field edits -------------------------------------------------
+	// The event-settings screen edits one field at a time rather than posting the whole
+	// event back, so each of these is a PUT alongside the whole-event update above. They
+	// share its rules — creator-only, 404/403/401 the same way — and answer the same v2
+	// envelope, which is what the client re-renders the event from.
+	//
+	// Note the bodies are FORM-encoded (the tags one excepted), where the whole-event
+	// writes next to them are JSON. That is what the client sends; don't unify them.
+
+	// Move an event's window. Either bound alone is enough — an absent one keeps its
+	// stored value, so the start can be nudged without restating the end.
+	.put(
+		'/api/playerevents/v2/:eventId{[0-9]+}/time',
+		describeRoute({
+			tags: ['Events'],
+			summary: 'Reschedule a player event',
+			description:
+				'Moves an event’s window. `startTime` and `endTime` are both optional and both ' +
+				'independent: an absent bound keeps the stored one, so the start can be nudged ' +
+				'without restating the end. Any parseable ISO 8601 is accepted — the client sends ' +
+				'.NET tick precision (`2026-08-31T17:30:00.0000000Z`) — and stored trimmed to ' +
+				'seconds, the form every read serves.\n\n' +
+				'A bound that is present but unparseable is a 400 rather than being dropped: a ' +
+				'reschedule that silently did nothing is worse than a refusal. So is a window that ' +
+				'ends before it starts, or one running longer than 24 HOURS — an event lasts at ' +
+				'most a day. Both are checked against the RESOLVED window, so sending one bound ' +
+				'is measured against the stored other one.\n\n' +
+				'Creator only, like the whole-event update; answers the same v2 envelope.',
+			security: AUTHED,
+			parameters: [idParam('eventId', 'Event id')],
+			requestBody: form(PlayerEventTimeRequest, 'The new window'),
+			responses: {
+				200: json(PlayerEventResultDto, 'The rescheduled event'),
+				400: {
+					description:
+						'An unparseable time, an end before the start, or a window over 24 hours ' +
+						'(empty body)',
+				},
+				401: UNAUTHORIZED_RESPONSE,
+				403: { description: 'Not the event’s creator (empty body)' },
+				404: { description: 'No such event (empty body)' },
+			},
+		}),
+		editEventField(async (c, event) => {
+			const body = await formBody(c)
+			// Absent leaves the stored bound alone; present-but-unusable is refused, which is
+			// the distinction `parseEventBody` deliberately collapses for the JSON writes.
+			const startTime = parseEventTime(body.startTime)
+			const endTime = parseEventTime(body.endTime)
+			if (body.startTime !== undefined && startTime === undefined) return null
+			if (body.endTime !== undefined && endTime === undefined) return null
+			// The window rules — ends after it starts, runs no longer than a day — live with
+			// the other write validation, resolved against the bound this edit isn't moving.
+			const input = { startTime, endTime }
+			return eventInputRejection(input, event) === null ? input : null
+		})
+	)
+
+	// Change an event's visibility. The NAME of the enum, as the subroom route in `rooms`
+	// takes it — not the ordinal the event's JSON writes carry.
+	.put(
+		'/api/playerevents/v2/:eventId{[0-9]+}/accessibility',
+		describeRoute({
+			tags: ['Events'],
+			summary: 'Set a player event’s accessibility',
+			description:
+				'Sets an event’s visibility. The client sends the `RoomAccessibility` NAME here ' +
+				'(`accessibility=Unlisted`), the way it does on the subroom route in `rooms` — not ' +
+				'the ordinal the event’s JSON writes carry, though the ordinal is accepted too.\n\n' +
+				'A value naming nothing in the enum is a 400 rather than being defaulted or stored ' +
+				'verbatim: guessing a visibility wrong is what shows a private event to everyone. ' +
+				'Creator only; answers the same v2 envelope.',
+			security: AUTHED,
+			parameters: [idParam('eventId', 'Event id')],
+			requestBody: form(PlayerEventAccessibilityRequest, 'The new visibility'),
+			responses: {
+				200: json(PlayerEventResultDto, 'The updated event'),
+				400: { description: 'Missing or unrecognized `accessibility` (empty body)' },
+				401: UNAUTHORIZED_RESPONSE,
+				403: { description: 'Not the event’s creator (empty body)' },
+				404: { description: 'No such event (empty body)' },
+			},
+		}),
+		editEventField(async (c) => {
+			const accessibility = parseEventAccessibility((await formBody(c)).accessibility)
+			return accessibility === undefined ? null : { accessibility }
+		})
+	)
+
+	// Replace an event's tags. A BARE JSON ARRAY of names, unlike the other edits here.
+	.put(
+		'/api/playerevents/v2/:eventId{[0-9]+}/tags',
+		describeRoute({
+			tags: ['Events'],
+			summary: 'Set a player event’s tags',
+			description:
+				'Replaces an event’s whole tag set. The body is a BARE JSON ARRAY of names — ' +
+				'`["tag1","class"]` — not the form encoding the other single-field edits use, and ' +
+				'not an object; the `{ tag, type }` pairs the create/update bodies accept work too. ' +
+				'A replace, not a merge: untagging is a PUT with the tag left out, and `[]` clears ' +
+				'them all.\n\n' +
+				'Names are lowercased and a leading `#` stripped, matching what the `#tag` search ' +
+				'looks for. A body that is not an array is a 400. Creator only; answers the same v2 ' +
+				'envelope, whose `TagModifyResult` carries the set the event now has.',
+			security: AUTHED,
+			parameters: [idParam('eventId', 'Event id')],
+			requestBody: jsonBody(PlayerEventTagsRequest, 'The whole tag set'),
+			responses: {
+				200: json(PlayerEventResultDto, 'The updated event, with its new tags'),
+				400: { description: 'The body is not a JSON array (empty body)' },
+				401: UNAUTHORIZED_RESPONSE,
+				403: { description: 'Not the event’s creator (empty body)' },
+				404: { description: 'No such event (empty body)' },
+			},
+		}),
+		editEventField(async (c) => {
+			const body = await c.req.json<unknown>().catch(() => undefined)
+			const tags = parseEventTags(body)
+			return tags === undefined ? null : { tags }
+		})
+	)
+
+	// Rewrite an event's blurb. An absent field clears it — the client sends no field for
+	// an emptied box, like the room description route in `rooms`.
+	.put(
+		'/api/playerevents/v2/:eventId{[0-9]+}/description',
+		describeRoute({
+			tags: ['Events'],
+			summary: 'Set a player event’s description',
+			description:
+				'Rewrites an event’s blurb. An absent `description` CLEARS it — an emptied text box ' +
+				'sends no field, the same way the room description route in `rooms` behaves — so ' +
+				'this is the one edit here that can’t be a no-op.\n\n' +
+				'Capped at 512 characters, the stored length, and refused rather than truncated: ' +
+				'silently cutting a player’s text off is worse than telling them. Creator only; ' +
+				'answers the same v2 envelope.',
+			security: AUTHED,
+			parameters: [idParam('eventId', 'Event id')],
+			requestBody: form(PlayerEventDescriptionRequest, 'The new description'),
+			responses: {
+				200: json(PlayerEventResultDto, 'The updated event'),
+				400: { description: 'Description over 512 characters (empty body)' },
+				401: UNAUTHORIZED_RESPONSE,
+				403: { description: 'Not the event’s creator (empty body)' },
+				404: { description: 'No such event (empty body)' },
+			},
+		}),
+		editEventField(async (c) => {
+			const raw = (await formBody(c)).description
+			const description = typeof raw === 'string' ? raw : ''
+			return eventInputRejection({ description }) === null ? { description } : null
+		})
+	)
+
+	// Rename an event. Unlike the description, a blank one is refused: `updateEvent` reads
+	// an empty name as "leave it alone", so storing one is impossible anyway — and an event
+	// with no title renders as a blank row.
+	.put(
+		'/api/playerevents/v2/:eventId{[0-9]+}/name',
+		describeRoute({
+			tags: ['Events'],
+			summary: 'Rename a player event',
+			description:
+				'Retitles an event. Capped at 64 characters, the stored length, and refused rather ' +
+				'than truncated. A blank name is refused too — an event with no title renders as a ' +
+				'blank row, and the whole-event update reads an empty name as “leave it alone”, so ' +
+				'there is no way to store one regardless. The name is stored trimmed.\n\n' +
+				'No uniqueness rule: two events may share a title, unlike a room name. Creator ' +
+				'only; answers the same v2 envelope.',
+			security: AUTHED,
+			parameters: [idParam('eventId', 'Event id')],
+			requestBody: form(PlayerEventNameRequest, 'The new title'),
+			responses: {
+				200: json(PlayerEventResultDto, 'The renamed event'),
+				400: { description: 'A blank name, or one over 64 characters (empty body)' },
+				401: UNAUTHORIZED_RESPONSE,
+				403: { description: 'Not the event’s creator (empty body)' },
+				404: { description: 'No such event (empty body)' },
+			},
+		}),
+		editEventField(async (c) => {
+			const raw = (await formBody(c)).name
+			const name = typeof raw === 'string' ? raw.trim() : ''
+			if (name === '' || eventInputRejection({ name }) !== null) return null
+			return { name }
+		})
 	)
 
 	// An event's guest list — every RSVP row, whatever the answer.

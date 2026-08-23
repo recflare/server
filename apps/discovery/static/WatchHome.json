@@ -1,0 +1,42 @@
+[
+  {
+    "id": "Rooms_ForYou_WatchHome",
+    "sectionType": 0,
+    "sectionSubType": "Rooms_ForYou",
+    "source": "CarouselEndpoint",
+    "sourceMetadata": "foryou",
+    "displayMetadata": "{\"DisplayTitle\":\"Recommended For You\",\"supportsDedupe\":\"false\",\"numRows\":\"2\",\"sizePerPlatform\":\"\",\"backgroundColor\":\"#F3DDCE\",\"horizontalScrollEnabled\":\"false\"}"
+  },
+  {
+    "id": "Accounts_OnlineFriends_WatchHome",
+    "sectionType": 1,
+    "sectionSubType": "Accounts_OnlineFriends",
+    "source": "OnlineFriends",
+    "sourceMetadata": null,
+    "displayMetadata": "{\"DisplayTitle\":\"Online Friends\",\"itemCount\":3,\"cardStyle\":\"Horizontal\"}"
+  },
+  {
+    "id": "Rooms_ContinuePlaying_WatchHome",
+    "sectionType": 0,
+    "sectionSubType": "Rooms_ContinuePlaying",
+    "source": "Recent",
+    "sourceMetadata": null,
+    "displayMetadata": "{\"DisplayTitle\":\"Continue Playing\",\"supportsDedupe\":\"false\",\"numRows\":\"1\",\"sizePerPlatform\":\"\",\"backgroundColor\":\"\",\"horizontalScrollEnabled\":\"false\"}"
+  },
+  {
+    "id": "Rooms_MostPopular",
+    "sectionType": 0,
+    "sectionSubType": "Rooms_MostPopular",
+    "source": "Hot",
+    "sourceMetadata": null,
+    "displayMetadata": "{\"DisplayTitle\":\"Trending\",\"supportsDedupe\":\"true\",\"numRows\":\"1\"}"
+  },
+  {
+    "id": "Rooms_RRO_WatchHome",
+    "sectionType": 0,
+    "sectionSubType": "Rooms_RRO",
+    "source": "Hot",
+    "sourceMetadata": "rro",
+    "displayMetadata": "{\"DisplayTitle\":\"Rec Room Originals\",\"supportsDedupe\":\"false\",\"numRows\":\"1\",\"sizePerPlatform\":\"\",\"backgroundColor\":\"\",\"horizontalScrollEnabled\":\"false\"}"
+  }
+]

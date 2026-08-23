@@ -5,11 +5,14 @@ import { useWorkersLogger } from 'workers-tagged-logger'
 import { logger, withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
 import { validateAndGetAccountId } from '@repo/jwt'
 
+import { censorSwears } from '../../api/src/sanitize'
 import { NotificationType } from '../../notify/src/notification-types'
 import { getThreadMessages } from './message-db'
 import {
 	AUTHED,
 	ChatMessageDto,
+	ChatPrivacySettingRequest,
+	ChatPrivacySettings,
 	ChatResult,
 	ChatThreadDto,
 	ChatThreadWithMessagesDto,
@@ -20,6 +23,8 @@ import {
 	json,
 	messageCountParam,
 	NOT_A_MEMBER_RESPONSE,
+	PartyInviteSettings,
+	PartyThread,
 	RenameThreadRequest,
 	SendMessageRequest,
 	SendMessageResponse,
@@ -47,7 +52,7 @@ import {
 } from './thread-db'
 
 import type { Context } from 'hono'
-import type { App } from './context'
+import type { App, Env } from './context'
 import type { ChatMessage } from './message-db'
 
 /**
@@ -85,13 +90,122 @@ async function formMessageCount(c: Context<App>, fallback: number): Promise<numb
 }
 
 /**
- * What a chat action reports back to the client alongside its payload — the reference's
- * ChatResult. Only success and "bad arguments" are reachable here.
+ * What a chat action reports back to the client — the reference's ChatResult, usually
+ * alongside a payload but sometimes (the DM privacy check) as the whole body. Only these
+ * four of the enum's twenty values are reachable here; `ChatResult` in openapi.ts records
+ * the rest, including the 15/16 privacy refusals nothing on this server can answer.
  */
 const CHAT_SUCCESS = 0
 const CHAT_INVALID_ARGUMENTS = 1
 const CHAT_MEMBERSHIP_NOT_FOUND = 3
 const CHAT_PLAYER_ALREADY_ON_THREAD = 4
+
+/**
+ * How long a party invite link stays usable, in minutes (`GET /settings/partyinvite`).
+ * The reference's value. Nothing here stores invite links, so this is what the client
+ * counts down with rather than a lifetime this server enforces.
+ */
+const PARTY_INVITE_LIFETIME_MINUTES = 60
+
+/**
+ * Who may start a chat with a player — the client's `ChatPrivacy` enum, served numerically
+ * like every other enum on this build. `Friends` is what a fresh account reports, and what
+ * a player who has never touched their privacy screen reads back here.
+ *
+ * The PUT spells the same enum by NAME (`directMessagePrivacySetting=Favorites`); only the
+ * GET is numeric. Both directions go through `parseChatPrivacy`, which takes either.
+ */
+const ChatPrivacy = {
+	Friends: 0,
+	Favorites: 1,
+	NoOne: 2,
+} as const
+
+type ChatPrivacyValue = (typeof ChatPrivacy)[keyof typeof ChatPrivacy]
+
+/** The enum member names, indexed by ordinal — what a stored setting holds. */
+const CHAT_PRIVACY_NAMES = ['Friends', 'Favorites', 'NoOne'] as const
+
+/**
+ * The keys the two settings live under in the player's `playersettings` map. Chat has no
+ * table of its own for them: they belong with the player's other toggles, and the settings
+ * bag is already read and written per player.
+ */
+const DM_PRIVACY_KEY = 'directMessagePrivacySetting'
+const GROUP_PRIVACY_KEY = 'groupChatPrivacySetting'
+
+/**
+ * A `ChatPrivacy` out of whatever was stored or posted — the member name as the client
+ * sends it (case-insensitively), or the ordinal as the GET serves it, since a value that
+ * made a round trip through the settings bag could be spelled either way.
+ *
+ * `undefined` for anything unrecognized, which the read and the write treat differently: a
+ * stored value that won't parse falls back to the default, but a posted one that won't
+ * parse is a field worth leaving alone rather than a write of `Friends`.
+ */
+function parseChatPrivacy(value: string | undefined): ChatPrivacyValue | undefined {
+	const raw = (value ?? '').trim()
+	if (raw === '') return undefined
+
+	const byName = CHAT_PRIVACY_NAMES.findIndex((n) => n.toLowerCase() === raw.toLowerCase())
+	if (byName !== -1) return byName as ChatPrivacyValue
+
+	const ordinal = Number.parseInt(raw, 10)
+	return ordinal >= 0 && ordinal < CHAT_PRIVACY_NAMES.length
+		? (ordinal as ChatPrivacyValue)
+		: undefined
+}
+
+/** The player's settings map from the KV the `playersettings` worker owns. */
+async function getPlayerSettings(
+	env: Env,
+	accountId: number
+): Promise<Record<string, string> | null> {
+	return env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(
+		`player:${accountId}`,
+		'json'
+	).catch(() => null)
+}
+
+/**
+ * A player's two chat privacy settings. Absent settings, an absent key and an unparseable
+ * value all read `Friends` — the reference's default, and the safer of the two directions
+ * to be wrong in: it describes a player as more private than this server enforces, rather
+ * than less.
+ */
+async function readChatPrivacy(
+	env: Env,
+	accountId: number
+): Promise<{
+	directMessagePrivacySetting: ChatPrivacyValue
+	groupChatPrivacySetting: ChatPrivacyValue
+}> {
+	const stored = (await getPlayerSettings(env, accountId)) ?? {}
+	return {
+		directMessagePrivacySetting: parseChatPrivacy(stored[DM_PRIVACY_KEY]) ?? ChatPrivacy.Friends,
+		groupChatPrivacySetting: parseChatPrivacy(stored[GROUP_PRIVACY_KEY]) ?? ChatPrivacy.Friends,
+	}
+}
+
+/**
+ * Write the posted setting(s) back into the player's settings map.
+ *
+ * The write MERGES, exactly as the `playersettings` worker's own PUT does: the map holds
+ * every setting the player has (OOBE state, tutorial mask, …), so storing these two on
+ * their own would wipe the rest. Values are stored by NAME, the way the client posts them,
+ * so the bag stays readable; `parseChatPrivacy` takes either spelling back.
+ */
+async function writeChatPrivacy(
+	env: Env,
+	accountId: number,
+	settings: Partial<Record<typeof DM_PRIVACY_KEY | typeof GROUP_PRIVACY_KEY, ChatPrivacyValue>>
+): Promise<void> {
+	const merged: Record<string, string> = { ...(await getPlayerSettings(env, accountId)) }
+	for (const [key, value] of Object.entries(settings)) {
+		if (value !== undefined) merged[key] = CHAT_PRIVACY_NAMES[value]
+	}
+	await env.RECFLARE_PLAYER_SETTINGS.put(`player:${accountId}`, JSON.stringify(merged))
+}
 
 /** The hub is a single global Durable Object instance, as every worker addresses it. */
 const HUB_INSTANCE = 'global'
@@ -126,6 +240,49 @@ async function pushChatMessage(c: Context<App>, message: ChatMessage): Promise<v
 }
 
 /**
+ * The message envelope with the player's own words masked, as it will be stored.
+ *
+ * The same filter `api`'s `POST /api/sanitize/v1` runs, applied again here because
+ * nothing obliges the client to have called it: a message posted straight to this
+ * endpoint would otherwise reach every member of the thread unfiltered.
+ *
+ * Only `Data` — the text the player typed — is censored. `Type`, `Version`, the `Blocks`
+ * array and whatever else the client packs alongside are copied through untouched: the
+ * rest of the envelope is the client's own business and this server doesn't know what
+ * most of it means. The
+ * mask is one character per character, so lengths (and therefore the envelope) survive
+ * intact, and a Version 2 `Data` keeps its `<=>` prefix — the marker isn't a word, so
+ * whole-word matching never reaches it.
+ *
+ * Contents that aren't a JSON object, or whose `Data` isn't a string, are censored
+ * whole: a hand-written `messageContents=hi` is plain text with nothing in it to
+ * preserve. Text with nothing to object to comes back as the very bytes that were sent,
+ * which is the common case — the envelope is only rebuilt when something was masked.
+ *
+ * Blocked characters are deliberately NOT stripped the way `PreRemoveBlockedCharacters`
+ * strips them: chat carries emoji, and the format characters that rule removes include
+ * the zero-width joiners holding a multi-person emoji together.
+ */
+function censorContents(contents: string): string {
+	let envelope: unknown
+	try {
+		envelope = JSON.parse(contents)
+	} catch {
+		return censorSwears(contents)
+	}
+	if (typeof envelope !== 'object' || envelope === null || Array.isArray(envelope)) {
+		return censorSwears(contents)
+	}
+
+	const fields = envelope as Record<string, unknown>
+	const data = fields.Data
+	if (typeof data !== 'string') return contents
+
+	const censored = censorSwears(data)
+	return censored === data ? contents : JSON.stringify({ ...fields, Data: censored })
+}
+
+/**
  * Send a message to a thread that already exists — every message after the one that
  * opened the conversation. `/thread/18` is what the client posts; `/thread/18/message` is
  * the same call under the reference's other spelling, so both routes land here.
@@ -142,14 +299,19 @@ async function sendToThread(c: Context<App>) {
 	const chatThreadId = Number.parseInt(c.req.param('id') ?? '', 10)
 	if (!(await isThreadMember(c.env.DB, chatThreadId, id))) return c.notFound()
 
-	// Stored exactly as sent: the envelope carries its own Type/Version and may hold
-	// fields we know nothing about (the client sends Version 2 with a `<=>` prefix in
-	// Data, and a `Blocks` array alongside it), so nothing here parses or rewrites it.
+	// Stored as sent but for the profanity mask: the envelope carries its own Type/Version
+	// and may hold fields we know nothing about (the client sends Version 2 with a `<=>`
+	// prefix in Data, and a `Blocks` array alongside it), so `censorContents` rewrites the
+	// player's `Data` and nothing else.
 	const contents = (await formField(c, 'messageContents'))?.trim()
 	const posted =
 		contents === undefined || contents === ''
 			? null
-			: await postMessage(c.env.DB, { chatThreadId, senderPlayerId: id, contents })
+			: await postMessage(c.env.DB, {
+					chatThreadId,
+					senderPlayerId: id,
+					contents: censorContents(contents),
+				})
 	if (posted !== null) {
 		await pushChatMessage(c, posted)
 		// Sending is reading: the reference answers with `lastReadMessageId` already at the
@@ -289,7 +451,9 @@ function sendToThreadRoute(spelling: string) {
 		description: [
 			'Every message after the one that opened the conversation. Answers',
 			'`{ chatResult, chatThread }` — the WHOLE thread with its messages, not just the message',
-			'that was sent, so the client re-renders the conversation from one response. Blank or',
+			'that was sent, so the client re-renders the conversation from one response. The envelope’s',
+			'`Data` goes through the same profanity filter `api`’s `POST /api/sanitize/v1` runs, masked',
+			'one `*` per character; every other field is stored as sent. Blank or',
 			'missing `messageContents` stores nothing and reports invalid-arguments (1), still with',
 			'the thread attached, rather than an error status. Sending is reading: the sender’s own',
 			'`lastReadMessageId` comes back already at the message just posted. Pushes',
@@ -368,9 +532,11 @@ const app = new Hono<App>()
 	// players already share rather than opening a second one.
 	//
 	// `messageContents` is the same envelope a message carries
-	// (`{"Type":0,"Version":1,"Data":"…"}`) and is stored verbatim, unparsed. The client
-	// also sends it blank, right after /thread/withmembers: that opens the thread without
-	// posting an empty message, and reports invalid-arguments the way the reference does.
+	// (`{"Type":0,"Version":1,"Data":"…"}`), stored as sent but for the profanity mask
+	// `censorContents` puts over `Data` — the same filter the later messages go through,
+	// since the first one is no different. The client also sends it blank, right after
+	// /thread/withmembers: that opens the thread without posting an empty message, and
+	// reports invalid-arguments the way the reference does.
 	.post(
 		'/thread',
 		describeRoute({
@@ -410,7 +576,11 @@ const app = new Hono<App>()
 			const posted =
 				contents === undefined || contents === ''
 					? null
-					: await postMessage(c.env.DB, { chatThreadId, senderPlayerId: id, contents })
+					: await postMessage(c.env.DB, {
+							chatThreadId,
+							senderPlayerId: id,
+							contents: censorContents(contents),
+						})
 			if (posted !== null) {
 				await pushChatMessage(c, posted)
 				await markThreadRead(c.env.DB, chatThreadId, id, posted.chatMessageId)
@@ -423,6 +593,217 @@ const app = new Hono<App>()
 				chatThread: thread,
 				chatResult: posted === null ? CHAT_INVALID_ARGUMENTS : CHAT_SUCCESS,
 			})
+		}
+	)
+
+	// How long a party invite link lives. Server-side config the client reads to stamp its
+	// own invite links, not per-player state — one hour, which is the reference's value.
+	//
+	// A bare single-key object: `{ InviteLinkLifetimeInMinutes }` and nothing else, no
+	// `{ success, error, value }` envelope. Nothing here expires links (there is no invite
+	// link store), so this is the number the client shows and counts down with rather than
+	// a lifetime this server enforces.
+	.get(
+		'/settings/partyinvite',
+		describeRoute({
+			tags: ['Threads'],
+			summary: 'Party invite settings',
+			description: [
+				'How long a party invite link stays usable, in minutes, as a bare single-key object —',
+				'no envelope. 60 here, the reference’s value. Nothing on this server stores or expires',
+				'invite links, so the client is the only thing that acts on it.',
+			].join(' '),
+			security: AUTHED,
+			responses: {
+				200: json(PartyInviteSettings, 'The invite-link lifetime'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return c.body(null, 401)
+			return c.json({ InviteLinkLifetimeInMinutes: PARTY_INVITE_LIFETIME_MINUTES })
+		}
+	)
+
+	// The party thread (`/thread/party?maxCount=1&mode=0`). STUB: the response shape is
+	// unknown — it hasn't been observed off a live client — so this answers an empty
+	// object, which parses as "no party" rather than failing the client's deserializer the
+	// way a 404 or a bare array would. `maxCount` and `mode` are accepted and ignored.
+	// Replace the body once the real shape is captured.
+	.get(
+		'/thread/party',
+		describeRoute({
+			tags: ['Threads'],
+			summary: 'The caller’s party thread (stub)',
+			description: [
+				'STUB — the response shape has not been observed off a live client, so this answers an',
+				'empty object `{}`, which parses as "no party" rather than failing the client’s',
+				'deserializer the way a 404 or a bare array would. `maxCount` and `mode` are accepted and',
+				'ignored. Replace the body once the real shape is captured.',
+			].join(' '),
+			security: AUTHED,
+			parameters: [
+				{
+					name: 'maxCount',
+					in: 'query',
+					required: false,
+					description: 'Page size the client sends (1). Ignored by the stub',
+					schema: { type: 'integer' },
+				},
+				{
+					name: 'mode',
+					in: 'query',
+					required: false,
+					description: 'Unknown mode selector the client sends (0). Ignored by the stub',
+					schema: { type: 'integer' },
+				},
+			],
+			responses: {
+				200: json(PartyThread, 'Always `{}` — the stub carries no party'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return c.body(null, 401)
+			return c.json({})
+		}
+	)
+
+	// The caller's chat privacy settings — who may DM them, and who may pull them into a
+	// group chat — read out of their `playersettings` map. A player who has never opened the
+	// privacy screen reads `Friends` for both, the reference's default and the safer of the
+	// two directions to be wrong in: it describes a player as more private than the server
+	// actually enforces, rather than less.
+	//
+	// STORED, NOT ENFORCED. The PUT below keeps the player's choice, but nothing checks it:
+	// the DM check further down allows every message regardless, because this server has no
+	// friends/favorites list to test a sender against. Wire the two together once it does —
+	// a screen that says "Favorites" while anyone can message you is worse than one that
+	// says nothing.
+	//
+	// `playerId` comes off the TOKEN, not a query param: the answer is about the caller.
+	.get(
+		'/thread/chatPrivacySetting',
+		describeRoute({
+			tags: ['Threads'],
+			summary: 'The caller’s chat privacy settings',
+			description: [
+				'Who may direct-message the caller and who may add them to a group chat, as the',
+				'`ChatPrivacy` enum by NUMBER (0 Friends · 1 Favorites · 2 NoOne) — note the PUT takes',
+				'the same enum by NAME. Read from the caller’s `playersettings` map; a player who has',
+				'never set them reads `Friends` for both, as does one whose stored value won’t parse.',
+				'Stored but not enforced: the DM check allows every message. `playerId` is the caller,',
+				'read from the token.',
+			].join(' '),
+			security: AUTHED,
+			responses: {
+				200: json(ChatPrivacySettings, 'The caller’s stored settings (Friends/Friends by default)'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return c.body(null, 401)
+			return c.json({ playerId: id, ...(await readChatPrivacy(c.env, id)) })
+		}
+	)
+
+	// Set one of the two settings. The client PUTs whichever row of its privacy screen the
+	// player just changed — `directMessagePrivacySetting=Favorites` OR
+	// `groupChatPrivacySetting=Favorites`, never both — so a field that isn't in the body is
+	// left alone rather than reset to the default, which would silently undo the other row.
+	//
+	// The body spells the enum by NAME while the GET answers the ordinal; that asymmetry is
+	// the client's, not a mistake here. An unrecognized value writes nothing.
+	//
+	// Answers the RESULTING settings, the same body the GET serves, rather than an empty
+	// ack: the client has just changed a toggle it renders, and a body it can read back
+	// can't disagree with what was stored.
+	.put(
+		'/thread/chatPrivacySetting',
+		describeRoute({
+			tags: ['Threads'],
+			summary: 'Set the caller’s chat privacy settings',
+			description: [
+				'Stores the posted setting(s) in the caller’s `playersettings` map and answers the',
+				'resulting settings — the same body `GET /thread/chatPrivacySetting` serves, with the',
+				'enum by NUMBER. The body names the enum by NAME',
+				'(`directMessagePrivacySetting=Favorites`); the ordinal is accepted too. The client',
+				'sends one field per call, so an absent field leaves that setting as it was, and the',
+				'write merges into the settings map so the player’s other settings are untouched. A',
+				'body with nothing readable in it is a no-op 200 answering the stored settings, not a',
+				'400. Stored, not enforced: nothing checks these when a message is sent.',
+			].join(' '),
+			security: AUTHED,
+			requestBody: form(ChatPrivacySettingRequest, 'The setting(s) to store'),
+			responses: {
+				200: json(ChatPrivacySettings, 'The caller’s settings as they now stand'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return c.body(null, 401)
+
+			const posted = {
+				[DM_PRIVACY_KEY]: parseChatPrivacy(await formField(c, DM_PRIVACY_KEY)),
+				[GROUP_PRIVACY_KEY]: parseChatPrivacy(await formField(c, GROUP_PRIVACY_KEY)),
+			}
+			if (posted[DM_PRIVACY_KEY] !== undefined || posted[GROUP_PRIVACY_KEY] !== undefined) {
+				await writeChatPrivacy(c.env, id, posted)
+			}
+
+			return c.json({ playerId: id, ...(await readChatPrivacy(c.env, id)) })
+		}
+	)
+
+	// May the caller DM this player? Asked before the client opens a new direct message, so
+	// it can grey the button out rather than let the send fail. Always 0 (Success): the
+	// setting the name refers to is stored (see `/thread/chatPrivacySetting`) but can't be
+	// checked, since Friends and Favorites both need a friends list this server doesn't
+	// keep. Enforce it here the moment one exists.
+	//
+	// The body is a bare ChatResult INTEGER — the client instantiates its response wrapper
+	// with the ChatResult enum, not a bool, so `true` decodes as nothing. The refusals this
+	// endpoint would otherwise answer are 15 (blocked by the caller's own privacy setting)
+	// and 16 (blocked by the other player's); everything else in the enum belongs to the
+	// thread actions. It is served numerically: this client build carries no by-name enum
+	// formatter.
+	.get(
+		'/thread/checkCanSendDirectMessageWithPrivacySetting',
+		describeRoute({
+			tags: ['Threads'],
+			summary: 'May the caller DM this player?',
+			description: [
+				'Whether the caller may open a direct message with `receivingPlayerId`, as a bare',
+				'ChatResult integer — 0 (Success) means allowed; a real refusal would be 15 (the',
+				'caller’s own privacy setting) or 16 (the other player’s). Always 0 here: the settings',
+				'`/thread/chatPrivacySetting` stores are not enforced, since Friends and Favorites both',
+				'need a friends list this server doesn’t keep.',
+				'`receivingPlayerId` is accepted and ignored; the answer is the same for every player,',
+				'and the client asks again for the next one.',
+			].join(' '),
+			security: AUTHED,
+			parameters: [
+				{
+					name: 'receivingPlayerId',
+					in: 'query',
+					required: false,
+					description: 'The player the caller wants to message. Accepted and ignored.',
+					schema: { type: 'integer' },
+				},
+			],
+			responses: {
+				200: json(ChatResult, 'Always 0 (Success) — the DM is allowed'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return c.body(null, 401)
+			return c.json(CHAT_SUCCESS)
 		}
 	)
 

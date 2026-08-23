@@ -2710,5 +2710,11 @@
 		"Key": "WatchHomeCarouselOrdering",
 		"StartTime": null,
 		"Value": "rooms_continueplaying=23;rooms_friendsplaying=22;foryou=21;rooms_hot=20;rooms_rro=19;items_featured=8;items_featuredcustom=7;inventions_featured=6;inventions_featureddormskins=5"
+	},
+	{
+		"Key": "BootSequence.AutoCreateAccount",
+		"Value": "false",
+		"StartTime": null,
+		"EndTime": null
 	}
 ]

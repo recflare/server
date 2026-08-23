@@ -24,6 +24,14 @@ export type Env = SharedHonoEnv & {
 	// Shared CDN bucket (owned by the `cdn` worker, written by `storage`). Read
 	// here only to hash an invention's uploaded data blob under `invention/`.
 	CDN_ASSETS: R2Bucket
+	/**
+	 * The per-player settings map the `playersettings` worker owns (`player:<id>` → JSON
+	 * `{ key: value }`). Read and written here by
+	 * `GET|PUT /api/players/v1/playerPhotoTaggingSetting`: the photo-tagging preference is
+	 * one key (`playerPhotoTaggingSetting`) in that shared bag, not a store of its own, so
+	 * the write MERGES — see `writePhotoTaggingSetting`.
+	 */
+	RECFLARE_PLAYER_SETTINGS: KVNamespace
 	// SignalR notifications hub (DO owned by the `notify` worker). Bound here to
 	// push RelationshipChanged notifications when a player's relationship changes.
 	RECFLARE_NOTIFICATIONS_HUB: DurableObjectNamespace<NotificationsHub>

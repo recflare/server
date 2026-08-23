@@ -1,0 +1,36 @@
+{
+	"name": "ai",
+	"version": "0.1.0",
+	"private": true,
+	"sideEffects": false,
+	"type": "module",
+	"scripts": {
+		"build:wrangler": "run-wrangler-build",
+		"check:lint": "run-oxlint",
+		"check:types": "run-tsc",
+		"check:workers-types": "run-wrangler-types --check",
+		"deploy": "run-wrangler-deploy",
+		"dev": "run-wrangler-dev",
+		"fix:workers-types": "run-wrangler-types",
+		"test": "run-vitest"
+	},
+	"dependencies": {
+		"@repo/hono-helpers": "workspace:*",
+		"@repo/jwt": "workspace:*",
+		"@standard-community/standard-json": "0.3.5",
+		"@standard-community/standard-openapi": "0.2.9",
+		"hono": "4.12.27",
+		"hono-openapi": "1.3.1",
+		"openapi-types": "12.1.3",
+		"workers-tagged-logger": "1.0.1",
+		"zod": "4.4.3"
+	},
+	"devDependencies": {
+		"@cloudflare/vitest-pool-workers": "0.16.20",
+		"@repo/tools": "workspace:*",
+		"@repo/typescript-config": "workspace:*",
+		"@types/node": "26.0.1",
+		"vitest": "4.1.9",
+		"wrangler": "4.105.0"
+	}
+}

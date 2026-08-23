@@ -1,0 +1,10 @@
+[
+	{
+		"id": "store-featured",
+		"sectionType": 4,
+		"sectionSubType": "StoreCategory_Featured",
+		"source": "CuratedList",
+		"sourceMetadata": "17859340",
+		"displayMetadata": "{\"DisplayTitle\":\"Featured\",\"itemCount\":20,\"cardStyle\":\"wide\",\"categoryUriNames\":\"featured,new\"}"
+	}
+]

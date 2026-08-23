@@ -1,0 +1,2122 @@
+[
+	{
+		"Id": 1258,
+		"Difficulty": 10,
+		"EN_US": "Nothing"
+	},
+	{
+		"Id": 1259,
+		"Difficulty": 10,
+		"EN_US": "Losing"
+	},
+	{
+		"Id": 1260,
+		"Difficulty": 10,
+		"EN_US": "Winning"
+	},
+	{
+		"Id": 1261,
+		"Difficulty": 10,
+		"EN_US": "Magnesium"
+	},
+	{
+		"Id": 1262,
+		"Difficulty": 10,
+		"EN_US": "Zirconium"
+	},
+	{
+		"Id": 1263,
+		"Difficulty": 10,
+		"EN_US": "Franco Prussian War"
+	},
+	{
+		"Id": 1264,
+		"Difficulty": 10,
+		"EN_US": "Neuschwanstein Castle"
+	},
+	{
+		"Id": 1265,
+		"Difficulty": 10,
+		"EN_US": "Mobius Strip"
+	},
+	{
+		"Id": 1266,
+		"Difficulty": 10,
+		"EN_US": "M.C. Escher"
+	},
+	{
+		"Id": 1267,
+		"Difficulty": 10,
+		"EN_US": "Pride and Prejudice"
+	},
+	{
+		"Id": 1268,
+		"Difficulty": 10,
+		"EN_US": "Giant's Causeway"
+	},
+	{
+		"Id": 1269,
+		"Difficulty": 10,
+		"EN_US": "Liechtenstein"
+	},
+	{
+		"Id": 1270,
+		"Difficulty": 10,
+		"EN_US": "Photosynthesis"
+	},
+	{
+		"Id": 1271,
+		"Difficulty": 10,
+		"EN_US": "Doppler Effect"
+	},
+	{
+		"Id": 1272,
+		"Difficulty": 10,
+		"EN_US": "Chaos Theory"
+	},
+	{
+		"Id": 1273,
+		"Difficulty": 10,
+		"EN_US": "Spacing Out"
+	},
+	{
+		"Id": 1274,
+		"Difficulty": 10,
+		"EN_US": "Design"
+	},
+	{
+		"Id": 1275,
+		"Difficulty": 10,
+		"EN_US": "Concept"
+	},
+	{
+		"Id": 1276,
+		"Difficulty": 10,
+		"EN_US": "Tectonic Plates"
+	},
+	{
+		"Id": 1277,
+		"Difficulty": 10,
+		"EN_US": "Chuck Norris"
+	},
+	{
+		"Id": 1278,
+		"Difficulty": 10,
+		"EN_US": "The Thing"
+	},
+	{
+		"Id": 1279,
+		"Difficulty": 10,
+		"EN_US": "Onomatopoeia"
+	},
+	{
+		"Id": 1280,
+		"Difficulty": 10,
+		"EN_US": "Alliteration"
+	},
+	{
+		"Id": 1281,
+		"Difficulty": 10,
+		"EN_US": "Amoeba"
+	},
+	{
+		"Id": 1282,
+		"Difficulty": 10,
+		"EN_US": "Carnivore"
+	},
+	{
+		"Id": 1283,
+		"Difficulty": 10,
+		"EN_US": "Herbivore"
+	},
+	{
+		"Id": 1284,
+		"Difficulty": 10,
+		"EN_US": "Omnivore"
+	},
+	{
+		"Id": 1285,
+		"Difficulty": 10,
+		"EN_US": "Translate"
+	},
+	{
+		"Id": 1286,
+		"Difficulty": 10,
+		"EN_US": "Rhyme"
+	},
+	{
+		"Id": 1287,
+		"Difficulty": 10,
+		"EN_US": "Cringe"
+	},
+	{
+		"Id": 1288,
+		"Difficulty": 10,
+		"EN_US": "Speed of light"
+	},
+	{
+		"Id": 1289,
+		"Difficulty": 10,
+		"EN_US": "Grapes of Wrath"
+	},
+	{
+		"Id": 1290,
+		"Difficulty": 10,
+		"EN_US": "Kicking"
+	},
+	{
+		"Id": 1291,
+		"Difficulty": 10,
+		"EN_US": "Blockchain"
+	},
+	{
+		"Id": 1292,
+		"Difficulty": 10,
+		"EN_US": "“Going Viral”"
+	},
+	{
+		"Id": 1293,
+		"Difficulty": 10,
+		"EN_US": "El Niño"
+	},
+	{
+		"Id": 1294,
+		"Difficulty": 10,
+		"EN_US": "Plot Twist"
+	},
+	{
+		"Id": 1295,
+		"Difficulty": 10,
+		"EN_US": "Velocity"
+	},
+	{
+		"Id": 1296,
+		"Difficulty": 10,
+		"EN_US": "Sea Monkeys"
+	},
+	{
+		"Id": 1297,
+		"Difficulty": 10,
+		"EN_US": "Pinball"
+	},
+	{
+		"Id": 1298,
+		"Difficulty": 10,
+		"EN_US": "Mayonnaise"
+	},
+	{
+		"Id": 1299,
+		"Difficulty": 10,
+		"EN_US": "Anchovies"
+	},
+	{
+		"Id": 1300,
+		"Difficulty": 10,
+		"EN_US": "Alexander Hamilton"
+	},
+	{
+		"Id": 1301,
+		"Difficulty": 10,
+		"EN_US": "Plagiarism"
+	},
+	{
+		"Id": 1302,
+		"Difficulty": 10,
+		"EN_US": "Courage"
+	},
+	{
+		"Id": 1303,
+		"Difficulty": 10,
+		"EN_US": "Estate Tax"
+	},
+	{
+		"Id": 1304,
+		"Difficulty": 10,
+		"EN_US": "Scientific Method"
+	},
+	{
+		"Id": 1305,
+		"Difficulty": 10,
+		"EN_US": "Imaginary Friend"
+	},
+	{
+		"Id": 1306,
+		"Difficulty": 10,
+		"EN_US": "Frustration"
+	},
+	{
+		"Id": 1307,
+		"Difficulty": 10,
+		"EN_US": "April Fool’s"
+	},
+	{
+		"Id": 1308,
+		"Difficulty": 10,
+		"EN_US": "Ventriloquism"
+	},
+	{
+		"Id": 1309,
+		"Difficulty": 10,
+		"EN_US": "August"
+	},
+	{
+		"Id": 1310,
+		"Difficulty": 10,
+		"EN_US": "Final Exams"
+	},
+	{
+		"Id": 1311,
+		"Difficulty": 10,
+		"EN_US": "Echolocation"
+	},
+	{
+		"Id": 1312,
+		"Difficulty": 10,
+		"EN_US": "19th Century"
+	},
+	{
+		"Id": 1313,
+		"Difficulty": 10,
+		"EN_US": "Calories"
+	},
+	{
+		"Id": 1314,
+		"Difficulty": 10,
+		"EN_US": "Telling a Lie"
+	},
+	{
+		"Id": 1315,
+		"Difficulty": 10,
+		"EN_US": "Gestures"
+	},
+	{
+		"Id": 1316,
+		"Difficulty": 10,
+		"EN_US": "Circling Things"
+	},
+	{
+		"Id": 1317,
+		"Difficulty": 10,
+		"EN_US": "Words"
+	},
+	{
+		"Id": 1318,
+		"Difficulty": 10,
+		"EN_US": "Hieroglyphics"
+	},
+	{
+		"Id": 1319,
+		"Difficulty": 10,
+		"EN_US": "Comedy Club"
+	},
+	{
+		"Id": 1320,
+		"Difficulty": 10,
+		"EN_US": "Nihilism"
+	},
+	{
+		"Id": 1321,
+		"Difficulty": 10,
+		"EN_US": "Ennui"
+	},
+	{
+		"Id": 1322,
+		"Difficulty": 10,
+		"EN_US": "International Date Line"
+	},
+	{
+		"Id": 1323,
+		"Difficulty": 10,
+		"EN_US": "Marianas Trench"
+	},
+	{
+		"Id": 1324,
+		"Difficulty": 10,
+		"EN_US": "Nobody"
+	},
+	{
+		"Id": 1325,
+		"Difficulty": 10,
+		"EN_US": "You"
+	},
+	{
+		"Id": 1326,
+		"Difficulty": 10,
+		"EN_US": "Me"
+	},
+	{
+		"Id": 1327,
+		"Difficulty": 10,
+		"EN_US": "Identical twin"
+	},
+	{
+		"Id": 1328,
+		"Difficulty": 10,
+		"EN_US": "Id"
+	},
+	{
+		"Id": 1329,
+		"Difficulty": 10,
+		"EN_US": "Ego"
+	},
+	{
+		"Id": 1330,
+		"Difficulty": 10,
+		"EN_US": "The Mumps"
+	},
+	{
+		"Id": 1331,
+		"Difficulty": 10,
+		"EN_US": "Asymptote"
+	},
+	{
+		"Id": 1332,
+		"Difficulty": 10,
+		"EN_US": "Synonym"
+	},
+	{
+		"Id": 1333,
+		"Difficulty": 10,
+		"EN_US": "Antigone"
+	},
+	{
+		"Id": 1334,
+		"Difficulty": 10,
+		"EN_US": "Ohms"
+	},
+	{
+		"Id": 1335,
+		"Difficulty": 10,
+		"EN_US": "Mitochondria"
+	},
+	{
+		"Id": 1336,
+		"Difficulty": 10,
+		"EN_US": "Quarks"
+	},
+	{
+		"Id": 1337,
+		"Difficulty": 10,
+		"EN_US": "Quantum Entanglement"
+	},
+	{
+		"Id": 1338,
+		"Difficulty": 10,
+		"EN_US": "Tax Deductions"
+	},
+	{
+		"Id": 1339,
+		"Difficulty": 10,
+		"EN_US": "Legal Precedent"
+	},
+	{
+		"Id": 1340,
+		"Difficulty": 10,
+		"EN_US": "Inner Peace"
+	},
+	{
+		"Id": 1341,
+		"Difficulty": 10,
+		"EN_US": "Destiny"
+	},
+	{
+		"Id": 1342,
+		"Difficulty": 10,
+		"EN_US": "Protagonist"
+	},
+	{
+		"Id": 1343,
+		"Difficulty": 10,
+		"EN_US": "Hubris"
+	},
+	{
+		"Id": 1344,
+		"Difficulty": 10,
+		"EN_US": "Regret"
+	},
+	{
+		"Id": 1345,
+		"Difficulty": 10,
+		"EN_US": "A Character Arc"
+	},
+	{
+		"Id": 1346,
+		"Difficulty": 10,
+		"EN_US": "Leap Year"
+	},
+	{
+		"Id": 1347,
+		"Difficulty": 10,
+		"EN_US": "Coincidence"
+	},
+	{
+		"Id": 1348,
+		"Difficulty": 10,
+		"EN_US": "Deja Vu"
+	},
+	{
+		"Id": 1349,
+		"Difficulty": 10,
+		"EN_US": "Moral Ambiguity"
+	},
+	{
+		"Id": 1350,
+		"Difficulty": 10,
+		"EN_US": "Metaphor"
+	},
+	{
+		"Id": 1351,
+		"Difficulty": 10,
+		"EN_US": "Secret Identity"
+	},
+	{
+		"Id": 1352,
+		"Difficulty": 10,
+		"EN_US": "Dehydration"
+	},
+	{
+		"Id": 1353,
+		"Difficulty": 10,
+		"EN_US": "Evaporation"
+	},
+	{
+		"Id": 1354,
+		"Difficulty": 10,
+		"EN_US": "Irony"
+	},
+	{
+		"Id": 1355,
+		"Difficulty": 10,
+		"EN_US": "Asbestos"
+	},
+	{
+		"Id": 1356,
+		"Difficulty": 10,
+		"EN_US": "Idiom"
+	},
+	{
+		"Id": 1357,
+		"Difficulty": 10,
+		"EN_US": "Consciousness"
+	},
+	{
+		"Id": 1358,
+		"Difficulty": 10,
+		"EN_US": "Conscience"
+	},
+	{
+		"Id": 1359,
+		"Difficulty": 10,
+		"EN_US": "The Heebie-Jeebies"
+	},
+	{
+		"Id": 1360,
+		"Difficulty": 10,
+		"EN_US": "Meringue"
+	},
+	{
+		"Id": 1361,
+		"Difficulty": 10,
+		"EN_US": "Possibility"
+	},
+	{
+		"Id": 1362,
+		"Difficulty": 10,
+		"EN_US": "The big bang"
+	},
+	{
+		"Id": 1363,
+		"Difficulty": 10,
+		"EN_US": "Emojis"
+	},
+	{
+		"Id": 1364,
+		"Difficulty": 10,
+		"EN_US": "The Emoji Movie"
+	},
+	{
+		"Id": 1365,
+		"Difficulty": 10,
+		"EN_US": "Existentialism"
+	},
+	{
+		"Id": 1366,
+		"Difficulty": 10,
+		"EN_US": "Philosophiæ Naturalis"
+	},
+	{
+		"Id": 1367,
+		"Difficulty": 10,
+		"EN_US": "Being a Screenmode Player"
+	},
+	{
+		"Id": 1368,
+		"Difficulty": 10,
+		"EN_US": "Self Expression"
+	},
+	{
+		"Id": 1369,
+		"Difficulty": 10,
+		"EN_US": "Inside-out"
+	},
+	{
+		"Id": 1370,
+		"Difficulty": 10,
+		"EN_US": "Expired"
+	},
+	{
+		"Id": 1371,
+		"Difficulty": 10,
+		"EN_US": "Excessive"
+	},
+	{
+		"Id": 1372,
+		"Difficulty": 10,
+		"EN_US": "Not Quite Enough"
+	},
+	{
+		"Id": 1373,
+		"Difficulty": 10,
+		"EN_US": "Unnecessary"
+	},
+	{
+		"Id": 1374,
+		"Difficulty": 10,
+		"EN_US": "Preternatural"
+	},
+	{
+		"Id": 1375,
+		"Difficulty": 10,
+		"EN_US": "By any means necessary"
+	},
+	{
+		"Id": 1376,
+		"Difficulty": 10,
+		"EN_US": "The Letter of the Law"
+	},
+	{
+		"Id": 1377,
+		"Difficulty": 10,
+		"EN_US": "Honor amongst thieves"
+	},
+	{
+		"Id": 1378,
+		"Difficulty": 10,
+		"EN_US": "Heavy-handed"
+	},
+	{
+		"Id": 1379,
+		"Difficulty": 10,
+		"EN_US": "Tongue-in-cheek"
+	},
+	{
+		"Id": 1380,
+		"Difficulty": 10,
+		"EN_US": "Taciturn"
+	},
+	{
+		"Id": 1381,
+		"Difficulty": 10,
+		"EN_US": "Legit"
+	},
+	{
+		"Id": 1382,
+		"Difficulty": 10,
+		"EN_US": "Prank"
+	},
+	{
+		"Id": 1383,
+		"Difficulty": 10,
+		"EN_US": "Appeal Process"
+	},
+	{
+		"Id": 1384,
+		"Difficulty": 10,
+		"EN_US": "Well-meaning"
+	},
+	{
+		"Id": 1385,
+		"Difficulty": 10,
+		"EN_US": "Bureaucracy"
+	},
+	{
+		"Id": 1386,
+		"Difficulty": 10,
+		"EN_US": "Nondescript"
+	},
+	{
+		"Id": 1387,
+		"Difficulty": 10,
+		"EN_US": "Remarkable"
+	},
+	{
+		"Id": 1388,
+		"Difficulty": 10,
+		"EN_US": "Discrepancy"
+	},
+	{
+		"Id": 1389,
+		"Difficulty": 10,
+		"EN_US": "Resolution"
+	},
+	{
+		"Id": 1390,
+		"Difficulty": 10,
+		"EN_US": "Return Policy"
+	},
+	{
+		"Id": 1391,
+		"Difficulty": 10,
+		"EN_US": "Losing Tracking"
+	},
+	{
+		"Id": 1392,
+		"Difficulty": 10,
+		"EN_US": "Adjusting Headset"
+	},
+	{
+		"Id": 1393,
+		"Difficulty": 10,
+		"EN_US": "Looking at your watch"
+	},
+	{
+		"Id": 1395,
+		"Difficulty": 10,
+		"EN_US": "That One Thing"
+	},
+	{
+		"Id": 1396,
+		"Difficulty": 10,
+		"EN_US": "5 Seconds of Silence"
+	},
+	{
+		"Id": 1397,
+		"Difficulty": 10,
+		"EN_US": "Cacophony"
+	},
+	{
+		"Id": 1398,
+		"Difficulty": 10,
+		"EN_US": "Exorcism"
+	},
+	{
+		"Id": 1399,
+		"Difficulty": 10,
+		"EN_US": "Mimicry"
+	},
+	{
+		"Id": 1400,
+		"Difficulty": 10,
+		"EN_US": "Benjamin Button"
+	},
+	{
+		"Id": 1401,
+		"Difficulty": 10,
+		"EN_US": "Frozen Fire"
+	},
+	{
+		"Id": 1402,
+		"Difficulty": 10,
+		"EN_US": "The Weekend"
+	},
+	{
+		"Id": 1403,
+		"Difficulty": 10,
+		"EN_US": "Transparent Tree"
+	},
+	{
+		"Id": 1405,
+		"Difficulty": 10,
+		"EN_US": "Movie Set"
+	},
+	{
+		"Id": 1406,
+		"Difficulty": 10,
+		"EN_US": "Buying a House"
+	},
+	{
+		"Id": 1407,
+		"Difficulty": 10,
+		"EN_US": "Tell No One"
+	},
+	{
+		"Id": 1408,
+		"Difficulty": 10,
+		"EN_US": "Geocaching"
+	},
+	{
+		"Id": 1409,
+		"Difficulty": 10,
+		"EN_US": "Inspiration"
+	},
+	{
+		"Id": 1410,
+		"Difficulty": 10,
+		"EN_US": "Nostalgia"
+	},
+	{
+		"Id": 1411,
+		"Difficulty": 10,
+		"EN_US": "Macro Economics"
+	},
+	{
+		"Id": 1412,
+		"Difficulty": 10,
+		"EN_US": "Asparagus Fern"
+	},
+	{
+		"Id": 1413,
+		"Difficulty": 10,
+		"EN_US": "Best Case Scenario"
+	},
+	{
+		"Id": 1414,
+		"Difficulty": 10,
+		"EN_US": "Influencer"
+	},
+	{
+		"Id": 1415,
+		"Difficulty": 10,
+		"EN_US": "Rabies"
+	},
+	{
+		"Id": 1417,
+		"Difficulty": 10,
+		"EN_US": "Hydro Power Plant"
+	},
+	{
+		"Id": 1418,
+		"Difficulty": 10,
+		"EN_US": "Snuggie"
+	},
+	{
+		"Id": 1420,
+		"Difficulty": 10,
+		"EN_US": "Pedicure"
+	},
+	{
+		"Id": 1421,
+		"Difficulty": 10,
+		"EN_US": "Cellar Door"
+	},
+	{
+		"Id": 1422,
+		"Difficulty": 10,
+		"EN_US": "Tofu"
+	},
+	{
+		"Id": 1423,
+		"Difficulty": 10,
+		"EN_US": "Half Sphere"
+	},
+	{
+		"Id": 1424,
+		"Difficulty": 10,
+		"EN_US": "Void"
+	},
+	{
+		"Id": 1425,
+		"Difficulty": 10,
+		"EN_US": "Skim Milk"
+	},
+	{
+		"Id": 1426,
+		"Difficulty": 10,
+		"EN_US": "Quetzacoatl"
+	},
+	{
+		"Id": 1427,
+		"Difficulty": 10,
+		"EN_US": "Event Horizon"
+	},
+	{
+		"Id": 1428,
+		"Difficulty": 10,
+		"EN_US": "Mortician"
+	},
+	{
+		"Id": 1429,
+		"Difficulty": 10,
+		"EN_US": "Trade Embargo"
+	},
+	{
+		"Id": 1430,
+		"Difficulty": 10,
+		"EN_US": "Employee Discount"
+	},
+	{
+		"Id": 1431,
+		"Difficulty": 10,
+		"EN_US": "Haha"
+	},
+	{
+		"Id": 1432,
+		"Difficulty": 10,
+		"EN_US": "Foreboding"
+	},
+	{
+		"Id": 1433,
+		"Difficulty": 10,
+		"EN_US": "Curbside Pickup"
+	},
+	{
+		"Id": 1434,
+		"Difficulty": 10,
+		"EN_US": "Nail Polish Remover"
+	},
+	{
+		"Id": 1435,
+		"Difficulty": 10,
+		"EN_US": "Gauze"
+	},
+	{
+		"Id": 1436,
+		"Difficulty": 10,
+		"EN_US": "Cotton Ball"
+	},
+	{
+		"Id": 1437,
+		"Difficulty": 10,
+		"EN_US": "Social Media"
+	},
+	{
+		"Id": 1438,
+		"Difficulty": 10,
+		"EN_US": "Family Time"
+	},
+	{
+		"Id": 1439,
+		"Difficulty": 10,
+		"EN_US": "Maintenance"
+	},
+	{
+		"Id": 1440,
+		"Difficulty": 10,
+		"EN_US": "Can You Hear Me?"
+	},
+	{
+		"Id": 1441,
+		"Difficulty": 10,
+		"EN_US": "Calligraphy"
+	},
+	{
+		"Id": 1442,
+		"Difficulty": 10,
+		"EN_US": "Operator"
+	},
+	{
+		"Id": 1443,
+		"Difficulty": 10,
+		"EN_US": "Efficiency"
+	},
+	{
+		"Id": 1444,
+		"Difficulty": 10,
+		"EN_US": "Metamorphosis"
+	},
+	{
+		"Id": 1446,
+		"Difficulty": 10,
+		"EN_US": "Rotary Phone"
+	},
+	{
+		"Id": 1447,
+		"Difficulty": 10,
+		"EN_US": "Zero Degrees Kelvin"
+	},
+	{
+		"Id": 1448,
+		"Difficulty": 10,
+		"EN_US": "Kevin"
+	},
+	{
+		"Id": 1449,
+		"Difficulty": 10,
+		"EN_US": "Instant Oatmeal"
+	},
+	{
+		"Id": 1450,
+		"Difficulty": 10,
+		"EN_US": "Census"
+	},
+	{
+		"Id": 1451,
+		"Difficulty": 10,
+		"EN_US": "Too Much Caffeine"
+	},
+	{
+		"Id": 1452,
+		"Difficulty": 10,
+		"EN_US": "Dad Joke"
+	},
+	{
+		"Id": 1453,
+		"Difficulty": 10,
+		"EN_US": "Another New Streaming Service"
+	},
+	{
+		"Id": 1454,
+		"Difficulty": 10,
+		"EN_US": "Mad with Power"
+	},
+	{
+		"Id": 1455,
+		"Difficulty": 10,
+		"EN_US": "Creation"
+	},
+	{
+		"Id": 1456,
+		"Difficulty": 10,
+		"EN_US": "Karen"
+	},
+	{
+		"Id": 1457,
+		"Difficulty": 10,
+		"EN_US": "Lore"
+	},
+	{
+		"Id": 1458,
+		"Difficulty": 10,
+		"EN_US": "Hype Train"
+	},
+	{
+		"Id": 1459,
+		"Difficulty": 10,
+		"EN_US": "Rec Room Plus"
+	},
+	{
+		"Id": 1460,
+		"Difficulty": 10,
+		"EN_US": "Curiosity"
+	},
+	{
+		"Id": 1461,
+		"Difficulty": 10,
+		"EN_US": "Imagination"
+	},
+	{
+		"Id": 1463,
+		"Difficulty": 10,
+		"EN_US": "Gravity"
+	},
+	{
+		"Id": 1464,
+		"Difficulty": 10,
+		"EN_US": "Difficulty"
+	},
+	{
+		"Id": 1465,
+		"Difficulty": 10,
+		"EN_US": "Animal Crossing"
+	},
+	{
+		"Id": 1466,
+		"Difficulty": 10,
+		"EN_US": "Voice-Activated"
+	},
+	{
+		"Id": 1467,
+		"Difficulty": 10,
+		"EN_US": "Not Playing Basketball"
+	},
+	{
+		"Id": 1468,
+		"Difficulty": 10,
+		"EN_US": "Calculus"
+	},
+	{
+		"Id": 1469,
+		"Difficulty": 10,
+		"EN_US": "Estimation"
+	},
+	{
+		"Id": 1470,
+		"Difficulty": 10,
+		"EN_US": "AI"
+	},
+	{
+		"Id": 1471,
+		"Difficulty": 10,
+		"EN_US": "Preferential Treatment"
+	},
+	{
+		"Id": 1472,
+		"Difficulty": 10,
+		"EN_US": "Using The Maker Pen"
+	},
+	{
+		"Id": 1473,
+		"Difficulty": 10,
+		"EN_US": "Osmosis"
+	},
+	{
+		"Id": 1474,
+		"Difficulty": 10,
+		"EN_US": "Terminal Velocity"
+	},
+	{
+		"Id": 1475,
+		"Difficulty": 10,
+		"EN_US": "The Current Score"
+	},
+	{
+		"Id": 1476,
+		"Difficulty": 10,
+		"EN_US": "Flat Soda"
+	},
+	{
+		"Id": 1477,
+		"Difficulty": 10,
+		"EN_US": "Dark Chocolate"
+	},
+	{
+		"Id": 1478,
+		"Difficulty": 10,
+		"EN_US": "Meta"
+	},
+	{
+		"Id": 1481,
+		"Difficulty": 10,
+		"EN_US": "Harmony"
+	},
+	{
+		"Id": 1482,
+		"Difficulty": 10,
+		"EN_US": "Okay Boomer"
+	},
+	{
+		"Id": 1483,
+		"Difficulty": 10,
+		"EN_US": "Ghosted"
+	},
+	{
+		"Id": 1484,
+		"Difficulty": 10,
+		"EN_US": "I Forgot"
+	},
+	{
+		"Id": 1485,
+		"Difficulty": 10,
+		"EN_US": "Orientation"
+	},
+	{
+		"Id": 1486,
+		"Difficulty": 10,
+		"EN_US": "Proverb"
+	},
+	{
+		"Id": 1488,
+		"Difficulty": 10,
+		"EN_US": "Inviting All Your Friends"
+	},
+	{
+		"Id": 1489,
+		"Difficulty": 10,
+		"EN_US": "No Peeking!"
+	},
+	{
+		"Id": 1490,
+		"Difficulty": 10,
+		"EN_US": "Stop Pointing"
+	},
+	{
+		"Id": 1491,
+		"Difficulty": 10,
+		"EN_US": "Feeling like you're going to sneeze"
+	},
+	{
+		"Id": 1492,
+		"Difficulty": 10,
+		"EN_US": "Mandela Effect"
+	},
+	{
+		"Id": 1493,
+		"Difficulty": 10,
+		"EN_US": "Sus(picious)"
+	},
+	{
+		"Id": 1494,
+		"Difficulty": 10,
+		"EN_US": "Charades"
+	},
+	{
+		"Id": 1495,
+		"Difficulty": 10,
+		"EN_US": "Creating an Invention"
+	},
+	{
+		"Id": 1496,
+		"Difficulty": 10,
+		"EN_US": "The Aether"
+	},
+	{
+		"Id": 1497,
+		"Difficulty": 10,
+		"EN_US": "The Multiverse"
+	},
+	{
+		"Id": 1498,
+		"Difficulty": 10,
+		"EN_US": "The Answer to Life"
+	},
+	{
+		"Id": 1500,
+		"Difficulty": 10,
+		"EN_US": "The Invisible Man"
+	},
+	{
+		"Id": 1501,
+		"Difficulty": 10,
+		"EN_US": "Meme"
+	},
+	{
+		"Id": 1502,
+		"Difficulty": 10,
+		"EN_US": "Poggers"
+	},
+	{
+		"Id": 1503,
+		"Difficulty": 10,
+		"EN_US": "Rickroll"
+	},
+	{
+		"Id": 1504,
+		"Difficulty": 10,
+		"EN_US": "Air"
+	},
+	{
+		"Id": 1505,
+		"Difficulty": 10,
+		"EN_US": "Why"
+	},
+	{
+		"Id": 1506,
+		"Difficulty": 10,
+		"EN_US": "Sandbox Machine"
+	},
+	{
+		"Id": 1507,
+		"Difficulty": 10,
+		"EN_US": "Archaeornithomimus"
+	},
+	{
+		"Id": 1508,
+		"Difficulty": 10,
+		"EN_US": "Thermodynamics"
+	},
+	{
+		"Id": 1509,
+		"Difficulty": 10,
+		"EN_US": "The Void"
+	},
+	{
+		"Id": 1510,
+		"Difficulty": 10,
+		"EN_US": "Hydrogen Peroxide"
+	},
+	{
+		"Id": 1511,
+		"Difficulty": 10,
+		"EN_US": "Hello"
+	},
+	{
+		"Id": 1512,
+		"Difficulty": 10,
+		"EN_US": "Crescendo"
+	},
+	{
+		"Id": 1513,
+		"Difficulty": 10,
+		"EN_US": "Iridocyclitis"
+	},
+	{
+		"Id": 1514,
+		"Difficulty": 10,
+		"EN_US": "Harambe"
+	},
+	{
+		"Id": 1515,
+		"Difficulty": 10,
+		"EN_US": "Cheese Balls"
+	},
+	{
+		"Id": 1516,
+		"Difficulty": 10,
+		"EN_US": "Worcestershire Sauce‬"
+	},
+	{
+		"Id": 1517,
+		"Difficulty": 10,
+		"EN_US": "Neutron Star"
+	},
+	{
+		"Id": 1518,
+		"Difficulty": 10,
+		"EN_US": "Cthulhu"
+	},
+	{
+		"Id": 1519,
+		"Difficulty": 10,
+		"EN_US": "Non-Euclidean"
+	},
+	{
+		"Id": 1520,
+		"Difficulty": 10,
+		"EN_US": "Paradox"
+	},
+	{
+		"Id": 1521,
+		"Difficulty": 10,
+		"EN_US": "Damage"
+	},
+	{
+		"Id": 1522,
+		"Difficulty": 10,
+		"EN_US": "Fractal"
+	},
+	{
+		"Id": 1523,
+		"Difficulty": 10,
+		"EN_US": "Bamboozled"
+	},
+	{
+		"Id": 1524,
+		"Difficulty": 10,
+		"EN_US": "Supernova"
+	},
+	{
+		"Id": 1525,
+		"Difficulty": 10,
+		"EN_US": "Corrupted"
+	},
+	{
+		"Id": 1526,
+		"Difficulty": 10,
+		"EN_US": "February"
+	},
+	{
+		"Id": 1527,
+		"Difficulty": 10,
+		"EN_US": "Apocalyptic"
+	},
+	{
+		"Id": 1528,
+		"Difficulty": 10,
+		"EN_US": "Mortality"
+	},
+	{
+		"Id": 1529,
+		"Difficulty": 10,
+		"EN_US": "Random"
+	},
+	{
+		"Id": 1530,
+		"Difficulty": 10,
+		"EN_US": "Oxymoron"
+	},
+	{
+		"Id": 1531,
+		"Difficulty": 10,
+		"EN_US": "Extravaganza"
+	},
+	{
+		"Id": 1532,
+		"Difficulty": 10,
+		"EN_US": "Antimatter"
+	},
+	{
+		"Id": 1533,
+		"Difficulty": 10,
+		"EN_US": "Hypothesize"
+	},
+	{
+		"Id": 1534,
+		"Difficulty": 10,
+		"EN_US": "The Spanish Inquisition"
+	},
+	{
+		"Id": 1535,
+		"Difficulty": 10,
+		"EN_US": "Soon tm"
+	},
+	{
+		"Id": 1536,
+		"Difficulty": 10,
+		"EN_US": "Antidisestablishmentarianism"
+	},
+	{
+		"Id": 1537,
+		"Difficulty": 10,
+		"EN_US": "The Meaning Of Life"
+	},
+	{
+		"Id": 1538,
+		"Difficulty": 10,
+		"EN_US": "Pi"
+	},
+	{
+		"Id": 1539,
+		"Difficulty": 10,
+		"EN_US": "VR Headset"
+	},
+	{
+		"Id": 1540,
+		"Difficulty": 10,
+		"EN_US": "The Forbidden One"
+	},
+	{
+		"Id": 1541,
+		"Difficulty": 10,
+		"EN_US": "Charades Card"
+	},
+	{
+		"Id": 1542,
+		"Difficulty": 10,
+		"EN_US": "Hawaiian Pizza"
+	},
+	{
+		"Id": 1543,
+		"Difficulty": 10,
+		"EN_US": "Mona Lisa"
+	},
+	{
+		"Id": 1544,
+		"Difficulty": 10,
+		"EN_US": "Talk to the hand"
+	},
+	{
+		"Id": 1545,
+		"Difficulty": 10,
+		"EN_US": "VHS player"
+	},
+	{
+		"Id": 1546,
+		"Difficulty": 10,
+		"EN_US": "Color Blindness"
+	},
+	{
+		"Id": 1547,
+		"Difficulty": 10,
+		"EN_US": "The High Ground"
+	},
+	{
+		"Id": 1548,
+		"Difficulty": 10,
+		"EN_US": "Bedrock"
+	},
+	{
+		"Id": 1549,
+		"Difficulty": 10,
+		"EN_US": "Alphabet Soup"
+	},
+	{
+		"Id": 1550,
+		"Difficulty": 10,
+		"EN_US": "Quadrilateral"
+	},
+	{
+		"Id": 1551,
+		"Difficulty": 10,
+		"EN_US": "Something"
+	},
+	{
+		"Id": 1552,
+		"Difficulty": 10,
+		"EN_US": "Disappointment"
+	},
+	{
+		"Id": 1553,
+		"Difficulty": 10,
+		"EN_US": "Bamboozle"
+	},
+	{
+		"Id": 1554,
+		"Difficulty": 10,
+		"EN_US": "Axolotl"
+	},
+	{
+		"Id": 1555,
+		"Difficulty": 10,
+		"EN_US": "Procrastination"
+	},
+	{
+		"Id": 1556,
+		"Difficulty": 10,
+		"EN_US": "Doing a Little Trolling"
+	},
+	{
+		"Id": 1557,
+		"Difficulty": 10,
+		"EN_US": "Retro Encabulator"
+	},
+	{
+		"Id": 1579,
+		"Difficulty": 10,
+		"EN_US": "Sound"
+	},
+	{
+		"Id": 1580,
+		"Difficulty": 10,
+		"EN_US": "Ranger Roy"
+	},
+	{
+		"Id": 1581,
+		"Difficulty": 10,
+		"EN_US": "Redacted"
+	},
+	{
+		"Id": 1582,
+		"Difficulty": 10,
+		"EN_US": "Rec Center"
+	},
+	{
+		"Id": 1583,
+		"Difficulty": 10,
+		"EN_US": "Suspicious"
+	},
+	{
+		"Id": 1584,
+		"Difficulty": 10,
+		"EN_US": "Announcement"
+	},
+	{
+		"Id": 1585,
+		"Difficulty": 10,
+		"EN_US": "Anarchy"
+	},
+	{
+		"Id": 1586,
+		"Difficulty": 10,
+		"EN_US": "Anything"
+	},
+	{
+		"Id": 1587,
+		"Difficulty": 10,
+		"EN_US": "Slow Breathing"
+	},
+	{
+		"Id": 1588,
+		"Difficulty": 10,
+		"EN_US": "Chemicals"
+	},
+	{
+		"Id": 1589,
+		"Difficulty": 10,
+		"EN_US": "Carpool"
+	},
+	{
+		"Id": 1590,
+		"Difficulty": 10,
+		"EN_US": "Cinematic"
+	},
+	{
+		"Id": 1591,
+		"Difficulty": 10,
+		"EN_US": "Coffee Beans"
+	},
+	{
+		"Id": 1592,
+		"Difficulty": 10,
+		"EN_US": "Confetti"
+	},
+	{
+		"Id": 1593,
+		"Difficulty": 10,
+		"EN_US": "Curling"
+	},
+	{
+		"Id": 1594,
+		"Difficulty": 10,
+		"EN_US": "Digestive System"
+	},
+	{
+		"Id": 1595,
+		"Difficulty": 10,
+		"EN_US": "Dignity"
+	},
+	{
+		"Id": 1596,
+		"Difficulty": 10,
+		"EN_US": "Dodecahedron"
+	},
+	{
+		"Id": 1597,
+		"Difficulty": 10,
+		"EN_US": "Dino Nuggets"
+	},
+	{
+		"Id": 1598,
+		"Difficulty": 10,
+		"EN_US": "Flabbergasted"
+	},
+	{
+		"Id": 1599,
+		"Difficulty": 10,
+		"EN_US": "Fog"
+	},
+	{
+		"Id": 1600,
+		"Difficulty": 10,
+		"EN_US": "Garlic Bread"
+	},
+	{
+		"Id": 1601,
+		"Difficulty": 10,
+		"EN_US": "GIF"
+	},
+	{
+		"Id": 1602,
+		"Difficulty": 10,
+		"EN_US": "Hydraulic Press"
+	},
+	{
+		"Id": 1603,
+		"Difficulty": 10,
+		"EN_US": "Hydrophobic Water"
+	},
+	{
+		"Id": 1605,
+		"Difficulty": 10,
+		"EN_US": "Immortality"
+	},
+	{
+		"Id": 1606,
+		"Difficulty": 10,
+		"EN_US": "Imposter"
+	},
+	{
+		"Id": 1607,
+		"Difficulty": 10,
+		"EN_US": "Infinite"
+	},
+	{
+		"Id": 1608,
+		"Difficulty": 10,
+		"EN_US": "Invisible Cloak"
+	},
+	{
+		"Id": 1609,
+		"Difficulty": 10,
+		"EN_US": "Joking"
+	},
+	{
+		"Id": 1610,
+		"Difficulty": 10,
+		"EN_US": "Lackluster"
+	},
+	{
+		"Id": 1611,
+		"Difficulty": 10,
+		"EN_US": "Lamborghini"
+	},
+	{
+		"Id": 1612,
+		"Difficulty": 10,
+		"EN_US": "Mist"
+	},
+	{
+		"Id": 1613,
+		"Difficulty": 10,
+		"EN_US": "Negligible"
+	},
+	{
+		"Id": 1614,
+		"Difficulty": 10,
+		"EN_US": "Nurture"
+	},
+	{
+		"Id": 1615,
+		"Difficulty": 10,
+		"EN_US": "Orange Cube"
+	},
+	{
+		"Id": 1616,
+		"Difficulty": 10,
+		"EN_US": "Over Thinking"
+	},
+	{
+		"Id": 1617,
+		"Difficulty": 10,
+		"EN_US": "Particle"
+	},
+	{
+		"Id": 1618,
+		"Difficulty": 10,
+		"EN_US": "Philosophy"
+	},
+	{
+		"Id": 1619,
+		"Difficulty": 10,
+		"EN_US": "Full Body Costume"
+	},
+	{
+		"Id": 1620,
+		"Difficulty": 10,
+		"EN_US": "Purgatory"
+	},
+	{
+		"Id": 1621,
+		"Difficulty": 10,
+		"EN_US": "Scheme"
+	},
+	{
+		"Id": 1622,
+		"Difficulty": 10,
+		"EN_US": "Quaternion"
+	},
+	{
+		"Id": 1623,
+		"Difficulty": 10,
+		"EN_US": "Rally Fast"
+	},
+	{
+		"Id": 1624,
+		"Difficulty": 10,
+		"EN_US": "Rick Roll"
+	},
+	{
+		"Id": 1625,
+		"Difficulty": 10,
+		"EN_US": "Battle Royale"
+	},
+	{
+		"Id": 1626,
+		"Difficulty": 10,
+		"EN_US": "Taxes"
+	},
+	{
+		"Id": 1627,
+		"Difficulty": 10,
+		"EN_US": "College"
+	},
+	{
+		"Id": 1630,
+		"Difficulty": 10,
+		"EN_US": "Contes"
+	},
+	{
+		"Id": 1631,
+		"Difficulty": 10,
+		"EN_US": "Hatsune Miku"
+	},
+	{
+		"Id": 1632,
+		"Difficulty": 10,
+		"EN_US": "Qualms"
+	},
+	{
+		"Id": 1633,
+		"Difficulty": 10,
+		"EN_US": "Opposite Day"
+	},
+	{
+		"Id": 1634,
+		"Difficulty": 10,
+		"EN_US": "Placeholder Text"
+	},
+	{
+		"Id": 1635,
+		"Difficulty": 10,
+		"EN_US": "Standing Still"
+	},
+	{
+		"Id": 1636,
+		"Difficulty": 10,
+		"EN_US": "Insubstantial"
+	},
+	{
+		"Id": 1637,
+		"Difficulty": 10,
+		"EN_US": "Superlimnal"
+	},
+	{
+		"Id": 1638,
+		"Difficulty": 10,
+		"EN_US": "Vegemite"
+	},
+	{
+		"Id": 1639,
+		"Difficulty": 10,
+		"EN_US": "The Sweet Smell of Flowers in Spring"
+	},
+	{
+		"Id": 1640,
+		"Difficulty": 10,
+		"EN_US": "The 1962 World's Fair"
+	},
+	{
+		"Id": 1641,
+		"Difficulty": 10,
+		"EN_US": "Underwater Basket Weaving"
+	},
+	{
+		"Id": 1642,
+		"Difficulty": 10,
+		"EN_US": "A Random Scribble"
+	},
+	{
+		"Id": 1643,
+		"Difficulty": 10,
+		"EN_US": "A lizard with 7 legs"
+	},
+	{
+		"Id": 1644,
+		"Difficulty": 10,
+		"EN_US": "The missing piece of a jigsaw puzzle"
+	},
+	{
+		"Id": 1645,
+		"Difficulty": 10,
+		"EN_US": "Gesticulating Wildly"
+	},
+	{
+		"Id": 1646,
+		"Difficulty": 10,
+		"EN_US": "It's Morbin' Time"
+	},
+	{
+		"Id": 1647,
+		"Difficulty": 10,
+		"EN_US": "Low Sodium Soy Sauce"
+	},
+	{
+		"Id": 1648,
+		"Difficulty": 10,
+		"EN_US": "I Can't Believe It Is Butter"
+	},
+	{
+		"Id": 1649,
+		"Difficulty": 10,
+		"EN_US": "Lentils"
+	},
+	{
+		"Id": 1650,
+		"Difficulty": 10,
+		"EN_US": "Coverage"
+	},
+	{
+		"Id": 1651,
+		"Difficulty": 10,
+		"EN_US": "Defenestration"
+	},
+	{
+		"Id": 1652,
+		"Difficulty": 10,
+		"EN_US": "Late-night Talk Show Host"
+	},
+	{
+		"Id": 1653,
+		"Difficulty": 10,
+		"EN_US": "1000 Jumping Jacks"
+	},
+	{
+		"Id": 1655,
+		"Difficulty": 10,
+		"EN_US": "Send help, I'm stuck in a charades card factory!"
+	},
+	{
+		"Id": 1656,
+		"Difficulty": 10,
+		"EN_US": "The entire history of Rome"
+	},
+	{
+		"Id": 1657,
+		"Difficulty": 10,
+		"EN_US": "Anti-Taco Legislation"
+	},
+	{
+		"Id": 1658,
+		"Difficulty": 10,
+		"EN_US": "Extra Crispy"
+	},
+	{
+		"Id": 1659,
+		"Difficulty": 10,
+		"EN_US": "Cumulonimbus"
+	},
+	{
+		"Id": 1660,
+		"Difficulty": 10,
+		"EN_US": "(This card intentionally left blank)"
+	},
+	{
+		"Id": 1661,
+		"Difficulty": 10,
+		"EN_US": "Choreography"
+	},
+	{
+		"Id": 1662,
+		"Difficulty": 10,
+		"EN_US": "Staring Contest"
+	},
+	{
+		"Id": 1663,
+		"Difficulty": 10,
+		"EN_US": "FOV"
+	},
+	{
+		"Id": 1664,
+		"Difficulty": 10,
+		"EN_US": "Haute Couture"
+	},
+	{
+		"Id": 1665,
+		"Difficulty": 10,
+		"EN_US": "Sous Vide"
+	},
+	{
+		"Id": 1666,
+		"Difficulty": 10,
+		"EN_US": "Callouses"
+	},
+	{
+		"Id": 1667,
+		"Difficulty": 10,
+		"EN_US": "Shenanigans"
+	},
+	{
+		"Id": 1668,
+		"Difficulty": 10,
+		"EN_US": "Duct tape fixes everything"
+	},
+	{
+		"Id": 1669,
+		"Difficulty": 10,
+		"EN_US": "Chest High Wall"
+	},
+	{
+		"Id": 1670,
+		"Difficulty": 10,
+		"EN_US": "Pressing the button but nobody has guessed the word"
+	},
+	{
+		"Id": 1671,
+		"Difficulty": 10,
+		"EN_US": "A Single Paintball"
+	},
+	{
+		"Id": 1672,
+		"Difficulty": 10,
+		"EN_US": "Six fingers on your right hand"
+	},
+	{
+		"Id": 1673,
+		"Difficulty": 10,
+		"EN_US": "Manual Transmission"
+	},
+	{
+		"Id": 1674,
+		"Difficulty": 10,
+		"EN_US": "Palindrome"
+	},
+	{
+		"Id": 1675,
+		"Difficulty": 10,
+		"EN_US": "Banana For Scale"
+	},
+	{
+		"Id": 1676,
+		"Difficulty": 10,
+		"EN_US": "Theory of Relativity"
+	},
+	{
+		"Id": 1677,
+		"Difficulty": 10,
+		"EN_US": "Xenoanthropology"
+	},
+	{
+		"Id": 1678,
+		"Difficulty": 10,
+		"EN_US": "A.I."
+	},
+	{
+		"Id": 1680,
+		"Difficulty": 10,
+		"EN_US": "No Limbs"
+	},
+	{
+		"Id": 1681,
+		"Difficulty": 10,
+		"EN_US": "Oxygenation"
+	},
+	{
+		"Id": 1682,
+		"Difficulty": 10,
+		"EN_US": "Rooms 2.0"
+	},
+	{
+		"Id": 1683,
+		"Difficulty": 10,
+		"EN_US": "Z-Fighting"
+	},
+	{
+		"Id": 1684,
+		"Difficulty": 10,
+		"EN_US": "Discombobulate"
+	},
+	{
+		"Id": 1685,
+		"Difficulty": 10,
+		"EN_US": "Amnesia"
+	},
+	{
+		"Id": 1686,
+		"Difficulty": 10,
+		"EN_US": "Mewing"
+	},
+	{
+		"Id": 1687,
+		"Difficulty": 10,
+		"EN_US": "Chupacabra"
+	},
+	{
+		"Id": 1688,
+		"Difficulty": 10,
+		"EN_US": "Sasquatch"
+	},
+	{
+		"Id": 1689,
+		"Difficulty": 10,
+		"EN_US": "Ambidextrous"
+	},
+	{
+		"Id": 1758,
+		"Difficulty": 10,
+		"EN_US": "Entropy"
+	},
+	{
+		"Id": 1759,
+		"Difficulty": 10,
+		"EN_US": "Free will"
+	},
+	{
+		"Id": 1760,
+		"Difficulty": 10,
+		"EN_US": "Collapse"
+	},
+	{
+		"Id": 1761,
+		"Difficulty": 10,
+		"EN_US": "Recursion"
+	},
+	{
+		"Id": 1762,
+		"Difficulty": 10,
+		"EN_US": "Impending Doom"
+	},
+	{
+		"Id": 1763,
+		"Difficulty": 10,
+		"EN_US": "Wireless"
+	},
+	{
+		"Id": 1764,
+		"Difficulty": 10,
+		"EN_US": "Waiting"
+	},
+	{
+		"Id": 1765,
+		"Difficulty": 10,
+		"EN_US": "Nutrition"
+	},
+	{
+		"Id": 1766,
+		"Difficulty": 10,
+		"EN_US": "Mirror Image"
+	},
+	{
+		"Id": 1767,
+		"Difficulty": 10,
+		"EN_US": "Vintage"
+	},
+	{
+		"Id": 1768,
+		"Difficulty": 10,
+		"EN_US": "Doomscrolling"
+	},
+	{
+		"Id": 1769,
+		"Difficulty": 10,
+		"EN_US": "Tinnitus"
+	},
+	{
+		"Id": 1770,
+		"Difficulty": 10,
+		"EN_US": "Subtext"
+	},
+	{
+		"Id": 1771,
+		"Difficulty": 10,
+		"EN_US": "Lost in translation"
+	},
+	{
+		"Id": 1772,
+		"Difficulty": 10,
+		"EN_US": "July 17th"
+	},
+	{
+		"Id": 1773,
+		"Difficulty": 10,
+		"EN_US": "Indigo"
+	},
+	{
+		"Id": 1774,
+		"Difficulty": 10,
+		"EN_US": "Waving your arms frantically"
+	},
+	{
+		"Id": 1775,
+		"Difficulty": 10,
+		"EN_US": "A squiggle"
+	},
+	{
+		"Id": 1776,
+		"Difficulty": 10,
+		"EN_US": "I Give Up"
+	},
+	{
+		"Id": 1777,
+		"Difficulty": 10,
+		"EN_US": "Exactly 9 spoons"
+	},
+	{
+		"Id": 1778,
+		"Difficulty": 10,
+		"EN_US": "The Andromeda Galaxy"
+	},
+	{
+		"Id": 1779,
+		"Difficulty": 10,
+		"EN_US": "Cumulonimbus Cloud"
+	},
+	{
+		"Id": 1780,
+		"Difficulty": 10,
+		"EN_US": "Copyright Infringement"
+	},
+	{
+		"Id": 1781,
+		"Difficulty": 10,
+		"EN_US": "Inserting a USB the wrong way"
+	},
+	{
+		"Id": 1782,
+		"Difficulty": 10,
+		"EN_US": "Rec Room"
+	},
+	{
+		"Id": 1783,
+		"Difficulty": 10,
+		"EN_US": "Wasabi"
+	},
+	{
+		"Id": 1784,
+		"Difficulty": 10,
+		"EN_US": "Staring at the card"
+	},
+	{
+		"Id": 1785,
+		"Difficulty": 10,
+		"EN_US": "Synced Lists"
+	}
+]

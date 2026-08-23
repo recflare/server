@@ -9,7 +9,7 @@
 	// so image requests still hit R2/signing; assets are only fetched explicitly
 	// via the ASSETS binding.
 	"cache": {
-		"enabled": false
+		"enabled": true
 	},
 	"assets": {
 		"directory": "./static",

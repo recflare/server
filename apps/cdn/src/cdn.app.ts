@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { describeRoute, openAPIRouteHandler } from 'hono-openapi'
+import { describeRoute, openAPIRouteHandler, resolver } from 'hono-openapi'
 import { useWorkersLogger } from 'workers-tagged-logger'
 
 import {
@@ -15,6 +15,7 @@ import {
 	assetResponses,
 	CONDITIONAL_HEADERS,
 	json,
+	JsonValue,
 	keyParam,
 	LoadingScreenTip,
 	ServiceStatus,
@@ -71,7 +72,7 @@ async function serveAsset(c: Context<App>, key: string) {
 	headers.set('etag', object.httpEtag)
 	headers.set('content-type', 'application/octet-stream')
 	headers.set('accept-ranges', 'bytes')
-	headers.set('cache-control', 'public, max-age=3600')
+	headers.set('cache-control', CACHE_CONTROL)
 
 	// Precondition matched (If-None-Match) → R2 returns no body.
 	if (!('body' in object)) return new Response(null, { status: 304, headers })
@@ -86,6 +87,64 @@ async function serveAsset(c: Context<App>, key: string) {
 	}
 
 	return new Response(object.body, { headers })
+}
+
+/**
+ * Cache-Control on every file this worker serves — 30 days (86400 × 30). These are big,
+ * rarely-changing blobs fetched by key: a room scene, an invention, a signature blob. The
+ * keys are content-addressed or date-foldered UUIDs, so a changed asset arrives under a
+ * NEW key rather than replacing one that is already cached.
+ *
+ * Not `immutable`, unlike `img`: the same rule covers `/config/`, whose files ARE
+ * republished under their existing names, and telling a browser never to revalidate those
+ * would pin a stale config for the whole window.
+ */
+const CACHE_CONTROL = `public, max-age=${86400 * 30}`
+
+/**
+ * What may reach the ASSETS binding as a config filename: one path segment, no slashes,
+ * and `..` rejected outright below. A traversal is then a 404 from this worker rather than
+ * a request the asset server has to be trusted to refuse.
+ */
+const CONFIG_NAME = /^[A-Za-z0-9._-]+$/
+
+/**
+ * Serve a file from `static/config/` through the ASSETS binding, by its own filename —
+ * whatever is in that directory, not just the JSON (a config may be an opaque binary blob
+ * named by GUID). `null` when nothing is published under that name.
+ *
+ * A name carrying no extension also resolves against `<name>.json`, because the same file
+ * is asked for both ways: the game configs that point at these carry the extension
+ * (`Econ.MakerAI.DayPass.Config` is `"SkuConfig_v1.json"`) while the client's older config
+ * calls leave it off. The exact name is tried first, so an extension-less FILE always wins
+ * over the `.json` guess.
+ *
+ * The asset response is handed back whole rather than parsed and re-serialized: it already
+ * carries a content type and an etag (so `If-None-Match` gets its 304 for free), and these
+ * files go out BYTE-FOR-BYTE — `RRPlusConfig_v3.json` opens with a UTF-8 BOM, which is what
+ * the real CDN served and what the client's parser expects.
+ */
+async function serveConfig(c: Context<App>, name: string): Promise<Response | null> {
+	if (!CONFIG_NAME.test(name) || name.includes('..')) return null
+
+	const candidates = name.includes('.') ? [name] : [name, `${name}.json`]
+	for (const candidate of candidates) {
+		// Forwarding the original request keeps its conditional headers; only the URL is
+		// rewritten to the asset's path.
+		const res = await c.env.ASSETS.fetch(
+			new Request(new URL(`/config/${candidate}`, c.req.url), c.req.raw)
+		)
+		// Rebuilt rather than returned as-is, only to stamp our own Cache-Control over the
+		// asset server's: everything else — the body, the status, the content type, the etag
+		// a conditional GET matched on — is carried across untouched. A 304 has no body to
+		// carry, and `Response` refuses one for that status.
+		if (res.ok || res.status === 304) {
+			const headers = new Headers(res.headers)
+			headers.set('cache-control', CACHE_CONTROL)
+			return new Response(res.status === 304 ? null : res.body, { status: res.status, headers })
+		}
+	}
+	return null
 }
 
 const app = new Hono<App>()
@@ -137,7 +196,50 @@ const app = new Hono<App>()
 			].join(' '),
 			responses: { 200: json(LoadingScreenTip.array(), 'The bundled tips') },
 		}),
-		(c) => c.json(loadingScreenTipData)
+		(c) => c.json(loadingScreenTipData, 200, { 'Cache-Control': CACHE_CONTROL })
+	)
+
+	// Everything else under `/config/`, served from `static/config/` by filename — JSON and
+	// opaque blobs alike. Declared AFTER the tip-data route above, which would otherwise be
+	// shadowed by this one: its file is named differently from its path, so it stays a
+	// route of its own.
+	.get(
+		'/config/:name',
+		describeRoute({
+			tags: ['Config'],
+			summary: 'Serve a config file',
+			description: [
+				'Serves a file out of `static/config/` verbatim — `RRPlusConfig_v3.json` (the Rec Room',
+				'Plus benefit lists), `SkuConfig_v1.json` (the Maker AI day-pass store copy) and a',
+				'GUID-named binary blob today. `{name}` IS the filename, so publishing a config is',
+				'dropping a file in that directory; nothing in the worker enumerates them, and not',
+				'everything there is JSON.',
+				'',
+				'A name with no extension also resolves against `<name>.json`, because the same file',
+				'is asked for both ways — the game configs that point at these carry the extension',
+				'(`Econ.MakerAI.DayPass.Config` is `"SkuConfig_v1.json"`), the client’s older config',
+				'calls leave it off. An extension-less file wins over the `.json` guess.',
+				'',
+				'These are byte-for-byte copies of what the real CDN served, BOM included, and are',
+				'not rewritten or re-serialized on the way out.',
+			].join(' '),
+			parameters: [
+				keyParam('name', 'The config’s filename. The `.json` may be left off.', false),
+				...CONDITIONAL_HEADERS.filter((h) => h.name === 'If-None-Match'),
+			],
+			responses: {
+				200: {
+					description: 'The config file, as stored',
+					content: {
+						'application/json': { schema: resolver(JsonValue) },
+						'application/octet-stream': { schema: { type: 'string', format: 'binary' } },
+					},
+				},
+				304: { description: '`If-None-Match` matched the file’s etag (no body)' },
+				404: { description: 'No config is published under that name' },
+			},
+		}),
+		async (c) => (await serveConfig(c, c.req.param('name'))) ?? c.notFound()
 	)
 
 	// Signature blobs by name. Streamed from R2 under the `sigs/` key prefix;
@@ -242,8 +344,8 @@ app.get(
 						'Binary asset delivery for recflare, a private-server reimplementation of the Rec',
 						'Room backend. Streams the blobs the client downloads while playing — anti-cheat',
 						'signatures, saved room scenes, invention data and generic client uploads — out of',
-						'the shared `recflare-cdn` R2 bucket, plus the one bundled config file the loading',
-						'screen reads.',
+						'the shared `recflare-cdn` R2 bucket, plus the JSON config files the client reads',
+						'from `/config/`.',
 						'',
 						'Everything is keyed by prefix (`sigs/`, `room/`, `invention/`, `data/`) and served as',
 						'`application/octet-stream`; the worker never interprets what it hands back. Reads',

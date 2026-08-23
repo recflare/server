@@ -1,9 +1,12 @@
 import { Hono } from 'hono'
 import { describeRoute } from 'hono-openapi'
 
+import charadesAprilWords from '../../static/charades-april.json'
 import charadesWords from '../../static/charades.json'
 import communityBoard from '../../static/community-board.json'
+import { authedId, unauthorized } from '../http'
 import {
+	AUTHED,
 	BareString,
 	idParam,
 	IsPureResponse,
@@ -15,47 +18,136 @@ import {
 	KeepsakeConfig,
 	SanitizeRequest,
 	stringParam,
+	UNAUTHORIZED_RESPONSE,
 } from '../openapi'
+import {
+	censorSwears,
+	containsSwears,
+	DEFAULT_REPLACEMENT_CHAR,
+	removeBlockedCharacters,
+} from '../sanitize'
 
+import type { Context } from 'hono'
 import type { App } from '../context'
+
+/**
+ * A sanitize request, as the client posts it:
+ *
+ * ```json
+ * { "Value": "...", "ReplacementChar": "*", "Context": "RoomChat",
+ *   "Intent": 1, "ruleset": 0, "PreRemoveBlockedCharacters": false }
+ * ```
+ *
+ * Fields are read case-insensitively because the client's own casing isn't consistent —
+ * it sends `ruleset` lowercase among otherwise PascalCase keys, and a reader that trusts
+ * one spelling silently ignores the other.
+ *
+ * `Context` ("RoomChat", and whatever else names the surface being checked), `Intent` and
+ * `ruleset` are read but not acted on: they select among the reference's several
+ * filtering policies and this server has one, so honouring them would mean inventing
+ * differences between them. A body that isn't JSON, or carries no `Value`, reads as the
+ * empty string — nothing to object to, rather than a bad request.
+ */
+async function sanitizeRequest(
+	c: Context<App>
+): Promise<{ value: string; replacementChar: string; preRemoveBlockedCharacters: boolean }> {
+	const body = await c.req
+		.json<Record<string, unknown>>()
+		.catch(() => ({}) as Record<string, unknown>)
+	const field = (name: string): unknown => {
+		const key = Object.keys(body).find((k) => k.toLowerCase() === name.toLowerCase())
+		return key === undefined ? undefined : body[key]
+	}
+	const value = field('Value')
+	const replacementChar = field('ReplacementChar')
+	return {
+		value: typeof value === 'string' ? value : '',
+		replacementChar:
+			typeof replacementChar === 'string' && replacementChar !== ''
+				? replacementChar
+				: DEFAULT_REPLACEMENT_CHAR,
+		preRemoveBlockedCharacters: field('PreRemoveBlockedCharacters') === true,
+	}
+}
+
+/**
+ * The Charades word bank for a given moment: the April Fools list on April 1st, the
+ * ordinary list every other day.
+ *
+ * A REPLACEMENT, not an addition — the joke list stands alone for the day, which is why
+ * its ids (1258+) start past the end of the ordinary one rather than overlapping it. The
+ * client fetches the bank when the activity starts, so a game already running keeps
+ * whichever list it drew.
+ *
+ * The date is read in UTC, so the swap runs 00:00-23:59 UTC on April 1 for everyone
+ * rather than rolling around the world with local midnight. `now` is injectable so tests
+ * can pick a day.
+ */
+export function charadesWordsFor(now: Date = new Date()) {
+	const isAprilFools = now.getUTCMonth() === 3 && now.getUTCDate() === 1
+	return isAprilFools ? charadesAprilWords : charadesWords
+}
 
 // Text sanitization, keepsakes, objectives/events/rewards, and the misc analytics
 // sinks the client hits during load.
 export const gameplayRoutes = new Hono<App>({ strict: false })
-	// Text sanitization (display names, room names, chat). `v1` echoes the input
-	// value back; `isPure` reports the text is clean.
+	// Text sanitization (display names, room names, chat). `v1` masks the swears in the
+	// text and hands it back; `isPure` answers the same question as a yes/no.
 	.post(
 		'/api/sanitize/v1',
 		describeRoute({
 			tags: ['Gameplay'],
 			summary: 'Sanitize a string',
 			description:
-				'Runs display names, room names and chat through the profanity filter. There is ' +
-				'no filter here — the input `Value` is echoed back verbatim as a bare JSON string ' +
-				'(an empty string if the body has no `Value`).',
+				'Masks any swear in the posted `Value` and returns the cleaned text as a bare JSON ' +
+				'string. Each character of a swear becomes the request’s `ReplacementChar` (`*` when ' +
+				'it names none), so the shape of the message survives; text with nothing to object ' +
+				'to comes back untouched. `PreRemoveBlockedCharacters` strips control and zero-width ' +
+				'characters first — the ones used to break a word up so a filter misses it. ' +
+				'`Context`, `Intent` and `ruleset` are accepted and ignored: they pick among the ' +
+				'reference’s filtering policies, and this server has one.',
 			requestBody: jsonBody(SanitizeRequest, 'The text to clean'),
-			responses: { 200: json(BareString, 'The input text, unchanged (a bare JSON string)') },
+			responses: { 200: json(BareString, 'The cleaned text (a bare JSON string)') },
 		}),
 		async (c) => {
-			const body = await c.req.json<{ Value?: unknown }>().catch(() => ({}) as { Value?: unknown })
-			return c.json(typeof body.Value === 'string' ? body.Value : '')
+			const { value, replacementChar, preRemoveBlockedCharacters } = await sanitizeRequest(c)
+			const text = preRemoveBlockedCharacters ? removeBlockedCharacters(value) : value
+			return c.json(censorSwears(text, replacementChar))
 		}
 	)
+	// The yes/no form of the filter, and the one that actually filters: the client asks
+	// this before it accepts a display name, a room name or an invention title. Auth-gated,
+	// as the reference is — the client only ever asks while logged in.
 	.post(
 		'/api/sanitize/v1/isPure',
 		describeRoute({
 			tags: ['Gameplay'],
 			summary: 'Whether a string is clean',
-			description: 'The yes/no form of the filter. Always `true` — nothing is filtered here.',
+			description:
+				'Reports whether the posted `Value` contains a swear — the check the client runs ' +
+				'against a display name, room name or invention title before it accepts one. ' +
+				'Matching is word-boundary aware, so ordinary words that contain a swear ' +
+				'(`analysis`, `Scunthorpe`, `class`) are pure, while leetspeak (`sh1t`, `a$$hole`) ' +
+				'is not. An empty or absent `Value` is pure.',
+			security: AUTHED,
 			requestBody: jsonBody(SanitizeRequest, 'The text to check'),
-			responses: { 200: json(IsPureResponse, 'Always pure') },
+			responses: {
+				200: json(IsPureResponse, 'Whether the text is clean'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
 		}),
-		(c) => c.json({ IsPure: true })
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+			const { value } = await sanitizeRequest(c)
+			return c.json({ IsPure: !containsSwears(value) })
+		}
 	)
 
 	// ---- Activities -----------------------------------------------------------
 	// Word bank for the Charades activity. The client requests the list by
 	// activity name (`.../words/Charades`); other activities have no data yet.
+	// On April 1st (UTC) the joke list replaces it — see `charadesWordsFor`.
 	.get(
 		'/api/activities/charades/v1/words/:activity',
 		describeRoute({
@@ -64,11 +156,12 @@ export const gameplayRoutes = new Hono<App>({ strict: false })
 			description:
 				'The words the Charades activity draws from. The client asks by activity name ' +
 				'(`.../words/Charades`); the name is not matched on, so every activity gets the ' +
-				'charades list — no other activity has data yet.',
+				'charades list — no other activity has data yet. On April 1st (UTC) the April ' +
+				'Fools word list is served in place of the ordinary one.',
 			parameters: [stringParam('activity', 'Activity name, e.g. `Charades`. Not matched on.')],
 			responses: { 200: json(JsonArray, 'The word list') },
 		}),
-		(c) => c.json(charadesWords)
+		(c) => c.json(charadesWordsFor())
 	)
 
 	// Keepsakes (room mementos). Stubbed empty.

@@ -17,6 +17,16 @@
 			"migrations_table": "d1_migrations_chat"
 		}
 	],
+	// Per-player settings KV, owned by the `playersettings` worker. Chat keeps the two
+	// chat-privacy settings in it rather than in a table of its own, so they sit with the
+	// player's other toggles. The "local" id placeholder is replaced with the real id from
+	// RECFLARE_KV at deploy time.
+	"kv_namespaces": [
+		{
+			"binding": "RECFLARE_PLAYER_SETTINGS",
+			"id": "local"
+		}
+	],
 	"logpush": false,
 	// Shared Secrets Store holding the HS256 JWT signing key. Every worker binds the
 	// same store as JWT_SECRET so tokens signed by `auth` verify here. The "local"

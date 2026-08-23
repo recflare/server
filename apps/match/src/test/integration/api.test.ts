@@ -38,6 +38,24 @@ declare module 'cloudflare:test' {
 
 const ORIGIN = 'https://example.com'
 
+/** What a matchmake answers with when the request named no `CorrelationId`. */
+const EMPTY_CORRELATION_ID = '00000000-0000-0000-0000-000000000000'
+
+/**
+ * A refused matchmake, whole: the code under both names the client reads (`result` and
+ * the legacy `errorCode`, always equal), a null instance, and the correlation echo — an
+ * empty GUID here, since these requests carry no `CorrelationId`. A refusal has to
+ * correlate too, or the client goes on waiting for a response it never matches up.
+ */
+function refused(code: number) {
+	return {
+		errorCode: code,
+		result: code,
+		roomInstance: null,
+		correlationId: EMPTY_CORRELATION_ID,
+	}
+}
+
 // Matchmaking into a room resolves its real scene from the shared recflare D1.
 // Seed the schema + a couple of rooms (matching the rooms worker's migration).
 const RECCENTER_SCENE = 'cbad71af-0831-44d8-b8ef-69edafa841f6'
@@ -242,10 +260,13 @@ function b64url(input: ArrayBuffer | string): string {
 	return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
-async function bearer(sub = '42'): Promise<Record<string, string>> {
+// `version` mints the `rn.ver` claim auth stamps from the client's posted `ver`; left
+// off, the token carries none — which is what a token issued before the claim carried the
+// client's own build looks like to presence.
+async function bearer(sub = '42', version?: string): Promise<Record<string, string>> {
 	const now = Math.floor(Date.now() / 1000)
 	const signingInput = `${b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))}.${b64url(
-		JSON.stringify({ sub, exp: now + 3600 })
+		JSON.stringify({ sub, exp: now + 3600, ...(version && { 'rn.ver': version }) })
 	)}`
 	const key = await crypto.subtle.importKey(
 		'raw',
@@ -592,6 +613,136 @@ describe('public endpoints', () => {
 		expect(unknown).toMatchObject({ subRoomId: 34, location: RECCENTER_SCENE })
 	})
 
+	test('the /matchmake/v2 routes take a JSON body and answer the PascalCase envelope', async () => {
+		// The newer client posts JSON with real types (JoinMode a number, AdditionalPlayerIds
+		// null when alone) and reads back `ErrorCode`/`CorrelationId`/`RoomInstance`.
+		type V2Instance = {
+			RoomInstanceId: number
+			RoomId: number
+			SubRoomId: number
+			Location: string
+			MaxCapacity: number
+			IsPrivate: boolean
+			RoomInstanceType: number
+			MatchmakingPolicy: number
+		}
+		type V2Body = { ErrorCode: number; CorrelationId: string; RoomInstance: V2Instance | null }
+		const correlationId = 'e3f1a2b3-c4d5-4e6f-8a9b-0c1d2e3f4a5b'
+		const matchmake = async (
+			path: string,
+			player: string,
+			body: Record<string, unknown> = {}
+		): Promise<V2Body> => {
+			const res = await exports.default.fetch(`${ORIGIN}${path}`, {
+				method: 'POST',
+				headers: { ...(await bearer(player)), 'Content-Type': 'application/json' },
+				// The client's real body, verbatim.
+				body: JSON.stringify({
+					AdditionalPlayerIds: null,
+					BypassMovementModeRestriction: false,
+					MaxPersistenceVersion: 12,
+					Ugc1SubVersion: 0,
+					Ugc2SubVersion: 0,
+					VoiceServerVersion: '1.0',
+					LoginLock: EMPTY_CORRELATION_ID,
+					ClientJoinData: null,
+					CorrelationId: correlationId,
+					JoinMode: 0,
+					InviteMode: 0,
+					ShouldKeepPlayerWithParty: true,
+					PlayerScores: null,
+					...body,
+				}),
+			})
+			expect(res.status).toBe(200)
+			return (await res.json()) as V2Body
+		}
+
+		const room = await matchmake('/matchmake/v2/room/2', '8901')
+		expect(room.ErrorCode).toBe(0)
+		// The JSON body's CorrelationId is read and echoed — a form-only body read would
+		// have lost it here and the client would never match the response to its attempt.
+		expect(room.CorrelationId).toBe(correlationId)
+		expect(room.RoomInstance).toMatchObject({
+			RoomId: 2,
+			Location: RECCENTER_SCENE,
+			IsPrivate: false,
+			MatchmakingPolicy: 0,
+		})
+		// The v2 instance is a strict field set: no camelCase twins, no DataBlob, no Photon
+		// coordinates (the reference server sends none).
+		expect(Object.keys(room.RoomInstance!).sort()).toEqual(
+			[
+				'ClubId',
+				'EncryptVoiceChat',
+				'EventId',
+				'IsFull',
+				'IsInProgress',
+				'IsPrivate',
+				'Location',
+				'MaxCapacity',
+				'MatchmakingPolicy',
+				'Name',
+				'RoomCode',
+				'RoomId',
+				'RoomInstanceId',
+				'RoomInstanceType',
+				'SubRoomId',
+			].sort()
+		)
+		// ...and the envelope has no `result`/`roomInstance` camelCase twins either.
+		expect(Object.keys(room).sort()).toEqual(['CorrelationId', 'ErrorCode', 'RoomInstance'])
+
+		// By name, and the subroom form carries the subroom through.
+		expect((await matchmake('/matchmake/v2/room/RecCenter', '8902')).RoomInstance).toMatchObject({
+			RoomId: 2,
+		})
+		expect((await matchmake('/matchmake/v2/room/77/35', '8903')).RoomInstance).toMatchObject({
+			RoomId: 77,
+			SubRoomId: 35,
+			Location: SECOND_SUBROOM_SCENE,
+		})
+
+		// JoinMode is a NUMBER here: 2 still means a private instance.
+		const priv = await matchmake('/matchmake/v2/room/2', '8905', { JoinMode: 2 })
+		expect(priv.RoomInstance).toMatchObject({ IsPrivate: true })
+
+		// A v2 and a v1 player asking for the same public room land in the SAME instance —
+		// only the wire shape differs. Its own room, so the two players it seats don't count
+		// against another test's capacity.
+		await seedRoomWithSubRooms(env.DB, {
+			RoomId: 79,
+			Name: 'V2Room',
+			IsDorm: false,
+			Accessibility: 1,
+			CreatorAccountId: 8907,
+			SubRooms: [{ SubRoomId: 37, UnitySceneId: RECCENTER_SCENE, MaxPlayers: 10 }],
+		} as unknown as Record<string, unknown>)
+		const v1 = await exports.default.fetch(`${ORIGIN}/matchmake/room/79`, {
+			method: 'POST',
+			headers: {
+				...(await bearer('8906')),
+				'Content-Type': 'application/x-www-form-urlencoded',
+			},
+			body: new URLSearchParams({ JoinMode: '0' }).toString(),
+		})
+		const v1Instance = (
+			(await v1.json()) as { roomInstance: { roomInstanceId: number; roomId: number } }
+		).roomInstance
+		expect(v1Instance.roomId).toBe(79)
+		const v2 = await matchmake('/matchmake/v2/room/79', '8907')
+		expect(v2.RoomInstance!.RoomInstanceId).toBe(v1Instance.roomInstanceId)
+
+		// Refusals answer in v2 too, correlation id echoed — including the ban gate, which
+		// answers before any route runs.
+		const unknown = await matchmake('/matchmake/v2/room/99999', '8904')
+		expect(unknown).toEqual({ ErrorCode: 20, CorrelationId: correlationId, RoomInstance: null })
+
+		// Unauthenticated is a 401, not a matchmake refusal.
+		const anon = await exports.default.fetch(`${ORIGIN}/matchmake/v2/room/2`, { method: 'POST' })
+		expect(anon.status).toBe(401)
+	})
+
 	test('matchmaking serves the PUBLISHED save to everyone, creator included', async () => {
 		// The client offers the owner "latest or published" itself, from the
 		// `/subrooms/{id}/saves` list — matchmaking never picks. Serving a staged blob to
@@ -687,10 +838,7 @@ describe('public endpoints', () => {
 			['/matchmake/club/5', '120'],
 			['/matchmake/club/9999', '120'],
 		] as const) {
-			expect(await (await matchmake(path, sub)).json()).toEqual({
-				errorCode: 20,
-				roomInstance: null,
-			})
+			expect(await (await matchmake(path, sub)).json()).toEqual(refused(20))
 		}
 
 		// Signed out is a 401, not a matchmaking error.
@@ -732,10 +880,7 @@ describe('public endpoints', () => {
 		expect((await join('/matchmake/event/8', '302')).errorCode).toBe(0)
 
 		// A stranger doesn't — and is told why (35 EventIsPrivate), not fobbed off with 20.
-		expect(await join('/matchmake/event/8', '399')).toEqual({
-			errorCode: 35,
-			roomInstance: null,
-		})
+		expect(await join('/matchmake/event/8', '399')).toEqual(refused(35))
 
 		// Public and unlisted are open to anyone: unlisted only keeps an event out of the
 		// listings, it doesn't close it.
@@ -743,10 +888,7 @@ describe('public endpoints', () => {
 		expect((await join('/matchmake/event/10', '399')).errorCode).toBe(0)
 
 		// An unknown event is the opaque NoSuchRoom, so ids can't be probed.
-		expect(await join('/matchmake/event/9999', '399')).toEqual({
-			errorCode: 20,
-			roomInstance: null,
-		})
+		expect(await join('/matchmake/event/9999', '399')).toEqual(refused(20))
 
 		// Signed out is a 401, not a matchmaking error.
 		expect((await matchmake('/matchmake/event/9')).status).toBe(401)
@@ -777,7 +919,7 @@ describe('public endpoints', () => {
 			headers: await bearer('88'),
 		})
 		expect(res.status).toBe(200)
-		expect(await res.json()).toEqual({ errorCode: 20, roomInstance: null })
+		expect(await res.json()).toEqual(refused(20))
 	})
 
 	test('ROOM_REDIRECTS switches a matchmake out to another room', async () => {
@@ -858,6 +1000,25 @@ describe('public endpoints', () => {
 		expect(res.status).toBe(200)
 	})
 
+	test('GET /player/connection-info 401s without a token', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/player/connection-info`)
+		expect(res.status).toBe(401)
+	})
+
+	test('GET /player/qos returns the probe targets', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/player/qos`)
+		expect(res.status).toBe(200)
+		// A bare array, not the { success, value, error } envelope connection-info uses.
+		expect(await res.json()).toEqual([
+			{ id: 'us-west1', address: '34.169.254.144:50000' },
+			{ id: 'europe-west1', address: '35.205.141.119:50000' },
+			{ id: 'asia-northeast1', address: '35.200.67.228:50000' },
+			{ id: 'us-east1', address: '34.73.244.122:50000' },
+			{ id: 'us-central1', address: '34.69.179.51:50000' },
+			{ id: 'northamerica-northeast1', address: '34.152.4.100:50000' },
+		])
+	})
+
 	test('PUT /player/photonregionpings returns 200', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/player/photonregionpings`, { method: 'PUT' })
 		expect(res.status).toBe(200)
@@ -897,6 +1058,191 @@ describe('auth-gated endpoints', () => {
 		// A private matchmake (JoinMode 2) gets its own distinct instance.
 		const priv = await matchmake('902', '2')
 		expect(priv.roomInstance.photonRoomId).not.toBe(a.roomInstance.photonRoomId)
+	})
+
+	test('POST /matchmake/room/:roomId only pools players on the same client build', async () => {
+		const matchmake = async (sub: string, version: string) =>
+			(await (
+				await exports.default.fetch(`${ORIGIN}/matchmake/room/2`, {
+					method: 'POST',
+					headers: await bearer(sub, version),
+				})
+			).json()) as { roomInstance: { photonRoomId: string; roomInstanceId: number } }
+
+		// Two players on one build share an instance, exactly as before — the build scoping
+		// groups players, it doesn't stop grouping them.
+		const oldA = await matchmake('910', '20250424.01')
+		const oldB = await matchmake('911', '20250424.01')
+		expect(oldB.roomInstance.roomInstanceId).toBe(oldA.roomInstance.roomInstanceId)
+
+		// A player on a different build asking for the same room gets their own instance:
+		// the live one is running a version of the room their client can't render, so it
+		// isn't somebody to join.
+		const next = await matchmake('912', '20250718.01')
+		expect(next.roomInstance.roomInstanceId).not.toBe(oldA.roomInstance.roomInstanceId)
+		expect(next.roomInstance.photonRoomId).not.toBe(oldA.roomInstance.photonRoomId)
+
+		// ...and they pool with their own build in turn.
+		const nextB = await matchmake('913', '20250718.01')
+		expect(nextB.roomInstance.roomInstanceId).toBe(next.roomInstance.roomInstanceId)
+	})
+
+	test('GET /player/connection-info hands back the Photon room the caller matchmade into', async () => {
+		const matchmaked = (await (
+			await exports.default.fetch(`${ORIGIN}/matchmake/room/2`, {
+				method: 'POST',
+				headers: await bearer('960'),
+			})
+		).json()) as { roomInstance: { photonRoomId: string } }
+
+		const res = await exports.default.fetch(`${ORIGIN}/player/connection-info`, {
+			headers: await bearer('960'),
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({
+			success: true,
+			value: {
+				// A signed JWT, not an opaque id — three base64url segments.
+				photonAuthToken: expect.stringMatching(/^[\w-]+\.[\w-]+\.[\w-]+$/),
+				// Empty until the operator names their own Photon apps — this server ships none,
+				// so there is no id to hand out.
+				photonRealtimeAppId: '',
+				photonVoiceAppId: '',
+				photonChatAppId: '',
+				// Matches the region every room instance is stamped with. This one DOES have a
+				// default: an instance stamped with an empty region can't be connected to.
+				photonRegion: 'us',
+				// The room the client is told to join has to be the one matchmaking placed
+				// them in, or they end up alone in a room of their own.
+				photonRoomId: matchmaked.roomInstance.photonRoomId,
+				// Empty strings, not nulls — unlike the presence payload's connection fields,
+				// which stay null (they never carry credentials).
+				voiceConnectionInfo: '',
+				voiceServerId: '',
+				experiments: {
+					networkTransformSyncInterval: 10,
+					shouldUseUnreliableOnChange: false,
+					shouldAvoidDiscontinuityRPCs: true,
+					shouldAvoidRedundantDiscontinuity: false,
+					r2RuntimeStaticBaking: true,
+					r2AutoEmbodiment: true,
+					r2RuntimeStaticBakingMinShapeThreshold: 1,
+					r2UseCheapReplicas: true,
+					// true would send the client to a local game server instead of Photon.
+					shouldUseGameServerNetworking: false,
+				},
+			},
+			error: null,
+		})
+	})
+
+	test('the Photon apps and region come from the operator’s vars', async () => {
+		// Unset, every value is the shipped default — asserted by the test above. Set, the
+		// vars win, and the region has to reach BOTH the connection info and the instance:
+		// the client authenticates against the app named here and connects to the region on
+		// its instance, so a mismatch is a session it can't join.
+		const original = {
+			realtime: env.PHOTON_REALTIME_APP_ID,
+			voice: env.PHOTON_VOICE_APP_ID,
+			chat: env.PHOTON_CHAT_APP_ID,
+			region: env.PHOTON_REGION,
+		}
+		try {
+			env.PHOTON_REALTIME_APP_ID = '11111111-1111-4111-8111-111111111111'
+			env.PHOTON_VOICE_APP_ID = '22222222-2222-4222-8222-222222222222'
+			env.PHOTON_CHAT_APP_ID = '33333333-3333-4333-8333-333333333333'
+			env.PHOTON_REGION = 'eu'
+
+			const matchmaked = (await (
+				await exports.default.fetch(`${ORIGIN}/matchmake/room/2`, {
+					method: 'POST',
+					headers: await bearer('961'),
+				})
+			).json()) as { roomInstance: { photonRegion: string; photonRegionId: string } }
+			expect(matchmaked.roomInstance).toMatchObject({ photonRegion: 'eu', photonRegionId: 'eu' })
+
+			const res = await exports.default.fetch(`${ORIGIN}/player/connection-info`, {
+				headers: await bearer('961'),
+			})
+			expect((await res.json()) as { value: Record<string, unknown> }).toMatchObject({
+				value: {
+					photonRealtimeAppId: '11111111-1111-4111-8111-111111111111',
+					photonVoiceAppId: '22222222-2222-4222-8222-222222222222',
+					photonChatAppId: '33333333-3333-4333-8333-333333333333',
+					photonRegion: 'eu',
+				},
+			})
+
+			// A whitespace-only var is not a value: the app id reads as unset (empty) rather
+			// than as a blank-but-present id, and the region falls back to its default.
+			env.PHOTON_REALTIME_APP_ID = '   '
+			env.PHOTON_REGION = '  '
+			const blank = await exports.default.fetch(`${ORIGIN}/player/connection-info`, {
+				headers: await bearer('961'),
+			})
+			expect((await blank.json()) as { value: Record<string, unknown> }).toMatchObject({
+				value: { photonRealtimeAppId: '', photonRegion: 'us' },
+			})
+		} finally {
+			env.PHOTON_REALTIME_APP_ID = original.realtime
+			env.PHOTON_VOICE_APP_ID = original.voice
+			env.PHOTON_CHAT_APP_ID = original.chat
+			env.PHOTON_REGION = original.region
+		}
+	})
+
+	test('GET /player/connection-info mints a token carrying the caller’s id', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/player/connection-info`, {
+			headers: await bearer('961'),
+		})
+		const body = (await res.json()) as {
+			value: { photonAuthToken: string; photonRealtimeAppId: string }
+		}
+		const claims = JSON.parse(atob(body.value.photonAuthToken.split('.')[1]!)) as {
+			sub: string
+			aud: string
+			exp: number
+			'rn.env': string
+		}
+		expect(claims.sub).toBe('961')
+		// Scoped to the realtime app the same response hands out. Asserted as agreement
+		// rather than a pinned literal: PHOTON_APPS is hardcoded until it moves to wrangler
+		// vars, and a token minted for a different app than the client is handed is the bug
+		// worth catching here.
+		expect(claims.aud).toBe(body.value.photonRealtimeAppId)
+		expect(claims.exp).toBeGreaterThan(Math.floor(Date.now() / 1000))
+		// The client is built against prod regardless of which environment we run in.
+		expect(claims['rn.env']).toBe('prod')
+	})
+
+	test('GET /player/connection-info falls back to ?roomInstanceId when presence has no room', async () => {
+		// Player 962 never matchmade, so there's no presence to read the room from; the
+		// param names the instance they're trying to connect to.
+		const instance = await createRoomInstance(env.DB, {
+			roomId: 2,
+			subRoomId: 2,
+			roomInstanceType: 0,
+			photonRoomId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+			maxCapacity: 12,
+			isPrivate: false,
+			ownerAccountId: 962,
+		})
+
+		const res = await exports.default.fetch(
+			`${ORIGIN}/player/connection-info?roomInstanceId=${instance.roomInstanceId}`,
+			{ headers: await bearer('962') }
+		)
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as { value: { photonRoomId: string } }
+		expect(body.value.photonRoomId).toBe('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
+	})
+
+	test('GET /player/connection-info serves an empty photonRoomId when nothing resolves', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/player/connection-info`, {
+			headers: await bearer('963'),
+		})
+		const body = (await res.json()) as { value: { photonRoomId: string } }
+		expect(body.value.photonRoomId).toBe('')
 	})
 
 	test('re-matchmaking into your current room returns a different instance (id must change)', async () => {
@@ -949,6 +1295,125 @@ describe('auth-gated endpoints', () => {
 			roomId: first.roomInstance.roomId,
 			photonRoomId: first.roomInstance.photonRoomId,
 			roomInstanceId: first.roomInstance.roomInstanceId,
+		})
+	})
+
+	test('POST /matchmake/dorm gives each client build its own dorm instance', async () => {
+		const dorm = async (version: string) =>
+			(await (
+				await exports.default.fetch(`${ORIGIN}/matchmake/dorm`, {
+					method: 'POST',
+					headers: await bearer('43', version),
+				})
+			).json()) as {
+				roomInstance: { roomId: number; photonRoomId: string; roomInstanceId: number }
+			}
+
+		// Same dorm ROOM whichever build the owner is on — it's their one dorm...
+		const older = await dorm('20250424.01')
+		const newer = await dorm('20250718.01')
+		expect(newer.roomInstance.roomId).toBe(older.roomInstance.roomId)
+
+		// ...but a separate session per build. A dorm takes guests, so a mixed one is a
+		// room where neither side can see what the other spawned; the owner on a new build
+		// and a guest still on the old one are deliberately kept apart.
+		expect(newer.roomInstance.roomInstanceId).not.toBe(older.roomInstance.roomInstanceId)
+		expect(newer.roomInstance.photonRoomId).not.toBe(older.roomInstance.photonRoomId)
+
+		// Each build's instance is still the stable one it re-enters (id + Photon room),
+		// and coming back on the older build doesn't hand back the newer session.
+		expect(await dorm('20250424.01')).toMatchObject({ roomInstance: older.roomInstance })
+		expect(await dorm('20250718.01')).toMatchObject({ roomInstance: newer.roomInstance })
+	})
+
+	test('a matchmake echoes the request’s CorrelationId (and mirrors errorCode as result)', async () => {
+		// The client tags each attempt with a GUID and won't accept a session whose
+		// response doesn't carry the same one back ("Unable to connect to game session").
+		const correlationId = 'b71abbbb-93e1-4d67-94da-64e6f554863a'
+		const dorm = (await (
+			await exports.default.fetch(`${ORIGIN}/matchmake/dorm`, {
+				method: 'POST',
+				headers: {
+					...(await bearer('43')),
+					'content-type': 'application/x-www-form-urlencoded',
+				},
+				// Verbatim from the client, unread fields included.
+				body: `BypassMovementModeRestriction=False&LoginLock=40bacd8f-7c60-4d49-93f9-462b096602de&VoiceServerVersion=gameserver-2&CorrelationId=${correlationId}&MaxPersistenceVersion=227`,
+			})
+		).json()) as { errorCode: number; result: number; correlationId: string }
+		expect(dorm.correlationId).toBe(correlationId)
+		// Both names for the one code, always in agreement.
+		expect(dorm.result).toBe(0)
+		expect(dorm.errorCode).toBe(0)
+
+		// A room matchmake echoes it too, and so does a refusal — a refused attempt the
+		// client can't correlate is one it goes on waiting for.
+		const room = (await (
+			await exports.default.fetch(`${ORIGIN}/matchmake/room/999999`, {
+				method: 'POST',
+				headers: {
+					...(await bearer('43')),
+					'content-type': 'application/x-www-form-urlencoded',
+				},
+				body: `JoinMode=0&CorrelationId=${correlationId}`,
+			})
+		).json()) as { errorCode: number; result: number; roomInstance: null; correlationId: string }
+		expect(room).toEqual({
+			errorCode: 20,
+			result: 20,
+			roomInstance: null,
+			correlationId,
+		})
+	})
+
+	test('a matchmake with no CorrelationId answers the empty GUID, not null', async () => {
+		// The client reads correlationId as a Guid, not a nullable one — an older client
+		// that sends none still has to get a parseable value back.
+		const body = (await (
+			await exports.default.fetch(`${ORIGIN}/matchmake/dorm`, {
+				method: 'POST',
+				headers: await bearer('43'),
+			})
+		).json()) as { correlationId: string }
+		expect(body.correlationId).toBe(EMPTY_CORRELATION_ID)
+	})
+
+	test('POST /matchmake/none 401s without a token', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/matchmake/none`, { method: 'POST' })
+		expect(res.status).toBe(401)
+	})
+
+	test('POST /matchmake/none keeps the caller where they are, else falls back to the dorm', async () => {
+		const none = async (sub: string) =>
+			(await (
+				await exports.default.fetch(`${ORIGIN}/matchmake/none`, {
+					method: 'POST',
+					headers: await bearer(sub),
+				})
+			).json()) as { errorCode: number; roomInstance: { roomId: number; roomInstanceId: number } }
+
+		// Account 44 has never entered a room → their personal dorm, and a second call is
+		// idempotent now that presence holds it.
+		const fresh = await none('44')
+		expect(fresh.errorCode).toBe(0)
+		expect(fresh.roomInstance.roomId).toBeGreaterThan(2)
+		expect((await none('44')).roomInstance).toMatchObject({
+			roomId: fresh.roomInstance.roomId,
+			roomInstanceId: fresh.roomInstance.roomInstanceId,
+		})
+
+		// Once in a real room, `none` must NOT warp them out of it — that is the whole
+		// point of the endpoint, since the client posts it while sitting in Orientation.
+		const entered = (await (
+			await exports.default.fetch(`${ORIGIN}/matchmake/room/2`, {
+				method: 'POST',
+				headers: await bearer('44'),
+			})
+		).json()) as { roomInstance: { roomId: number; roomInstanceId: number } }
+		expect(entered.roomInstance.roomId).toBe(2)
+		expect((await none('44')).roomInstance).toMatchObject({
+			roomId: 2,
+			roomInstanceId: entered.roomInstance.roomInstanceId,
 		})
 	})
 
@@ -1051,6 +1516,59 @@ describe('auth-gated endpoints', () => {
 		})
 	})
 
+	// The build a player reports is the one their TOKEN carries (`rn.ver`, from the `ver`
+	// they posted to /connect/token) — not this server's GAME_VERSION, which is only the
+	// fallback for a token that names none.
+	test('presence reports the build from the caller’s token', async () => {
+		const headers = await bearer('9710', '20250718.01')
+		await exports.default.fetch(`${ORIGIN}/matchmake/dorm`, { method: 'POST', headers })
+
+		const hb = (await (
+			await exports.default.fetch(`${ORIGIN}/player/heartbeat`, { method: 'POST', headers })
+		).json()) as { appVersion: string }
+		expect(hb.appVersion).toBe('20250718.01')
+
+		// And it is what everyone else sees of them, since it was written to the row.
+		const [player] = (await (
+			await exports.default.fetch(`${ORIGIN}/player?id=9710`)
+		).json()) as Array<{ appVersion: string }>
+		expect(player.appVersion).toBe('20250718.01')
+	})
+
+	// A player who quit and relaunched on a new build heartbeats with a NEW token against
+	// the row the old session left behind; the heartbeat adopts it rather than waiting for
+	// a re-matchmake.
+	test('a heartbeat on a new build updates the stored version', async () => {
+		await exports.default.fetch(`${ORIGIN}/matchmake/dorm`, {
+			method: 'POST',
+			headers: await bearer('9711', '20250424.01'),
+		})
+
+		const hb = (await (
+			await exports.default.fetch(`${ORIGIN}/player/heartbeat`, {
+				method: 'POST',
+				headers: await bearer('9711', '20250718.01'),
+			})
+		).json()) as { appVersion: string }
+		expect(hb.appVersion).toBe('20250718.01')
+
+		const [player] = (await (
+			await exports.default.fetch(`${ORIGIN}/player?id=9711`)
+		).json()) as Array<{ appVersion: string }>
+		expect(player.appVersion).toBe('20250718.01')
+	})
+
+	// A token issued before the claim carried the client's build still has to produce a
+	// usable version — an empty one breaks the client's presence handling.
+	test('a token with no rn.ver falls back to GAME_VERSION', async () => {
+		const headers = await bearer('9712')
+		await exports.default.fetch(`${ORIGIN}/matchmake/dorm`, { method: 'POST', headers })
+		const hb = (await (
+			await exports.default.fetch(`${ORIGIN}/player/heartbeat`, { method: 'POST', headers })
+		).json()) as { appVersion: string }
+		expect(hb.appVersion).toBe(GAME_VERSION)
+	})
+
 	test('heartbeat pushes no websocket frame', async () => {
 		// The notify DO is stubbed to record every send (see vitest.config).
 		type Sent = { playerId: number; notificationType: number; data: Record<string, unknown> }
@@ -1143,8 +1661,15 @@ describe('auth-gated endpoints', () => {
 			)
 			.run()
 
+	// A stand-in instance id for presence rows whose instance is beside the point. Kept
+	// far above what createRoomInstance hands out (ID_BASE + 1, climbing by one per
+	// instance) so it can never collide with a real one — a live presence row pointing at
+	// a real instance makes that instance look occupied, which quietly breaks whichever
+	// test is watching the empty-instance sweep.
+	const UNRELATED_INSTANCE_ID = 1_900_042
+
 	const seedPresence = (id: number, expiresAt: number) =>
-		seedPresenceInInstance(id, 1000042, expiresAt)
+		seedPresenceInInstance(id, UNRELATED_INSTANCE_ID, expiresAt)
 
 	const storedExpiresAt = async (id: number): Promise<number> => {
 		const row = await env.DB.prepare('SELECT data FROM presence WHERE account_id = ?1')
@@ -1188,11 +1713,12 @@ describe('auth-gated endpoints', () => {
 	})
 
 	test('countPlayersInInstance counts live players in a room instance (excludes expired)', async () => {
-		// Three players in instance 1000099 — two live, one expired.
-		await seedPresenceInInstance(710, 1000099, nowSeconds() + 800)
-		await seedPresenceInInstance(711, 1000099, nowSeconds() + 800)
-		await seedPresenceInInstance(712, 1000099, nowSeconds() - 10) // expired → not counted
-		expect(await countPlayersInInstance(env.DB, 1000099)).toBe(2)
+		// Three players in instance 1900099 (synthetic, like UNRELATED_INSTANCE_ID above) —
+		// two live, one expired.
+		await seedPresenceInInstance(710, 1_900_099, nowSeconds() + 800)
+		await seedPresenceInInstance(711, 1_900_099, nowSeconds() + 800)
+		await seedPresenceInInstance(712, 1_900_099, nowSeconds() - 10) // expired → not counted
+		expect(await countPlayersInInstance(env.DB, 1_900_099)).toBe(2)
 		expect(await countPlayersInInstance(env.DB, 999999)).toBe(0)
 	})
 
@@ -1319,22 +1845,36 @@ describe('auth-gated endpoints', () => {
 		expect(await getRoomInstance(env.DB, fresh.roomInstanceId)).not.toBeNull()
 	})
 
-	test('the cron sweep spares an empty dorm instance', async () => {
-		// A dorm is backed by one persistent instance so its Photon room id survives
-		// re-entry — it sits empty whenever the owner is anywhere else.
+	test('the cron sweep retires an empty dorm instance like any other', async () => {
+		// A dorm gets no exemption: once its owner is elsewhere the session is an empty
+		// Photon room nobody can be pointed at, exactly like a public instance everyone
+		// left. What persists about a dorm is the ROOM and the scene saved in it.
 		const headers = await bearer('833')
-		const dorm = (await (
-			await exports.default.fetch(`${ORIGIN}/matchmake/dorm`, { method: 'POST', headers })
-		).json()) as { roomInstance: { roomInstanceId: number } }
-		const dormInstanceId = dorm.roomInstance.roomInstanceId
+		const enterDorm = async () =>
+			(await (
+				await exports.default.fetch(`${ORIGIN}/matchmake/dorm`, { method: 'POST', headers })
+			).json()) as {
+				roomInstance: { roomInstanceId: number; roomId: number; photonRoomId: string }
+			}
+
+		const dorm = await enterDorm()
 		await expirePresence(833)
-		await backdateInstance(dormInstanceId)
+		await backdateInstance(dorm.roomInstance.roomInstanceId)
 
 		const ctx = createExecutionContext()
 		await scheduled(createScheduledController(), env, ctx)
 		await waitOnExecutionContext(ctx)
 
-		expect(await getRoomInstance(env.DB, dormInstanceId)).not.toBeNull()
+		expect(await getRoomInstance(env.DB, dorm.roomInstance.roomInstanceId)).toBeNull()
+
+		// And the owner walks back into their own dorm regardless — same room, a fresh
+		// session of it. Freshness is read off the Photon room (a new GUID per instance)
+		// rather than the id: ids come from MAX(id) + 1, so retiring the newest row hands
+		// its number straight back to the next instance created.
+		const again = await enterDorm()
+		expect(again.roomInstance.roomId).toBe(dorm.roomInstance.roomId)
+		expect(again.roomInstance.photonRoomId).not.toBe(dorm.roomInstance.photonRoomId)
+		expect(await getRoomInstance(env.DB, again.roomInstance.roomInstanceId)).not.toBeNull()
 	})
 
 	test('player/login and exclusivelogin preserve presence', async () => {
@@ -1483,6 +2023,42 @@ describe('auth-gated endpoints', () => {
 		expect((await coOwner.json()) as unknown[]).toHaveLength(instances.length)
 	})
 
+	test('POST /matchmake/instance/:id refuses an instance running another client build', async () => {
+		const spawn = async (sub: string, version: string) =>
+			(
+				(await (
+					await exports.default.fetch(`${ORIGIN}/matchmake/room/3`, {
+						method: 'POST',
+						headers: await bearer(sub, version),
+					})
+				).json()) as { roomInstance: { roomInstanceId: number } }
+			).roomInstance.roomInstanceId
+
+		const join = async (instanceId: number, version: string) =>
+			(
+				await exports.default.fetch(`${ORIGIN}/matchmake/instance/${instanceId}`, {
+					method: 'POST',
+					headers: await bearer('42', version),
+				})
+			).json()
+
+		// The owner of room 3 (42) can't drop into a session running a build their own
+		// client isn't: owning the room doesn't make an older client able to render it.
+		// Their build is behind the instance's, so they're told to update (16) rather than
+		// given the opaque refusal.
+		const newer = await spawn('914', '20250718.01')
+		expect(await join(newer, '20250424.01')).toEqual(refused(16))
+
+		// The other direction has no code of its own — there's no "the people in there must
+		// update" — so it's the opaque NoSuchRoom every other unjoinable thing answers.
+		const older = await spawn('915', '20250424.01')
+		expect(await join(older, '20250718.01')).toEqual(refused(20))
+
+		// Same build → in they go.
+		const same = await spawn('916', '20250718.01')
+		expect(await join(same, '20250718.01')).toMatchObject({ errorCode: 0 })
+	})
+
 	test('POST /matchmake/instance/:id joins that exact instance, owner-only', async () => {
 		// A player with no role on room 3 spins up an instance of it, which the room's
 		// owner should then be able to drop into by id.
@@ -1511,14 +2087,14 @@ describe('auth-gated endpoints', () => {
 			headers: await bearer('999'),
 		})
 		expect(stranger.status).toBe(200)
-		expect(await stranger.json()).toEqual({ errorCode: 20, roomInstance: null })
+		expect(await stranger.json()).toEqual(refused(20))
 
 		// Unknown instance → same refusal.
 		const unknown = await exports.default.fetch(`${ORIGIN}/matchmake/instance/9999999`, {
 			method: 'POST',
 			headers: await bearer('42'),
 		})
-		expect(await unknown.json()).toEqual({ errorCode: 20, roomInstance: null })
+		expect(await unknown.json()).toEqual(refused(20))
 
 		// Park the owner somewhere else first, so this is a real transition.
 		await exports.default.fetch(`${ORIGIN}/matchmake/dorm`, {
@@ -1811,6 +2387,37 @@ describe('auth-gated endpoints', () => {
 		expect(await sent()).toEqual([])
 	})
 
+	test('POST /matchmake/player/:id refuses a friend on another client build', async () => {
+		// 9810 is friends with 9811, 9812 with 9813 — one pair per direction of the build gap.
+		const insertRel = env.DB.prepare(
+			'INSERT INTO relationship (requester_id, target_id, relationship_type) VALUES (?1, ?2, ?3)'
+		)
+		await env.DB.batch([insertRel.bind(9810, 9811, 3), insertRel.bind(9812, 9813, 3)])
+
+		const enter = async (sub: string, version: string) =>
+			exports.default.fetch(`${ORIGIN}/matchmake/room/2`, {
+				method: 'POST',
+				headers: await bearer(sub, version),
+			})
+		const follow = async (targetId: number, sub: string, version: string) =>
+			(
+				await exports.default.fetch(`${ORIGIN}/matchmake/player/${targetId}`, {
+					method: 'POST',
+					headers: await bearer(sub, version),
+				})
+			).json()
+
+		// The friend is standing in a session of a newer build: following them would put
+		// two builds in one Photon room, so the follower is told to update (16) instead.
+		await enter('9811', '20250718.01')
+		expect(await follow(9811, '9810', '20250424.01')).toEqual(refused(16))
+
+		// Following someone on an OLDER build is refused too — opaquely, since there's no
+		// code for "they're the ones who need to update".
+		await enter('9813', '20250424.01')
+		expect(await follow(9813, '9812', '20250718.01')).toEqual(refused(20))
+	})
+
 	test('POST /matchmake/player/:id follows a friend into their room, friends only', async () => {
 		// 9800 is friends with 9801 (in a room) and 9803 (not in any room); 9802 is not a
 		// friend.
@@ -1858,11 +2465,11 @@ describe('auth-gated endpoints', () => {
 		expect(hb.roomInstance?.roomInstanceId).toBe(friendMM.roomInstance?.roomInstanceId)
 
 		// A non-friend can't be followed → NoSuchRoom, null instance (no leak of their state).
-		expect(await (await follow(9802, '9800')).json()).toEqual({ errorCode: 20, roomInstance: null })
+		expect(await (await follow(9802, '9800')).json()).toEqual(refused(20))
 		// You can't follow yourself.
-		expect(await (await follow(9800, '9800')).json()).toEqual({ errorCode: 20, roomInstance: null })
+		expect(await (await follow(9800, '9800')).json()).toEqual(refused(20))
 		// A friend who isn't in any room → nothing to join.
-		expect(await (await follow(9803, '9800')).json()).toEqual({ errorCode: 20, roomInstance: null })
+		expect(await (await follow(9803, '9800')).json()).toEqual(refused(20))
 
 		// No token → 401.
 		expect((await follow(9801)).status).toBe(401)
@@ -1875,10 +2482,7 @@ describe('auth-gated endpoints', () => {
 			 VALUES (2, 9800, 0, 1, '2026-01-01T00:00:00.000Z')`
 		).run()
 		try {
-			expect(await (await follow(9801, '9800')).json()).toEqual({
-				errorCode: 55,
-				roomInstance: null,
-			})
+			expect(await (await follow(9801, '9800')).json()).toEqual(refused(55))
 		} finally {
 			await env.DB.prepare(
 				'DELETE FROM room_ban WHERE room_id = 2 AND banned_player_id = 9800'
@@ -1907,12 +2511,12 @@ describe('auth-gated endpoints', () => {
 		// is nothing for the banned player to join. errorCode 55 rather than the opaque
 		// NoSuchRoom every other refusal answers — a banned player already knows the room
 		// exists, so the client can say why. Applies to the subroom path as well.
-		expect(await matchmake('9701')).toEqual({ errorCode: 55, roomInstance: null })
+		expect(await matchmake('9701')).toEqual(refused(55))
 		const sub = await exports.default.fetch(`${ORIGIN}/matchmake/room/2/2`, {
 			method: 'POST',
 			headers: await bearer('9701'),
 		})
-		expect(await sub.json()).toEqual({ errorCode: 55, roomInstance: null })
+		expect(await sub.json()).toEqual(refused(55))
 
 		// Refused before any instance is created, and no presence was recorded for them.
 		expect(
@@ -2019,6 +2623,8 @@ describe('auth-gated endpoints', () => {
 		expect([...documented].sort()).toEqual([
 			'GET /player',
 			'GET /player/avoidjuniors',
+			'GET /player/connection-info',
+			'GET /player/qos',
 			'GET /room/{roomId}/instances',
 			'GET /rooms/requiring/developer',
 			'GET /rooms/requiring/rrplus',
@@ -2027,9 +2633,12 @@ describe('auth-gated endpoints', () => {
 			'POST /matchmake/dorm',
 			'POST /matchmake/event/{eventId}',
 			'POST /matchmake/instance/{instanceId}',
+			'POST /matchmake/none',
 			'POST /matchmake/player/{playerId}',
 			'POST /matchmake/room/{roomId}',
 			'POST /matchmake/room/{roomId}/{subRoomId}',
+			'POST /matchmake/v2/room/{roomId}',
+			'POST /matchmake/v2/room/{roomId}/{subRoomId}',
 			'POST /player/exclusivelogin',
 			'POST /player/heartbeat',
 			'POST /player/login',
@@ -2077,7 +2686,7 @@ describe('account bans', () => {
 		]) {
 			const res = await matchmake(path, '6001')
 			expect(res.status, path).toBe(200)
-			expect(await res.json(), path).toEqual({ errorCode: 55, roomInstance: null })
+			expect(await res.json(), path).toEqual(refused(55))
 		}
 	})
 
@@ -2104,10 +2713,7 @@ describe('account bans', () => {
 
 	test('a ban that has not expired yet blocks a matchmake', async () => {
 		await banAccount(6004, new Date(Date.now() + 3_600_000).toISOString())
-		expect(await (await matchmake('/matchmake/room/2', '6004')).json()).toEqual({
-			errorCode: 55,
-			roomInstance: null,
-		})
+		expect(await (await matchmake('/matchmake/room/2', '6004')).json()).toEqual(refused(55))
 	})
 
 	// A report on its own is not a ban — only a moderator converting it is.
@@ -2180,7 +2786,7 @@ describe('ban evasion at matchmake', () => {
 		await account(6202)
 		await link(6202, 0, 'steam-evader')
 
-		expect(await matchmake('6202')).toEqual({ errorCode: 55, roomInstance: null })
+		expect(await matchmake('6202')).toEqual(refused(55))
 	})
 
 	test('a new account sharing a banned account’s signup IP is refused', async () => {
@@ -2188,7 +2794,7 @@ describe('ban evasion at matchmake', () => {
 		await banAccount(6203)
 		await account(6204, { signupIp: '203.0.113.203' })
 
-		expect(await matchmake('6204')).toEqual({ errorCode: 55, roomInstance: null })
+		expect(await matchmake('6204')).toEqual(refused(55))
 	})
 
 	// The address the request arrives from counts too, so an account that has never
@@ -2198,7 +2804,7 @@ describe('ban evasion at matchmake', () => {
 		await banAccount(6205)
 		await account(6206)
 
-		expect(await matchmake('6206', '203.0.113.205')).toEqual({ errorCode: 55, roomInstance: null })
+		expect(await matchmake('6206', '203.0.113.205')).toEqual(refused(55))
 		// From anywhere else, that same account plays.
 		expect((await matchmake('6206', '198.51.100.50')).errorCode).toBe(0)
 	})
@@ -2226,14 +2832,14 @@ describe('ban evasion at matchmake', () => {
 		try {
 			env.BAN_EVASION_MATCH = 'platform'
 			expect((await matchmake('6211')).errorCode).toBe(0)
-			expect(await matchmake('6212')).toEqual({ errorCode: 55, roomInstance: null })
+			expect(await matchmake('6212')).toEqual(refused(55))
 			// The banned account itself is still refused, whatever the knob says.
-			expect(await matchmake('6210')).toEqual({ errorCode: 55, roomInstance: null })
+			expect(await matchmake('6210')).toEqual(refused(55))
 
 			env.BAN_EVASION_MATCH = 'off'
 			expect((await matchmake('6211')).errorCode).toBe(0)
 			expect((await matchmake('6212')).errorCode).toBe(0)
-			expect(await matchmake('6210')).toEqual({ errorCode: 55, roomInstance: null })
+			expect(await matchmake('6210')).toEqual(refused(55))
 		} finally {
 			env.BAN_EVASION_MATCH = original
 		}

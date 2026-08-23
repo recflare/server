@@ -48,23 +48,54 @@ export async function issueRefreshToken(db: D1Database, accountId: number): Prom
 }
 
 /**
+ * Attempts per redemption. D1 occasionally answers a perfectly good statement with
+ * `D1_ERROR: internal error` — a storage-side hiccup carrying a support reference, not a
+ * verdict on the query. Unretried, one of those logs a player out: the grant throws, the
+ * shared error handler turns it into a 500, and the client falls back to the login
+ * screen with a refresh token it never got to spend.
+ *
+ * Deliberately small, like the Meta nonce retry next door: a refresh blocks the client on
+ * a loading screen, so two quick retries ride out a blip and a longer outage fails fast
+ * rather than hanging.
+ */
+const MAX_ATTEMPTS = 3
+
+/**
  * Redeem a refresh token: if it exists and hasn't expired, delete it (single-use
  * rotation) and return the account it logs in; otherwise return null. The delete is
  * atomic (`DELETE ... RETURNING`), so a token can't be redeemed twice — a
  * concurrent second attempt finds no row. An expired token is deleted and rejected.
+ *
+ * A D1 error is retried (see {@link MAX_ATTEMPTS}). That is safe precisely BECAUSE the
+ * statement is atomic and single-use: an attempt that actually committed before failing
+ * to answer leaves no row, so the retry returns null and the player re-logs in — exactly
+ * what a replayed token does. There is no interleaving in which retrying redeems one
+ * token twice, and none in which it lands worse than the 500 it replaces.
+ *
+ * Only the D1 call is retried; the hashing around it is pure.
  */
-export async function consumeRefreshToken(
-	db: D1Database,
-	token: string
-): Promise<number | null> {
+export async function consumeRefreshToken(db: D1Database, token: string): Promise<number | null> {
 	const now = Math.floor(Date.now() / 1000)
-	const row = await db
+	const statement = db
 		.prepare(
 			`DELETE FROM refresh_tokens WHERE token_hash = ?1
 			 RETURNING account_id AS accountId, expires_at AS expiresAt`
 		)
 		.bind(await hashToken(token))
-		.first<{ accountId: number; expiresAt: number }>()
+
+	let row: { accountId: number; expiresAt: number } | null = null
+	for (let attempt = 1; ; attempt++) {
+		try {
+			row = await statement.first<{ accountId: number; expiresAt: number }>()
+			break
+		} catch (err) {
+			// The last attempt rethrows: a D1 outage is a 500, not a silent "bad token" that
+			// would tell the player to log in again over something that isn't their fault.
+			if (attempt === MAX_ATTEMPTS) throw err
+			await new Promise((resolve) => setTimeout(resolve, attempt * attempt * 250))
+		}
+	}
+
 	if (!row || row.expiresAt < now) return null
 	return row.accountId
 }
