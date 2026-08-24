@@ -487,13 +487,8 @@ export const LegacyAvatarItemSaves = z.object({
 	customAvatarItemSavesByAvatarItemDesc: z.record(z.string(), CustomAvatarItemSave),
 })
 
-/**
- * `GET /outfits/me` — the outfit envelope. Either the outfit stored in slot 0, served
- * back exactly as it was saved, or (for a player who has never saved) the brand-new-
- * account form, where every field that would carry an outfit is null/empty and
- * `DataVersion` is 9.
- */
-export const OutfitsMeResponse = z.object({
+/** `GET /outfits/me` — the outfit stored in slot 0, served back exactly as it was saved. */
+export const StoredOutfit = z.object({
 	LegacyData: z.object({
 		SelectionsV1: z.string().nullable().describe('Semicolon-delimited legacy descriptors'),
 		SelectionsV2: z.string().nullable().describe('JSON-in-a-string: `{ selections: [...] }`'),
@@ -502,7 +497,7 @@ export const OutfitsMeResponse = z.object({
 		HairColor: z.string().nullable(),
 	}),
 	Selections: JsonArray,
-	DataVersion: z.int().describe('9 in the new-account envelope; whatever was saved otherwise'),
+	DataVersion: z.int().describe('The client’s outfit format version, as saved'),
 	CustomizationSettings: z
 		.string()
 		.nullable()
@@ -512,6 +507,22 @@ export const OutfitsMeResponse = z.object({
 	Accessibility: z.int(),
 	Slot: z.int().describe('0 — the outfit being worn'),
 })
+
+/**
+ * `GET /outfits/me` for a player who has never saved — the brand-new-account envelope.
+ * Flatter than a stored outfit rather than a nulled-out copy of it: four empty strings and
+ * nothing else, no `LegacyData`, no `Selections`, no `DataVersion`. `OutfitSelections` is
+ * the flat field name here, not `SelectionsV1`/`SelectionsV2`.
+ */
+export const EmptyOutfit = z.object({
+	FaceFeatures: z.string(),
+	HairColor: z.string(),
+	OutfitSelections: z.string(),
+	SkinColor: z.string(),
+})
+
+/** `GET /outfits/me` — the stored outfit, or the empty envelope for a new player. */
+export const OutfitsMeResponse = z.union([StoredOutfit, EmptyOutfit])
 
 /**
  * `PUT /outfits/me` JSON body — the outfit the client is saving, in the newer envelope.

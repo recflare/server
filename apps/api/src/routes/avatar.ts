@@ -334,8 +334,9 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 				'`outfit` table — the newer client treats slot 0 as the outfit currently worn — and ' +
 				'handed back exactly as it was saved, since the payload’s heavy fields are the ' +
 				'client’s own JSON-in-a-string documents.\n\n' +
-				'A player who has never saved gets the brand-new-account envelope: all-null ' +
-				'`LegacyData`, no `Selections`, `DataVersion` 9.',
+				'A player who has never saved gets the brand-new-account envelope, which is a ' +
+				'different, flatter shape than a stored outfit: the four empty-string fields ' +
+				'`FaceFeatures`, `HairColor`, `OutfitSelections` and `SkinColor`, and nothing else.',
 			security: AUTHED,
 			responses: {
 				200: json(OutfitsMeResponse, 'The stored outfit, or the empty envelope'),
@@ -350,20 +351,10 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 			if (outfit !== null) return c.json(outfit)
 
 			return c.json({
-				LegacyData: {
-					SelectionsV1: null,
-					SelectionsV2: null,
-					FaceFeatures: null,
-					SkinColor: null,
-					HairColor: null,
-				},
-				Selections: [],
-				DataVersion: 9,
-				CustomizationSettings: null,
-				ThumbnailFileName: null,
-				Name: null,
-				Accessibility: 0,
-				Slot: 0,
+				FaceFeatures: '',
+				HairColor: '',
+				OutfitSelections: '',
+				SkinColor: '',
 			})
 		}
 	)

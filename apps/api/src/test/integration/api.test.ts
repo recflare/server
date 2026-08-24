@@ -670,20 +670,10 @@ describe('public endpoints', () => {
 		const res = await exports.default.fetch(`${ORIGIN}/outfits/me`, { headers: await bearer('77') })
 		expect(res.status).toBe(200)
 		expect(await res.json()).toEqual({
-			LegacyData: {
-				SelectionsV1: null,
-				SelectionsV2: null,
-				FaceFeatures: null,
-				SkinColor: null,
-				HairColor: null,
-			},
-			Selections: [],
-			DataVersion: 9,
-			CustomizationSettings: null,
-			ThumbnailFileName: null,
-			Name: null,
-			Accessibility: 0,
-			Slot: 0,
+			FaceFeatures: '',
+			HairColor: '',
+			OutfitSelections: '',
+			SkinColor: '',
 		})
 	})
 
