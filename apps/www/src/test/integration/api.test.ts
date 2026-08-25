@@ -1,13 +1,18 @@
 import { adminSecretsStore, env, SELF } from 'cloudflare:test'
 import { beforeAll, expect, it } from 'vitest'
 
-import { PRESENCE_SCHEMA_DDL, PRESENCE_TTL_SECONDS } from '@repo/domain/src/presence-db'
+import {
+	PRESENCE_SCHEMA_DDL,
+	PRESENCE_TTL_SECONDS,
+	presenceGeoFromCf,
+} from '@repo/domain/src/presence-db'
 
 import { DOCUMENTED_SERVICES } from '../../docs'
 import { DISCORD_INVITE, ISSUES_URL, PRIVACY_EMAIL } from '../../links'
 import { turnstileKeys } from '../../turnstile'
 import { postAuthForm, readAuthError } from '../../upstream'
 
+import type { PresenceGeo } from '@repo/domain/src/presence-db'
 import type { Env } from '../../context'
 
 declare module 'cloudflare:test' {
@@ -258,6 +263,68 @@ it('serves a public head-count of the players actually online', async () => {
 	// Readable from any origin — it's meant to be embedded elsewhere.
 	expect(res.headers.get('access-control-allow-origin')).toBe('*')
 	expect(await res.json()).toEqual({ status: 'online', players: 2 })
+})
+
+// The globe on the front page. Two things are pinned here that a rendering bug wouldn't
+// catch: that the response carries COUNTS per grid cell and no per-player row (the whole
+// reason locations are stored coarsened in the first place), and that `players` and
+// `located` are allowed to disagree — a player the edge couldn't place is online without
+// being on the map, and the page says so rather than showing the smaller number.
+it('serves player locations as counts per grid cell, never per player', async () => {
+	const now = Math.floor(Date.now() / 1000)
+	await env.DB.prepare('DELETE FROM presence').run()
+	const write = (accountId: number, expiresAt: number, geo: PresenceGeo | null) =>
+		env.DB.prepare('INSERT OR REPLACE INTO presence (data) VALUES (?1)')
+			.bind(JSON.stringify({ accountId, roomInstance: null, expiresAt, geo: geo ?? undefined }))
+			.run()
+
+	const live = now + PRESENCE_TTL_SECONDS
+	// Two players in one cell, one in another, one online but unplaceable, one lapsed.
+	await write(1, live, { lat: 34, lon: -118.5, country: 'US' })
+	await write(2, live, { lat: 34, lon: -118.5, country: 'US' })
+	await write(3, live, { lat: 51.5, lon: 0, country: 'GB' })
+	await write(4, live, null)
+	await write(5, now - 1, { lat: 34, lon: -118.5, country: 'US' })
+
+	const res = await SELF.fetch('https://example.com/server-status/locations', {
+		headers: { origin: 'https://s.example' },
+	})
+	expect(res.status).toBe(200)
+	// Public like the head-count beside it.
+	expect(res.headers.get('access-control-allow-origin')).toBe('*')
+	expect(await res.json()).toEqual({
+		// Everyone unexpired, including the player with no location…
+		players: 4,
+		// …who is the reason these two differ.
+		located: 3,
+		// Busiest cell first, and the two in one cell are ONE pin — not two rows that
+		// happen to share coordinates, which would be a per-player list in disguise.
+		pins: [
+			{ lat: 34, lon: -118.5, country: 'US', players: 2 },
+			{ lat: 51.5, lon: 0, country: 'GB', players: 1 },
+		],
+	})
+})
+
+// The blur is applied on the way IN, so the database itself never holds a fine
+// coordinate — pinned because doing it at read time would look identical from the
+// outside and be worth much less.
+it('snaps a location to the grid and refuses to name a pseudo-country', () => {
+	expect(presenceGeoFromCf({ latitude: '34.0522', longitude: '-118.2437', country: 'US' })).toEqual(
+		{ lat: 34, lon: -118, country: 'US' }
+	)
+	// Cleanly on the grid, not 34.900000000000006 — two spellings of one cell would
+	// group into two pins sitting on top of each other.
+	expect(presenceGeoFromCf({ latitude: '34.8', longitude: '0.1', country: 'gb' })).toEqual({
+		lat: 35,
+		lon: 0,
+		country: 'GB',
+	})
+	// `T1` is Tor, not a country.
+	expect(presenceGeoFromCf({ latitude: '0', longitude: '0', country: 'T1' })?.country).toBe('XX')
+	// No `cf` at all is the ordinary local-dev case, and must not become a pin at (0, 0).
+	expect(presenceGeoFromCf(undefined)).toBeNull()
+	expect(presenceGeoFromCf({ country: 'US' })).toBeNull()
 })
 
 it('serves the aggregated docs page with a source per documented service', async () => {

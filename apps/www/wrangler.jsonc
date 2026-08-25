@@ -30,7 +30,9 @@
 	// SPA `not_found_handling`, a top-level *navigation* to a non-asset path (browsers
 	// send `Sec-Fetch-Mode: navigate`) is served index.html WITHOUT invoking the Worker,
 	// so a browser hitting `/docs` got the homepage. Keep this in sync with the Worker's
-	// routes (`/api/*`, `/docs*`, `/privacy` and `/server-status`).
+	// routes (`/api/*`, `/docs*`, `/privacy` and `/server-status*`) — including SUB-routes:
+	// `/server-status` matches that exact path only, so `/server-status/locations` (the
+	// globe's pins) needed its own pattern or it silently served the homepage instead.
 	// `/docs/scalar.standalone.js` is
 	// deliberately excluded so it's served directly as the static asset it is.
 	//
@@ -40,7 +42,14 @@
 	"assets": {
 		"binding": "ASSETS",
 		"not_found_handling": "single-page-application",
-		"run_worker_first": ["/api/*", "/docs", "/docs/openapi/*", "/privacy", "/server-status"]
+		"run_worker_first": [
+			"/api/*",
+			"/docs",
+			"/docs/openapi/*",
+			"/privacy",
+			"/server-status",
+			"/server-status/*"
+		]
 	},
 	// The Turnstile keypair guarding web signup, out of the same account-level Secrets
 	// Store every other worker binds for JWT_SECRET — values live there, never in this

@@ -34,7 +34,7 @@ import { DISCORD_INVITE, ISSUES_URL, PRIVACY_EMAIL, SOURCE_REPO } from './links'
  */
 
 /** Last substantive revision, shown in the header. Bump when the text changes. */
-const EFFECTIVE_DATE = '26 July 2026'
+const EFFECTIVE_DATE = '25 August 2026'
 
 /** The palette and type of the main site, inlined — this page loads no stylesheet. */
 const STYLES = `
@@ -246,6 +246,7 @@ export function privacyPage(): string {
 		<li>Your relationships with other players — friends, invites and blocks — and your interactions with rooms, such as favourites and cheers.</li>
 		<li>Your in-game economy: token balance, inventory, outfits and gifts received.</li>
 		<li>Your presence — which room instance you are currently in — so friends can find you and join. Presence records expire automatically on their own.</li>
+		<li>An approximate location, worked out by our hosting provider from the IP address your game connects on, and stored on that presence record <em>instead of</em> the address. It is rounded to roughly 55 kilometres before it is stored, so it identifies a region, not a place — and it disappears with the presence record when you stop playing.</li>
 		<li>Your player settings and preferences.</li>
 	</ul>
 
@@ -254,6 +255,7 @@ export function privacyPage(): string {
 		<li><strong>To run the game.</strong> Nearly everything above exists so the world can be reassembled the next time you log in — your avatar, your rooms, your inventory, your photos, your conversations.</li>
 		<li><strong>To sign you in.</strong> Your platform identity, password hash and session tokens are what prove an account is yours and stop anyone else using it.</li>
 		<li><strong>To let players find each other.</strong> Presence, friend lists and public feeds — including the photo slideshow on this website's front page, which shows public in-game photos along with the username of the player who took each one.</li>
+		<li><strong>To show that people are playing.</strong> This website's front page has a globe of where the players who are online right now are. It is drawn from the approximate locations above, counted per region before it leaves the server — so it shows how many players are in an area, never who they are, and no address or individual location is ever sent to the page.</li>
 		<li><strong>To keep the server usable.</strong> IP addresses, device identifiers and logs are used to investigate abuse, ban evasion and bugs, and to limit how many accounts can be created from one place. This is the only reason we keep them.</li>
 		<li><strong>To contact you, if you asked us to.</strong> An email address you add is used for account recovery and account notices, nothing else.</li>
 	</ul>

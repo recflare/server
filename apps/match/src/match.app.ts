@@ -32,6 +32,7 @@ import {
 	MatchmakingErrorCode,
 	MessageType,
 	MOST_ACTIVE_CLUBHOUSE_LIMIT,
+	presenceGeoFromCf,
 	recordRoomVisit,
 	refreshInstanceFullness,
 	RoomInstanceType,
@@ -523,6 +524,10 @@ async function enterRoom(c: Context<App>, id: number, roomInstance: RoomInstance
 		// Carry the session lock recorded at login forward, so matchmake doesn't wipe it
 		// and the heartbeat can keep verifying against it.
 		loginLock: prev?.loginLock,
+		// Where this matchmake came from, coarsened at the edge (see presenceGeoFromCf).
+		// Falls back to the row's last known cell when the request carried no geolocation,
+		// so a player only leaves the globe when they leave the server.
+		geo: presenceGeoFromCf(c.req.raw.cf) ?? prev?.geo,
 	})
 
 	// Count the visit. Every matchmake route funnels through here with the instance the
@@ -1285,6 +1290,7 @@ const app = new Hono<App>()
 					const presence = await getPresence<RoomInstance>(c.env.DB, id)
 					if (presence) {
 						presence.loginLock = loginLock
+						presence.geo = presenceGeoFromCf(c.req.raw.cf) ?? presence.geo
 						await setPresence(c.env.DB, presence)
 					} else {
 						// No live presence yet — seed a lobby row (roomInstance null) holding the
@@ -1299,6 +1305,7 @@ const app = new Hono<App>()
 							platform: account?.platform ?? 0,
 							appVersion: (await callerVersion(c)) ?? GAME_VERSION,
 							loginLock,
+							geo: presenceGeoFromCf(c.req.raw.cf) ?? undefined,
 						})
 					}
 				}
@@ -1574,6 +1581,11 @@ const app = new Hono<App>()
 				const versionChanged = version !== null && presence.appVersion !== version
 				if (versionChanged) presence.appVersion = version
 
+				// The heartbeat is the only call a parked player keeps making, so it's what
+				// keeps their location current — someone who moves house or switches to mobile
+				// data re-pins on the next refresh instead of at their next matchmake.
+				presence.geo = presenceGeoFromCf(c.req.raw.cf) ?? presence.geo
+
 				// Otherwise the heartbeat's only side effect is refreshing the TTL, and only
 				// once it's within PRESENCE_REFRESH_THRESHOLD (s) of lapsing — a still player is
 				// refreshed periodically rather than re-written on every beat. `expiresAt` is
@@ -1611,6 +1623,7 @@ const app = new Hono<App>()
 				const presence = await getPresence<RoomInstance>(c.env.DB, id)
 				if (presence && !Number.isNaN(sv)) {
 					presence.statusVisibility = sv
+					presence.geo = presenceGeoFromCf(c.req.raw.cf) ?? presence.geo
 					await setPresence(c.env.DB, presence)
 				}
 			}

@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { useWorkersLogger } from 'workers-tagged-logger'
 
-import { countOnlinePlayers } from '@repo/domain/src/presence-db'
+import { countOnlinePlayers, countOnlinePlayersByLocation } from '@repo/domain/src/presence-db'
 import { logger, withDefaultCors, withOnError } from '@repo/hono-helpers'
 
 import { authUnreachable } from './auth-messages'
@@ -94,6 +94,27 @@ const app = new Hono<App>()
 			// Players sitting in the lobby count as online, same as anywhere else we read
 			// presence.
 			players: await countOnlinePlayers(c.env.DB),
+		})
+	})
+
+	// Where those players are, for the globe on the homepage: one pin per populated grid
+	// cell with a head-count, and nothing else. Same open CORS as the head-count above.
+	//
+	// No address ever reaches this worker, let alone the browser. A player's location is
+	// resolved by the EDGE from the IP their own game client's request arrived on, snapped
+	// to a ~55km grid before it is stored, and grouped into counts by the database — so
+	// the finest thing that exists to serve is "n players somewhere in this cell", and
+	// there is no per-player row to leak even if this route were made to return more.
+	//
+	// `players` is everyone online and `located` only those with a pin, because they can
+	// differ (a player the edge can't place, or one whose row predates geo) and a globe
+	// showing eight pins under a headline reading twelve looks broken rather than partial.
+	.get('/server-status/locations', withDefaultCors(), async (c) => {
+		const pins = await countOnlinePlayersByLocation(c.env.DB)
+		return c.json({
+			players: await countOnlinePlayers(c.env.DB),
+			located: pins.reduce((n, pin) => n + pin.players, 0),
+			pins,
 		})
 	})
 

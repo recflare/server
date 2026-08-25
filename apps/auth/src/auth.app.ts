@@ -13,6 +13,7 @@ import {
 	getPasswordHash,
 	getRoomById,
 	hashPassword,
+	presenceGeoFromCf,
 	RoomInstanceType,
 	setLastLoginTime,
 	setLoginContext,
@@ -62,7 +63,7 @@ import { consumeRefreshToken, issueRefreshToken } from './refresh-db'
 import { verifySteamTicket } from './steam-ticket'
 
 import type { Context } from 'hono'
-import type { Account } from '@repo/domain'
+import type { Account, PresenceGeo } from '@repo/domain'
 import type { App } from './context'
 import type { PlatformLink } from './platform-db'
 
@@ -154,7 +155,8 @@ const ORIENTATION_INSTANCE_ID = -2
 async function placeNewPlayerInOrientation(
 	env: App['Bindings'],
 	accountId: number,
-	deviceClass: number
+	deviceClass: number,
+	geo: PresenceGeo | null
 ): Promise<void> {
 	// getRoomById hydrates the room's SubRooms from the subroom table (they no longer
 	// live in the room blob), so the Orientation scene resolves the same way match does.
@@ -195,6 +197,9 @@ async function placeNewPlayerInOrientation(
 		vrMovementMode: 1,
 		platform: 0,
 		appVersion: GAME_VERSION,
+		// The first pin a new player gets — the sign-in that made the account is the only
+		// request we've seen from them, and match's heartbeat refreshes it from there.
+		geo: geo ?? undefined,
 	})
 }
 
@@ -893,7 +898,12 @@ const app = new Hono<App>()
 					await setPasswordHash(c.env.DB, account.accountId, await hashPassword(password))
 				}
 				// Place the new player in Orientation (they don't explicitly matchmake into it).
-				await placeNewPlayerInOrientation(c.env, account.accountId, deviceClass)
+				await placeNewPlayerInOrientation(
+					c.env,
+					account.accountId,
+					deviceClass,
+					presenceGeoFromCf(c.req.raw.cf)
+				)
 			} else if (grantType === 'refresh_token') {
 				const presented = typeof body.refresh_token === 'string' ? body.refresh_token : ''
 				const refreshed = presented ? await consumeRefreshToken(c.env.DB, presented) : null

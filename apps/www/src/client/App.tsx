@@ -1,3 +1,4 @@
+import createGlobe from 'cobe'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Accessibility } from '@repo/domain/src/enums'
@@ -13,6 +14,7 @@ import {
 	SOURCE_REPO,
 } from '../links'
 
+import type { COBEOptions, Globe, Marker } from 'cobe'
 import type { ReactNode } from 'react'
 
 /**
@@ -777,6 +779,7 @@ function HomePage({
 			<Stage slides={feed.slides} offerSignup={offerSignup} navigate={navigate} />
 			<div className="shell home">
 				<About slides={feed.slides} error={feed.error} />
+				<PlayersWorldwide />
 			</div>
 		</main>
 	)
@@ -939,6 +942,399 @@ function About({ slides, error }: { slides: Slide[] | null; error: string }) {
 					{state === 'online' && <p className="status-quip">The cloud never goes down, right?</p>}
 				</div>
 			</div>
+		</section>
+	)
+}
+
+/* ---- Who's playing, and where ------------------------------------------- */
+
+/** One pin from `/server-status/locations`: a grid cell and how many players are in it. */
+interface Pin {
+	lat: number
+	lon: number
+	/** ISO 3166-1 alpha-2, or `XX` when the edge couldn't name a country. */
+	country: string
+	players: number
+}
+
+/**
+ * The whole answer from `/server-status/locations`. `players` is everyone online and
+ * `located` only those with a pin — a player the edge couldn't place is counted in the
+ * first and missing from the second, so the section can say so rather than quietly
+ * showing a smaller number than the rest of the page.
+ */
+interface WorldPresence {
+	players: number
+	located: number
+	pins: Pin[]
+}
+
+/** How often the globe re-asks who's online. */
+const GLOBE_POLL_MS = 30_000
+
+/**
+ * Poll `www` for where the online players are. `presence === null` means the first
+ * answer hasn't landed yet.
+ *
+ * Same-origin, so unlike the photo feed this doesn't wait on the config — `www` serves
+ * it itself. Polling stops while the tab is hidden and asks again on the way back, so a
+ * page left open in a background tab overnight isn't a few thousand requests. A failed
+ * poll keeps the last good answer on screen: a globe that empties out because one
+ * request timed out reads as "everyone left", which is worse than being 30s stale.
+ */
+function useWorldPresence(): { presence: WorldPresence | null; error: string } {
+	const [presence, setPresence] = useState<WorldPresence | null>(null)
+	const [error, setError] = useState('')
+
+	useEffect(() => {
+		let live = true
+		let timer: ReturnType<typeof setTimeout> | undefined
+
+		// Function declarations, not consts: `schedule` names `poll` and `poll` names
+		// `schedule`, and hoisting is what lets them be written in reading order.
+		function schedule() {
+			clearTimeout(timer)
+			if (!live || document.hidden) return
+			timer = setTimeout(poll, GLOBE_POLL_MS)
+		}
+
+		function poll() {
+			call<WorldPresence>('/server-status/locations')
+				.then((next) => {
+					if (!live) return
+					setPresence(next)
+					setError('')
+				})
+				.catch((e: unknown) => {
+					if (live) setError(e instanceof Error ? e.message : String(e))
+				})
+				.finally(schedule)
+		}
+
+		// Coming back to a tab that was away: answer now, rather than after a timer that
+		// was deliberately never armed while it was hidden.
+		const onVisibility = () => {
+			if (!document.hidden) poll()
+		}
+		document.addEventListener('visibilitychange', onVisibility)
+		poll()
+
+		return () => {
+			live = false
+			clearTimeout(timer)
+			document.removeEventListener('visibilitychange', onVisibility)
+		}
+	}, [])
+
+	return { presence, error }
+}
+
+/** Radians the globe turns per frame when nobody is steering it. */
+const GLOBE_SPIN_PER_FRAME = 0.0028
+/** Radians per pixel of drag — cobe's own demo figure, and it feels right. */
+const GLOBE_DRAG_PER_PX = 1 / 200
+/**
+ * Where the spin starts. Arbitrary — the globe turns continuously, so this only decides
+ * which face the first second shows; nudge it if that first face keeps landing on ocean.
+ */
+const GLOBE_START_PHI = 4.1
+
+/** A pin's dot size, from the smallest that reads to one that still isn't a blob. */
+const PIN_MIN_SIZE = 0.028
+const PIN_MAX_SIZE = 0.075
+
+/**
+ * Pins → cobe markers. Sized by head-count against the busiest cell so a crowd reads as
+ * one, on a square root because area is what the eye compares: scaling the radius
+ * linearly makes four players look sixteen times the size of one.
+ */
+function pinMarkers(pins: Pin[]): Marker[] {
+	const busiest = pins.reduce((n, pin) => Math.max(n, pin.players), 1)
+	return pins.map((pin) => ({
+		location: [pin.lat, pin.lon],
+		size: PIN_MIN_SIZE + (PIN_MAX_SIZE - PIN_MIN_SIZE) * Math.sqrt(pin.players / busiest),
+	}))
+}
+
+/** cobe wants colours as 0–1 RGB triples, so the palette is repeated here in its terms. */
+const GLOBE_THEME = {
+	// Warm dark: the surface the screenshots are lit against (--surface-hi / --line).
+	dark: {
+		dark: 1,
+		baseColor: [0.21, 0.17, 0.13],
+		glowColor: [0.31, 0.24, 0.17],
+		markerColor: [1, 0.44, 0.004], // --accent #FE7101
+		mapBrightness: 5.4,
+	},
+	light: {
+		dark: 0,
+		baseColor: [0.86, 0.84, 0.81],
+		glowColor: [1, 0.99, 0.97],
+		markerColor: [0.88, 0.37, 0], // --accent #E05F00
+		mapBrightness: 2.2,
+	},
+} as const
+
+/**
+ * The globe itself: a dotted earth with a pin per populated cell, spinning slowly and
+ * draggable.
+ *
+ * Drawn by `cobe`, a ~13KB WebGL globe that takes markers as plain lat/lon and does the
+ * projection — no three.js, no map tiles and no network of its own, which is what makes
+ * it affordable on a page whose point is the hero photo above it.
+ *
+ * Purely the picture: every number it shows lives in the list beside it too, so a
+ * browser with no WebGL (or a reader who isn't looking at pixels) loses nothing. That's
+ * also why the canvas is aria-hidden rather than labelled.
+ */
+function PlayerGlobe({ pins }: { pins: Pin[] }) {
+	const canvas = useRef<HTMLCanvasElement>(null)
+	const box = useRef<HTMLDivElement>(null)
+	const [failed, setFailed] = useState(false)
+	const [theme, setTheme] = useState<'dark' | 'light'>(() =>
+		typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: light)').matches
+			? 'light'
+			: 'dark'
+	)
+
+	// New markers are handed to the running globe rather than rebuilding it, so a poll
+	// doesn't restart the spin. The flag is what keeps the buffer upload to the frames
+	// where something actually changed instead of all sixty a second.
+	const markers = useRef<Marker[]>(pinMarkers(pins))
+	const markersChanged = useRef(true)
+	useEffect(() => {
+		markers.current = pinMarkers(pins)
+		markersChanged.current = true
+	}, [pins])
+
+	// How far the pointer has dragged the globe, in radians. A ref, not state: it changes
+	// on every pointermove and the animation loop is the only thing that reads it, so
+	// re-rendering React for it would be sixty wasted renders a second.
+	const nudge = useRef(0)
+	const dragFrom = useRef<number | null>(null)
+
+	// The site follows the system theme with no toggle of its own (see styles.css), so
+	// this listens for the same switch the CSS does and rebuilds the globe in the other
+	// palette — cobe takes its colours at creation.
+	useEffect(() => {
+		if (typeof matchMedia !== 'function') return
+		const query = matchMedia('(prefers-color-scheme: light)')
+		const onChange = () => setTheme(query.matches ? 'light' : 'dark')
+		query.addEventListener('change', onChange)
+		return () => query.removeEventListener('change', onChange)
+	}, [])
+
+	useEffect(() => {
+		const surface = canvas.current
+		const frame = box.current
+		if (!surface || !frame) return
+
+		let globe: Globe | null = null
+		let request = 0
+		let phi = GLOBE_START_PHI
+		let size = 0
+		let sizeChanged = false
+
+		// The auto-spin is decoration, and a globe that never stops moving is exactly what
+		// this setting is for. The pins (and the drag) still work.
+		const still =
+			typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
+
+		function draw() {
+			if (!globe) return
+			// Only the parts that changed: cobe reallocates the drawing buffer whenever it's
+			// handed a width, which would clear the canvas on every single frame.
+			const next: Partial<COBEOptions> = {}
+			if (sizeChanged) {
+				next.width = size
+				next.height = size
+				sizeChanged = false
+			}
+			if (markersChanged.current) {
+				next.markers = markers.current
+				markersChanged.current = false
+			}
+			// A hand on the globe stops the drift, and it picks back up from wherever it was
+			// let go rather than snapping to where it would have got to.
+			if (!still && dragFrom.current === null) phi += GLOBE_SPIN_PER_FRAME
+			next.phi = phi + nudge.current
+			globe.update(next)
+			request = requestAnimationFrame(draw)
+		}
+
+		function begin() {
+			// Nothing to draw into yet — the observer calls back again once there is.
+			if (globe || size === 0) return
+			try {
+				globe = createGlobe(surface!, {
+					devicePixelRatio: Math.min(devicePixelRatio || 1, 2),
+					width: size,
+					height: size,
+					phi,
+					// Tilted a little north: most of the pins are, and a globe seen dead-on from
+					// the equator reads as a flat circle.
+					theta: 0.22,
+					diffuse: 1.2,
+					mapSamples: 14000,
+					markers: markers.current,
+					...GLOBE_THEME[theme],
+					// The palette is readonly (`as const`), which the option type isn't.
+					baseColor: [...GLOBE_THEME[theme].baseColor],
+					glowColor: [...GLOBE_THEME[theme].glowColor],
+					markerColor: [...GLOBE_THEME[theme].markerColor],
+				})
+			} catch {
+				// No WebGL, or a context the browser refused to give. The list beside this
+				// carries every number the globe was going to show, so drop the canvas and
+				// leave the section otherwise intact.
+				setFailed(true)
+				return
+			}
+			markersChanged.current = false
+			request = requestAnimationFrame(draw)
+		}
+
+		// Square, and sized from the layout rather than from a constant, so the globe fills
+		// its column at every breakpoint instead of being letterboxed on one of them.
+		const observer = new ResizeObserver(() => {
+			const width = Math.round(frame.clientWidth)
+			if (width === 0 || width === size) return
+			size = width
+			sizeChanged = true
+			begin()
+		})
+		observer.observe(frame)
+
+		return () => {
+			observer.disconnect()
+			cancelAnimationFrame(request)
+			globe?.destroy()
+		}
+	}, [theme])
+
+	if (failed) return null
+
+	return (
+		<div className="globe-frame" ref={box}>
+			<canvas
+				className="globe-canvas"
+				ref={canvas}
+				// Decorative: `PlayersWorldwide` states the head-count in words and lists every
+				// country beside it, so there is nothing here for a screen reader to miss.
+				aria-hidden="true"
+				onPointerDown={(e) => {
+					dragFrom.current = e.clientX
+					e.currentTarget.setPointerCapture(e.pointerId)
+				}}
+				onPointerMove={(e) => {
+					if (dragFrom.current === null) return
+					nudge.current += (e.clientX - dragFrom.current) * GLOBE_DRAG_PER_PX
+					dragFrom.current = e.clientX
+				}}
+				onPointerUp={(e) => {
+					dragFrom.current = null
+					e.currentTarget.releasePointerCapture(e.pointerId)
+				}}
+				onPointerCancel={() => {
+					dragFrom.current = null
+				}}
+			/>
+		</div>
+	)
+}
+
+/** Country codes to names, once — building an Intl formatter per row is not free. */
+const countryNames =
+	typeof Intl.DisplayNames === 'function' ? new Intl.DisplayNames(['en'], { type: 'region' }) : null
+
+/** A country code as something to read. `XX` is the edge declining to name one. */
+function countryName(code: string): string {
+	if (code === 'XX') return 'Somewhere else'
+	return countryNames?.of(code) ?? code
+}
+
+/** Players per country, busiest first — the pins in a cell-by-cell list's stead. */
+function byCountry(pins: Pin[]): Array<{ country: string; players: number }> {
+	const totals = new Map<string, number>()
+	for (const pin of pins) totals.set(pin.country, (totals.get(pin.country) ?? 0) + pin.players)
+	return [...totals]
+		.map(([country, players]) => ({ country, players }))
+		.sort(
+			(a, b) =>
+				b.players - a.players || countryName(a.country).localeCompare(countryName(b.country))
+		)
+}
+
+/** How many countries to name before the rest become "and n more". */
+const COUNTRY_ROWS = 6
+
+/**
+ * "People are playing this right now, from all over" — the claim the rest of the page
+ * makes in words, shown instead.
+ *
+ * The globe is the illustration and the list is the content: everything the pins say is
+ * written out beside them, which is what lets the canvas be decorative (and lets the
+ * whole thing degrade to a list where WebGL isn't available).
+ */
+function PlayersWorldwide() {
+	const { presence, error } = useWorldPresence()
+	const pins = presence?.pins ?? []
+	const countries = byCountry(pins)
+
+	return (
+		<section className="globe" aria-labelledby="globe-title">
+			<div className="globe-copy">
+				<h2 className="about-title" id="globe-title">
+					Somebody is playing right now
+				</h2>
+				{presence === null ? (
+					<p className="about-lede">
+						{error ? "Can't reach the servers to ask who's online." : 'Counting who’s on…'}
+					</p>
+				) : presence.located === 0 ? (
+					<p className="about-lede">
+						{presence.players > 0
+							? `${presence.players.toLocaleString()} online — nobody placed on the map yet.`
+							: 'Nobody is online this second. The servers are up; be the first one on.'}
+					</p>
+				) : (
+					<>
+						<p className="globe-count">
+							<strong>{presence.located.toLocaleString()}</strong>{' '}
+							{presence.located === 1 ? 'player' : 'players'} in {countries.length}{' '}
+							{countries.length === 1 ? 'country' : 'countries'}, right now.
+						</p>
+						<ul className="globe-list">
+							{countries.slice(0, COUNTRY_ROWS).map((row) => (
+								<li key={row.country}>
+									<span>{countryName(row.country)}</span>
+									<span className="globe-tally">{row.players.toLocaleString()}</span>
+								</li>
+							))}
+							{countries.length > COUNTRY_ROWS && (
+								<li className="globe-more">
+									<span>and {countries.length - COUNTRY_ROWS} more</span>
+								</li>
+							)}
+						</ul>
+						{/* The head-count and the map can disagree — say which, rather than
+						    letting the smaller number look like the answer. */}
+						{presence.players > presence.located && (
+							<p className="globe-note">
+								{presence.players - presence.located} more online from somewhere we couldn&apos;t
+								place.
+							</p>
+						)}
+					</>
+				)}
+				{/* Not a disclaimer in the footer: people see a map of themselves and want to
+				    know how precise it is, so it says so where they're looking. */}
+				<p className="globe-note">
+					Pins are rounded to about 55km before anyone stores them, and nobody&apos;s address is
+					kept — see the <a href="/privacy">privacy policy</a>.
+				</p>
+			</div>
+			<PlayerGlobe pins={pins} />
 		</section>
 	)
 }
@@ -1382,10 +1778,10 @@ function BlobUpload({
 				<span className="badge beta">Beta</span>
 			</p>
 			<p className="muted blob-upload-caveat">
-				New and lightly tested. Nothing here checks the file — the server stores whatever it
-				is and the game finds out on load. This server runs the {CLIENT_BUILD_DATE} build, so
-				scene data from a room built on anything newer may not load at all. Download the save
-				above and keep it before replacing it.
+				New and lightly tested. Nothing here checks the file — the server stores whatever it is and
+				the game finds out on load. This server runs the {CLIENT_BUILD_DATE} build, so scene data
+				from a room built on anything newer may not load at all. Download the save above and keep it
+				before replacing it.
 			</p>
 			<label className="blob-upload-file">
 				Scene data file

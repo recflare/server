@@ -403,6 +403,118 @@ body {
 	background: var(--error);
 }
 
+/* ---- Who's playing, and where ------------------------------------------- */
+
+/*
+ * The same split as .about, mirrored: the numbers on the left, the globe on the right,
+ * under the photo that's already on that side. The globe is the illustration and the
+ * list is the content — everything the pins say is written out beside them, so the
+ * section still reads with no WebGL (PlayerGlobe renders nothing at all in that case,
+ * and the copy column simply takes the width).
+ */
+.globe {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(0, 380px);
+	gap: 32px 48px;
+	align-items: center;
+	padding: 8px 0 56px;
+}
+
+.globe-copy {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 14px;
+	min-width: 0;
+}
+
+/* The one number the section exists to say. Tabular figures so a poll landing on a
+   different count doesn't shift the words after it. */
+.globe-count {
+	margin: 0;
+	font-size: 1.05rem;
+	color: var(--muted);
+	font-variant-numeric: tabular-nums;
+}
+
+.globe-count strong {
+	font-family: var(--display);
+	font-weight: 700;
+	font-size: 1.6rem;
+	letter-spacing: -0.02em;
+	color: var(--text);
+	margin-right: 2px;
+}
+
+/* Country, then tally, on rules rather than in a box: this sits directly under the
+   lede and a bordered card here would read as a second, competing surface. */
+.globe-list {
+	list-style: none;
+	margin: 2px 0 0;
+	padding: 0;
+	width: 100%;
+	max-width: 340px;
+}
+
+.globe-list li {
+	display: flex;
+	justify-content: space-between;
+	align-items: baseline;
+	gap: 16px;
+	padding: 7px 0;
+	border-bottom: 1px solid var(--line);
+	font-size: 0.95rem;
+}
+
+.globe-list li:last-child {
+	border-bottom: none;
+}
+
+.globe-tally {
+	font-variant-numeric: tabular-nums;
+	font-weight: 600;
+	color: var(--text);
+}
+
+.globe-more {
+	color: var(--muted);
+	font-style: italic;
+}
+
+.globe-note {
+	margin: 0;
+	font-size: 0.8rem;
+	color: var(--muted);
+}
+
+.globe-note a {
+	color: inherit;
+}
+
+/* Square and sized from the layout: PlayerGlobe measures this box and hands cobe the
+   width, so the canvas has to be told its own size in CSS rather than inheriting one
+   from the drawing buffer. */
+.globe-frame {
+	position: relative;
+	width: 100%;
+	aspect-ratio: 1;
+	justify-self: end;
+}
+
+.globe-canvas {
+	width: 100%;
+	height: 100%;
+	/* The globe is draggable, so it says so — and never steals a page scroll on touch,
+	   which `touch-action: none` on a full-width element would. */
+	cursor: grab;
+	touch-action: pan-y;
+	contain: layout paint;
+}
+
+.globe-canvas:active {
+	cursor: grabbing;
+}
+
 .cta {
 	display: inline-block;
 	font-family: var(--body);
@@ -1097,6 +1209,20 @@ button[type='submit']:disabled {
 		grid-template-columns: 1fr;
 		gap: 26px;
 		padding-top: 40px;
+	}
+
+	/* One column too — but the globe goes first: stacked, it's the thing worth
+	   scrolling to, and a list of countries above it reads as a table of nothing. */
+	.globe {
+		grid-template-columns: 1fr;
+		gap: 24px;
+		padding-bottom: 40px;
+	}
+
+	.globe-frame {
+		order: -1;
+		justify-self: center;
+		max-width: 340px;
 	}
 }
 
