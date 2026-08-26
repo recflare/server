@@ -669,9 +669,15 @@ importers:
 
   apps/leaderboard:
     dependencies:
+      '@repo/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
       '@repo/hono-helpers':
         specifier: workspace:*
         version: link:../../packages/hono-helpers
+      '@repo/jwt':
+        specifier: workspace:*
+        version: link:../../packages/jwt
       '@standard-community/standard-json':
         specifier: 0.3.5
         version: 0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(quansync@0.2.11)(zod@4.4.3)

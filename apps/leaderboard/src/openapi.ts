@@ -67,7 +67,7 @@ export const LeaderboardRows = z.object({
  */
 export const PlayerRank = z.object({
 	PlayerId: z.int().describe('Echoed from the request — whose rank this is'),
-	Score: z.int().describe('The player’s wins in the room; 0 when they have no row there'),
+	Score: z.int().describe('The player’s value on the board; 0 when they have no row there'),
 	Rank: z.int().describe('1-based position on the board; 99999 when the player isn’t on it'),
 })
 
@@ -88,8 +88,8 @@ export const CheckAndSetStatResponse = z
  * The body the client posts to `GetRanks`, e.g.
  * `{"RankStart":0,"RankEnd":9,"PlayerId":2,"StatChannel":1,"RoomId":6,"FilterType":0,"SortAscending":false}`.
  *
- * Recovered from a live client, not from a spec. `StatChannel` and `FilterType` are
- * accepted and ignored — one board per room, global.
+ * Recovered from a live client, not from a spec. `FilterType` 1 restricts the board to
+ * `PlayerId` and their friends.
  */
 export const GetRanksBody = z.object({
 	RankStart: z.int().describe('First rank of the slice, 0-based and inclusive'),
@@ -141,5 +141,7 @@ export const CheckAndSetStatBody = z.object({
  * which is why the handler still logs it.
  */
 export const GetNearbyScoresBody = GetPlayerRankBody.extend({
-	WindowSize: z.int().describe('How many rows either side of the player to return; default 10'),
+	WindowSize: z
+		.int()
+		.describe('How many rows either side of the player to return; default and maximum 10'),
 })
