@@ -16,6 +16,7 @@
 	},
 	"dependencies": {
 		"@repo/hono-helpers": "workspace:*",
+		"@repo/jwt": "workspace:*",
 		"@standard-community/standard-json": "0.3.5",
 		"@standard-community/standard-openapi": "0.2.9",
 		"hono": "4.12.27",

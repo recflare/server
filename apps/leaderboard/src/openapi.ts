@@ -27,8 +27,8 @@ export function json(schema: z.ZodType, description: string) {
 /**
  * Convert a zod schema to a plain OpenAPI schema for a request body. `describeRoute`'s
  * `requestBody` takes an OpenAPI schema (not a `resolver()`). zod's `$schema` key and
- * `additionalProperties: false` are dropped — the handlers read nothing out of these
- * bodies at all, so a closed object would misreport them as stricter than they are.
+ * `additionalProperties: false` are dropped — the handlers ignore fields they don't read,
+ * so a closed object would misreport them as stricter than they are.
  */
 function toOpenApiSchema(schema: z.ZodType): OpenAPIV3_1.SchemaObject {
 	const { $schema: _$schema, additionalProperties: _extra, ...jsonSchema } = z.toJSONSchema(schema)
@@ -45,18 +45,15 @@ export function jsonBody(schema: z.ZodType, description: string): OpenAPIV3_1.Re
 /**
  * Both leaderboard reads answer this and nothing else: `{ Rows: [...] }`.
  *
- * `Rows` is EMPTY on this server — nothing scores anything yet — and an empty list is a
- * complete answer meaning "this leaderboard has no scores", which the client renders as a
- * blank board rather than failing. The key must be present; a bare `{}` trips its parser.
- *
- * The row shape is therefore undocumented: no live response has ever carried one, so
- * describing a row here would be inventing it. It is typed as an open object rather than
- * `unknown` so a viewer shows an object in the array.
+ * An EMPTY `Rows` is a complete answer meaning "this leaderboard has no scores", which the
+ * client renders as a blank board rather than failing. The key must be present; a bare `{}`
+ * trips its parser. Each row is the same `{ PlayerId, Score, Rank }` {@link PlayerRank}
+ * answers — the shape both reference servers serve.
  */
 export const LeaderboardRows = z.object({
 	Rows: z
-		.array(z.looseObject({}))
-		.describe('The board’s rows. Always empty — nothing is scored or stored yet.'),
+		.array(z.lazy(() => PlayerRank))
+		.describe('The board’s rows, in rank order. Empty when the board has no scores.'),
 })
 
 /**
@@ -64,14 +61,14 @@ export const LeaderboardRows = z.object({
  * `{"PlayerId":205,"Score":4200,"Rank":17}`.
  *
  * Three fields only: none of the board selectors the request names are echoed back, so the
- * client matches the answer to the question by having asked it. Nothing is scored here yet,
- * so `Rank` is a constant sentinel and `Score` is zero — see the route for why that pairing
- * rather than a rank of 0, which would read as "first place".
+ * client matches the answer to the question by having asked it. A player with no row gets
+ * the 99999 sentinel with a zero score — see the route for why that rather than a rank of
+ * 0, which would read as "first place".
  */
 export const PlayerRank = z.object({
 	PlayerId: z.int().describe('Echoed from the request — whose rank this is'),
-	Score: z.int().describe('The stat value behind the rank. Always 0 — nothing is scored yet'),
-	Rank: z.int().describe('1-based position on the board. Always 99999 — an unranked sentinel'),
+	Score: z.int().describe('The player’s wins in the room; 0 when they have no row there'),
+	Rank: z.int().describe('1-based position on the board; 99999 when the player isn’t on it'),
 })
 
 /**
@@ -91,9 +88,8 @@ export const CheckAndSetStatResponse = z
  * The body the client posts to `GetRanks`, e.g.
  * `{"RankStart":0,"RankEnd":9,"PlayerId":2,"StatChannel":1,"RoomId":6,"FilterType":0,"SortAscending":false}`.
  *
- * Recovered from a live client, not from a spec, and IGNORED by the handler today — the
- * board is empty whatever it says. It is documented because it is the record of what the
- * client asks for, which is what an implementation will have to answer.
+ * Recovered from a live client, not from a spec. `StatChannel` and `FilterType` are
+ * accepted and ignored — one board per room, global.
  */
 export const GetRanksBody = z.object({
 	RankStart: z.int().describe('First rank of the slice, 0-based and inclusive'),
@@ -110,7 +106,7 @@ export const GetRanksBody = z.object({
  * `{"PlayerId":205,"StatChannel":2,"RoomId":14,"FilterType":0,"SortAscending":false}`.
  *
  * The same board selectors {@link GetRanksBody} carries, minus the slice — this asks about
- * one player rather than a page. Only `PlayerId` is read today, to echo it back.
+ * one player rather than a page.
  */
 export const GetPlayerRankBody = z.object({
 	PlayerId: z.int().describe('The player whose rank is being asked for'),
@@ -139,11 +135,11 @@ export const CheckAndSetStatBody = z.object({
 })
 
 /**
- * The body posted to `GetNearbyScores`. Its shape has NOT been recovered from the client —
- * the handler logs the raw text precisely so it can be — so this documents an open object
- * rather than guessing fields. Expect it to name a player and a board the way
- * {@link GetRanksBody} does.
+ * The body posted to `GetNearbyScores`: {@link GetPlayerRankBody} plus `WindowSize`. This
+ * is the reference servers' shape (the client's `GetNearbyScoresRequestDTO` extends its
+ * rank request with `WindowSize`); it has not yet been watched from a live client here,
+ * which is why the handler still logs it.
  */
-export const GetNearbyScoresBody = z
-	.looseObject({})
-	.describe('Unknown shape — logged by the handler so it can be recovered from a live client.')
+export const GetNearbyScoresBody = GetPlayerRankBody.extend({
+	WindowSize: z.int().describe('How many rows either side of the player to return; default 10'),
+})

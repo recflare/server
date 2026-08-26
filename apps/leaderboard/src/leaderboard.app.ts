@@ -3,6 +3,16 @@ import { describeRoute, openAPIRouteHandler } from 'hono-openapi'
 import { useWorkersLogger } from 'workers-tagged-logger'
 
 import { logger, withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
+import { validateAndGetAccountId } from '@repo/jwt'
+
+import {
+	checkAndSetStat,
+	getNearbyScores,
+	getPlayerRank,
+	getRanks,
+	NO_SCORE,
+	UNRANKED,
+} from './leaderboard-db'
 
 import {
 	CheckAndSetStatBody,
@@ -19,24 +29,31 @@ import {
 import type { App } from './context'
 
 /**
- * Leaderboard Worker. Nothing scores anything here yet — the routes answer the shape the
- * client parses, with no rows, no rank and no stored stats behind them.
+ * Leaderboard Worker. One board per room, stored in the `leaderboard` table (see
+ * leaderboard-db.ts): `CheckAndSetStat` writes the caller's wins for a room, and the three
+ * reads rank them.
  */
 
-/**
- * The rank a player who isn't on the board gets. Nothing is scored here, so every caller is
- * unranked — but "unranked" has to be said in the client's own vocabulary, and `Rank` is
- * 1-based: a 0 would render as first place and a negative one may not render at all. A
- * number far past the end of any real board reads as last, which is what an unscored player
- * is, and is recognisable in a log or a screenshot as a sentinel rather than a real standing.
- */
-const UNRANKED = 99999
+/** A board selector as the client posts it. Every field is optional on the wire — a body
+ * that names nothing still gets an answer, it's just an empty one. */
+interface BoardBody {
+	PlayerId?: number
+	RoomId?: number
+	StatChannel?: number
+	FilterType?: number
+	SortAscending?: boolean
+	RankStart?: number
+	RankEnd?: number
+	WindowSize?: number
+}
 
-/**
- * The score behind {@link UNRANKED}. Zero rather than a second sentinel: no stat has ever
- * been stored, and 0 is what "no score" means in the client's own units.
- */
-const NO_SCORE = 0
+/** Read a JSON body leniently: an unreadable one is `{}`, never an error — a board that
+ * fails to draw is worse than one that draws empty. */
+async function readBody<T extends object>(c: { req: { json<U>(): Promise<U> } }): Promise<T> {
+	return c.req.json<T>().catch(() => ({}) as T)
+}
+
+const int = (v: unknown, fallback: number) => (Number.isInteger(v) ? (v as number) : fallback)
 
 const app = new Hono<App>()
 	.use(
@@ -77,34 +94,40 @@ const app = new Hono<App>()
 	// a blank board instead of failing. The key must be present — a bare `{}` trips its
 	// parser.
 	//
-	// Nothing is ranked or stored yet, so the request body is ignored. It IS logged: the
-	// body's shape hasn't been recovered from the client, and this route is how it gets
-	// watched. Read it as text — the shape is unknown, so parsing it would only invent one —
-	// and never fail on it, since an unreadable body must not cost the client its board.
+	// The body is GetPlayerRank's plus `WindowSize` (the reference servers' shape — it has
+	// not been watched from a live client here, which is why it is still logged): the rows
+	// `WindowSize` either side of the player's rank, or the top of the board when they
+	// aren't on it. An unreadable body is answered with an empty board, never an error.
 	.post(
 		'/leaderboard/GetNearbyScores',
 		describeRoute({
 			tags: ['Leaderboard'],
 			summary: 'The scores around a player',
 			description: [
-				'What the client shows when it opens a leaderboard ON someone rather than at the top.',
+				'What the client shows when it opens a leaderboard ON someone rather than at the top:',
+				'the rows `WindowSize` (default 10) either side of `PlayerId`’s rank on `RoomId`’s',
+				'board, or the top of the board when the player isn’t on it.',
 				'',
-				'Nothing is scored or stored on this server yet, so `Rows` is always empty — a complete',
-				'answer meaning "this leaderboard has no scores", which the client renders as a blank',
-				'board rather than failing. The key is always present; a bare `{}` trips its parser.',
+				'An empty `Rows` is a complete answer meaning "this leaderboard has no scores", which',
+				'the client renders as a blank board rather than failing. The key is always present; a',
+				'bare `{}` trips its parser. An unreadable body is answered with an empty board.',
 				'',
-				'The request body is IGNORED, and logged rather than parsed: its shape has not been',
-				'recovered from the client, so this route is how it gets watched. An unreadable body is',
-				'not an error either — it must not cost the client its board.',
+				'`StatChannel` and `FilterType` are accepted and ignored: one board per room, global.',
 			].join(' '),
-			requestBody: jsonBody(GetNearbyScoresBody, 'Ignored and logged; shape not yet recovered'),
-			responses: { 200: json(LeaderboardRows, 'The board, always with no rows') },
+			requestBody: jsonBody(GetNearbyScoresBody, 'The player and the board to centre on'),
+			responses: { 200: json(LeaderboardRows, 'The rows around the player') },
 		}),
 		async (c) => {
-			const body = await c.req.text().catch(() => '<unreadable>')
+			const body = await readBody<BoardBody>(c)
 			logger.info('GetNearbyScores', { body })
 
-			const rows: unknown[] = []
+			const rows = await getNearbyScores(
+				c.env.DB,
+				int(body.RoomId, 0),
+				int(body.PlayerId, 0),
+				int(body.WindowSize, 10),
+				body.SortAscending === true
+			)
 			return c.json({ Rows: rows })
 		}
 	)
@@ -116,8 +139,8 @@ const app = new Hono<App>()
 	//
 	// Same answer and same rules as GetNearbyScores: `{ Rows: [...] }`, where an EMPTY
 	// `Rows` is a complete answer meaning "this leaderboard has no scores" and the key must
-	// be present. Nothing is ranked or stored yet, so the body is ignored — only logged, and
-	// read as text so an unreadable body can never cost the client its board.
+	// be present. Ranks are 1-based; a `RankStart` of 0 is read as the top. An unreadable
+	// body is answered with an empty board, never an error.
 	.post(
 		'/leaderboard/GetRanks',
 		describeRoute({
@@ -129,20 +152,26 @@ const app = new Hono<App>()
 				'plus `StatChannel`), the viewer (`PlayerId`) and the ordering (`FilterType`,',
 				'`SortAscending`).',
 				'',
-				'Answers exactly what `GetNearbyScores` answers, under the same rules: `Rows` is always',
-				'empty because nothing is scored or stored here yet, and the key is always present.',
+				'Answers the rows ranked `RankStart`..`RankEnd` on `RoomId`’s board (1-based; 0 is',
+				'read as the top), highest wins first unless `SortAscending`. An empty `Rows` means',
+				'"this leaderboard has no scores"; the key is always present.',
 				'',
-				'The body is IGNORED — it is logged, not parsed — so the fields are documented as the',
-				'record of what the client asks for rather than as anything the handler reads.',
+				'`StatChannel` and `FilterType` are accepted and ignored: one board per room, global.',
 			].join(' '),
 			requestBody: jsonBody(GetRanksBody, 'The slice and board the client is asking for'),
-			responses: { 200: json(LeaderboardRows, 'The board, always with no rows') },
+			responses: { 200: json(LeaderboardRows, 'The requested slice of the board') },
 		}),
 		async (c) => {
-			const body = await c.req.text().catch(() => '<unreadable>')
+			const body = await readBody<BoardBody>(c)
 			logger.info('GetRanks', { body })
 
-			const rows: unknown[] = []
+			const rows = await getRanks(
+				c.env.DB,
+				int(body.RoomId, 0),
+				int(body.RankStart, 1),
+				int(body.RankEnd, 10),
+				body.SortAscending === true
+			)
 			return c.json({ Rows: rows })
 		}
 	)
@@ -156,9 +185,9 @@ const app = new Hono<App>()
 	// therefore the one field read out of the body: answering with a different player's id
 	// would be answering a question nobody asked.
 	//
-	// Nothing is scored here, so every caller is unranked and gets {@link UNRANKED} with a
-	// zero score. A body that can't be read still gets an answer — a board that fails to draw
-	// is worse than one that draws the player as unranked — so `PlayerId` falls back to 0.
+	// A player with no row in the room gets {@link UNRANKED} with a zero score. A body that
+	// can't be read still gets an answer — a board that fails to draw is worse than one that
+	// draws the player as unranked — so `PlayerId` falls back to 0.
 	.post(
 		'/leaderboard/GetPlayerRank',
 		describeRoute({
@@ -169,24 +198,26 @@ const app = new Hono<App>()
 				'the board — the body names the player and the board (`RoomId` + `StatChannel` +',
 				'`FilterType`: Global 0, Friends 1).',
 				'',
-				'Nothing is scored or stored on this server yet, so the answer is always the same:',
-				`\`Rank\` ${UNRANKED}, a sentinel meaning unranked (ranks are 1-based, so a 0 would`,
-				'render as first place), and `Score` 0.',
+				'`Score` is the player’s wins in the room and `Rank` their 1-based position on its',
+				`board. A player with no row there answers \`Rank\` ${UNRANKED}, a sentinel meaning`,
+				'unranked (ranks are 1-based, so a 0 would render as first place), and `Score` 0.',
 				'',
-				'`PlayerId` is echoed from the request and is the only field read out of it — the',
-				'response carries no board selectors, so the client matches the answer to its own',
-				'question. An unreadable body is answered rather than rejected, with a `PlayerId` of 0.',
+				'`PlayerId` is echoed from the request — the response carries no board selectors, so',
+				'the client matches the answer to its own question. An unreadable body is answered',
+				'rather than rejected, with a `PlayerId` of 0.',
 			].join(' '),
 			requestBody: jsonBody(GetPlayerRankBody, 'The player and the board being asked about'),
-			responses: { 200: json(PlayerRank, 'The player’s standing — always unranked') },
+			responses: { 200: json(PlayerRank, 'The player’s standing') },
 		}),
 		async (c) => {
-			const body = await c.req
-				.json<{ PlayerId?: number }>()
-				.catch(() => ({}) as { PlayerId?: number })
+			const body = await readBody<BoardBody>(c)
 			logger.info('GetPlayerRank', { body })
 
-			return c.json({ PlayerId: body.PlayerId ?? 0, Score: NO_SCORE, Rank: UNRANKED })
+			const playerId = int(body.PlayerId, 0)
+			if (playerId === 0) return c.json({ PlayerId: 0, Score: NO_SCORE, Rank: UNRANKED })
+			return c.json(
+				await getPlayerRank(c.env.DB, int(body.RoomId, 0), playerId, body.SortAscending === true)
+			)
 		}
 	)
 
@@ -196,9 +227,11 @@ const app = new Hono<App>()
 	// how a room's high-score board avoids being walked backwards by a stale client. There is
 	// no `PlayerId`: the stat belongs to whoever is calling.
 	//
-	// Nothing is stored yet, so the write is accepted and dropped. The answer is a BARE `0` —
-	// not an envelope, not `{ value: 0 }` — which is what the live service returns and so what
-	// the client's parser expects. The body is logged, not read.
+	// The caller comes from the bearer token — no token, 401, since a stat with no owner has
+	// nowhere to go. The write lands in `leaderboard` as the caller's wins for `RoomId`
+	// (`StatChannel` is ignored: one board per room). The answer is a BARE `0` — not an
+	// envelope, not `{ value: 0 }` — which is what the live service returns and so what the
+	// client's parser expects; it is 0 even when the compare failed and nothing was written.
 	.post(
 		'/leaderboard/CheckAndSetStat',
 		describeRoute({
@@ -209,19 +242,44 @@ const app = new Hono<App>()
 				'wants stored, `CurrentStatValue` what it believes is stored now (null when it believes',
 				'nothing is). No `PlayerId` — the stat belongs to the caller.',
 				'',
-				'Nothing is stored on this server yet, so the write is accepted and dropped. The',
-				'response is the BARE number `0`, not an envelope and not a `{ value }` wrapper — what',
-				'the live service answers, and what the client’s parser expects.',
+				'Stores `StatValue` as the caller’s wins in `RoomId` (identified by the Bearer token;',
+				'401 without one). With a numeric `CurrentStatValue` the row is written only if it still',
+				'holds that value; with null it is written regardless. `StatChannel` is ignored.',
 				'',
-				'The body is IGNORED and logged, which is how these shapes get recovered from a live',
-				'client.',
+				'The response is the BARE number `0`, not an envelope and not a `{ value }` wrapper —',
+				'what the live service answers, and what the client’s parser expects — whether or not',
+				'the compare passed.',
 			].join(' '),
 			requestBody: jsonBody(CheckAndSetStatBody, 'The stat, the room and the value to store'),
-			responses: { 200: json(CheckAndSetStatResponse, 'Always the bare number 0') },
+			responses: {
+				200: json(CheckAndSetStatResponse, 'Always the bare number 0'),
+				401: { description: 'No valid bearer token' },
+			},
 		}),
 		async (c) => {
-			const body = await c.req.text().catch(() => '<unreadable>')
-			logger.info('CheckAndSetStat', { body })
+			const accountId = await validateAndGetAccountId(c.req.raw, await c.env.JWT_SECRET.get())
+			if (accountId === null) return c.body(null, 401)
+
+			const body = await readBody<{
+				RoomId?: number
+				StatChannel?: number
+				StatValue?: number
+				CurrentStatValue?: number | null
+			}>(c)
+			logger.info('CheckAndSetStat', { accountId, body })
+
+			const roomId = int(body.RoomId, 0)
+			if (roomId !== 0 && typeof body.StatValue === 'number') {
+				const expected = typeof body.CurrentStatValue === 'number' ? body.CurrentStatValue : null
+				const written = await checkAndSetStat(
+					c.env.DB,
+					roomId,
+					accountId,
+					Math.trunc(body.StatValue),
+					expected
+				)
+				if (!written) logger.info('CheckAndSetStat: stale, not written', { accountId, roomId })
+			}
 
 			return c.json(0)
 		}
@@ -242,17 +300,18 @@ app.get(
 						'Leaderboards for recflare, a private-server reimplementation of the Rec Room',
 						'backend — the boards a room keeps for the stats it tracks.',
 						'',
-						'NOTHING IS SCORED HERE YET, and every route answers accordingly rather than',
-						'failing: the two board reads answer `{ "Rows": [] }`, an empty list being a',
-						'complete answer meaning "this leaderboard has no scores" (the `Rows` key is always',
-						'present — a bare `{}` trips the client’s parser); `GetPlayerRank` answers a rank of',
-						'99999, the sentinel for unranked, with a score of 0; and `CheckAndSetStat` accepts',
-						'a stat write, drops it, and answers the bare number `0`.',
+						'One board per room: `CheckAndSetStat` stores the caller’s wins for a room (the',
+						'client’s `StatChannel` is accepted and ignored), and the reads rank them — highest',
+						'first unless `SortAscending`, ties broken on the lower player id, ranks 1-based.',
 						'',
-						'Only `GetPlayerRank` reads anything out of its request body, and only the',
-						'`PlayerId` it echoes back. Every route logs the body verbatim, which is how these',
-						'shapes get recovered from a live client; `GetNearbyScores`’ body is still unknown',
-						'for exactly that reason. No route needs a token today.',
+						'The two board reads answer `{ "Rows": [ { PlayerId, Score, Rank } ] }`, an empty',
+						'list being a complete answer meaning "this leaderboard has no scores" (the `Rows`',
+						'key is always present — a bare `{}` trips the client’s parser); `GetPlayerRank`',
+						'answers a player with no row a rank of 99999, the sentinel for unranked, with a',
+						'score of 0; and `CheckAndSetStat` answers the bare number `0`.',
+						'',
+						'Only `CheckAndSetStat` needs a token — the stat belongs to whoever is calling.',
+						'Unreadable bodies are answered (empty board / unranked), never rejected.',
 					].join('\n'),
 				},
 				servers: [{ url: 'https://leaderboard.recflare.net', description: 'Production' }],
