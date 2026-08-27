@@ -110,7 +110,7 @@ export const configRoutes = new Hono<App>({ strict: false })
 		}),
 		(c) =>
 			c.json({
-                                VersionStatus: isSupportedGameVersion(c.req.query('v')) ? 0 : 1,
+				VersionStatus: isSupportedGameVersion(c.req.query('v')) ? 0 : 1,
 				UpdateNotificationStage: 0,
 				IsVersionIslanded: false,
 				IsCrossPlayDisabled: false,
@@ -162,7 +162,7 @@ export const configRoutes = new Hono<App>({ strict: false })
 		}),
 		async (c) => {
 			const version = await validateAndGetVersion(c.req.raw, await c.env.JWT_SECRET.get())
-			const newerThanTarget = version !== null && version > GAME_VERSION
+			const newerThanTarget = version !== null && version > '20230414'
 			return c.json(newerThanTarget ? gameConfigsV1All2025 : gameConfigsV1All)
 		}
 	)

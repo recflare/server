@@ -244,6 +244,9 @@ const app = new Hono<App>()
 
 	// Signature blobs by name. Streamed from R2 under the `sigs/` key prefix;
 	// 404 when missing.
+	// Generic client assets stored under the `client/` R2 prefix.
+	.get('/client/:path{.+}', (c) => serveAsset(c, `client/${c.req.param('path')}`))
+
 	.get(
 		'/sigs/:sigName',
 		describeRoute({

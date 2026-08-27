@@ -30,7 +30,7 @@ export const PRESENCE_TTL_SECONDS = 900
  * empty value breaks the client's presence/version handling. Matches our target
  * 2023 client build.
  */
-export const GAME_VERSION = '20230302'
+export const GAME_VERSION = '20250718.01'
 
 /**
  * Client builds `/api/versioncheck/v4` answers "current" for. `GAME_VERSION` is the one
