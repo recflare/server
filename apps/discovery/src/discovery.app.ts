@@ -66,7 +66,7 @@ const app = new Hono<App>()
 	.get(
 		'/sections/bulk',
 		describeRoute({
-			tags: ['Discovery'],
+			tags: ['Discovery', '2025'],
 			summary: 'Look up sections by id',
 			description: [
 				'The sections named by the repeated `?id=` query, drawn from the catalogue in',
@@ -106,7 +106,7 @@ const app = new Hono<App>()
 	.get(
 		'/sections/pagesource/:type',
 		describeRoute({
-			tags: ['Discovery'],
+			tags: ['Discovery', '2025'],
 			summary: 'Section layout for a page source',
 			description: [
 				'The sections of one discovery page, in the order the client draws them. `{type}` IS',

@@ -63,9 +63,14 @@ export const CURATED_LIST_SCHEMA_DDL: string[] = [
 
 /**
  * One curated list as the client parses it, whether it came out of D1 or out of a static
- * capture. `Description` may be null but `ImageName` must be a STRING — the client reads it
- * straight into a string field — and `ItemIds` are strings even where they stand for
+ * capture. `Description` may be null, and `ItemIds` are strings even where they stand for
  * numeric ids, which is what the working captures carry.
+ *
+ * `ImageName` is a STRING on every list the client draws a TILE for — it reads it straight
+ * into a string field, and empty or null renders that tile blank. It is nullable only
+ * because one capture (`RoomGenreTags`, whose `ItemIds` are genre names rather than rooms)
+ * is served with a null, having no tile to draw. A stored list always has a string; don't
+ * reach for the null on anything the client renders as a row.
  *
  * `ListId` is a string HERE ONLY and never reaches the client as one: the `lists` worker's
  * `serializeCuratedList` puts the digits back on the wire unquoted, because the client's
@@ -78,7 +83,7 @@ export interface CuratedList {
 	CreatorAccountId: number
 	Name: string
 	Description: string | null
-	ImageName: string
+	ImageName: string | null
 	Type: number
 	ItemIds: string[]
 	Accessibility?: number

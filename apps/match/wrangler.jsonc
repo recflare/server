@@ -7,12 +7,17 @@
 	// Shared `recflare` DB. Reads room scenes for matchmaking, writes a player's
 	// personal dorm room on first dorm entry (see getOrCreateDormRoom), and holds
 	// player presence (the `presence` table — owned/migrated by the `rooms` worker).
+	// This worker owns the `room_invite` table behind POST /invite (schema/migration
+	// here); its own migrations_table keeps that history separate from the other
+	// workers' migrations on the shared database.
 	// The "local" placeholder is replaced with the real id from RECFLARE_D1 at deploy time.
 	"d1_databases": [
 		{
 			"binding": "DB",
 			"database_name": "recflare",
-			"database_id": "local"
+			"database_id": "local",
+			"migrations_dir": "migrations",
+			"migrations_table": "d1_migrations_match"
 		}
 	],
 	// Per-player settings KV, owned by the `playersettings` worker. Read-only here, for
@@ -61,9 +66,10 @@
 			"head_sampling_rate": 1 // 100%
 		}
 	},
-	// The operator's knobs — the room substitutions (ROOM_REDIRECTS) and the Photon app ids
+	// The operator's knobs — the room substitutions (ROOM_REDIRECTS), the Photon app ids
 	// and region (PHOTON_REALTIME_APP_ID, PHOTON_VOICE_APP_ID, PHOTON_CHAT_APP_ID,
-	// PHOTON_REGION) — are deliberately NOT set here. They're injected at deploy time from
+	// PHOTON_REGION), and the Tachyon voice server (TACHYON_HOST_PORT, TACHYON_NAME) —
+	// are deliberately NOT set here. They're injected at deploy time from
 	// the gitignored .env (RECFLARE_<VAR>, see .env.example), so swapping a room out or
 	// pointing at your own Photon apps never means editing a versioned file. Unset — the
 	// default — means every matchmake enters the room it asked for, the Photon app ids are

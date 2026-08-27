@@ -36,7 +36,7 @@ export const EQUIPMENT_SCHEMA_DDL: string[] = [
  * inconsistency to tidy up: a drop is a flat record holding avatar, consumable and
  * equipment fields side by side, so it needs the prefix to disambiguate, while this
  * record is all equipment. Confirmed against the live endpoint, and the entries the
- * client PUTs back to `/api/equipment/v1/update` use the same unprefixed names.
+ * client sends back to `/api/equipment/v1/update` use the same unprefixed names.
  */
 export interface Equipment extends Record<string, unknown> {
 	ModificationGuid: string
@@ -46,7 +46,7 @@ export interface Equipment extends Record<string, unknown> {
 	Rarity: number
 	/** Always -1 (all platforms) — we don't gate equipment per platform. */
 	PlatformMask: number
-	/** Player-set favourite flag, toggled by `PUT /api/equipment/v1/update`. */
+	/** Player-set favourite flag, toggled by `PUT`/`POST /api/equipment/v1/update`. */
 	Favorited: boolean
 }
 
@@ -73,7 +73,7 @@ export async function grantEquipment(
 		.run()
 }
 
-/** One entry of the `PUT /api/equipment/v1/update` body. */
+/** One entry of the `PUT`/`POST /api/equipment/v1/update` body. */
 export interface EquipmentFavoriteUpdate {
 	ModificationGuid: string
 	Favorited: boolean

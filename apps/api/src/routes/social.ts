@@ -22,6 +22,7 @@ import { authedId, unauthorized } from '../http'
 import {
 	AckResponse,
 	AUTHED,
+	DeleteMessagesRequest,
 	ErrorResponse,
 	form,
 	FriendOnlineCountResponse,
@@ -623,6 +624,28 @@ export const socialRoutes = new Hono<App>({ strict: false })
 			responses: { 200: json(JsonArray, 'An empty list') },
 		}),
 		(c) => c.json([])
+	)
+	// The inbox's delete button. A POST rather than a DELETE because the ids arrive as
+	// a JSON array body — the client batches a multi-select into one call, and its HTTP
+	// layer only ever sends a body on POST/PUT.
+	.post(
+		'/api/messages/v3/delete',
+		describeRoute({
+			tags: ['Social'],
+			summary: 'Delete messages',
+			description:
+				'Drops the given messages from the caller’s inbox. Nothing happens: there is no ' +
+				'message store behind `GET /api/messages/v2/get` (the `MessageReceived` ' +
+				'notification is the whole delivery — see `POST /api/messages/v2/send`), so ' +
+				'there are no ids to match and nothing to remove.\n\n' +
+				'Accepted unconditionally and answered 200 with an empty body, which is what the ' +
+				'client wants: it removes the rows locally and re-reads the empty list either ' +
+				'way. Not auth-gated, for the same reason `GET /api/messages/v2/get` isn’t — ' +
+				'the call reaches no state to protect.',
+			requestBody: jsonBody(DeleteMessagesRequest, 'The messages to delete'),
+			responses: { 200: { description: 'Accepted (empty body)' } },
+		}),
+		(c) => c.body(null, 200)
 	)
 	// How many of the caller's friends are online — the friends panel's header count.
 	// Answered from the friend graph joined to live presence, so it agrees with the

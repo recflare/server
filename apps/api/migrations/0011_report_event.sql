@@ -15,6 +15,10 @@
 -- Partial index: event reports are a small minority of rows, so indexing only the ones
 -- that name an event keeps "reports against this event" off a full scan without paying
 -- for the NULLs.
+--
+-- SUPERSEDED by 0016_report_invention.sql, which DROPS that index: nothing ever queried
+-- `event_id`, so it only cost writes. Left here so an unmigrated database still applies
+-- the migrations in order and ends up in the same place.
 
 ALTER TABLE report ADD COLUMN event_id INTEGER;
 CREATE INDEX IF NOT EXISTS idx_report_event ON report (event_id) WHERE event_id IS NOT NULL;

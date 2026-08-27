@@ -1247,6 +1247,7 @@ describe('auth worker routes', () => {
 		expect([...documented].sort()).toEqual([
 			'GET /cachedlogin/forplatformid/{platform}/{id}',
 			'GET /eac/challenge',
+			'GET /oculus/nonce',
 			'GET /privileges/me/restrictions',
 			'GET /role/developer/{id}',
 			'GET /role/moderator/{id}',

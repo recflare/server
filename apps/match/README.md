@@ -123,11 +123,16 @@ substitutes the same as asking by id.
 | `JWT_SECRET`               | Secrets Store | Shared HS256 signing key (see the `auth` README)             |
 | `RECFLARE_PLAYER_SETTINGS` | KV            | The `playersettings` map — `/player/avoidjuniors`            |
 
-The `presence` and `room_instance` tables are owned/migrated by the `rooms` worker;
-this worker has no migrations of its own. The settings KV is owned by the
-`playersettings` worker; this worker touches exactly one key in it, the "avoid juniors"
-preference, and its write merges (as that worker's own PUT does) so the rest of the
-player's settings survive.
+The `presence` and `room_instance` tables are owned/migrated by the `rooms` worker. This
+worker owns one table of its own, `room_invite` (`migrations/0001_room_invite.sql`, applied
+under its own `d1_migrations_match` table so it doesn't clash with the other workers
+sharing the database): a row per game invite `POST /invite` sends, which is what gives the
+invite the `RoomInviteId` the response carries. Its `created_at` is epoch seconds, so old
+invites can be swept later.
+
+The settings KV is owned by the `playersettings` worker; this worker touches exactly one
+key in it, the "avoid juniors" preference, and its write merges (as that worker's own PUT
+does) so the rest of the player's settings survive.
 
 ## Known gaps
 

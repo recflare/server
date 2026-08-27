@@ -103,7 +103,7 @@ const app = new Hono<App>()
 	.get(
 		'/gameai/user/access',
 		describeRoute({
-			tags: ['Game AI'],
+			tags: ['Game AI', '2025'],
 			summary: 'May the caller use Game AI here?',
 			description: [
 				'Asked before the client offers any Game AI feature in a room. This server hosts no',
@@ -136,7 +136,7 @@ const app = new Hono<App>()
 	.get(
 		'/gameai/room/:roomId{[0-9]+}/spendsummary',
 		describeRoute({
-			tags: ['Game AI'],
+			tags: ['Game AI', '2025'],
 			summary: 'A room’s Game AI spend summary',
 			description: [
 				'What a room has spent of its Game AI budget. Refused with the same 200-plus-',
@@ -169,7 +169,7 @@ const app = new Hono<App>()
 	.get(
 		'/roomieai/user/access',
 		describeRoute({
-			tags: ['Roomie AI'],
+			tags: ['Roomie AI', '2025'],
 			summary: 'The caller’s Roomie AI energy budget',
 			description: [
 				'What Roomie may spend: an energy ceiling, what is left of it, and when it next',
@@ -209,7 +209,7 @@ const app = new Hono<App>()
 	.get(
 		'/roomieai/user/facts',
 		describeRoute({
-			tags: ['Roomie AI'],
+			tags: ['Roomie AI', '2025'],
 			summary: 'What Roomie knows about the caller',
 			description: [
 				'The memory Roomie is primed with: `UserContext`, a prose profile written from past',
@@ -247,7 +247,7 @@ const app = new Hono<App>()
 	.get(
 		'/makerai/user/access',
 		describeRoute({
-			tags: ['Maker AI'],
+			tags: ['Maker AI', '2025'],
 			summary: 'May the caller use Maker AI?',
 			description: [
 				'Asked before the client offers Maker AI. Always granted — the gate is about',
@@ -287,7 +287,7 @@ const app = new Hono<App>()
 	.get(
 		'/makerai/user/balances',
 		describeRoute({
-			tags: ['Maker AI'],
+			tags: ['Maker AI', '2025'],
 			summary: 'The caller’s Maker AI usage balances',
 			description: [
 				'What Maker AI has cost the caller. Live, these meter model usage in DOLLARS against',
@@ -331,7 +331,7 @@ const app = new Hono<App>()
 	.post(
 		'/realtime-session/create',
 		describeRoute({
-			tags: ['Roomie AI'],
+			tags: ['Roomie AI', '2025'],
 			summary: 'Open a realtime AI session',
 			description: [
 				'Posted when the player actually pulls out an assistant. Live, this mints a short-',

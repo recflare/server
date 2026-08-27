@@ -21,9 +21,9 @@ function unauthorized(c: Context<App>) {
 }
 
 /**
- * The notification categories `GET /config/categories` serves — a STUB standing in for the
- * real list until something here actually defines categories and stores preferences against
- * them.
+ * The notification categories `GET /config/categories` serves as its `Results` — a STUB
+ * standing in for the real list until something here actually defines categories and stores
+ * preferences against them.
  *
  * `CategoryId` is the client's own id for the category, `Importance` its ranking (0 being
  * the lowest observed), and `IsMuteable` whether the player may switch it off at all. The
@@ -74,9 +74,15 @@ const app = new Hono<App>()
 	})
 
 	// The notification categories a player can be shown toggles for — the "what may we notify
-	// you about" list. A bare array of PascalCase categories, no envelope. No auth: the list
-	// is server-side config, the same for every player, and a caller's own preferences are
-	// the per-account routes above.
+	// you about" list. A `{ Results, TotalResults }` PAGE of PascalCase categories, the same
+	// envelope the other paged reads on this server use — not the bare array this once
+	// served. No auth: the list is server-side config, the same for every player, and a
+	// caller's own preferences are the per-account routes above.
+	//
+	// `TotalResults` counts the whole list rather than the page, and there is only ever one
+	// page here — nothing pages a list this short — so it is the array's own length. Counting
+	// it rather than writing the number keeps the two from disagreeing when a category is
+	// added.
 	//
 	// STUB. Nothing here defines categories or stores a preference against one, so this is
 	// one hand-written entry standing in for the real list — the toggle it draws does
@@ -84,7 +90,10 @@ const app = new Hono<App>()
 	// the field the client renders, so the stub is visible in-game instead of looking like
 	// a real (and broken) setting. `Name` is left clean in case the client keys off it.
 	.get('/config/categories', async (c) => {
-		return c.json(NOTIFICATION_CATEGORIES)
+		return c.json({
+			Results: NOTIFICATION_CATEGORIES,
+			TotalResults: NOTIFICATION_CATEGORIES.length,
+		})
 	})
 
 	// The caller's CRM configuration — the campaign/messaging settings the client fetches on

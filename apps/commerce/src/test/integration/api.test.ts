@@ -43,6 +43,14 @@ describe('commerce endpoints', () => {
 		expect(skus[0]).toHaveProperty('skuId')
 	})
 
+	it('GET|POST /purchase/v1/cleanuppending returns []', async () => {
+		for (const method of ['GET', 'POST']) {
+			const res = await SELF.fetch(`${ORIGIN}/purchase/v1/cleanuppending`, { method })
+			expect(res.status).toBe(200)
+			expect(await res.json()).toEqual([])
+		}
+	})
+
 	it('GET /purchasecampaign/allcurrent/v2 returns []', async () => {
 		const res = await SELF.fetch(`${ORIGIN}/purchasecampaign/allcurrent/v2`)
 		expect(res.status).toBe(200)
@@ -78,9 +86,11 @@ describe('commerce endpoints', () => {
 		expect([...documented].sort()).toEqual([
 			'GET /',
 			'GET /api/catalog/v1/all',
+			'GET /purchase/v1/cleanuppending',
 			'GET /purchase/v1/hasspentmoney',
 			'GET /purchasecampaign/allcurrent/v2',
 			'GET /reminder/currentTokenBundles/v2',
+			'POST /purchase/v1/cleanuppending',
 			'POST /purchase/v1/initiatepurchase',
 		])
 

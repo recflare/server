@@ -4,12 +4,23 @@ import { describeRoute } from 'hono-openapi'
 import {
 	CURRENT_OUTFIT_SLOT,
 	getOutfit,
+	getOutfitsByAccounts,
 	inventionDescriptionRejection,
 	inventionNameRejection,
 	inventionTagRejection,
+	MAX_BULK_OUTFIT_ACCOUNTS,
 	setOutfit,
 } from '@repo/domain'
 
+import {
+	createCustomAvatarItem,
+	deleteCustomAvatarItem,
+	getCustomAvatarItem,
+	listCustomAvatarItemsByCreator,
+	listFeaturedCustomAvatarItems,
+	listHotCustomAvatarItems,
+	updateCustomAvatarItem,
+} from '../custom-avatar-items-db'
 import { authedId, unauthorized } from '../http'
 import {
 	createInvention,
@@ -34,7 +45,11 @@ import {
 import {
 	AUTHED,
 	BareBoolean,
+	BareInteger,
 	BulkCustomAvatarItemsRequest,
+	CreateCustomAvatarItemRequest,
+	CustomAvatarItemList,
+	CustomAvatarItemResponse,
 	CustomAvatarItemsPage,
 	ErrorResponse,
 	form,
@@ -45,25 +60,33 @@ import {
 	InventionDetails,
 	InventionDto,
 	InventionPersonalDetails,
+	InventionReportRequest,
 	InventionSaveResult,
 	InventionVersionDto,
 	json,
 	JsonArray,
 	jsonBody,
 	LegacyAvatarItemSaves,
+	OPTIONAL_AUTHED,
 	OutfitSaveResponse,
+	OutfitsBulkRequest,
+	OutfitsBulkResponse,
 	OutfitsMeRequest,
 	OutfitsMeResponse,
 	pageParams,
 	SaveInventionRequest,
 	SetTagsRequest,
 	SetTagsResponse,
+	stringParam,
 	stringQuery,
+	SuccessErrorEnvelope,
 	SuccessValueEnvelope,
 	TagFilters,
 	UNAUTHORIZED_RESPONSE,
+	UpdateCustomAvatarItemRequest,
 	UpdatePriceRequest,
 } from '../openapi'
+import { createReport } from '../reports-db'
 
 import type { Context } from 'hono'
 import type { App } from '../context'
@@ -223,29 +246,225 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 		}),
 		(c) => c.json(true)
 	)
+	.get(
+		'/api/customAvatarItems/v1/minPriceForPublicItem',
+		describeRoute({
+			tags: ['Avatar'],
+			summary: 'Minimum token price for a public custom item',
+			description:
+				'The floor the creation UI enforces when listing a custom item publicly. A fixed `100`.',
+			responses: { 200: json(BareInteger, 'A bare `100`') },
+		}),
+		(c) => c.json(100)
+	)
+	.post(
+		'/api/customAvatarItems/v1',
+		describeRoute({
+			tags: ['Avatar'],
+			summary: 'Create a custom avatar item',
+			description:
+				'Multipart: a `metadata` JSON text field plus two file parts, `thumbnailImage` ' +
+				'(PNG) and `design` (the design blob). Inserts a `custom_avatar_item` row owned ' +
+				'by the caller and answers with it in the PascalCase `{ Value, Success, Error, ' +
+				'error_id }` envelope.\n\n' +
+				'The two files go to the shared image bucket (`recflare-img`) under ' +
+				'`avatar-item/<date>/<id>-thumb.png` and `avatar-item/<date>/<id>-design.png`; those ' +
+				'keys are the `ThumbnailImageFilename` / `DesignFilename` on the row.',
+			security: AUTHED,
+			requestBody: form(CreateCustomAvatarItemRequest, 'The metadata and the two files'),
+			responses: {
+				200: json(CustomAvatarItemResponse, 'The created item'),
+				400: json(CustomAvatarItemResponse, 'Missing or malformed metadata / files'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
 
-	// The featured custom-avatar-item feed. No curated items yet → an empty list.
+			const fail = (message: string) =>
+				c.json({ Value: null, Success: false, Error: message, error_id: null }, 400)
+
+			const body = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>)
+			if (typeof body.metadata !== 'string') return fail('metadata is required')
+			let meta: Record<string, unknown>
+			try {
+				const parsed: unknown = JSON.parse(body.metadata)
+				if (!parsed || typeof parsed !== 'object') return fail('metadata must be a JSON object')
+				meta = parsed as Record<string, unknown>
+			} catch {
+				return fail('metadata is not valid JSON')
+			}
+			if (typeof meta.Name !== 'string' || meta.Name.trim() === '') return fail('Name is required')
+			if (typeof meta.BaseAvatarItemId !== 'number') return fail('BaseAvatarItemId is required')
+			if (typeof meta.BaseAvatarItemColor !== 'string')
+				return fail('BaseAvatarItemColor is required')
+			if (!(body.thumbnailImage instanceof File)) return fail('thumbnailImage is required')
+			if (!(body.design instanceof File)) return fail('design is required')
+
+			// Both files go to the shared image bucket, foldered by upload date and keyed by
+			// the item's id (chosen here so the keys can carry it). The `img` worker serves
+			// them back by key.
+			const customAvatarItemId = crypto.randomUUID()
+			const prefix = `avatar-item/${new Date().toISOString().slice(0, 10)}/${customAvatarItemId}`
+			const thumbnailImageFilename = `${prefix}-thumb.png`
+			const designFilename = `${prefix}-design.png`
+			await Promise.all([
+				c.env.IMAGES.put(thumbnailImageFilename, await body.thumbnailImage.arrayBuffer(), {
+					httpMetadata: { contentType: body.thumbnailImage.type || 'image/png' },
+				}),
+				c.env.IMAGES.put(designFilename, await body.design.arrayBuffer(), {
+					httpMetadata: { contentType: body.design.type || 'image/png' },
+				}),
+			])
+
+			const item = await createCustomAvatarItem(c.env.DB, {
+				customAvatarItemId,
+				creatorAccountId: id,
+				name: meta.Name,
+				description: typeof meta.Description === 'string' ? meta.Description : '',
+				price: typeof meta.Price === 'number' ? meta.Price : 0,
+				baseAvatarItemId: meta.BaseAvatarItemId,
+				baseAvatarItemColor: meta.BaseAvatarItemColor,
+				accessibility: typeof meta.Accessibility === 'number' ? meta.Accessibility : 0,
+				designFilename,
+				thumbnailImageFilename,
+			})
+			return c.json({ Value: item, Success: true, Error: null, error_id: null })
+		}
+	)
+	.put(
+		'/api/customAvatarItems/v1/:id{[0-9a-fA-F-]{36}}',
+		describeRoute({
+			tags: ['Avatar'],
+			summary: 'Edit a custom avatar item',
+			description:
+				'A partial edit of `Name`, `Description`, `Price` and `Accessibility` — the client ' +
+				'sends every field and nulls the ones it is not changing, so null means "leave ' +
+				'alone". Only the creator may edit. `ModifiedAt` is bumped. Answers the updated ' +
+				'item in the same `{ Value, Success, Error, error_id }` envelope as the create.',
+			security: AUTHED,
+			parameters: [stringParam('id', 'The `CustomAvatarItemId`')],
+			requestBody: jsonBody(UpdateCustomAvatarItemRequest, 'The fields to change'),
+			responses: {
+				200: json(CustomAvatarItemResponse, 'The updated item'),
+				400: json(CustomAvatarItemResponse, 'Malformed body'),
+				401: UNAUTHORIZED_RESPONSE,
+				403: json(CustomAvatarItemResponse, 'Not the creator'),
+				404: json(CustomAvatarItemResponse, 'No such item'),
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+			const fail = (status: 400 | 403 | 404, message: string) =>
+				c.json({ Value: null, Success: false, Error: message, error_id: null }, status)
+
+			const itemId = c.req.param('id')
+			const existing = await getCustomAvatarItem(c.env.DB, itemId)
+			if (!existing) return fail(404, 'No such item')
+			if (existing.CreatorAccountId !== id) return fail(403, 'Not your item')
+
+			const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+			if (!body) return fail(400, 'A JSON body is required')
+			const str = (v: unknown, field: string): string | null | undefined => {
+				if (v === null || v === undefined) return null
+				if (typeof v !== 'string') throw new TypeError(`${field} must be a string`)
+				return v
+			}
+			const int = (v: unknown, field: string): number | null => {
+				if (v === null || v === undefined) return null
+				if (typeof v !== 'number' || !Number.isInteger(v))
+					throw new TypeError(`${field} must be an integer`)
+				return v
+			}
+			let patch
+			try {
+				patch = {
+					name: str(body.Name, 'Name'),
+					description: str(body.Description, 'Description'),
+					price: int(body.Price, 'Price'),
+					accessibility: int(body.Accessibility, 'Accessibility'),
+				}
+			} catch (e) {
+				return fail(400, (e as Error).message)
+			}
+			if (patch.name !== null && patch.name?.trim() === '')
+				return fail(400, 'Name must not be blank')
+
+			const item = await updateCustomAvatarItem(c.env.DB, itemId, patch)
+			if (!item) return fail(404, 'No such item')
+			return c.json({ Value: item, Success: true, Error: null, error_id: null })
+		}
+	)
+	.delete(
+		'/api/customAvatarItems/v1/:id{[0-9a-fA-F-]{36}}',
+		describeRoute({
+			tags: ['Avatar'],
+			summary: 'Delete a custom avatar item',
+			description:
+				'Removes the item and its two bucket objects (thumbnail and design). Only the ' +
+				'creator may delete. Answers the deleted item in the `{ Value, Success, Error, ' +
+				'error_id }` envelope.',
+			security: AUTHED,
+			parameters: [stringParam('id', 'The `CustomAvatarItemId`')],
+			responses: {
+				200: json(CustomAvatarItemResponse, 'The deleted item'),
+				401: UNAUTHORIZED_RESPONSE,
+				403: json(CustomAvatarItemResponse, 'Not the creator'),
+				404: json(CustomAvatarItemResponse, 'No such item'),
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+			const fail = (status: 403 | 404, message: string) =>
+				c.json({ Value: null, Success: false, Error: message, error_id: null }, status)
+
+			const itemId = c.req.param('id')
+			const existing = await getCustomAvatarItem(c.env.DB, itemId)
+			if (!existing) return fail(404, 'No such item')
+			if (existing.CreatorAccountId !== id) return fail(403, 'Not your item')
+
+			const item = await deleteCustomAvatarItem(c.env.DB, itemId)
+			if (!item) return fail(404, 'No such item')
+			// The row is gone; the objects follow. A missing key is a no-op for R2.
+			await c.env.IMAGES.delete([item.ThumbnailImageFilename, item.DesignFilename])
+			return c.json({ Value: item, Success: true, Error: null, error_id: null })
+		}
+	)
+
+	// The featured custom-avatar-item feed: flagged (`is_featured`) AND published
+	// (`Accessibility` != 0) items from the `custom_avatar_item` table.
 	.get(
 		'/api/customAvatarItems/v1/featured',
 		describeRoute({
 			tags: ['Avatar'],
 			summary: 'Featured custom avatar items',
-			description: 'The curated feed. Nothing is curated yet, so it is empty.',
-			responses: { 200: json(JsonArray, 'An empty list') },
+			description:
+				'The curated feed: items with `IsFeatured` set that are also published ' +
+				'(`Accessibility` 0 is unpublished and is excluded even when flagged), newest first, ' +
+				'up to 50. Nothing sets the flag yet, so it stays empty until an operator does.',
+			responses: { 200: json(CustomAvatarItemList, 'The items, newest first') },
 		}),
-		(c) => c.json([])
+		async (c) => c.json(await listFeaturedCustomAvatarItems(c.env.DB))
 	)
 
-	// The "hot" (trending) custom-avatar-item feed. No items yet → an empty list.
+	// The "hot" (trending) custom-avatar-item feed: every published (`Accessibility` != 0)
+	// item from the `custom_avatar_item` table. There is nothing to rank a trend from yet,
+	// so it is the accessible items, newest first.
 	.get(
 		'/api/customAvatarItems/v1/hot',
 		describeRoute({
 			tags: ['Avatar'],
 			summary: 'Trending custom avatar items',
-			description: 'The “hot” feed. No custom items exist yet, so it is empty.',
-			responses: { 200: json(JsonArray, 'An empty list') },
+			description:
+				'The “hot” feed: the published items (`Accessibility` 0 is unpublished and is left ' +
+				'out), newest first, up to 50. No purchase or wear counts are recorded, so there is ' +
+				'no trend to rank by and recency stands in for one.',
+			responses: { 200: json(CustomAvatarItemList, 'The items, newest first') },
 		}),
-		(c) => c.json([])
+		async (c) => c.json(await listHotCustomAvatarItems(c.env.DB))
 	)
 
 	// A batch lookup of custom avatar items by id. The reference filters a static catalog
@@ -284,20 +503,29 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 		}
 	)
 
-	// Custom avatar items created by a given account. No storage yet → an empty
-	// paginated result (matches the econ `customAvatarItems/v1/owned` shape).
+	// Custom avatar items created by a given account, from the `custom_avatar_item` table,
+	// in the paginated shape (matches the econ `customAvatarItems/v1/owned` shape). Auth is
+	// optional: the creator themselves also sees their unpublished (`Accessibility` 0) items.
 	.get(
 		'/api/customAvatarItems/v2/fromCreator/:accountId{[0-9]+}',
 		describeRoute({
 			tags: ['Avatar'],
 			summary: 'A creator’s custom avatar items',
 			description:
-				'The items an account has authored. Nothing stores custom items yet, so this is an ' +
-				'empty page — in the same shape as the `econ` worker’s `customAvatarItems/v1/owned`.',
+				'The items an account has authored, newest first, in the same page shape as the ' +
+				'`econ` worker’s `customAvatarItems/v1/owned`. Published items only — unless the ' +
+				'bearer token is the creator’s, in which case their unpublished (`Accessibility` 0) ' +
+				'items are included too. Paging is not applied (the client sends none), so ' +
+				'`TotalResults` is the length of `Results`.',
+			security: OPTIONAL_AUTHED,
 			parameters: [idParam('accountId', 'Creator account id')],
-			responses: { 200: json(CustomAvatarItemsPage, 'An empty page') },
+			responses: { 200: json(CustomAvatarItemsPage, 'The creator’s items') },
 		}),
-		(c) => c.json({ Results: [], TotalResults: 0 })
+		async (c) => {
+			const accountId = Number.parseInt(c.req.param('accountId'), 10)
+			const viewer = await authedId(c)
+			return c.json(await listCustomAvatarItemsByCreator(c.env.DB, accountId, viewer === accountId))
+		}
 	)
 
 	// The client asks which legacy avatar items have been rebuilt as custom items, so it
@@ -327,15 +555,16 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 	.get(
 		'/outfits/me',
 		describeRoute({
-			tags: ['Avatar'],
+			tags: ['Avatar', '2025'],
 			summary: 'The caller’s outfit',
 			description:
 				'The newer outfit read, on a bare un-prefixed path. Served from slot 0 of the shared ' +
 				'`outfit` table — the newer client treats slot 0 as the outfit currently worn — and ' +
 				'handed back exactly as it was saved, since the payload’s heavy fields are the ' +
 				'client’s own JSON-in-a-string documents.\n\n' +
-				'A player who has never saved gets the brand-new-account envelope: all-null ' +
-				'`LegacyData`, no `Selections`, `DataVersion` 9.',
+				'A player who has never saved gets the brand-new-account envelope, which is a ' +
+				'different, flatter shape than a stored outfit: the four empty-string fields ' +
+				'`FaceFeatures`, `HairColor`, `OutfitSelections` and `SkinColor`, and nothing else.',
 			security: AUTHED,
 			responses: {
 				200: json(OutfitsMeResponse, 'The stored outfit, or the empty envelope'),
@@ -350,20 +579,10 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 			if (outfit !== null) return c.json(outfit)
 
 			return c.json({
-				LegacyData: {
-					SelectionsV1: null,
-					SelectionsV2: null,
-					FaceFeatures: null,
-					SkinColor: null,
-					HairColor: null,
-				},
-				Selections: [],
-				DataVersion: 9,
-				CustomizationSettings: null,
-				ThumbnailFileName: null,
-				Name: null,
-				Accessibility: 0,
-				Slot: 0,
+				FaceFeatures: '',
+				HairColor: '',
+				OutfitSelections: '',
+				SkinColor: '',
 			})
 		}
 	)
@@ -379,7 +598,7 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 	.put(
 		'/outfits/me',
 		describeRoute({
-			tags: ['Avatar'],
+			tags: ['Avatar', '2025'],
 			summary: 'Save the caller’s outfit',
 			description:
 				'Saves into the shared `outfit` table, in the slot the body names — slot 0 being the ' +
@@ -415,6 +634,68 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 		}
 	)
 
+	// Several players' worn outfits at once — what the client calls to dress everyone in a
+	// room rather than asking per player. POST because the account list rides in the body.
+	//
+	// The answer is a MAP keyed by account id, not a list: the client looks each player up by
+	// id, and a list would make it match up the order itself. An account with nothing saved is
+	// left out of the map — see `getOutfitsByAccounts`.
+	//
+	// `UnityAssetTarget` / `UnityAssetVersion` name the baked-asset build the client would
+	// like the outfits for. Nothing here bakes assets, so both are accepted and ignored.
+	.post(
+		'/outfits/bulk',
+		describeRoute({
+			tags: ['Avatar'],
+			summary: 'Several players’ outfits',
+			description:
+				'The worn outfit (slot 0) of each account in `AccountIds`, keyed by account id — the ' +
+				'call the client makes to dress a room full of players in one request.\n\n' +
+				'A MAP rather than a list: the client looks each player up by id. The key is the id ' +
+				'as a string, and the value is the same stored outfit `GET /outfits/me` serves, ' +
+				'handed back exactly as it was saved. An account with nothing saved in slot 0 is ' +
+				'ABSENT from the map rather than carrying a null — a map says “no outfit” by not ' +
+				'having the key, and inventing one for a player who has never saved would dress them ' +
+				'in something they never chose.\n\n' +
+				'Repeated ids collapse, and at most 99 distinct accounts may be named — one query, ' +
+				'one round trip, and a room holds nothing like that many players. A longer list is ' +
+				'a 400 rather than a partial answer, which would read as “those players have no ' +
+				'outfit”. `UnityAssetTarget` / `UnityAssetVersion` name a baked-asset build and are ' +
+				'accepted and ignored: nothing here bakes assets.',
+			security: AUTHED,
+			requestBody: jsonBody(OutfitsBulkRequest, 'The accounts whose outfits are wanted'),
+			responses: {
+				200: json(OutfitsBulkResponse, 'The outfits that exist, keyed by account id'),
+				400: json(ErrorResponse, 'Unparseable body, or more than 99 accounts'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+			if (body === null) return c.json({ error: 'Invalid request body' }, 400)
+
+			// Only the integers survive: the field is the client's, and a malformed entry is
+			// dropped rather than turned into a NaN lookup that can never match a row.
+			const accountIds = Array.isArray(body.AccountIds)
+				? body.AccountIds.filter((v): v is number => Number.isInteger(v))
+				: []
+			// One query, one round trip — so the list has to fit D1's parameter cap. A room
+			// holds nothing like this many players; a longer list is refused rather than
+			// quietly answered in part, which would look like those accounts have no outfit.
+			if (new Set(accountIds).size > MAX_BULK_OUTFIT_ACCOUNTS) {
+				return c.json({ error: `At most ${MAX_BULK_OUTFIT_ACCOUNTS} accounts per request` }, 400)
+			}
+
+			const outfits = await getOutfitsByAccounts(c.env.DB, accountIds, CURRENT_OUTFIT_SLOT)
+			const OutfitsByAccountId: Record<string, unknown> = {}
+			for (const [accountId, outfit] of outfits) OutfitsByAccountId[String(accountId)] = outfit
+			return c.json({ OutfitsByAccountId })
+		}
+	)
+
 	// The caller's outfit wardrobe. An empty list for now — the outfits saved through
 	// `PUT /outfits/me` are in the shared `outfit` table already, but which of them
 	// belong in this list (and in what shape) has not been pinned down, so it answers []
@@ -422,7 +703,7 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 	.get(
 		'/outfits/me/saved',
 		describeRoute({
-			tags: ['Avatar'],
+			tags: ['Avatar', '2025'],
 			summary: 'The caller’s saved outfits',
 			description:
 				'The wardrobe behind the newer outfit screen. Empty for now: the outfits saved ' +
@@ -927,6 +1208,19 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 		}
 	)
 
+	// The featured dorm-skin feed (inventions that reskin the dorm). Nothing curates these
+	// yet → an empty list, so the client's shelf renders empty rather than 404ing.
+	.get(
+		'/api/inventions/v1/featureddormskins',
+		describeRoute({
+			tags: ['Inventions'],
+			summary: 'The featured dorm-skin feed',
+			description: 'Curated dorm-skin inventions. Nothing is curated yet, so it is empty.',
+			responses: { 200: json(JsonArray, 'An empty list') },
+		}),
+		(c) => c.json([])
+	)
+
 	// Inventions by particular creators (`?id=207&id=…`) — what the client fills a creator's
 	// shelf, and the "from creators you follow" row, from.
 	//
@@ -1004,6 +1298,70 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
 			return c.json(await getMyInventions(c.env.DB, id))
+		}
+	)
+
+	// Report an invention. Stored in the `report` table the player and event reports use —
+	// same fields, same moderation life — with `invention_id` set. See
+	// migrations/0016_report_invention.sql.
+	.post(
+		'/api/inventions/v1/report',
+		describeRoute({
+			tags: ['Inventions', 'Moderation'],
+			summary: 'Report an invention',
+			description:
+				'Files a report against an invention. Stored as a row in the same `report` table a ' +
+				'player report goes to (`POST /api/PlayerReporting/v3/create`) and an event report ' +
+				'(`POST /api/playerevents/v1/report`) — it is the same submission with the same ' +
+				'moderation life, and a moderator converts any of them into a ban the same way. ' +
+				'What marks it as an invention report is `invention_id`; the row’s ' +
+				'`reported_player_id` is the invention’s CREATOR — who a moderator would act ' +
+				'against — read from the invention rather than sent by the client. Nothing fills ' +
+				'`room_id`: an invention isn’t tied to one room the way an event is.\n\n' +
+				'The reporter is the caller (from the bearer token), never a body field. ' +
+				'`ReportCategory` is stored verbatim — the enum is not mapped here. Nothing ' +
+				'dedupes the rows: reporting the same invention twice files two reports, and ' +
+				'reporting your own is allowed rather than being a special case.\n\n' +
+				'Answers the same `{ success, error }` envelope as the event report, `error` being ' +
+				'an empty string rather than null, on the rejected branches too so there is only ' +
+				'one shape to parse.',
+			security: AUTHED,
+			requestBody: jsonBody(InventionReportRequest, 'The report'),
+			responses: {
+				200: json(SuccessErrorEnvelope, '`{ success: true, error: "" }`'),
+				400: json(SuccessErrorEnvelope, 'No usable `InventionId` in the body'),
+				401: UNAUTHORIZED_RESPONSE,
+				404: json(SuccessErrorEnvelope, 'No such invention'),
+			},
+		}),
+		async (c) => {
+			const reporterId = await authedId(c)
+			if (reporterId === null) return unauthorized(c)
+
+			const body = await c.req
+				.json<{ InventionId?: unknown; ReportCategory?: unknown; Details?: unknown }>()
+				.catch(() => ({}) as Record<string, unknown>)
+			const inventionId = Number(body.InventionId)
+			if (!Number.isInteger(inventionId)) {
+				return c.json({ success: false, error: 'InventionId is required' }, 400)
+			}
+
+			// The invention supplies the reported player. An unknown invention is refused rather
+			// than filed against nobody: the row's reported player has to be someone, and a
+			// report naming an invention that never existed isn't actionable.
+			const invention = await getInventionById(c.env.DB, inventionId)
+			if (invention === null) return c.json({ success: false, error: 'No such invention' }, 404)
+
+			const category = Number(body.ReportCategory)
+			await createReport(c.env.DB, {
+				reporterPlayerId: reporterId,
+				reportedPlayerId: invention.CreatorPlayerId,
+				reportCategory: Number.isInteger(category) ? category : 0,
+				details: typeof body.Details === 'string' ? body.Details : null,
+				inventionId,
+			})
+
+			return c.json({ success: true, error: '' })
 		}
 	)
 

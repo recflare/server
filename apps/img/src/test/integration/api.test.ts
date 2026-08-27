@@ -344,6 +344,45 @@ describe('img endpoints', () => {
 		expect(size.height).toBe(256)
 	})
 
+	it('keeps a PNG source as PNG when resizing, alpha intact', async () => {
+		// A 64×64 RGBA PNG: left half opaque red, right half fully transparent. Built
+		// through Photon so the bytes are a real PNG with an alpha channel.
+		const side = 64
+		const rgba = new Uint8Array(side * side * 4)
+		for (let y = 0; y < side; y++) {
+			for (let x = 0; x < side; x++) {
+				const i = (y * side + x) * 4
+				rgba[i] = 255
+				rgba[i + 3] = x < side / 2 ? 255 : 0
+			}
+		}
+		const src = new PhotonImage(rgba, side, side)
+		const pngBytes = src.get_bytes()
+		src.free()
+		// Stored under a `.bin` name with a claimed PNG type, like a custom avatar item's
+		// design; the codec must go by the bytes, not the name.
+		await env.IMAGES.put('avatar-item/2026-08-26/abc-design.bin', pngBytes, {
+			httpMetadata: { contentType: 'image/png' },
+		})
+
+		const res = await SELF.fetch(`${ORIGIN}/avatar-item/2026-08-26/abc-design.bin?width=128`)
+		expect(res.status).toBe(200)
+		expect(res.headers.get('content-type')).toBe('image/png')
+		expect(res.headers.get('etag')).toBeNull()
+
+		const out = PhotonImage.new_from_byteslice(new Uint8Array(await res.arrayBuffer()))
+		try {
+			expect(out.get_width()).toBe(128)
+			const px = out.get_raw_pixels()
+			const alphaAt = (x: number, y: number) => px[(y * 128 + x) * 4 + 3]
+			// Deep inside each half, away from the Lanczos edge: opaque left, transparent right.
+			expect(alphaAt(16, 64)).toBe(255)
+			expect(alphaAt(112, 64)).toBe(0)
+		} finally {
+			out.free()
+		}
+	})
+
 	it('crops to a square at native size with ?cropSquare=1 alone', async () => {
 		const full = jpegSize(
 			new Uint8Array(await (await SELF.fetch(`${ORIGIN}/RecCenter.jpg`)).arrayBuffer())

@@ -31,6 +31,7 @@ export const DOCUMENTED_SERVICES: ReadonlyArray<{ slug: string; title: string }>
 	{ slug: 'playersettings', title: 'playersettings — per-player settings' },
 	{ slug: 'roomcomments', title: 'roomcomments — notes pinned in a room' },
 	{ slug: 'discovery', title: 'discovery — discovery page layouts' },
+	{ slug: 'lists', title: 'lists — curated & algorithmic lists' },
 	{ slug: 'leaderboard', title: 'leaderboard — room score boards' },
 	{ slug: 'ai', title: 'ai — game AI access' },
 	{ slug: 'api', title: 'api — everything else' },

@@ -283,14 +283,37 @@ function censorContents(contents: string): string {
 }
 
 /**
+ * A stored message in the PascalCase shape the client's SendMessage handler reads back, as
+ * distinct from the camelCase {@link ChatMessage} the thread payloads carry. Same six
+ * fields; the client reads them in two places under two spellings.
+ *
+ * `Contents` goes out exactly as stored, which is what makes the envelope discipline matter:
+ * the client parses it into `MessageJson` in a post-deserialize hook, and anything that
+ * isn't an escaped `{ Type, Version, Data }` with a non-null `Data` leaves that null. The
+ * hook only logs, so the client then throws on the null instead of showing the message.
+ */
+function toSentChatMessage(message: ChatMessage) {
+	return {
+		ChatMessageId: message.chatMessageId,
+		ChatThreadId: message.chatThreadId,
+		SenderPlayerId: message.senderPlayerId,
+		TimeSent: message.timeSent,
+		Contents: message.contents,
+		ModerationState: message.moderationState,
+	}
+}
+
+/**
  * Send a message to a thread that already exists — every message after the one that
  * opened the conversation. `/thread/18` is what the client posts; `/thread/18/message` is
  * the same call under the reference's other spelling, so both routes land here.
  *
- * Answers `{chatResult, chatThread}` — the whole thread with its messages, not just the
- * message that was sent, so the client re-renders the conversation from one response.
- * Blank or missing contents stores nothing and reports invalid-arguments, still with the
- * thread attached, rather than an error status.
+ * Answers the message just posted (`ChatMessage`/`ChatResult`, which is what the client's
+ * own send handler reads) AND the whole thread with its messages (`chatResult`/`chatThread`,
+ * which the conversation re-renders from). Blank or missing contents stores nothing and
+ * reports invalid-arguments, still with the thread attached, rather than an error status —
+ * and with a NULL `ChatMessage`, which is safe because the client only dereferences it on
+ * result 0.
  */
 async function sendToThread(c: Context<App>) {
 	const id = await authedId(c)
@@ -320,8 +343,16 @@ async function sendToThread(c: Context<App>) {
 	}
 
 	const thread = await threadWithMessages(c, chatThreadId, id, DEFAULT_THREAD_MESSAGE_COUNT)
+	const chatResult = posted === null ? CHAT_INVALID_ARGUMENTS : CHAT_SUCCESS
+	// Both spellings, because the client reads this response in two places. Its SendMessage
+	// handler dereferences `ChatMessage` the moment `ChatResult` is 0, so a success answered
+	// without one throws inside the client — the lowercase pair alone left that null. The
+	// thread stays for the conversation re-render. One value, serialized twice, so the two
+	// result keys can never disagree.
 	return c.json({
-		chatResult: posted === null ? CHAT_INVALID_ARGUMENTS : CHAT_SUCCESS,
+		ChatMessage: posted === null ? null : toSentChatMessage(posted),
+		ChatResult: chatResult,
+		chatResult,
 		chatThread: thread,
 	})
 }
@@ -449,9 +480,15 @@ function sendToThreadRoute(spelling: string) {
 		tags: ['Messages'],
 		summary: `Send a message to an existing thread (${spelling})`,
 		description: [
-			'Every message after the one that opened the conversation. Answers',
-			'`{ chatResult, chatThread }` — the WHOLE thread with its messages, not just the message',
-			'that was sent, so the client re-renders the conversation from one response. The envelope’s',
+			'Every message after the one that opened the conversation. Answers FOUR keys in two',
+			'spellings: `ChatMessage`/`ChatResult`, which is what the client’s own send handler reads',
+			'— it dereferences `ChatMessage` as soon as `ChatResult` is 0, so a success without one',
+			'throws inside the client — plus `chatResult`/`chatThread`, the WHOLE thread with its',
+			'messages, which the conversation re-renders from. The two result keys are one value',
+			'serialized twice. `ChatMessage.Contents` is the stored envelope verbatim, and it MUST',
+			'parse to `{ Type, Version, Data }` with a non-null `Data`: the client parses it into',
+			'`MessageJson` in a post-deserialize hook that only logs on failure, then dereferences the',
+			'null. The envelope’s',
 			'`Data` goes through the same profanity filter `api`’s `POST /api/sanitize/v1` runs, masked',
 			'one `*` per character; every other field is stored as sent. Blank or',
 			'missing `messageContents` stores nothing and reports invalid-arguments (1), still with',

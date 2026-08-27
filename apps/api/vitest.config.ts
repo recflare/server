@@ -25,6 +25,11 @@ export default defineConfig({
 						// worker pushed (type + payload). GET the DO for the most recent one,
 						// GET /all for the whole list (friend-graph changes notify both players),
 						// DELETE to reset it between assertions.
+						//
+						// notifyPlayersEphemeral lands in the same list, tagged `ephemeral` and
+						// carrying `playerIds` rather than `playerId` — the two sends differ in
+						// whether an offline recipient gets the frame later, which is a thing worth
+						// asserting (a cheer's effect is broadcast to a room this way).
 						script: `
 							import { DurableObject } from 'cloudflare:workers'
 							export class NotificationsHub extends DurableObject {
@@ -32,6 +37,10 @@ export default defineConfig({
 								async notifyPlayer(playerId, notificationType, data) {
 									this.sent.push({ playerId, notificationType, data })
 									return { delivered: 0, queued: true }
+								}
+								async notifyPlayersEphemeral(playerIds, notificationType, data) {
+									this.sent.push({ playerIds, ephemeral: true, notificationType, data })
+									return { delivered: 0 }
 								}
 								async broadcast() { return { delivered: 0 } }
 								async fetch(request) {

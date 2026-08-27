@@ -176,6 +176,31 @@ export async function countPlayersInInstance(
 }
 
 /**
+ * WHO is standing in a room instance right now — the sibling of
+ * {@link countPlayersInInstance}, for when the answer has to be addressed rather than
+ * counted. The fan-out set for anything that happens in front of a room: a cheer plays its
+ * effect on every client in the instance, not just the two players involved.
+ *
+ * Reads only unexpired presence, so it is the LIVE occupancy — a player who crashed out
+ * drops off it when their row lapses. Ordered by account id for a stable result.
+ */
+export async function getPlayerIdsInInstance(
+	db: D1Database,
+	roomInstanceId: number,
+	now = nowSeconds()
+): Promise<number[]> {
+	const { results } = await db
+		.prepare(
+			`SELECT account_id AS accountId FROM presence
+			 WHERE room_instance_id = ?1 AND expires_at > ?2
+			 ORDER BY account_id`
+		)
+		.bind(roomInstanceId, now)
+		.all<{ accountId: number }>()
+	return results.map((r) => r.accountId)
+}
+
+/**
  * How many players are online right now, anywhere — one row per account, so this is
  * the player count a status page means. Counts unexpired presence only: rows outlive
  * the player by up to the TTL until the sweep purges them, and reads elsewhere ignore

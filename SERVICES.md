@@ -40,7 +40,7 @@ apex/`ns` host and isn't listed within it. Each implemented worker has its own
 | GameLogs              | `gamelogs`              | —                       | Not yet implemented                                                   |
 | Geo                   | `geo`                   | —                       | Not yet implemented                                                   |
 | Images                | `img`                   | `img`                   | Image storage & signed delivery (R2)                                  |
-| Leaderboard           | `leaderboard`           | `leaderboard`           | Stub — deploys and answers, no leaderboard endpoints yet              |
+| Leaderboard           | `leaderboard`           | `leaderboard`           | Per-room stat leaderboards, one board per stat channel (D1)           |
 | Link                  | `link`                  | `link`                  | Stub — deploys and answers, no link endpoints yet                     |
 | Lists                 | `lists`                 | `lists`                 | Curated & algorithmic discovery lists (canned — nothing ranks yet)    |
 | Matchmaking           | `match`                 | `match`                 | Matchmaking & per-player presence (D1, KV)                            |

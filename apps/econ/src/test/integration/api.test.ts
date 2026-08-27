@@ -15,13 +15,14 @@ import {
 
 // The `invention` table belongs to the `api` worker; buyInvention reads it, so its DDL
 // is built here too (see the same cross-worker import in econ.app.ts).
+import {
+	createCustomAvatarItem,
+	SCHEMA_DDL as CUSTOM_AVATAR_ITEM_SCHEMA_DDL,
+} from '../../../../api/src/custom-avatar-items-db'
 import { SCHEMA_DDL as INVENTION_SCHEMA_DDL } from '../../../../api/src/inventions-db'
 // The notification-type ids the hub carries, from the worker that owns them — asserting
 // against the enum rather than a copied number is what keeps these frames honest.
 import { NotificationType } from '../../../../notify/src/notification-types'
-// The live weekly rotation, so the challenge tests exercise whatever it currently holds
-// instead of hard-coded ids from a rotation that has since been replaced.
-import weeklyChallenge from '../../../static/weekly-challenge.json'
 import { SCHEMA_DDL } from '../../avatar-db'
 import {
 	BALANCE_SCHEMA_DDL,
@@ -31,6 +32,10 @@ import {
 	spendCurrency,
 } from '../../balance-db'
 import { CHALLENGE_GIFT_SCHEMA_DDL, CHALLENGE_STATUS_SCHEMA_DDL } from '../../challenge-db'
+// The live weekly rotation, generated the same way the worker generates it, so the challenge
+// tests exercise whatever this week actually holds instead of ids from a rotation that has
+// since rolled over.
+import { buildRotation, rotationIndex, withWeeklyGift } from '../../challenge-rotation'
 import { CONSUMABLE_SCHEMA_DDL, grantConsumable } from '../../consumables-db'
 import { EQUIPMENT_SCHEMA_DDL, grantEquipment } from '../../equipment-db'
 import { INVENTORY_SCHEMA_DDL } from '../../inventory-db'
@@ -44,8 +49,11 @@ declare module 'cloudflare:test' {
 
 const ORIGIN = 'https://example.com'
 
+/** This week's rotation — the same one the worker builds for these requests. */
+const weekly = buildRotation(new Date())
+
 /** The first challenge of the live rotation — the progress tests report against it. */
-const CURRENT_CHALLENGE = weeklyChallenge.Challenges[0]
+const CURRENT_CHALLENGE = weekly.Challenges[0]
 
 // Build the accounts table and seed the test player (the default token's sub, 42)
 // so avatar reads/writes have a row to attach to.
@@ -65,6 +73,7 @@ beforeAll(async () => {
 	for (const stmt of RECEIVED_GIFT_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of INVENTORY_INVENTION_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of INVENTION_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	for (const stmt of CUSTOM_AVATAR_ITEM_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	await env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
 		.bind(JSON.stringify({ accountId: 42, username: 'Tester', displayName: 'Tester' }))
 		.run()
@@ -671,6 +680,63 @@ describe('econ endpoints', () => {
 		}
 	})
 
+	test('POST /api/ugcPurchasables/v1/items/bulk resolves custom avatar items, echoing RoomId', async () => {
+		const item = await createCustomAvatarItem(env.DB, {
+			customAvatarItemId: crypto.randomUUID(),
+			creatorAccountId: 205,
+			name: 'Neon Visor',
+			description: '',
+			price: 250,
+			baseAvatarItemId: 1,
+			baseAvatarItemColor: '#fff',
+			accessibility: 0,
+			designFilename: 'design_x.bin',
+			thumbnailImageFilename: 'thumb_x.png',
+		})
+		const res = await exports.default.fetch(`${ORIGIN}/api/ugcPurchasables/v1/items/bulk`, {
+			method: 'POST',
+			headers: { ...(await bearer()), 'content-type': 'application/json' },
+			body: JSON.stringify({
+				RoomId: 92,
+				Ids: [
+					{ itemType: 3, itemId: item.CustomAvatarItemId },
+					{ itemType: 3, itemId: 'does-not-exist' },
+					{ itemType: 1, itemId: item.CustomAvatarItemId },
+				],
+			}),
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([
+			{
+				ItemType: 3,
+				ItemId: item.CustomAvatarItemId,
+				Name: 'Neon Visor',
+				Description: '',
+				ImageName: 'thumb_x.png',
+				RoomId: 92,
+				Price: 250,
+				PurchaseCurrencyId: null,
+				CreatedAt: item.CreatedAt,
+				ModifiedAt: item.ModifiedAt,
+			},
+		])
+	})
+
+	test('POST /api/ugcPurchasables/v1/items/bulk 400s without Ids and 401s without a token', async () => {
+		const bad = await exports.default.fetch(`${ORIGIN}/api/ugcPurchasables/v1/items/bulk`, {
+			method: 'POST',
+			headers: { ...(await bearer()), 'content-type': 'application/json' },
+			body: JSON.stringify({ RoomId: 92 }),
+		})
+		expect(bad.status).toBe(400)
+		const anon = await exports.default.fetch(`${ORIGIN}/api/ugcPurchasables/v1/items/bulk`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ RoomId: 92, Ids: [] }),
+		})
+		expect(anon.status).toBe(401)
+	})
+
 	test('GET /econ/roomEconConfig/:roomId echoes the room and disables sorting tabs', async () => {
 		const anon = await exports.default.fetch(`${ORIGIN}/econ/roomEconConfig/92`)
 		expect(anon.status).toBe(401)
@@ -1090,9 +1156,9 @@ describe('econ endpoints', () => {
 		expect(await unlocked()).toHaveLength(1)
 
 		// Favouriting sticks.
-		const update = async (favorited: boolean) =>
+		const update = async (favorited: boolean, method: 'PUT' | 'POST' = 'PUT') =>
 			exports.default.fetch(`${ORIGIN}/api/equipment/v1/update`, {
-				method: 'PUT',
+				method,
 				headers: { ...(await bearer('31')), 'Content-Type': 'application/json' },
 				body: JSON.stringify([
 					{ PrefabName: '[DiscGolfDisc]', ModificationGuid: guid, Favorited: favorited },
@@ -1109,22 +1175,75 @@ describe('econ endpoints', () => {
 		expect((await update(false)).status).toBe(200)
 		after = await unlocked()
 		expect(after[0].Favorited).toBe(false)
+
+		// The client sends this as a POST too, with the same body — same effect.
+		expect((await update(true, 'POST')).status).toBe(200)
+		expect((await unlocked())[0]?.Favorited).toBe(true)
+		expect((await update(false, 'POST')).status).toBe(200)
+		expect((await unlocked())[0]?.Favorited).toBe(false)
 	})
 
-	test('PUT /api/equipment/v1/update 401s without a token, 400s on a non-array body', async () => {
-		const anon = await exports.default.fetch(`${ORIGIN}/api/equipment/v1/update`, {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: '[]',
-		})
-		expect(anon.status).toBe(401)
+	test('POST /api/equipment/v1/update favourites from the client’s own body', async () => {
+		// The body verbatim as the client sends it — a full echo of the entry it was served,
+		// of which only `Favorited` is read.
+		const post = async (favorited: boolean, sub = '33') =>
+			exports.default.fetch(`${ORIGIN}/api/equipment/v1/update`, {
+				method: 'POST',
+				headers: { ...(await bearer(sub)), 'Content-Type': 'application/json' },
+				body: JSON.stringify([
+					{
+						PrefabName: '[ShareCamera]',
+						ModificationGuid: 'g5u0weNLmkCLeUXFUVn74Q',
+						FriendlyName: 'Camera Skin (Comic)',
+						Tooltip: 'ShareCamera Comic Debug: 2121',
+						Rarity: 5,
+						Favorited: favorited,
+					},
+				]),
+			})
 
-		const bad = await exports.default.fetch(`${ORIGIN}/api/equipment/v1/update`, {
-			method: 'PUT',
-			headers: { ...(await bearer('32')), 'Content-Type': 'application/json' },
-			body: '{}',
+		// Nothing owned yet: the guid matches no row, so this is a silent no-op, not an error.
+		expect((await post(true)).status).toBe(200)
+
+		await grantEquipment(env.DB, 33, {
+			PrefabName: '[ShareCamera]',
+			ModificationGuid: 'g5u0weNLmkCLeUXFUVn74Q',
+			FriendlyName: 'Camera Skin (Comic)',
+			Tooltip: 'ShareCamera Comic Debug: 2121',
+			Rarity: 5,
+			PlatformMask: -1,
+			Favorited: false,
 		})
-		expect(bad.status).toBe(400)
+		const owned = async () => {
+			const res = await exports.default.fetch(`${ORIGIN}/api/equipment/v2/getUnlocked`, {
+				headers: await bearer('33'),
+			})
+			return (await res.json()) as Array<{ ModificationGuid: string; Favorited: boolean }>
+		}
+		expect((await owned())[0]?.Favorited).toBe(false)
+
+		expect((await post(true)).status).toBe(200)
+		expect((await owned())[0]?.Favorited).toBe(true)
+		expect((await post(false)).status).toBe(200)
+		expect((await owned())[0]?.Favorited).toBe(false)
+	})
+
+	test('equipment/v1/update 401s without a token, 400s on a non-array body (PUT and POST)', async () => {
+		for (const method of ['PUT', 'POST'] as const) {
+			const anon = await exports.default.fetch(`${ORIGIN}/api/equipment/v1/update`, {
+				method,
+				headers: { 'Content-Type': 'application/json' },
+				body: '[]',
+			})
+			expect(anon.status).toBe(401)
+
+			const bad = await exports.default.fetch(`${ORIGIN}/api/equipment/v1/update`, {
+				method,
+				headers: { ...(await bearer('32')), 'Content-Type': 'application/json' },
+				body: '{}',
+			})
+			expect(bad.status).toBe(400)
+		}
 	})
 
 	test('POST /api/storefronts/v2/buyItem 409s when the sent price no longer matches', async () => {
@@ -1144,6 +1263,276 @@ describe('econ endpoints', () => {
 			headers: await bearer('21'),
 		})
 		expect(await bal.json()).toEqual([{ CurrencyType: 2, Platform: -2, Balance: 10000 }])
+	})
+
+	// sf300's item 2263 is 95 tokens in `Prices` and 85 in `SubscriberPrices`. A subscriber's
+	// client applies the Plus discount itself, but not to every item, so the server takes any
+	// price in the band [85, 95] from a subscriber and charges what they asked to pay.
+	const buy2263 = async (headers: Record<string, string>, RequestedPrice: number) =>
+		exports.default.fetch(`${ORIGIN}/api/storefronts/v2/buyItem`, {
+			method: 'POST',
+			headers: { ...headers, 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				StorefrontType: 300,
+				PurchasableItemId: 2263,
+				CurrencyType: 2,
+				RequestedPrice,
+				CouponConsumablePlayerMappingId: null,
+				Gift: null,
+			}),
+		})
+
+	test('POST /api/storefronts/v2/buyItem charges a subscriber the SubscriberPrices entry', async () => {
+		await drainFrames()
+		const res = await buy2263(await bearer('322', ['gameClient', 'developer']), 85)
+		expect(res.status).toBe(200)
+		expect(((await res.json()) as { Balance: number }).Balance).toBe(-85)
+		const bal = await exports.default.fetch(`${ORIGIN}/api/storefronts/v4/balance/2`, {
+			headers: await bearer('322'),
+		})
+		expect(await bal.json()).toEqual([{ CurrencyType: 2, Platform: -2, Balance: 10000 - 85 }])
+	})
+
+	test('POST /api/storefronts/v2/buyItem takes 10% off from a subscriber when the catalog lists no discount', async () => {
+		// sf3's item 2184 is 95 in BOTH lists, but a subscriber's client may still post
+		// floor(95 * 0.9) = 85.
+		const res = await exports.default.fetch(`${ORIGIN}/api/storefronts/v2/buyItem`, {
+			method: 'POST',
+			headers: {
+				...(await bearer('325', ['gameClient', 'developer'])),
+				'Content-Type': 'application/json',
+			},
+			body: JSON.stringify({
+				StorefrontType: 3,
+				PurchasableItemId: 2184,
+				CurrencyType: 2,
+				RequestedPrice: 85,
+				CouponConsumablePlayerMappingId: null,
+				Gift: null,
+			}),
+		})
+		expect(res.status).toBe(200)
+		expect(((await res.json()) as { Balance: number }).Balance).toBe(-85)
+	})
+
+	test('POST /api/storefronts/v2/buyItem charges a subscriber the full price when their client sends it', async () => {
+		// sf3's item 2208 is 150 in both lists and the live client posts 150 for a subscriber:
+		// not every item is discounted, so the full price has to stay buyable by a subscriber.
+		const res = await exports.default.fetch(`${ORIGIN}/api/storefronts/v2/buyItem`, {
+			method: 'POST',
+			headers: {
+				...(await bearer('326', ['gameClient', 'developer'])),
+				'Content-Type': 'application/json',
+			},
+			body: JSON.stringify({
+				StorefrontType: 3,
+				PurchasableItemId: 2208,
+				CurrencyType: 2,
+				RequestedPrice: 150,
+				CouponConsumablePlayerMappingId: null,
+				Gift: null,
+			}),
+		})
+		expect(res.status).toBe(200)
+		expect(((await res.json()) as { Balance: number }).Balance).toBe(-150)
+		const bal = await exports.default.fetch(`${ORIGIN}/api/storefronts/v4/balance/2`, {
+			headers: await bearer('326'),
+		})
+		expect(await bal.json()).toEqual([{ CurrencyType: 2, Platform: -2, Balance: 10000 - 150 }])
+	})
+
+	test('POST /api/storefronts/v2/buyItem 409s a subscriber below the discount band', async () => {
+		const res = await buy2263(await bearer('323', ['gameClient', 'developer']), 84)
+		expect(res.status).toBe(409)
+		// …and above it: a made-up price is a mismatch in either direction.
+		const over = await buy2263(await bearer('323', ['gameClient', 'developer']), 96)
+		expect(over.status).toBe(409)
+	})
+
+	test('POST /api/storefronts/v2/buyItem 409s a non-subscriber posting the subscriber price', async () => {
+		const res = await buy2263(await bearer('324'), 85)
+		expect(res.status).toBe(409)
+		const ok = await buy2263(await bearer('324'), 95)
+		expect(ok.status).toBe(200)
+	})
+
+	/** Seed a real account row, so a gift naming this player has somewhere to land. */
+	const seedAccount = async (accountId: number, username: string) => {
+		await env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
+			.bind(JSON.stringify({ accountId, username, displayName: username }))
+			.run()
+	}
+
+	/** Buy sf3's item 2107 (Backpack Skin (Camo), 3500) with a `Gift` block, as the client posts it. */
+	const giftBackpack = async (sub: string, gift: Record<string, unknown> | null) =>
+		exports.default.fetch(`${ORIGIN}/api/storefronts/v2/buyItem`, {
+			method: 'POST',
+			headers: { ...(await bearer(sub)), 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				StorefrontType: 3,
+				PurchasableItemId: 2107,
+				CurrencyType: 2,
+				RequestedPrice: 3500,
+				CouponConsumablePlayerMappingId: null,
+				Gift: gift,
+			}),
+		})
+
+	const pendingGifts = async (sub: string) => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/avatar/v2/gifts`, {
+			headers: await bearer(sub),
+		})
+		expect(res.status).toBe(200)
+		return (await res.json()) as Array<Record<string, unknown>>
+	}
+
+	const equipment = async (sub: string) => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/equipment/v2/getUnlocked`, {
+			headers: await bearer(sub),
+		})
+		expect(res.status).toBe(200)
+		return (await res.json()) as Array<{ ModificationGuid: string }>
+	}
+
+	test('POST /api/storefronts/v2/buyItem charges the buyer and hands the item to the gift’s receiver', async () => {
+		await seedAccount(205, 'GiftReceiver')
+		await drainFrames()
+		const res = await giftBackpack('330', {
+			ToPlayerId: 205,
+			Message: 'hello this is a message',
+			Anonymous: false,
+			GiftContext: 500,
+		})
+		expect(res.status).toBe(200)
+		// The buyer pays — `Balance` is their change — even though nothing lands on them.
+		expect(((await res.json()) as { Balance: number }).Balance).toBe(-3500)
+		const bal = await exports.default.fetch(`${ORIGIN}/api/storefronts/v4/balance/2`, {
+			headers: await bearer('330'),
+		})
+		expect(await bal.json()).toEqual([{ CurrencyType: 2, Platform: -2, Balance: 10000 - 3500 }])
+
+		// The item and its box are the RECEIVER's; the buyer keeps neither.
+		expect(await equipment('330')).toEqual([])
+		expect(await pendingGifts('330')).toEqual([])
+		const [box, ...rest] = await equipment('205')
+		expect(rest).toEqual([])
+		expect(box?.ModificationGuid).toBe('523e3615-4633-41a3-9b2d-17d3207a684b')
+		const [gift, ...others] = await pendingGifts('205')
+		expect(others).toEqual([])
+		// The box outlives the request, so it carries who sent it and why — the receiver may
+		// only ever meet it in this list.
+		expect(gift?.FromPlayerId).toBe(330)
+		expect(gift?.GiftContext).toBe(500)
+		expect(gift?.Message).toBe('hello this is a message')
+
+		// The receiver has no response to read, so the box is pushed to them.
+		const frames = await drainFrames()
+		const received = frames.find(
+			(f) => f.notificationType === NotificationType.GiftPackageReceivedImmediate
+		)
+		expect(received?.accountId).toBe(205)
+		expect(received?.payload).toMatchObject({
+			Id: gift?.Id,
+			FromPlayerId: 330,
+			GiftContext: 500,
+			Message: 'hello this is a message',
+			EquipmentModificationGuid: '523e3615-4633-41a3-9b2d-17d3207a684b',
+		})
+		// …and the spend frame still goes to the BUYER, who is the one who paid.
+		const spend = frames.find(
+			(f) => f.notificationType === NotificationType.StorefrontBalancePurchase
+		)
+		expect(spend?.accountId).toBe(330)
+	})
+
+	test('POST /api/storefronts/v2/buyItem attributes an anonymous gift to Coach', async () => {
+		await seedAccount(206, 'AnonReceiver')
+		await drainFrames()
+		const res = await giftBackpack('331', {
+			ToPlayerId: 206,
+			Message: 'guess who',
+			Anonymous: true,
+		})
+		expect(res.status).toBe(200)
+		// Anonymous hides the sender from the box, it does not withhold the gift: id 1 is Coach.
+		const [gift] = await pendingGifts('206')
+		expect(gift?.FromPlayerId).toBe(1)
+		expect(gift?.Message).toBe('guess who')
+		const received = (await drainFrames()).find(
+			(f) => f.notificationType === NotificationType.GiftPackageReceivedImmediate
+		)
+		expect(received?.payload).toMatchObject({ FromPlayerId: 1 })
+	})
+
+	test('POST /api/storefronts/v2/buyItem masks swears in the gift message', async () => {
+		await seedAccount(208, 'MaskedReceiver')
+		await drainFrames()
+		const res = await giftBackpack('334', {
+			ToPlayerId: 208,
+			Message: 'happy birthday you shit',
+			Anonymous: false,
+			GiftContext: 500,
+		})
+		expect(res.status).toBe(200)
+		// The buyer writes it and someone else reads it, so it is filtered like any other
+		// player-typed string — masked per character, never refused.
+		const masked = 'happy birthday you ****'
+		expect(
+			((await res.json()) as { BalanceUpdates: Array<{ Data: Array<{ Message: string }> }> })
+				.BalanceUpdates[0]?.Data[0]?.Message
+		).toBe(masked)
+		const [gift] = await pendingGifts('208')
+		expect(gift?.Message).toBe(masked)
+		const received = (await drainFrames()).find(
+			(f) => f.notificationType === NotificationType.GiftPackageReceivedImmediate
+		)
+		expect(received?.payload).toMatchObject({ Message: masked })
+	})
+
+	test('POST /api/storefronts/v2/buyItem caps the gift message at the client’s 150 characters', async () => {
+		await seedAccount(209, 'LongNoteReceiver')
+		await drainFrames()
+		// The client's input field stops at 150, so a 200-character note is a client that
+		// ignored its own limit — the overrun is dropped, the purchase still goes through.
+		const long = 'a'.repeat(140) + 'b'.repeat(60)
+		const res = await giftBackpack('335', { ToPlayerId: 209, Message: long, Anonymous: false })
+		expect(res.status).toBe(200)
+		const [gift] = await pendingGifts('209')
+		expect(gift?.Message).toBe(long.slice(0, 150))
+		expect((gift?.Message as string).length).toBe(150)
+		// An emoji straddling the cut is dropped whole rather than stored as half a character.
+		const emoji = `${'x'.repeat(149)}😀tail`
+		const second = await giftBackpack('336', { ToPlayerId: 209, Message: emoji, Anonymous: false })
+		expect(second.status).toBe(200)
+		const notes = (await pendingGifts('209')).map((box) => box.Message)
+		expect(notes).toContain('x'.repeat(149))
+	})
+
+	test('POST /api/storefronts/v2/buyItem 404s a gift to a player that does not exist', async () => {
+		await drainFrames()
+		const res = await giftBackpack('332', { ToPlayerId: 999999, Message: 'hi', Anonymous: false })
+		expect(res.status).toBe(404)
+		expect(await res.json()).toEqual({ error: 'No such player to gift to' })
+		// Refused before the debit: the buyer still has every token, and nothing was pushed.
+		expect(
+			await getBalance(env.DB, 332, CurrencyType.RecCenterTokens, DEFAULT_STARTING_TOKENS)
+		).toBe(10000)
+		expect(await drainFrames()).toEqual([])
+	})
+
+	test('POST /api/storefronts/v2/buyItem gifting to yourself is just a purchase', async () => {
+		await seedAccount(333, 'SelfGifter')
+		await drainFrames()
+		const res = await giftBackpack('333', { ToPlayerId: 333, Message: 'treat', Anonymous: false })
+		expect(res.status).toBe(200)
+		const [gift] = await pendingGifts('333')
+		expect(gift?.FromPlayerId).toBe(333)
+		// No hub gift frame: the buyer read the box out of the response.
+		expect(
+			(await drainFrames()).filter(
+				(f) => f.notificationType === NotificationType.GiftPackageReceivedImmediate
+			)
+		).toEqual([])
 	})
 
 	test('POST /api/storefronts/v2/buyItem 404s for an unknown item', async () => {
@@ -1460,6 +1849,58 @@ describe('econ endpoints', () => {
 		})
 		const list = (await items.json()) as Array<{ friendlyName: string }>
 		expect(list[0].friendlyName).toBe('Babydoll Dress (Blue)')
+	})
+
+	test('POST /api/items/bulkpurchase routes a gifted line to its receiver', async () => {
+		await seedAccount(207, 'BagReceiver')
+		await drainFrames()
+		const res = await bulkPurchase('960', {
+			PurchaseItemRequests: [
+				line(10, 200),
+				line(2182, 100, {
+					Gift: { ToPlayerId: 207, Message: 'from the bag', Anonymous: false, GiftContext: 500 },
+				}),
+			],
+		})
+		const body = (await res.json()) as BulkBody
+		expect(body.Success).toBe(true)
+		// The buyer pays for both lines; only the first one lands on them.
+		expect(body.Value!.Balance).toBe(10000 - 300)
+		const [own, gifted] = body.Value!.BalanceUpdates
+		expect(own?.Data.GiftPackage).toMatchObject({ PlayerId: 960, FromPlayerId: 1 })
+		expect(gifted?.Data.GiftPackage).toMatchObject({
+			PlayerId: 207,
+			FromPlayerId: 960,
+			GiftContext: 500,
+		})
+		expect(await pendingGifts('960')).toHaveLength(1)
+		const [box] = await pendingGifts('207')
+		expect(box?.FromPlayerId).toBe(960)
+		expect(box?.GiftContext).toBe(500)
+		expect(box?.Message).toBe('from the bag')
+		// The bag's response is the buyer's; the receiver is told over the hub instead.
+		const received = (await drainFrames()).find(
+			(f) => f.notificationType === NotificationType.GiftPackageReceivedImmediate
+		)
+		expect(received?.accountId).toBe(207)
+		expect(received?.payload).toMatchObject({ Id: box?.Id, FromPlayerId: 960, GiftContext: 500 })
+	})
+
+	test('POST /api/items/bulkpurchase 404s a bag gifting to a player that does not exist', async () => {
+		const res = await bulkPurchase('970', {
+			PurchaseItemRequests: [
+				line(10, 200),
+				line(2182, 100, { Gift: { ToPlayerId: 999998, Message: 'hi', Anonymous: false } }),
+			],
+		})
+		expect(res.status).toBe(404)
+		const body = (await res.json()) as BulkBody
+		expect(body.Success).toBe(false)
+		expect(body.Error).toBe('No such player to gift to')
+		// The whole bag is refused before the debit, the good line included.
+		expect(
+			await getBalance(env.DB, 970, CurrencyType.RecCenterTokens, DEFAULT_STARTING_TOKENS)
+		).toBe(10000)
 	})
 
 	test('POST /api/items/bulkpurchase reports per line what it cannot sell', async () => {
@@ -1834,9 +2275,110 @@ describe('econ endpoints', () => {
 		const res = await exports.default.fetch(`${ORIGIN}/api/challenge/v2/getCurrent`)
 		expect(res.status).toBe(200)
 		const body = (await res.json()) as { ChallengeMapId: number; Challenges: unknown[] }
-		expect(body).toHaveProperty('ChallengeMapId')
-		expect(Array.isArray(body.Challenges)).toBe(true)
+		expect(body.ChallengeMapId).toBe(weekly.ChallengeMapId)
+		expect(body.Challenges).toHaveLength(weekly.Challenges.length)
 	})
+
+	test('the rotation is a pure function of the week', async () => {
+		const at = new Date('2026-08-25T12:00:00Z')
+		// Same instant, same rotation — and any instant in the same week, too. Two players
+		// served different challenges for one `ChallengeMapId` would disagree about who has
+		// finished the week.
+		expect(buildRotation(at)).toEqual(buildRotation(at))
+		const laterSameWeek = new Date('2026-08-26T20:59:59Z')
+		expect(rotationIndex(laterSameWeek)).toBe(rotationIndex(at))
+		expect(buildRotation(laterSameWeek).Challenges).toEqual(buildRotation(at).Challenges)
+
+		// …and the week rolls at Wednesday 21:00 UTC, one map id at a time.
+		const nextWeek = new Date('2026-08-26T21:00:00Z')
+		expect(rotationIndex(nextWeek)).toBe(rotationIndex(at) + 1)
+		expect(buildRotation(nextWeek).ChallengeMapId).toBe(buildRotation(at).ChallengeMapId + 1)
+		expect(buildRotation(nextWeek).StartAt).toBe(buildRotation(at).EndAt)
+	})
+
+	test('the week is themed on the name of the item it rolls', async () => {
+		// `ChallengeThemeString` is the reward's catalog FriendlyName. The static file ships it
+		// empty on purpose — a generated week's gift isn't known until it is rolled — so the
+		// theming happens where the pick does.
+		const pool = [
+			{
+				GiftDropId: 11,
+				EquipmentPrefabName: '[ShareCamera]',
+				EquipmentModificationGuid: 'guid-a',
+				Rarity: 30,
+				FriendlyName: 'Camera Skin (Comic)',
+			},
+			{
+				GiftDropId: 12,
+				EquipmentPrefabName: '[Boombox]',
+				EquipmentModificationGuid: 'guid-b',
+				Rarity: 20,
+				FriendlyName: 'Boombox (Neon)',
+			},
+		]
+		const at = new Date('2026-08-25T12:00:00Z')
+		const themed = withWeeklyGift(buildRotation(at), pool)
+		const rolled = pool.find((p) => p.GiftDropId === themed.Gift.GiftDropId)
+		expect(rolled).toBeDefined()
+		expect(themed.ChallengeThemeString).toBe(rolled!.FriendlyName)
+
+		// An empty pool (the catalog didn't load) leaves the rotation as it was rather than
+		// theming the week on nothing.
+		expect(withWeeklyGift(buildRotation(at), []).ChallengeThemeString).toBe(
+			buildRotation(at).ChallengeThemeString
+		)
+
+		// And over the live catalog the route serves a real name, not the placeholder.
+		const served = (await (
+			await exports.default.fetch(`${ORIGIN}/api/challenge/v2/getCurrent`)
+		).json()) as { ChallengeThemeString: string }
+		expect(served.ChallengeThemeString).not.toBe('')
+	})
+
+	test('every generated week is five valid, distinct challenges', async () => {
+		// Walk two years of rotations: the pool, the constraints and the tree builders all have
+		// to hold for every week, not just this one.
+		for (let week = 0; week < 104; week++) {
+			const at = new Date(Date.UTC(2026, 0, 7, 21, 0, 0) + week * 7 * 24 * 60 * 60 * 1000)
+			const rotation = buildRotation(at)
+			const where = `week ${week}`
+			expect(rotation.Challenges, where).toHaveLength(5)
+			// Ids have to be unique within a rotation — `challenge_status` is keyed by them.
+			const ids = rotation.Challenges.map((ch) => ch.ChallengeId)
+			expect(new Set(ids).size, where).toBe(ids.length)
+			// One room per week: five ways to say "play Paintball" is not a rotation.
+			const scenes = rotation.Challenges.flatMap((ch) => sceneIdsOf(ch.Config))
+			expect(new Set(scenes).size, where).toBe(scenes.length)
+			for (const challenge of rotation.Challenges) {
+				// A malformed tree fails SILENTLY in the client — the challenge just never
+				// completes — so the shape is asserted here rather than discovered in game.
+				const tree = JSON.parse(challenge.Config) as { ct: number; t?: number }
+				expect([0, 1], `${where} ${challenge.Name}`).toContain(tree.ct)
+				if (tree.ct === 1) expect(tree.t, `${where} ${challenge.Name}`).toBeGreaterThan(0)
+				expect(sceneIdsOf(challenge.Config).length, `${where} ${challenge.Name}`).toBeGreaterThan(0)
+				// The copy is generated from the same inputs as the tree, so it can't drift — but a
+				// counter still has to say out loud how far it counts.
+				if (tree.ct === 1) expect(challenge.Description, where).toContain(String(tree.t))
+				expect(challenge.Tooltip.length, `${where} ${challenge.Name}`).toBeGreaterThan(0)
+				expect(challenge.Complete, `${where} ${challenge.Name}`).toBe(false)
+			}
+		}
+	})
+
+	/** Every `ct:7` scene id in a rule tree, however deep the tree nests them. */
+	function sceneIdsOf(config: string): string[] {
+		const scenes: string[] = []
+		const walk = (node: unknown): void => {
+			if (Array.isArray(node)) return node.forEach(walk)
+			if (node === null || typeof node !== 'object') return
+			const record = node as { ct?: number; vs?: Array<{ l?: string }> }
+			if (record.ct === 7)
+				for (const value of record.vs ?? []) if (value.l !== undefined) scenes.push(value.l)
+			for (const value of Object.values(record)) walk(value)
+		}
+		walk(JSON.parse(config))
+		return scenes
+	}
 
 	test('GET /api/storefronts/v1/adcarouselitems returns the carousel items', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/api/storefronts/v1/adcarouselitems`)
@@ -1860,7 +2402,7 @@ describe('econ endpoints', () => {
 			method: 'POST',
 			headers: { ...(await bearer('70')), 'Content-Type': 'application/json' },
 			body: JSON.stringify({
-				ChallengeMapId: String(weeklyChallenge.ChallengeMapId),
+				ChallengeMapId: String(weekly.ChallengeMapId),
 				ChallengeId: String(challenge.ChallengeId),
 				Config: challenge.Config,
 				// .NET's bool.ToString() — the capitalized string, which `Boolean("False")`
@@ -1870,7 +2412,7 @@ describe('econ endpoints', () => {
 		})
 		expect(res.status).toBe(200)
 		expect(await res.json()).toEqual({
-			ChallengeMapId: weeklyChallenge.ChallengeMapId,
+			ChallengeMapId: weekly.ChallengeMapId,
 			ChallengeId: challenge.ChallengeId,
 			Config: challenge.Config,
 			Complete: false,
@@ -1893,7 +2435,7 @@ describe('econ endpoints', () => {
 			method: 'POST',
 			headers: { ...bearerHeaders, 'Content-Type': 'application/json' },
 			body: JSON.stringify({
-				ChallengeMapId: String(weeklyChallenge.ChallengeMapId),
+				ChallengeMapId: String(weekly.ChallengeMapId),
 				ChallengeId: completedId,
 				Complete: 'True',
 			}),
@@ -1942,29 +2484,89 @@ describe('econ endpoints', () => {
 		expect(await completeOf(await post('18', 'True'))).toBe(true)
 	})
 
+	test('the reported Config is stored and served back over the static rule tree', async () => {
+		const challenge = CURRENT_CHALLENGE
+		const bearerHeaders = await bearer('78')
+		const headers = { ...bearerHeaders, 'Content-Type': 'application/json' }
+		// The client posts the catalog's tree with its own running count written into it —
+		// `cc` on the counter — which is the progress that has to survive the session.
+		const inProgress = challenge.Config.replace(/}$/, ',"cc":1}')
+		expect(inProgress).not.toBe(challenge.Config)
+		const post = (body: Record<string, string>) =>
+			exports.default.fetch(`${ORIGIN}/api/challenge/v2/updateProgress`, {
+				method: 'POST',
+				headers,
+				body: JSON.stringify({
+					ChallengeMapId: String(weekly.ChallengeMapId),
+					ChallengeId: String(challenge.ChallengeId),
+					...body,
+				}),
+			})
+		const reported = await post({ Config: inProgress, Complete: 'False' })
+		expect(await reported.json()).toEqual({
+			ChallengeMapId: weekly.ChallengeMapId,
+			ChallengeId: challenge.ChallengeId,
+			Config: inProgress,
+			Complete: false,
+		})
+
+		const configOf = async () => {
+			const res = await exports.default.fetch(`${ORIGIN}/api/challenge/v2/getCurrent`, {
+				headers: bearerHeaders,
+			})
+			const body = (await res.json()) as {
+				Challenges: Array<{ ChallengeId: number; Config: string }>
+			}
+			return body.Challenges.find((ch) => ch.ChallengeId === challenge.ChallengeId)?.Config
+		}
+		expect(await configOf()).toBe(inProgress)
+
+		// A report carrying no tree is not a reset — the stored progress stays, and is echoed.
+		const noConfig = await post({ Complete: 'False' })
+		expect(((await noConfig.json()) as { Config: string }).Config).toBe(inProgress)
+		expect(await configOf()).toBe(inProgress)
+
+		// Challenges this player never reported keep the authored tree, and so does everyone else.
+		const anon = await exports.default.fetch(`${ORIGIN}/api/challenge/v2/getCurrent`)
+		const anonBody = (await anon.json()) as { Challenges: Array<{ Config: string }> }
+		expect(anonBody.Challenges.map((ch) => ch.Config)).toEqual(
+			weekly.Challenges.map((ch) => ch.Config)
+		)
+	})
+
 	/**
 	 * How many of the rotation's challenges earn the gift — three, unless the rotation
 	 * publishes fewer or declares itself all-or-nothing (`CHALLENGES_REQUIRED_FOR_GIFT`).
 	 */
-	const REQUIRED_FOR_GIFT = weeklyChallenge.CompletedRequired
-		? weeklyChallenge.Challenges.length
-		: Math.min(3, weeklyChallenge.Challenges.length)
+	const REQUIRED_FOR_GIFT = weekly.CompletedRequired
+		? weekly.Challenges.length
+		: Math.min(3, weekly.Challenges.length)
 
 	/** Report the live rotation's challenges complete, for one player. */
 	async function finishTheRotation(sub: string) {
 		const headers = { ...(await bearer(sub)), 'Content-Type': 'application/json' }
-		const ids = weeklyChallenge.Challenges.map((challenge) => challenge.ChallengeId)
+		const ids = weekly.Challenges.map((challenge) => challenge.ChallengeId)
 		const report = (challengeId: number) =>
 			exports.default.fetch(`${ORIGIN}/api/challenge/v2/updateProgress`, {
 				method: 'POST',
 				headers,
 				body: JSON.stringify({
-					ChallengeMapId: String(weeklyChallenge.ChallengeMapId),
+					ChallengeMapId: String(weekly.ChallengeMapId),
 					ChallengeId: String(challengeId),
 					Complete: 'True',
 				}),
 			})
 		return { ids, report }
+	}
+
+	/**
+	 * The reward this week advertises, read back from the route that shows it to the client.
+	 * The gift is rolled from the storefront catalog rather than authored, so the assertion
+	 * that matters is that the box a player receives carries what the rotation promised.
+	 */
+	async function advertisedGift() {
+		const res = await exports.default.fetch(`${ORIGIN}/api/challenge/v2/getCurrent`)
+		return ((await res.json()) as { Gift: Record<string, string & number> }).Gift
 	}
 
 	/** A player's unopened gift boxes, as the client reads them back. */
@@ -1983,11 +2585,12 @@ describe('econ endpoints', () => {
 	}
 
 	test('completing enough of the rotation grants its gift, once', async () => {
-		// The live rotation, so this follows whatever static/weekly-challenge.json holds.
+		// The live rotation, so this follows whatever this week generated.
+		const gift = await advertisedGift()
 		const { ids, report } = await finishTheRotation('74')
-		// The whole point of the threshold: the gift lands before the set is finished (the
-		// published week is five challenges for three).
-		expect(REQUIRED_FOR_GIFT).toBeLessThan(ids.length)
+		// The threshold can't ask for more than the week publishes: a five-challenge week asks
+		// for three, and a rotation of three or fewer asks for all of them.
+		expect(REQUIRED_FOR_GIFT).toBeLessThanOrEqual(ids.length)
 		for (const id of ids.slice(0, REQUIRED_FOR_GIFT - 1)) {
 			expect((await report(id)).status).toBe(200)
 		}
@@ -2000,7 +2603,7 @@ describe('econ endpoints', () => {
 		const won = await giftBoxes('74')
 		expect(won).toHaveLength(1)
 		expect(won[0]?.Message).toBe('Weekly challenge complete!')
-		expect(won[0]?.EquipmentModificationGuid).toBe(weeklyChallenge.Gift.EquipmentModificationGuid)
+		expect(won[0]?.EquipmentModificationGuid).toBe(gift.EquipmentModificationGuid)
 
 		// The client is told the moment the set is finished, rather than finding the box the
 		// next time it reads the gifts list. `Immediate` (31), from Coach (1).
@@ -2013,10 +2616,10 @@ describe('econ endpoints', () => {
 			FromGiftDropId: 0,
 			FromPlayerId: 1,
 			ConsumableItemDesc: '',
-			AvatarItemDesc: weeklyChallenge.Gift.AvatarItemDesc,
-			AvatarItemType: weeklyChallenge.Gift.AvatarItemType,
-			EquipmentPrefabName: weeklyChallenge.Gift.EquipmentPrefabName,
-			EquipmentModificationGuid: weeklyChallenge.Gift.EquipmentModificationGuid,
+			AvatarItemDesc: gift.AvatarItemDesc,
+			AvatarItemType: gift.AvatarItemType,
+			EquipmentPrefabName: gift.EquipmentPrefabName,
+			EquipmentModificationGuid: gift.EquipmentModificationGuid,
 			CurrencyType: 0,
 			Currency: 0,
 			Xp: 0,
@@ -2024,9 +2627,10 @@ describe('econ endpoints', () => {
 			Platform: -1,
 			PlatformsToSpawnOn: -1,
 			BalanceType: -2,
-			GiftContext: weeklyChallenge.Gift.GiftContext,
-			// The catalog's rarity for the item, not the block's `GiftRarity` of 0.
-			GiftRarity: 5,
+			GiftContext: gift.GiftContext,
+			// The catalog's rarity for the item — which is also what the generated block carries,
+			// since the week's gift is drawn from the catalog itself.
+			GiftRarity: gift.GiftRarity,
 			Message: 'Weekly challenge complete!',
 		})
 
@@ -2035,9 +2639,7 @@ describe('econ endpoints', () => {
 			headers: await bearer('74'),
 		})
 		const owned = (await unlocked.json()) as Array<{ ModificationGuid: string }>
-		expect(owned.map((e) => e.ModificationGuid)).toContain(
-			weeklyChallenge.Gift.EquipmentModificationGuid
-		)
+		expect(owned.map((e) => e.ModificationGuid)).toContain(gift.EquipmentModificationGuid)
 
 		// Finishing the REST of the set, and re-reporting what's already done (which the client
 		// keeps doing), must not mint a second reward.
@@ -2047,10 +2649,11 @@ describe('econ endpoints', () => {
 
 	test('a player who already owns the rotation’s gift rolls the fallback box instead', async () => {
 		// Own the reward up front — the case the rotation's `FallbackGiftName` exists for.
+		const gift = await advertisedGift()
 		await grantEquipment(env.DB, 75, {
-			ModificationGuid: weeklyChallenge.Gift.EquipmentModificationGuid,
-			PrefabName: weeklyChallenge.Gift.EquipmentPrefabName,
-			FriendlyName: 'Camera Skin (Comic)',
+			ModificationGuid: gift.EquipmentModificationGuid,
+			PrefabName: gift.EquipmentPrefabName,
+			FriendlyName: 'The week’s reward, already owned',
 			Tooltip: '',
 			Rarity: 5,
 			PlatformMask: -1,
@@ -2069,9 +2672,7 @@ describe('econ endpoints', () => {
 		// Something they don't have, at the tier `FallbackGiftName` names ("4-Star Box" → 30),
 		// rather than a second copy of the gift.
 		const rolled = won[0]
-		expect(rolled?.EquipmentModificationGuid).not.toBe(
-			weeklyChallenge.Gift.EquipmentModificationGuid
-		)
+		expect(rolled?.EquipmentModificationGuid).not.toBe(gift.EquipmentModificationGuid)
 		expect(rolled?.GiftRarity).toBe(30)
 		expect(
 			(rolled?.AvatarItemDesc ?? '') !== '' || (rolled?.EquipmentModificationGuid ?? '') !== ''
@@ -2448,9 +3049,8 @@ describe('econ endpoints', () => {
 			{ headers: await bearer('207') }
 		)
 		expect(res.status).toBe(200)
-		// An object around the list, not a bare array. Note this is a 200 while its
-		// single-account sibling below answers 404 — "nobody is" is a complete answer to
-		// "who is?", where "are you?" is answered by the 404 itself.
+		// An object around the list, not a bare array — unlike its single-account siblings
+		// below, whose whole body is a bare tier number.
 		expect(await res.json()).toEqual({ InfluencerIds: [] })
 	})
 
@@ -2459,24 +3059,43 @@ describe('econ endpoints', () => {
 		expect(res.status).toBe(401)
 	})
 
-	test('GET /api/influencerpartnerprogram/influencer 404s with an empty JSON body', async () => {
+	test('GET /api/influencerpartnerprogram/influencer answers a bare 0', async () => {
 		const res = await exports.default.fetch(
+			`${ORIGIN}/api/influencerpartnerprogram/influencer?accountId=220`,
+			{ headers: await bearer('206') }
+		)
+		expect(res.status).toBe(200)
+		// The tier is the WHOLE body — a bare number, not `{ Tier: 0 }` or a string. 0 is
+		// "not an influencer", which every account is here.
+		expect(res.headers.get('content-type')).toContain('application/json')
+		expect(await res.text()).toBe('0')
+
+		// Any account, the caller's own included, gets the same answer.
+		const self = await exports.default.fetch(
 			`${ORIGIN}/api/influencerpartnerprogram/influencer?accountId=206`,
 			{ headers: await bearer('206') }
 		)
-		// 404 IS the answer — "not an influencer" — and the body is empty, not `{}` or null,
-		// with the content type the reference sends.
-		expect(res.status).toBe(404)
-		expect(res.headers.get('content-type')).toContain('application/json')
-		expect(await res.text()).toBe('')
+		expect(await self.json()).toBe(0)
 	})
 
-	test('GET /api/influencerpartnerprogram/influencer 401s without a bearer token', async () => {
-		// Auth is checked before the 404, so an unauthenticated caller is told that, not that
-		// they aren't an influencer.
-		const res = await exports.default.fetch(`${ORIGIN}/api/influencerpartnerprogram/influencer`)
-		expect(res.status).toBe(401)
-		expect(await res.text()).toBe('')
+	test('GET /api/influencerpartnerprogram/myinfluencer answers a bare 0', async () => {
+		// The `my` form takes the account from the token instead of a query parameter, and
+		// answers the same tier in the same shape.
+		const res = await exports.default.fetch(`${ORIGIN}/api/influencerpartnerprogram/myinfluencer`, {
+			headers: await bearer('206'),
+		})
+		expect(res.status).toBe(200)
+		expect(await res.text()).toBe('0')
+	})
+
+	test('the influencer tier routes 401 without a bearer token', async () => {
+		// Auth is checked before anything is answered, so an unauthenticated caller is told
+		// that rather than handed a tier.
+		for (const path of ['influencer', 'myinfluencer']) {
+			const res = await exports.default.fetch(`${ORIGIN}/api/influencerpartnerprogram/${path}`)
+			expect(res.status, path).toBe(401)
+			expect(await res.text()).toBe('')
+		}
 	})
 
 	test('GET /api/makerai/checkfreetrialeligibility answers a bare false', async () => {
@@ -2592,6 +3211,7 @@ describe('econ endpoints', () => {
 			'GET /api/incentivizedreferrals/progress',
 			'GET /api/influencerpartnerprogram/influencer',
 			'GET /api/influencerpartnerprogram/influencers',
+			'GET /api/influencerpartnerprogram/myinfluencer',
 			'GET /api/itemWishlists/v1/wishlist/me',
 			'GET /api/itemWishlists/v1/wishlist/{accountId}',
 			'GET /api/makerai/checkfreetrialeligibility',
@@ -2626,11 +3246,13 @@ describe('econ endpoints', () => {
 			'POST /api/checklist/v1/complete',
 			'POST /api/checklist/v2/complete',
 			'POST /api/consumables/v1/consume',
+			'POST /api/equipment/v1/update',
 			'POST /api/gamerewards/v1/request',
 			'POST /api/items/bulkpurchase',
 			'POST /api/objectives/v1/cleargroup',
 			'POST /api/objectives/v1/updateobjective',
 			'POST /api/storefronts/v2/buyItem',
+			'POST /api/ugcPurchasables/v1/items/bulk',
 			'PUT /api/equipment/v1/update',
 		])
 

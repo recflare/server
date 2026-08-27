@@ -14,6 +14,7 @@ import {
 	LEVEL_REQUIRED_XP,
 	LEVEL_REWARDS,
 	MAX_LEVEL,
+	MessageType,
 	OUTFIT_SCHEMA_DDL,
 	PRESENCE_SCHEMA_DDL,
 	PRESENCE_TTL_SECONDS,
@@ -30,6 +31,10 @@ import '../../api.app'
 import { PLATFORM_SCHEMA_DDL } from '../../../../auth/src/platform-db'
 import { banEvasionMatch, resolveBan } from '../../bans-db'
 import {
+	createCustomAvatarItem,
+	SCHEMA_DDL as CUSTOM_AVATAR_ITEM_SCHEMA_DDL,
+} from '../../custom-avatar-items-db'
+import {
 	countGoing,
 	SCHEMA_DDL as EVENTS_SCHEMA_DDL,
 	getEventAttendees,
@@ -44,6 +49,14 @@ import {
 	isPlayerBanned,
 	SCHEMA_DDL as REPORTS_SCHEMA_DDL,
 } from '../../reports-db'
+import {
+	CheerCategory,
+	DAILY_CHEER_CREDIT,
+	getCheerCredit,
+	getReputation,
+	SCHEMA_DDL as REPUTATION_SCHEMA_DDL,
+	spendCheerCredit,
+} from '../../reputation-db'
 import { charadesWordsFor } from '../../routes/gameplay'
 import { getWarningsAgainst, SCHEMA_DDL as WARNINGS_SCHEMA_DDL } from '../../warnings-db'
 
@@ -136,6 +149,12 @@ beforeAll(async () => {
 
 	// Player events table (owned by the api worker) — scheduled events live here.
 	for (const stmt of EVENTS_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+
+	// Reputation + cheer credit (owned by the api worker) — cheering writes both.
+	for (const stmt of REPUTATION_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+
+	// Custom avatar items (owned by the api worker).
+	for (const stmt of CUSTOM_AVATAR_ITEM_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 })
 
 // Mint a token the way the `auth` worker does, signing with the shared test key seeded into the JWT_SECRET store, so the
@@ -317,6 +336,360 @@ describe('public endpoints', () => {
 		const many = await exports.default.fetch(`${ORIGIN}/api/playerReputation/v2/bulk?id=1&id=2`)
 		const reps = (await many.json()) as Array<{ AccountId: number }>
 		expect(reps.map((r) => r.AccountId)).toEqual([1, 2])
+	})
+
+	// Cheering: `POST /api/PlayerCheer/v1/create`. The giver comes from the token, so these
+	// use ids of their own (71xx) rather than the shared 42 — a spent credit is durable
+	// state, and the reputation reads above assert all-zero records.
+	const cheer = async (fields: Record<string, string>, sub = '7100') =>
+		exports.default.fetch(`${ORIGIN}/api/PlayerCheer/v1/create`, {
+			method: 'POST',
+			headers: {
+				...(await bearer(sub)),
+				'Content-Type': 'application/x-www-form-urlencoded',
+			},
+			body: new URLSearchParams(fields),
+		})
+
+	const reputationOf = async (id: number) =>
+		(await (await exports.default.fetch(`${ORIGIN}/api/playerReputation/v1/${id}`)).json()) as {
+			CheerCredit: number
+			CheerGeneral: number
+			CheerHelpful: number
+		}
+
+	test('a cheer counts on the target and spends the giver’s credit', async () => {
+		// The body the client posts, verbatim from the live request.
+		const res = await cheer({
+			PlayerIdTo: '7101',
+			CheerCategory: '0',
+			RoomId: '112',
+			Anonymous: 'False',
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ Success: true, Message: null })
+
+		// The target's counter moved and nothing else did — in particular their OWN credit is
+		// untouched, since receiving a cheer doesn't pay for giving one.
+		expect(await reputationOf(7101)).toMatchObject({
+			CheerGeneral: 1,
+			CheerHelpful: 0,
+			CheerCredit: DAILY_CHEER_CREDIT,
+		})
+		// The giver paid, and has no counters of their own.
+		expect(await reputationOf(7100)).toMatchObject({
+			CheerGeneral: 0,
+			CheerCredit: DAILY_CHEER_CREDIT - 1,
+		})
+	})
+
+	test('each category counts into its own column', async () => {
+		for (const category of [
+			CheerCategory.General,
+			CheerCategory.Helpful,
+			CheerCategory.Sportmanship,
+			CheerCategory.GreatHost,
+			CheerCategory.Creative,
+		]) {
+			expect(
+				(await cheer({ PlayerIdTo: '7102', CheerCategory: String(category) }, '7103')).status
+			).toBe(200)
+		}
+		expect(await getReputation(env.DB, 7102)).toEqual({
+			AccountId: 7102,
+			IsCheerful: true,
+			Noteriety: 0,
+			SelectedCheer: 0,
+			CheerCredit: DAILY_CHEER_CREDIT,
+			CheerGeneral: 1,
+			CheerHelpful: 1,
+			CheerCreative: 1,
+			CheerGreatHost: 1,
+			CheerSportsman: 1,
+			SubscriberCount: 0,
+			SubscribedCount: 0,
+		})
+	})
+
+	test('a cheer the server can’t count is refused before it costs anything', async () => {
+		// Each refusal answers 200 with the reason — the client shows `Message` — and none of
+		// them may take a credit off the caller, which is what the closing assertion checks.
+		for (const [fields, Message] of [
+			[{ PlayerIdTo: '7105' }, 'CheerCategory is not a cheer category'],
+			// -1 is the enum's `None`: a real member, but not a counter.
+			[{ PlayerIdTo: '7105', CheerCategory: '-1' }, 'CheerCategory is not a cheer category'],
+			[{ PlayerIdTo: '7105', CheerCategory: '5' }, 'CheerCategory is not a cheer category'],
+			[{ CheerCategory: '0' }, 'PlayerIdTo is required'],
+			[{ PlayerIdTo: '7104', CheerCategory: '0' }, 'You cannot cheer yourself'],
+		] as Array<[Record<string, string>, string]>) {
+			const res = await cheer(fields, '7104')
+			expect(res.status).toBe(200)
+			expect(await res.json()).toEqual({ Success: false, Message })
+		}
+		expect(await getCheerCredit(env.DB, 7104)).toBe(DAILY_CHEER_CREDIT)
+		expect(await reputationOf(7105)).toMatchObject({ CheerGeneral: 0 })
+	})
+
+	test('the cheer frame plays in front of the whole room instance', async () => {
+		// Presence is written by the `match` worker; seeded straight into the table here.
+		// 7108 (the giver), 7109 (the target) and 7120 (a bystander) share instance 8800;
+		// 7121 stands in a different instance and must hear nothing.
+		const standIn = async (accountId: number, roomInstanceId: number | null) =>
+			env.DB.prepare('INSERT OR REPLACE INTO presence (data) VALUES (?1)')
+				.bind(
+					JSON.stringify({
+						accountId,
+						roomInstance: roomInstanceId === null ? null : { roomInstanceId, roomId: 112 },
+						statusVisibility: 0,
+						deviceClass: 0,
+						vrMovementMode: 0,
+						platform: 0,
+						appVersion: GAME_VERSION,
+						expiresAt: Math.floor(Date.now() / 1000) + PRESENCE_TTL_SECONDS,
+					})
+				)
+				.run()
+
+		// The notify DO is stubbed to record every notifyPlayer / notifyPlayersEphemeral call
+		// (see vitest.config).
+		const cheerHub = () => env.RECFLARE_NOTIFICATIONS_HUB.getByName('global')
+		const framesFor = async (anonymous: string) => {
+			await cheerHub().fetch('http://do/all', { method: 'DELETE' })
+			expect(
+				(
+					await cheer(
+						{ PlayerIdTo: '7109', CheerCategory: '10', RoomId: '112', Anonymous: anonymous },
+						'7108'
+					)
+				).status
+			).toBe(200)
+			return (await (await cheerHub().fetch('http://do/all')).json()) as Array<{
+				playerId?: number
+				playerIds?: number[]
+				ephemeral?: boolean
+				notificationType: string
+				data: Record<string, unknown>
+			}>
+		}
+
+		for (const id of [7108, 7109, 7120]) await standIn(id, 8800)
+		await standIn(7121, 8801)
+
+		// A signed cheer. Four sends: the PlayerCheer message that plays the cheer on the
+		// target's client, then the ReputationUpdate for the target durably, the rest of their
+		// instance ephemerally, and the giver's own credit refresh.
+		const all = await framesFor('False')
+		expect(all).toHaveLength(4)
+		expect(all[0]).toMatchObject({
+			playerId: 7109,
+			notificationType: 2, // NotificationType.MessageReceived
+			data: { FromPlayerId: 7108, ToPlayerId: 7109, Type: MessageType.PlayerCheer, Data: '10' },
+		})
+		expect(all[0]!.ephemeral).toBeFalsy()
+		const signed = all.slice(1)
+		expect(signed.every((f) => f.notificationType === 'ReputationUpdate')).toBe(true)
+
+		// `AccountId` is who the frame is ABOUT, not who it goes to — the room hears about
+		// 7109. The frame is 7109's RECORD: `SelectedCheer` is their pinned cheer (none), not
+		// the category just given, and `IsCheerful` is the profile flag — the message above
+		// is what plays the cheer.
+		const played = {
+			AccountId: 7109,
+			IsCheerful: true,
+			SelectedCheer: 0,
+			CheerHelpful: 1,
+		}
+		expect(signed[0]).toMatchObject({ playerId: 7109, data: played })
+		// The bystander and the giver see it; the target is not in the room list (they got
+		// the durable copy), and 7121 is in another instance entirely.
+		expect(signed[1]).toMatchObject({ playerIds: [7108, 7120], ephemeral: true, data: played })
+
+		// The giver's second frame is about THEM: their record with the spent credit.
+		expect(signed[2]).toMatchObject({
+			playerId: 7108,
+			data: {
+				AccountId: 7108,
+				IsCheerful: true,
+				SelectedCheer: 0,
+				CheerCredit: DAILY_CHEER_CREDIT - 1,
+			},
+		})
+
+		// An anonymous cheer reaches exactly the same people and moves the same counter —
+		// it just doesn't announce who gave it: the message is the anonymous type from
+		// sender 0. The reputation frames are the same records as before.
+		const allAnonymous = await framesFor('True')
+		expect(allAnonymous).toHaveLength(4)
+		expect(allAnonymous[0]).toMatchObject({
+			playerId: 7109,
+			notificationType: 2, // NotificationType.MessageReceived
+			data: {
+				FromPlayerId: 0,
+				ToPlayerId: 7109,
+				Type: MessageType.PlayerCheerAnonymous,
+				Data: '10',
+			},
+		})
+		const anonymous = allAnonymous.slice(1)
+		expect(anonymous[0]).toMatchObject({
+			playerId: 7109,
+			data: { AccountId: 7109, IsCheerful: true, SelectedCheer: 0, CheerHelpful: 2 },
+		})
+		expect(anonymous[1]).toMatchObject({ playerIds: [7108, 7120], data: { IsCheerful: true } })
+
+		// The frame carries only the fields the client's decoder has — no Noteriety or
+		// subscriber counts, which live on the profile DTO alone.
+		expect(Object.keys(anonymous[0]!.data).sort()).toEqual([
+			'AccountId',
+			'CheerCreative',
+			'CheerCredit',
+			'CheerGeneral',
+			'CheerGreatHost',
+			'CheerHelpful',
+			'CheerSportsman',
+			'IsCheerful',
+			'SelectedCheer',
+		])
+	})
+
+	test('a cheer with no room instance still reaches the player cheered', async () => {
+		// Cheering from a profile screen: the giver has lobby presence (roomInstance null),
+		// so there is no audience — but the target's own frame is not the room's to lose.
+		await env.DB.prepare('INSERT OR REPLACE INTO presence (data) VALUES (?1)')
+			.bind(
+				JSON.stringify({
+					accountId: 7130,
+					roomInstance: null,
+					statusVisibility: 0,
+					deviceClass: 0,
+					vrMovementMode: 0,
+					platform: 0,
+					appVersion: GAME_VERSION,
+					expiresAt: Math.floor(Date.now() / 1000) + PRESENCE_TTL_SECONDS,
+				})
+			)
+			.run()
+		const cheerHub = () => env.RECFLARE_NOTIFICATIONS_HUB.getByName('global')
+		await cheerHub().fetch('http://do/all', { method: 'DELETE' })
+
+		expect((await cheer({ PlayerIdTo: '7131', CheerCategory: '40' }, '7130')).status).toBe(200)
+
+		const frames = (await (await cheerHub().fetch('http://do/all')).json()) as Array<{
+			playerId?: number
+			ephemeral?: boolean
+			data: Record<string, unknown>
+		}>
+		// Three sends — the target's cheer message and reputation, then the giver's
+		// reputation — all durable and all addressed: nothing was broadcast.
+		expect(frames.map((f) => f.playerId)).toEqual([7131, 7131, 7130])
+		expect(frames.some((f) => f.ephemeral)).toBe(false)
+		expect(frames[0]!.data).toMatchObject({
+			ToPlayerId: 7131,
+			Type: MessageType.PlayerCheer,
+			Data: '40',
+		})
+		expect(frames[1]!.data).toMatchObject({ AccountId: 7131, CheerCreative: 1 })
+	})
+
+	test('SetSelectedCheer pins a cheer to the profile and pushes the record', async () => {
+		const pin = async (CheerCategory: string, sub: string) =>
+			exports.default.fetch(`${ORIGIN}/api/PlayerCheer/v1/SetSelectedCheer`, {
+				method: 'POST',
+				headers: { ...(await bearer(sub)), 'Content-Type': 'application/x-www-form-urlencoded' },
+				body: new URLSearchParams({ CheerCategory }),
+			})
+		const hub = () => env.RECFLARE_NOTIFICATIONS_HUB.getByName('global')
+		await hub().fetch('http://do/all', { method: 'DELETE' })
+
+		// 7140 has never been cheered — pinning still works, creating their row.
+		const res = await pin(String(CheerCategory.GreatHost), '7140')
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ Success: true, Message: null })
+		expect(await getReputation(env.DB, 7140)).toMatchObject({
+			SelectedCheer: CheerCategory.GreatHost,
+			IsCheerful: true,
+			CheerGreatHost: 0,
+		})
+		const frames = (await (await hub().fetch('http://do/all')).json()) as Array<{
+			playerId?: number
+			data: Record<string, unknown>
+		}>
+		expect(frames).toHaveLength(1)
+		expect(frames[0]).toMatchObject({
+			playerId: 7140,
+			data: { AccountId: 7140, SelectedCheer: CheerCategory.GreatHost },
+		})
+
+		// The pin survives a cheer landing on the row, and a cheer's frame carries it.
+		expect((await cheer({ PlayerIdTo: '7140', CheerCategory: '0' }, '7141')).status).toBe(200)
+		expect(await reputationOf(7140)).toMatchObject({ CheerGeneral: 1 })
+		expect(await getReputation(env.DB, 7140)).toMatchObject({
+			SelectedCheer: CheerCategory.GreatHost,
+		})
+
+		// -1 (`None`) unpins, read back as 0; a made-up category is refused.
+		expect(await (await pin('-1', '7140')).json()).toEqual({ Success: true, Message: null })
+		expect(await getReputation(env.DB, 7140)).toMatchObject({ SelectedCheer: 0 })
+		expect(await (await pin('7', '7140')).json()).toEqual({
+			Success: false,
+			Message: 'CheerCategory is not a cheer category',
+		})
+		expect(await pin('0', '7140').then((r) => r.status)).toBe(200)
+		expect(
+			(
+				await exports.default.fetch(`${ORIGIN}/api/PlayerCheer/v1/SetSelectedCheer`, {
+					method: 'POST',
+					body: new URLSearchParams({ CheerCategory: '0' }),
+				})
+			).status
+		).toBe(401)
+	})
+
+	test('cheering needs a token', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/PlayerCheer/v1/create`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({ PlayerIdTo: '7101', CheerCategory: '0' }),
+		})
+		expect(res.status).toBe(401)
+	})
+
+	test('the daily credit runs out and refills a day after the FIRST cheer', async () => {
+		// Driven through spendCheerCredit with an injected clock: burning 20 cheers over HTTP
+		// says nothing more than this does, and the rollover can't be tested any other way.
+		const start = new Date('2026-08-25T09:00:00.000Z')
+		const at = (hours: number) => new Date(start.getTime() + hours * 60 * 60 * 1000)
+
+		// The first spend opens the window; the credit counts down to nothing.
+		for (let spent = 1; spent <= DAILY_CHEER_CREDIT; spent++) {
+			// Spread across the window — spending inside it must not slide the deadline.
+			expect(await spendCheerCredit(env.DB, 7110, at(spent === 1 ? 0 : 12))).toBe(
+				DAILY_CHEER_CREDIT - spent
+			)
+		}
+		expect(await spendCheerCredit(env.DB, 7110, at(12))).toBeNull()
+		expect(await getCheerCredit(env.DB, 7110, at(12))).toBe(0)
+
+		// 23 hours in, still empty: the window is measured from the first cheer, not the last.
+		expect(await spendCheerCredit(env.DB, 7110, at(23))).toBeNull()
+
+		// A day after that first cheer it refills — lazily, on the spend itself, so nothing
+		// has to run on a schedule.
+		expect(await getCheerCredit(env.DB, 7110, at(24.5))).toBe(DAILY_CHEER_CREDIT)
+		expect(await spendCheerCredit(env.DB, 7110, at(24.5))).toBe(DAILY_CHEER_CREDIT - 1)
+		expect(await getCheerCredit(env.DB, 7110, at(25))).toBe(DAILY_CHEER_CREDIT - 1)
+	})
+
+	test('a player out of credit is refused, and the target keeps their counters', async () => {
+		// Empty 7106's credit directly, then try to cheer over HTTP.
+		for (let i = 0; i < DAILY_CHEER_CREDIT; i++) await spendCheerCredit(env.DB, 7106)
+		const res = await cheer({ PlayerIdTo: '7107', CheerCategory: '10' }, '7106')
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({
+			Success: false,
+			Message: 'You are out of cheers for today',
+		})
+		expect(await reputationOf(7107)).toMatchObject({ CheerHelpful: 0 })
 	})
 
 	test('GET /api/activities/charades/v1/words/Charades returns the word bank', async () => {
@@ -581,22 +954,168 @@ describe('public endpoints', () => {
 		expect(await res.json()).toBe(true)
 	})
 
-	test('GET /api/customAvatarItems/v1/featured returns []', async () => {
+	test('GET /api/customAvatarItems/v1/featured lists flagged, published items, newest first', async () => {
+		await env.DB.prepare('DELETE FROM custom_avatar_item').run()
+		const older = await createCustomAvatarItem(
+			env.DB,
+			item('Older', 1),
+			new Date('2026-08-01T00:00:00Z')
+		)
+		const newer = await createCustomAvatarItem(
+			env.DB,
+			item('Newer', 1),
+			new Date('2026-08-02T00:00:00Z')
+		)
+		const unpublished = await createCustomAvatarItem(env.DB, item('Unpublished', 0))
+		const unflagged = await createCustomAvatarItem(env.DB, item('Unflagged', 1))
+		// Nothing flags items yet, so flag straight in the table — the unflagged one stays.
+		await env.DB.prepare(
+			'UPDATE custom_avatar_item SET is_featured = 1 WHERE custom_avatar_item_id != ?1'
+		)
+			.bind(unflagged.CustomAvatarItemId)
+			.run()
+
 		const res = await exports.default.fetch(`${ORIGIN}/api/customAvatarItems/v1/featured`)
 		expect(res.status).toBe(200)
+		const got = (await res.json()) as Array<{ CustomAvatarItemId: string; Name: string }>
+		expect(got.map((i) => i.CustomAvatarItemId)).toEqual([
+			newer.CustomAvatarItemId,
+			older.CustomAvatarItemId,
+		])
+		expect(got.map((i) => i.CustomAvatarItemId)).not.toContain(unpublished.CustomAvatarItemId)
+		expect(got[0]).toMatchObject({ Name: 'Newer', IsFeatured: true, CurrentSaves: [] })
+
+		function item(name: string, accessibility: number) {
+			return {
+				customAvatarItemId: crypto.randomUUID(),
+				creatorAccountId: 205,
+				name,
+				description: '',
+				price: 0,
+				baseAvatarItemId: 1,
+				baseAvatarItemColor: '#fff',
+				accessibility,
+				designFilename: 'design_x.bin',
+				thumbnailImageFilename: 'thumb_x.png',
+			}
+		}
+	})
+
+	test('GET /api/inventions/v1/featureddormskins returns []', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/inventions/v1/featureddormskins`)
+		expect(res.status).toBe(200)
 		expect(await res.json()).toEqual([])
 	})
 
-	test('GET /api/customAvatarItems/v1/hot returns []', async () => {
+	test('GET /api/customAvatarItems/v1/hot lists the published items, newest first', async () => {
+		await env.DB.prepare('DELETE FROM custom_avatar_item').run()
+		const empty = await exports.default.fetch(`${ORIGIN}/api/customAvatarItems/v1/hot`)
+		expect(empty.status).toBe(200)
+		expect(await empty.json()).toEqual([])
+
+		const older = await createCustomAvatarItem(
+			env.DB,
+			item('Older', 1),
+			new Date('2026-08-01T00:00:00Z')
+		)
+		const newer = await createCustomAvatarItem(
+			env.DB,
+			item('Newer', 1),
+			new Date('2026-08-02T00:00:00Z')
+		)
+		const unpublished = await createCustomAvatarItem(env.DB, item('Unpublished', 0))
+
 		const res = await exports.default.fetch(`${ORIGIN}/api/customAvatarItems/v1/hot`)
 		expect(res.status).toBe(200)
-		expect(await res.json()).toEqual([])
+		const got = (await res.json()) as Array<{ CustomAvatarItemId: string; Name: string }>
+		// Unfeatured but published: the hot feed does not care about the featured flag.
+		expect(got.map((i) => i.CustomAvatarItemId)).toEqual([
+			newer.CustomAvatarItemId,
+			older.CustomAvatarItemId,
+		])
+		expect(got.map((i) => i.CustomAvatarItemId)).not.toContain(unpublished.CustomAvatarItemId)
+		expect(got[0]).toMatchObject({ Name: 'Newer', IsFeatured: false, CurrentSaves: [] })
+
+		function item(name: string, accessibility: number) {
+			return {
+				customAvatarItemId: crypto.randomUUID(),
+				creatorAccountId: 205,
+				name,
+				description: '',
+				price: 0,
+				baseAvatarItemId: 1,
+				baseAvatarItemColor: '#fff',
+				accessibility,
+				designFilename: 'design_x.bin',
+				thumbnailImageFilename: 'thumb_x.png',
+			}
+		}
 	})
 
-	test('GET /api/customAvatarItems/v2/fromCreator/:id returns an empty paginated result', async () => {
-		const res = await exports.default.fetch(`${ORIGIN}/api/customAvatarItems/v2/fromCreator/2`)
-		expect(res.status).toBe(200)
-		expect(await res.json()).toEqual({ Results: [], TotalResults: 0 })
+	test('GET /api/customAvatarItems/v2/fromCreator/:id shows unpublished items only to the creator', async () => {
+		await env.DB.prepare('DELETE FROM custom_avatar_item').run()
+		const base = {
+			description: '',
+			price: 0,
+			baseAvatarItemId: 1,
+			baseAvatarItemColor: '#fff',
+			designFilename: 'design_x.bin',
+			thumbnailImageFilename: 'thumb_x.png',
+		}
+		const pub = await createCustomAvatarItem(
+			env.DB,
+			{
+				...base,
+				customAvatarItemId: crypto.randomUUID(),
+				creatorAccountId: 205,
+				name: 'Published',
+				accessibility: 1,
+			},
+			new Date('2026-08-01T00:00:00Z')
+		)
+		const draft = await createCustomAvatarItem(
+			env.DB,
+			{
+				...base,
+				customAvatarItemId: crypto.randomUUID(),
+				creatorAccountId: 205,
+				name: 'Draft',
+				accessibility: 0,
+			},
+			new Date('2026-08-02T00:00:00Z')
+		)
+		await createCustomAvatarItem(env.DB, {
+			...base,
+			customAvatarItemId: crypto.randomUUID(),
+			creatorAccountId: 9,
+			name: 'Other',
+			accessibility: 0,
+		})
+
+		type Page = { Results: Array<{ CustomAvatarItemId: string }>; TotalResults: number }
+		const url = `${ORIGIN}/api/customAvatarItems/v2/fromCreator/205`
+
+		// Anonymous, or someone else: only the published (Accessibility != 0) item.
+		for (const headers of [{}, await bearer('9')]) {
+			const res = await exports.default.fetch(url, { headers })
+			expect(res.status).toBe(200)
+			const page = (await res.json()) as Page
+			expect(page.TotalResults).toBe(1)
+			expect(page.Results.map((i) => i.CustomAvatarItemId)).toEqual([pub.CustomAvatarItemId])
+		}
+
+		// The creator: their unpublished item too, newest first.
+		const own = (await (
+			await exports.default.fetch(url, { headers: await bearer('205') })
+		).json()) as Page
+		expect(own.TotalResults).toBe(2)
+		expect(own.Results.map((i) => i.CustomAvatarItemId)).toEqual([
+			draft.CustomAvatarItemId,
+			pub.CustomAvatarItemId,
+		])
+
+		const none = await exports.default.fetch(`${ORIGIN}/api/customAvatarItems/v2/fromCreator/2`)
+		expect(await none.json()).toEqual({ Results: [], TotalResults: 0 })
 	})
 
 	// Nothing locks avatar items here, so the array is empty and the posted ids are never
@@ -670,20 +1189,10 @@ describe('public endpoints', () => {
 		const res = await exports.default.fetch(`${ORIGIN}/outfits/me`, { headers: await bearer('77') })
 		expect(res.status).toBe(200)
 		expect(await res.json()).toEqual({
-			LegacyData: {
-				SelectionsV1: null,
-				SelectionsV2: null,
-				FaceFeatures: null,
-				SkinColor: null,
-				HairColor: null,
-			},
-			Selections: [],
-			DataVersion: 9,
-			CustomizationSettings: null,
-			ThumbnailFileName: null,
-			Name: null,
-			Accessibility: 0,
-			Slot: 0,
+			FaceFeatures: '',
+			HairColor: '',
+			OutfitSelections: '',
+			SkinColor: '',
 		})
 	})
 
@@ -763,6 +1272,91 @@ describe('public endpoints', () => {
 		})
 		expect(res.status).toBe(200)
 		expect(await res.json()).toEqual([])
+	})
+
+	test('POST /outfits/bulk serves each account’s worn outfit, keyed by id', async () => {
+		const bulk = async (body: unknown, sub?: string) =>
+			exports.default.fetch(`${ORIGIN}/outfits/bulk`, {
+				method: 'POST',
+				headers: {
+					...(sub === undefined ? {} : await bearer(sub)),
+					'content-type': 'application/json',
+				},
+				body: JSON.stringify(body),
+			})
+
+		// Two accounts with a saved outfit, and one with none.
+		const outfitFor = (skin: string) => ({
+			DataVersion: 2,
+			LegacyData: {
+				SelectionsV1: '193a3bf9-abc0-4d78-8d63-92046908b1c5,,0',
+				SelectionsV2: '{"selections":[]}',
+				FaceFeatures: '{"ver":7}',
+				SkinColor: skin,
+				HairColor: 'UAT0OaWEkUG-mWDIyiX1Kg',
+			},
+			CustomizationSettings: '{"AvatarVersion":2,"AvatarBodyType":0}',
+			Selections: [],
+			Slot: 0,
+			Name: '',
+			Accessibility: 1,
+			ThumbnailFileName: null,
+		})
+		const saved = new Map([
+			[187, outfitFor('skin-187')],
+			[220, outfitFor('skin-220')],
+		])
+		for (const [accountId, outfit] of saved) {
+			const res = await exports.default.fetch(`${ORIGIN}/outfits/me`, {
+				method: 'PUT',
+				headers: { ...(await bearer(String(accountId))), 'content-type': 'application/json' },
+				body: JSON.stringify(outfit),
+			})
+			expect(res.status).toBe(200)
+		}
+
+		expect((await bulk({ AccountIds: [187] })).status).toBe(401)
+
+		const res = await bulk(
+			{ AccountIds: [187, 220], UnityAssetTarget: null, UnityAssetVersion: null },
+			'42'
+		)
+		expect(res.status).toBe(200)
+		// A map keyed by the account id as a STRING, each value the outfit exactly as saved —
+		// the JSON-in-a-string fields are still strings.
+		expect(await res.json()).toEqual({
+			OutfitsByAccountId: {
+				'187': saved.get(187),
+				'220': saved.get(220),
+			},
+		})
+
+		// An account with nothing saved is ABSENT rather than carrying a null, and a repeated
+		// id collapses instead of appearing twice.
+		const sparse = await bulk({ AccountIds: [187, 999888, 187] }, '42')
+		expect(await sparse.json()).toEqual({ OutfitsByAccountId: { '187': saved.get(187) } })
+
+		// No ids is an empty map, not every outfit on the server.
+		expect(await (await bulk({ AccountIds: [] }, '42')).json()).toEqual({ OutfitsByAccountId: {} })
+
+		// 99 distinct accounts is the most one request may name — one query, one round trip.
+		const atCap = [...Array.from({ length: 98 }, (_, i) => 500000 + i), 220]
+		expect(await (await bulk({ AccountIds: atCap }, '42')).json()).toEqual({
+			OutfitsByAccountId: { '220': saved.get(220) },
+		})
+		// One more is refused rather than answered in part, which would read as "those
+		// accounts have no outfit". Duplicates don't count against the cap.
+		expect((await bulk({ AccountIds: [...atCap, 500999] }, '42')).status).toBe(400)
+		expect((await bulk({ AccountIds: [...atCap, ...atCap] }, '42')).status).toBe(200)
+
+		// An unparseable body is a 400, like the save's. (A body that parses but isn't an
+		// object — a bare string, say — names no accounts and so answers an empty map.)
+		const bad = await exports.default.fetch(`${ORIGIN}/outfits/bulk`, {
+			method: 'POST',
+			headers: { ...(await bearer('42')), 'content-type': 'application/json' },
+			body: 'not json',
+		})
+		expect(bad.status).toBe(400)
 	})
 
 	test('PUT /outfits/me 400s on an unparseable body', async () => {
@@ -950,6 +1544,67 @@ describe('public endpoints', () => {
 			own.InventionId,
 			bought.InventionId,
 		])
+	})
+
+	test('POST /api/inventions/v1/report files a report row against the invention', async () => {
+		// 5150 saves an invention; 42 reports it. The creator is derived from the invention,
+		// so the reporter never gets to name who the report is against.
+		const save = await exports.default.fetch(`${ORIGIN}/api/inventions/v6/save`, {
+			method: 'POST',
+			headers: { ...(await bearer('5150')), 'Content-Type': 'application/json' },
+			body: JSON.stringify({ name: 'Reportable', inventionDataFilename: 'blob' }),
+		})
+		const inventionId = ((await save.json()) as InventionSaveResult).Invention.InventionId
+
+		const res = await exports.default.fetch(`${ORIGIN}/api/inventions/v1/report`, {
+			method: 'POST',
+			headers: { ...(await bearer('42')), 'Content-Type': 'application/json' },
+			body: JSON.stringify({ InventionId: inventionId, Details: 'test', ReportCategory: 0 }),
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ success: true, error: '' })
+
+		// One row in the shared report table, marked as an invention report by `invention_id`,
+		// with the reported player filled in FROM the invention. `room_id` stays null: an
+		// invention isn't tied to one room the way an event is, so there is nothing to read.
+		const row = await env.DB.prepare('SELECT * FROM report WHERE invention_id = ?1')
+			.bind(inventionId)
+			.first<Record<string, unknown>>()
+		expect(row).toMatchObject({
+			reporter_player_id: 42,
+			reported_player_id: 5150, // the invention's creator
+			report_category: 0,
+			details: 'test',
+			invention_id: inventionId,
+			event_id: null, // the two id columns are mutually exclusive
+			room_id: null,
+			banned: 0, // filed unbanned, like any report
+		})
+
+		// A body with no usable invention id, and one naming an invention that doesn't exist —
+		// both answer the same envelope shape as the success branch.
+		const noId = await exports.default.fetch(`${ORIGIN}/api/inventions/v1/report`, {
+			method: 'POST',
+			headers: { ...(await bearer('42')), 'Content-Type': 'application/json' },
+			body: JSON.stringify({ Details: 'x' }),
+		})
+		expect(noId.status).toBe(400)
+		expect(await noId.json()).toEqual({ success: false, error: 'InventionId is required' })
+
+		const unknown = await exports.default.fetch(`${ORIGIN}/api/inventions/v1/report`, {
+			method: 'POST',
+			headers: { ...(await bearer('42')), 'Content-Type': 'application/json' },
+			body: JSON.stringify({ InventionId: 999999 }),
+		})
+		expect(unknown.status).toBe(404)
+		expect(await unknown.json()).toEqual({ success: false, error: 'No such invention' })
+
+		// Auth-gated: the reporter comes from the token, so there's no filing one signed out.
+		const anon = await exports.default.fetch(`${ORIGIN}/api/inventions/v1/report`, {
+			method: 'POST',
+			body: JSON.stringify({ InventionId: inventionId }),
+		})
+		expect(anon.status).toBe(401)
 	})
 
 	test('POST /api/inventions/v6/save 401s without a bearer token', async () => {
@@ -1919,6 +2574,231 @@ describe('auth-gated endpoints', () => {
 	test('401 with a garbage token', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/api/consumables/v2/getUnlocked`, {
 			headers: { Authorization: 'Bearer not-a-real-token' },
+		})
+		expect(res.status).toBe(401)
+	})
+})
+
+describe('custom avatar items', () => {
+	test('minPriceForPublicItem is a bare 100', async () => {
+		const res = await exports.default.fetch(
+			`${ORIGIN}/api/customAvatarItems/v1/minPriceForPublicItem`
+		)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toBe(100)
+	})
+
+	test('POST creates an item from the multipart form and returns it', async () => {
+		const form = new FormData()
+		form.set(
+			'metadata',
+			JSON.stringify({
+				Name: 'custom shirt 1',
+				Description: 'custom shirt 2',
+				Price: 0,
+				BaseAvatarItemId: 2184,
+				BaseAvatarItemColor: '#F55C1A',
+				Accessibility: 0,
+			})
+		)
+		form.set(
+			'thumbnailImage',
+			new File([new Uint8Array([1, 2, 3])], 'file.bin', { type: 'image/png' })
+		)
+		form.set('design', new File([new Uint8Array([4, 5, 6])], 'file.bin', { type: 'image/png' }))
+		const res = await exports.default.fetch(`${ORIGIN}/api/customAvatarItems/v1`, {
+			method: 'POST',
+			headers: await bearer('205'),
+			body: form,
+		})
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as {
+			Value: Record<string, unknown>
+			Success: boolean
+			Error: null
+			error_id: null
+		}
+		expect(body.Success).toBe(true)
+		expect(body.Error).toBeNull()
+		expect(body.error_id).toBeNull()
+		expect(body.Value).toMatchObject({
+			CreatorAccountId: 205,
+			Name: 'custom shirt 1',
+			Description: 'custom shirt 2',
+			Price: 0,
+			Accessibility: 0,
+			ForceCannotPublish: false,
+			IsFeatured: false,
+			IsRecRoomApproved: false,
+			BaseAvatarItemId: 2184,
+			BaseAvatarItemColor: '#F55C1A',
+			PreviewOrientation: 0,
+			RankingContext: null,
+			OutfitType: 0,
+			CurrentSaves: [],
+			PurchaseInfo: null,
+		})
+		const itemId = body.Value.CustomAvatarItemId as string
+		expect(itemId).toMatch(/^[0-9a-f-]{36}$/)
+		const date = (body.Value.CreatedAt as string).slice(0, 10)
+		expect(body.Value.ThumbnailImageFilename).toBe(`avatar-item/${date}/${itemId}-thumb.png`)
+		expect(body.Value.DesignFilename).toBe(`avatar-item/${date}/${itemId}-design.png`)
+		expect(body.Value.CreatedAt).toBe(body.Value.ModifiedAt)
+
+		// Both uploads landed in the image bucket under those keys.
+		const thumb = await env.IMAGES.get(body.Value.ThumbnailImageFilename as string)
+		expect(new Uint8Array((await thumb!.arrayBuffer()) as ArrayBuffer)).toEqual(
+			new Uint8Array([1, 2, 3])
+		)
+		expect(thumb!.httpMetadata?.contentType).toBe('image/png')
+		const design = await env.IMAGES.get(body.Value.DesignFilename as string)
+		expect(new Uint8Array((await design!.arrayBuffer()) as ArrayBuffer)).toEqual(
+			new Uint8Array([4, 5, 6])
+		)
+
+		const row = await env.DB.prepare(
+			'SELECT name, creator_account_id FROM custom_avatar_item WHERE custom_avatar_item_id = ?1'
+		)
+			.bind(body.Value.CustomAvatarItemId)
+			.first()
+		expect(row).toEqual({ name: 'custom shirt 1', creator_account_id: 205 })
+	})
+
+	test('PUT edits the creator’s item, leaving nulled fields alone', async () => {
+		const item = await createCustomAvatarItem(
+			env.DB,
+			{
+				customAvatarItemId: crypto.randomUUID(),
+				creatorAccountId: 205,
+				name: 'Visor',
+				description: 'shiny',
+				price: 0,
+				baseAvatarItemId: 1,
+				baseAvatarItemColor: '#fff',
+				accessibility: 0,
+				designFilename: 'd',
+				thumbnailImageFilename: 't',
+			},
+			new Date('2026-08-01T00:00:00Z')
+		)
+		const url = `${ORIGIN}/api/customAvatarItems/v1/${item.CustomAvatarItemId}`
+		const res = await exports.default.fetch(url, {
+			method: 'PUT',
+			headers: { ...(await bearer('205')), 'content-type': 'application/json' },
+			body: JSON.stringify({ Name: null, Description: null, Price: 100, Accessibility: 1 }),
+		})
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as {
+			Value: Record<string, unknown>
+			Success: boolean
+			Error: null
+		}
+		expect(body.Success).toBe(true)
+		expect(body.Value).toMatchObject({
+			CustomAvatarItemId: item.CustomAvatarItemId,
+			Name: 'Visor',
+			Description: 'shiny',
+			Price: 100,
+			Accessibility: 1,
+			CreatedAt: '2026-08-01T00:00:00.000Z',
+		})
+		expect(body.Value.ModifiedAt).not.toBe(item.ModifiedAt)
+
+		// Someone else can't edit it; an unknown id 404s; a bad type 400s.
+		const other = await exports.default.fetch(url, {
+			method: 'PUT',
+			headers: { ...(await bearer('9')), 'content-type': 'application/json' },
+			body: JSON.stringify({ Price: 5 }),
+		})
+		expect(other.status).toBe(403)
+		const missing = await exports.default.fetch(
+			`${ORIGIN}/api/customAvatarItems/v1/${crypto.randomUUID()}`,
+			{
+				method: 'PUT',
+				headers: { ...(await bearer('205')), 'content-type': 'application/json' },
+				body: JSON.stringify({ Price: 5 }),
+			}
+		)
+		expect(missing.status).toBe(404)
+		const bad = await exports.default.fetch(url, {
+			method: 'PUT',
+			headers: { ...(await bearer('205')), 'content-type': 'application/json' },
+			body: JSON.stringify({ Price: 'lots' }),
+		})
+		expect(bad.status).toBe(400)
+		expect(await bad.json()).toMatchObject({ Success: false, Value: null })
+		expect(await (await exports.default.fetch(url, { method: 'PUT' })).status).toBe(401)
+	})
+
+	test('DELETE removes the creator’s item and its bucket objects', async () => {
+		// Create through the endpoint so the objects really exist in the bucket.
+		const form = new FormData()
+		form.set(
+			'metadata',
+			JSON.stringify({ Name: 'Gone', BaseAvatarItemId: 1, BaseAvatarItemColor: '#fff' })
+		)
+		form.set('thumbnailImage', new File([new Uint8Array([1])], 'file.bin', { type: 'image/png' }))
+		form.set('design', new File([new Uint8Array([2])], 'file.bin', { type: 'image/png' }))
+		const created = (await (
+			await exports.default.fetch(`${ORIGIN}/api/customAvatarItems/v1`, {
+				method: 'POST',
+				headers: await bearer('205'),
+				body: form,
+			})
+		).json()) as {
+			Value: { CustomAvatarItemId: string; ThumbnailImageFilename: string; DesignFilename: string }
+		}
+		const { CustomAvatarItemId, ThumbnailImageFilename, DesignFilename } = created.Value
+		expect(await env.IMAGES.get(ThumbnailImageFilename)).not.toBeNull()
+		const url = `${ORIGIN}/api/customAvatarItems/v1/${CustomAvatarItemId}`
+
+		// Not the creator → 403 and nothing changes.
+		const other = await exports.default.fetch(url, { method: 'DELETE', headers: await bearer('9') })
+		expect(other.status).toBe(403)
+		expect(await env.IMAGES.get(ThumbnailImageFilename)).not.toBeNull()
+
+		const res = await exports.default.fetch(url, { method: 'DELETE', headers: await bearer('205') })
+		expect(res.status).toBe(200)
+		expect(await res.json()).toMatchObject({
+			Success: true,
+			Error: null,
+			Value: { CustomAvatarItemId, Name: 'Gone' },
+		})
+		expect(await env.IMAGES.get(ThumbnailImageFilename)).toBeNull()
+		expect(await env.IMAGES.get(DesignFilename)).toBeNull()
+		expect(
+			await env.DB.prepare('SELECT 1 FROM custom_avatar_item WHERE custom_avatar_item_id = ?1')
+				.bind(CustomAvatarItemId)
+				.first()
+		).toBeNull()
+
+		// Gone now → 404; no token → 401.
+		const again = await exports.default.fetch(url, {
+			method: 'DELETE',
+			headers: await bearer('205'),
+		})
+		expect(again.status).toBe(404)
+		expect((await exports.default.fetch(url, { method: 'DELETE' })).status).toBe(401)
+	})
+
+	test('POST 400s without the files', async () => {
+		const form = new FormData()
+		form.set(
+			'metadata',
+			JSON.stringify({ Name: 'x', BaseAvatarItemId: 1, BaseAvatarItemColor: '#fff' })
+		)
+		const res = await exports.default.fetch(`${ORIGIN}/api/customAvatarItems/v1`, {
+			method: 'POST',
+			headers: await bearer(),
+			body: form,
+		})
+		expect(res.status).toBe(400)
+		expect(await res.json()).toMatchObject({ Success: false, Value: null })
+	})
+
+	test('POST 401s without a token', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/customAvatarItems/v1`, {
+			method: 'POST',
 		})
 		expect(res.status).toBe(401)
 	})
@@ -3418,6 +4298,20 @@ describe('messages', () => {
 		expect(res.status).toBe(401)
 		expect(await pushed()).toEqual([])
 	})
+
+	test('POST /api/messages/v3/delete accepts anything with an empty 200', async () => {
+		// No message store, so no id can be real and nothing is gated — an unknown id, an
+		// empty list and a missing body all land the same way.
+		for (const body of [{ MessageIds: [1787377235629] }, { MessageIds: [] }, {}]) {
+			const res = await exports.default.fetch(`${ORIGIN}/api/messages/v3/delete`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(body),
+			})
+			expect(res.status).toBe(200)
+			expect(await res.text()).toBe('')
+		}
+	})
 })
 
 describe('mutual friends', () => {
@@ -3782,13 +4676,63 @@ describe('player events', () => {
 		const body = (await res.json()) as PlayerEventResult
 		expect(body.Result).toBe(0)
 		expect(body.PlayerEvent.Name).toBe('Enveloped')
-		// The tags ride inline on the event AND in TagModifyResult, as NAMES — not the
-		// `{ tag, type }` pairs the v1 read's lowercase `tags` serves.
-		expect(body.PlayerEvent.Tags).toEqual(['music'])
+		// The tags ride inline on the event AND in TagModifyResult. Inline they take the
+		// caller's build shape — this token names no build, so the 2023 `{ Tag, Type }` pairs
+		// (PascalCase: not the lowercase pairs the v1 read's `tags` serves). TagModifyResult
+		// is names to every build.
+		expect(body.PlayerEvent.Tags).toEqual([{ Tag: 'music', Type: 0 }])
 		expect(body.TagModifyResult).toEqual({ Result: 0, Tags: ['music'] })
 		// No `State`, and the broadcast instance is present and null.
 		expect(body.PlayerEvent).not.toHaveProperty('State')
 		expect(body.PlayerEvent.BroadcastingRoomInstanceId).toBeNull()
+	})
+
+	test('the v2 envelope shapes PlayerEvent.Tags per the caller’s build', async () => {
+		// Rec Room reshaped this field without minting a new path, so one endpoint owes two
+		// shapes: the 2023 build parses `{ Tag, Type }` pairs, the 2025 build bare names.
+		// Serving either to the wrong build empties the event's chips instead of erroring.
+		// A tag of this test's own: the `#tag` search tests assert exact result sets, and the
+		// four events below would join any set they share a tag with.
+		const PAIRS = [{ Tag: 'buildversions', Type: 0 }]
+		const NAMES = ['buildversions']
+
+		const created = async (version?: string) => {
+			const res = await exports.default.fetch(`${ORIGIN}/api/playerevents/v2`, {
+				method: 'POST',
+				headers: {
+					...(await bearer('42', undefined, version)),
+					'content-type': 'application/json',
+				},
+				body: JSON.stringify({ Name: 'Versioned', RoomId: 3, Tags: NAMES }),
+			})
+			expect(res.status).toBe(200)
+			return (await res.json()) as PlayerEventResult
+		}
+
+		// Newer than 20230414 is the 2025 client; that build, an older one, and a token naming
+		// no build at all are all the 2023 client. Builds are date-stamped, so they compare as
+		// strings.
+		expect((await created('20250718.01')).PlayerEvent.Tags).toEqual(NAMES)
+		expect((await created('20230414')).PlayerEvent.Tags).toEqual(PAIRS)
+		expect((await created('20220101')).PlayerEvent.Tags).toEqual(PAIRS)
+		const legacy = await created()
+		expect(legacy.PlayerEvent.Tags).toEqual(PAIRS)
+		// Only the inline field moves: TagModifyResult carries names to both builds.
+		expect(legacy.TagModifyResult).toEqual({ Result: 0, Tags: NAMES })
+
+		// The gate is on the ENVELOPE, not on the create: the read and the field edits answer
+		// the same shape, so a client that made an event and one opening it cold agree.
+		const eventId = legacy.PlayerEvent.PlayerEventId
+		const read = async (version?: string) =>
+			(
+				(await (
+					await exports.default.fetch(`${ORIGIN}/api/playerevents/v2/${eventId}`, {
+						headers: await bearer('42', undefined, version),
+					})
+				).json()) as PlayerEventResult
+			).PlayerEvent.Tags
+		expect(await read('20250718.01')).toEqual(NAMES)
+		expect(await read()).toEqual(PAIRS)
 	})
 
 	test('GET /api/playerevents/v2/:eventId serves the same envelope as the write', async () => {
@@ -4069,6 +5013,53 @@ describe('player events', () => {
 		// Started in an hour / finished already — neither is live.
 		expect(ids).not.toContain(upcoming.PlayerEventId)
 		expect(ids).not.toContain(pastEvent.PlayerEventId)
+	})
+
+	test('GET /api/playerevents/v1/room/:roomId serves that room’s current and upcoming events', async () => {
+		// A room of this test's own, so events other tests create can't drift into the shelf.
+		const soon = await create({
+			RoomId: 12,
+			Name: 'Room 12 Soon',
+			StartTime: at(2 * HOUR),
+			EndTime: at(3 * HOUR),
+		})
+		const running = await create({
+			RoomId: 12,
+			Name: 'Room 12 Running',
+			StartTime: at(-HOUR),
+			EndTime: at(HOUR),
+		})
+		const finished = await create({
+			RoomId: 12,
+			Name: 'Room 12 Finished',
+			StartTime: at(-3 * HOUR),
+			EndTime: at(-2 * HOUR),
+		})
+		const elsewhere = await create({
+			RoomId: 13,
+			Name: 'Room 13 Soon',
+			StartTime: at(HOUR),
+			EndTime: at(2 * HOUR),
+		})
+
+		const res = await get('/api/playerevents/v1/room/12')
+		expect(res.status).toBe(200)
+		const events = (await res.json()) as PlayerEvent[]
+
+		// Soonest first, and RUNNING counts as current: the filter is on the end time, so an
+		// event stays on the shelf until it is over rather than vanishing when it starts.
+		expect(events.map((e) => e.PlayerEventId)).toEqual([running.PlayerEventId, soon.PlayerEventId])
+		// A finished event is dropped — the shelf answers what you can still turn up to — and
+		// another room's event is not this room's business.
+		expect(events.map((e) => e.PlayerEventId)).not.toContain(finished.PlayerEventId)
+		expect(events.map((e) => e.PlayerEventId)).not.toContain(elsewhere.PlayerEventId)
+
+		// A bare array of the STORED record, like `/searchlive` and the multi-club shelf —
+		// not the base projection the browse feed serves, and not the single-club envelope.
+		expect(events[0]).toEqual(asRecord(running, null))
+
+		// A room with nothing scheduled, and a room id nothing knows about, are both empty.
+		expect(await (await get('/api/playerevents/v1/room/999999')).json()).toEqual([])
 	})
 
 	test('GET /api/playerevents/v1/clubs is a bare array; /club/:id is a paged envelope', async () => {
@@ -4467,12 +5458,9 @@ describe('player events', () => {
 
 		const res = await post(`/api/playerevents/v2/delete/${eventId}`, {})
 		expect(res.status).toBe(200)
-		// The envelope carries the event as it was, tags included — the caller can report
-		// what it removed.
-		const body = (await res.json()) as PlayerEventResult
-		expect(body.Result).toBe(0)
-		expect(body.PlayerEvent.PlayerEventId).toBe(eventId)
-		expect(body.PlayerEvent.Tags).toEqual(['meetup'])
+		// Both payload fields are null: the event is gone, so the envelope reports only that
+		// the delete succeeded. NOT the shape the other v2 routes answer with.
+		expect(await res.json()).toEqual({ PlayerEvent: null, Result: 0, TagModifyResult: null })
 
 		// Gone, and nothing left hanging off it: orphan RSVPs would keep being counted and
 		// orphan tags would keep answering `#tag` searches.
@@ -4625,7 +5613,10 @@ describe('player events', () => {
 
 		// A bare JSON array, not an object — and a replace, not a merge, so `meetup` goes.
 		const tagged = await edited(await putJson(path, ['tag1', '#Class']))
-		expect(tagged.Tags).toEqual(['class', 'tag1'])
+		expect(tagged.Tags).toEqual([
+			{ Tag: 'class', Type: 0 },
+			{ Tag: 'tag1', Type: 0 },
+		])
 		// The envelope's TagModifyResult reports the same set the client redraws chips from.
 		const body = (await (await putJson(path, ['workshops'])).json()) as PlayerEventResult
 		expect(body.TagModifyResult).toEqual({ Result: 0, Tags: ['workshops'] })
@@ -4728,6 +5719,7 @@ describe('openapi', () => {
 			)
 		)
 		expect([...documented].sort()).toEqual([
+			'DELETE /api/customAvatarItems/v1/{id}',
 			'DELETE /api/images/v1/deletesaved',
 			'DELETE /api/playerevents/v2/delete/{eventId}',
 			'GET /api/PlayerReporting/v1/moderationBlockDetails',
@@ -4745,6 +5737,7 @@ describe('openapi', () => {
 			'GET /api/customAvatarItems/v1/isCreationAllowedForAccount',
 			'GET /api/customAvatarItems/v1/isCreationEnabled',
 			'GET /api/customAvatarItems/v1/isRenderingEnabled',
+			'GET /api/customAvatarItems/v1/minPriceForPublicItem',
 			'GET /api/customAvatarItems/v2/fromCreator/{accountId}',
 			'GET /api/equipment/v2/getUnlocked',
 			'GET /api/gameconfigs/v1/all',
@@ -4760,6 +5753,7 @@ describe('openapi', () => {
 			'GET /api/inventions/v1',
 			'GET /api/inventions/v1/details',
 			'GET /api/inventions/v1/featured',
+			'GET /api/inventions/v1/featureddormskins',
 			'GET /api/inventions/v1/fromcreators',
 			'GET /api/inventions/v1/fulllineageowner',
 			'GET /api/inventions/v1/personaldetails/{inventionId}',
@@ -4784,6 +5778,7 @@ describe('openapi', () => {
 			'GET /api/playerevents/v1/bulk',
 			'GET /api/playerevents/v1/club/{clubId}',
 			'GET /api/playerevents/v1/clubs',
+			'GET /api/playerevents/v1/room/{roomId}',
 			'GET /api/playerevents/v1/search',
 			'GET /api/playerevents/v1/searchlive',
 			'GET /api/playerevents/v1/tagfilters',
@@ -4817,6 +5812,8 @@ describe('openapi', () => {
 			'GET /outfits/me',
 			'GET /outfits/me/saved',
 			'GET /voice/config',
+			'POST /api/PlayerCheer/v1/SetSelectedCheer',
+			'POST /api/PlayerCheer/v1/create',
 			'POST /api/PlayerReporting/v1/deviceId',
 			'POST /api/PlayerReporting/v1/hile',
 			'POST /api/PlayerReporting/v1/moderationBlockDetails',
@@ -4825,11 +5822,13 @@ describe('openapi', () => {
 			'POST /api/avatar/v1/lockeditems/bulk',
 			'POST /api/avatar/v2/gifts/generate',
 			'POST /api/customAvatarItems/GetCustomAvatarItemCurrentSavesForLegacyAvatarItems',
+			'POST /api/customAvatarItems/v1',
 			'POST /api/customAvatarItems/v1/bulk',
 			'POST /api/gamesight/event',
 			'POST /api/images/v1/cheer',
 			'POST /api/images/v4/uploadsaved',
 			'POST /api/images/v5/cheered/bulk',
+			'POST /api/inventions/v1/report',
 			'POST /api/inventions/v1/settags',
 			'POST /api/inventions/v1/update',
 			'POST /api/inventions/v1/updateprice',
@@ -4837,6 +5836,7 @@ describe('openapi', () => {
 			'POST /api/messages/v1/friendOnlineStatus',
 			'POST /api/messages/v1/sendMultiple',
 			'POST /api/messages/v2/send',
+			'POST /api/messages/v3/delete',
 			'POST /api/playerReputation/v1/bulk',
 			'POST /api/playerReputation/v2/bulk',
 			'POST /api/playerevents/v1/bulkInvite',
@@ -4862,7 +5862,9 @@ describe('openapi', () => {
 			'POST /api/sanitize/v1',
 			'POST /api/sanitize/v1/isPure',
 			'POST /api/v1/progression/bulk',
+			'POST /outfits/bulk',
 			'POST /statsigUserProperties',
+			'PUT /api/customAvatarItems/v1/{id}',
 			'PUT /api/playerevents/v2/{eventId}/accessibility',
 			'PUT /api/playerevents/v2/{eventId}/description',
 			'PUT /api/playerevents/v2/{eventId}/name',

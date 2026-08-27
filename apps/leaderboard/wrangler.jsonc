@@ -4,6 +4,18 @@
 	"main": "src/leaderboard.app.ts",
 	"compatibility_date": "2026-06-16",
 	"compatibility_flags": ["nodejs_compat"],
+	// Shared `recflare` D1 database. This worker owns the `leaderboard` table
+	// (migrations/), applied under its own migrations table so they don't clash with the
+	// other workers' migrations that share the database.
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "recflare",
+			"database_id": "local",
+			"migrations_dir": "migrations",
+			"migrations_table": "d1_migrations_leaderboard"
+		}
+	],
 	// Shared Secrets Store holding the HS256 JWT signing key. Every worker binds the
 	// same store as JWT_SECRET so tokens signed by `auth` verify here. The "local"
 	// store_id placeholder is replaced with RECFLARE_SECRETS_STORE at deploy time.

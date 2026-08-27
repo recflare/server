@@ -9,6 +9,8 @@ import {
 	SUBROOM_SCHEMA_DDL,
 } from '@repo/domain'
 
+import curatedLists from '../../../static/curated-lists.json'
+
 import type { Env } from '../../context'
 
 declare module 'cloudflare:test' {
@@ -240,38 +242,52 @@ it('serves one curated list object, not a collection', async () => {
 })
 
 it('serves every capture in static/curated-lists.json by name', async () => {
-	// One array holds every list, and each entry must be reachable by the keys the client
-	// asks with. `ImageName` must be a string even when empty — the client parses it into
-	// one — while `Description` may be null. The ids the client caches against have to be
-	// unique and reach it with their digits intact.
-	const names = [
-		'Discovery.PageSource.PlayExplore',
-		'Discovery.PageSource.PlayLibrary',
-		'RoomCategories.MoodPlaylists.AlgoEndpoint.FeelingLucky',
-	]
+	// Driven by the file itself, so a capture added to it is a capture this covers: each
+	// entry must be reachable by the three keys the client asks with, and come back as
+	// itself. The ids the client caches against have to be unique and reach it with their
+	// digits intact.
+	expect(curatedLists.length).toBeGreaterThan(0)
 	const seen = new Set<string>()
-	for (const name of names) {
-		const res = await SELF.fetch(`${ORIGIN}/curatedlists?creatorAccountId=1&type=7&name=${name}`)
+	for (const capture of curatedLists) {
+		const res = await SELF.fetch(
+			`${ORIGIN}/curatedlists?creatorAccountId=${capture.CreatorAccountId}` +
+				`&type=${capture.Type}&name=${capture.Name}`
+		)
 		expect(res.status).toBe(200)
 		const body = await res.text()
 		// Never a quoted id: the client's field is a number.
 		expect(body).toMatch(/"ListId":\d+,/)
-		const list = JSON.parse(body) as {
-			ListId: number
-			Type: number
-			Name: string
-			ItemIds: string[]
-			Description: string | null
-			ImageName: string
-		}
-		expect(list.Name).toBe(name)
-		expect(list.Type).toBe(7)
-		expect(list.ItemIds.length).toBeGreaterThan(0)
-		expect(typeof list.ImageName).toBe('string')
+		const { ListId: _id, ...rest } = JSON.parse(body) as Record<string, unknown>
+		const { ListId: _captured, ...expected } = capture as Record<string, unknown>
+		expect(rest).toEqual(expected)
+		expect((capture.ItemIds as string[]).length).toBeGreaterThan(0)
 		const id = /"ListId":(\d+),/.exec(body)?.[1]
+		expect(id).toBe(capture.ListId)
 		expect(seen.has(id!)).toBe(false)
 		seen.add(id!)
 	}
+})
+
+it('serves the RoomGenreTags capture with its tag names', async () => {
+	// Genre NAMES, not room or section ids — and the one capture with a null `ImageName`,
+	// since the client draws no tile for it. Served under type 5, where the other captures
+	// are type 7.
+	const res = await SELF.fetch(
+		`${ORIGIN}/curatedlists?creatorAccountId=1&type=5&name=RoomGenreTags`
+	)
+	expect(res.status).toBe(200)
+	const body = await res.text()
+	expect(body).toContain('"ListId":1')
+	expect(JSON.parse(body)).toEqual({
+		ListId: 1,
+		CreatorAccountId: 1,
+		Name: 'RoomGenreTags',
+		Description: '',
+		ImageName: null,
+		Type: 5,
+		ItemIds: ['quest', 'battle', 'roleplay', 'horror', 'hangout', 'casual', 'explore'],
+		CreatedAt: '2026-01-01T00:00:00Z',
+	})
 })
 
 it('matches the name case-insensitively and prefers it over the type', async () => {
@@ -294,24 +310,30 @@ it('matches the name case-insensitively and prefers it over the type', async () 
 	expect(((await explore.json()) as { Name: string }).Name).toBe('Discovery.PageSource.PlayExplore')
 })
 
-it('falls back to the default list for a name it has nothing under', async () => {
-	// The store's Featured page asks for its rows by the reference's numeric list id rather
-	// than by a name — nothing here is called that, and nothing is captured under its type
-	// either, so the default list answers. An empty body or a 404 would render as a blank
-	// page rather than an error.
-	const explore = await (
-		await SELF.fetch(`${ORIGIN}/curatedlists?name=Discovery.PageSource.PlayExplore`)
-	).text()
-
+it('404s for a name it has nothing under', async () => {
+	// A name nothing matches is a list that does not exist. It used to answer with the
+	// default capture, which put one page's rows under another page's heading — content that
+	// looks real, where a 404 says plainly there is no such list. `17859340` is the store
+	// Featured page's own lookup (by the reference's numeric list id) and gets the same
+	// answer: nothing here is called that.
 	for (const query of [
+		'?creatorAccountId=1&type=5&name=Internal_Medieval_Items',
 		'?creatorAccountId=1&type=4&name=17859340',
 		'?type=99&name=Nope',
-		'?creatorAccountId=7&type=&name=',
-		'',
+		'?type=7&name=Discovery.PageSource.NotAPage',
 	]) {
-		const bare = await SELF.fetch(`${ORIGIN}/curatedlists${query}`)
-		expect(bare.status).toBe(200)
-		expect(await bare.text()).toBe(explore)
+		const res = await SELF.fetch(`${ORIGIN}/curatedlists${query}`)
+		expect(res.status).toBe(404)
+	}
+
+	// Naming NO list is not a miss — it asks for the page default, and only the type says
+	// which page. Without a type there is no page either, so that 404s too.
+	const byType = await SELF.fetch(`${ORIGIN}/curatedlists?creatorAccountId=1&type=7`)
+	expect(byType.status).toBe(200)
+	expect(((await byType.json()) as { Name: string }).Name).toBe('Discovery.PageSource.PlayExplore')
+
+	for (const query of ['?creatorAccountId=7&type=&name=', '']) {
+		expect((await SELF.fetch(`${ORIGIN}/curatedlists${query}`)).status).toBe(404)
 	}
 })
 
@@ -451,16 +473,14 @@ it('answers an unowned reserved list EMPTY rather than with the default page', a
 	expect(typeof list.ImageName).toBe('string')
 })
 
-it('still falls back to the default page for a NON-reserved unknown name', async () => {
-	// The reserved-name carve-out must not swallow the store's Featured lookup, which asks
-	// by numeric list id and depends on the default answering.
-	const explore = await (
-		await SELF.fetch(`${ORIGIN}/curatedlists?name=Discovery.PageSource.PlayExplore`)
-	).text()
+it('404s for a NON-reserved unknown name', async () => {
+	// The empty-list answer is the reserved prefix's alone: a name a player did not reserve
+	// and this server has nothing under is missing, not empty. An empty list would have the
+	// client render a real but blank row for a page that does not exist here.
 	const featured = await SELF.fetch(
 		`${ORIGIN}/curatedlists?creatorAccountId=1&type=4&name=17859340`
 	)
-	expect(await featured.text()).toBe(explore)
+	expect(featured.status).toBe(404)
 })
 
 it('prefers a player’s stored list over a capture of the same name', async () => {
@@ -613,19 +633,39 @@ it('serves a discovery row from /algorithmiclists', async () => {
 	)
 	expect(res.status).toBe(200)
 	// `Type` is echoed from the query — it says what the ids ARE (1 = rooms), so the client
-	// resolves them against the right service. Ids are STRINGS even though a room id is a
-	// number, and `Context` (the ranking attribution) is null: nothing ranks anything here
-	// yet, so every row serves rooms 2–6.
-	expect(await res.json()).toEqual({
-		Type: 1,
+	// resolves them against the right service. Nothing ranks this row, so it answers 200 with
+	// NO entities: the client hides an empty carousel, where a 404 would show it as one that
+	// failed to load.
+	expect(await res.json()).toEqual({ Type: 1, Entities: [] })
+})
+
+it('serves the hand-picked summerpartycarousel row', async () => {
+	// The store's "Medieval Masterpieces from the Community" carousel, which the client asks
+	// for by the section's `sourceMetadata` slug and with `?type=5` (Generic). Nothing ranks
+	// store items here, so the row is a fixed id list — same entity shape as any other row,
+	// ids as STRINGS and `Context` null.
+	const res = await SELF.fetch(`${ORIGIN}/algorithmiclists/summerpartycarousel?type=5`)
+	expect(res.status).toBe(200)
+	const expected = {
+		Type: 5,
 		Entities: [
-			{ Id: '2', Context: null },
-			{ Id: '3', Context: null },
-			{ Id: '4', Context: null },
-			{ Id: '5', Context: null },
-			{ Id: '6', Context: null },
+			{ Id: '257', Context: null },
+			{ Id: '192', Context: null },
+			{ Id: '641', Context: null },
+			{ Id: '657', Context: null },
 		],
-	})
+	}
+	expect(await res.json()).toEqual(expected)
+
+	// Looked up folded, like every other row key: the casing is the reference's, not ours.
+	const cased = await SELF.fetch(`${ORIGIN}/algorithmiclists/SummerPartyCarousel?type=5`)
+	expect(await cased.json()).toEqual(expected)
+
+	// The store Clothing page's "New" carousel serves the same placeholder items — both are
+	// store rows nothing ranks yet, so they share one id list rather than drifting apart.
+	const newItems = await SELF.fetch(`${ORIGIN}/algorithmiclists/newitems?type=5`)
+	expect(newItems.status).toBe(200)
+	expect(await newItems.json()).toEqual(expected)
 })
 
 it('serves the live hot-room ranking for /algorithmiclists/HotList', async () => {
@@ -827,10 +867,10 @@ it('echoes the requested type and answers an unknown row', async () => {
 	const other = await SELF.fetch(`${ORIGIN}/algorithmiclists/Nothing_Ranks_This_Row?type=4`)
 	expect(other.status).toBe(200)
 	const body = (await other.json()) as { Type: number; Entities: unknown[] }
-	// An unknown row key still gets the canned entities: a 404 renders as a row that failed
-	// to load rather than an empty one.
+	// An unknown row key answers 200 with no entities rather than 404ing: a failed request
+	// renders as a row that failed to load, an empty one as a row the client hides.
 	expect(body.Type).toBe(4)
-	expect(body.Entities).toHaveLength(5)
+	expect(body.Entities).toEqual([])
 
 	// No `type` at all falls back to Rooms (1), the only one the client asks for — falling
 	// back to the enum's zero value would have the row resolve room ids as ACCOUNTS.
@@ -911,4 +951,22 @@ it('serves the rows when there are more rooms than D1 allows bound parameters', 
 
 	await env.DB.prepare('DELETE FROM room WHERE room_id >= ?1').bind(FIRST).run()
 	await env.DB.prepare('DELETE FROM room_tag WHERE room_id >= ?1').bind(FIRST).run()
+})
+
+it('generates a spec with no dangling $refs', async () => {
+	const res = await SELF.fetch(`${ORIGIN}/openapi.json`)
+	expect(res.status).toBe(200)
+	const spec = (await res.json()) as { paths: Record<string, unknown> }
+	expect(Object.keys(spec.paths)).toEqual(
+		expect.arrayContaining([
+			'/curatedlists',
+			'/curatedlists/bulk',
+			'/curatedlists/{name}/items/{itemId}/createlistifneeded',
+			'/algorithmiclists/{list}',
+			'/contextualfeatures',
+		])
+	)
+	// The spec route keeps itself out of its own output.
+	expect(Object.keys(spec.paths)).not.toContain('/openapi.json')
+	expect(JSON.stringify(spec).match(/\$ref/g)).toBeNull()
 })

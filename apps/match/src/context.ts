@@ -53,6 +53,18 @@ export type Env = SharedHonoEnv & {
 	/** The Photon Chat application id. Optional; see {@link Env.PHOTON_REALTIME_APP_ID}. */
 	PHOTON_CHAT_APP_ID?: string
 	/**
+	 * The Tachyon voice server the client is handed as `voiceConnectionInfo` on
+	 * `GET /player/connection-info`, as `host:port` (e.g. `66.228.47.217:7777`).
+	 * Optional, and EMPTY when unset — no separate voice server. Not a secret (the
+	 * client receives it in the clear), so a plain var like the Photon ids.
+	 */
+	TACHYON_HOST_PORT?: string
+	/**
+	 * The id of that voice server, handed to the client as `voiceServerId` (e.g.
+	 * `server-1`). Optional; see {@link Env.TACHYON_HOST_PORT} — set both or neither.
+	 */
+	TACHYON_NAME?: string
+	/**
 	 * The Photon region every session is pinned to — both the region named in the connection
 	 * info and the one stamped on every room instance, which must agree. Optional; unlike the
 	 * app ids this DOES default (`us`, us-east1 in the QoS list), because an instance stamped

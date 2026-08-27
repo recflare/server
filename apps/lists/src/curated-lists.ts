@@ -79,9 +79,10 @@ const BY_TYPE_NAME = new Map<string, CuratedList>()
 /** By name alone, for a name whose `type` doesn't line up with what it is captured under. */
 const BY_NAME = new Map<string, CuratedList>()
 /**
- * By type alone: the page's DEFAULT list, which is what answers a `name` this server has
- * nothing under — the store's Featured page, for one, asks for its rows by the reference's
- * numeric list id (`name=17859340`) rather than by a name.
+ * By type alone: the page's DEFAULT list, which answers a request that names NO list — only
+ * a request that names none. A request that DOES name one and matches nothing is a miss and
+ * 404s; handing it the page default answers a question nobody asked, under a heading that
+ * belongs to another list.
  */
 const BY_TYPE = new Map<number, CuratedList>()
 
@@ -94,16 +95,6 @@ for (const list of CURATED_LISTS) {
 	// earliest in `static/curated-lists.json`.
 	if (!BY_TYPE.has(list.Type)) BY_TYPE.set(list.Type, list)
 }
-
-/**
- * What a request that matches nothing at all gets: the Play menu's Explore panel. An empty
- * body — or a 404 — renders as a blank page rather than an error, so answering with
- * SOMETHING is the better failure, and it is what the reference was observed doing for a
- * list it had nothing under. Falls back to whatever sits first if that capture is ever
- * dropped from the array.
- */
-const DEFAULT_CURATED_LIST =
-	BY_NAME.get(nameKey('Discovery.PageSource.PlayExplore')) ?? CURATED_LISTS[0]
 
 /**
  * The prefix the reference gives a list the CLIENT owns and creates for itself, rather than
@@ -140,28 +131,30 @@ function emptyReservedList(creatorAccountId: string | undefined, type: number, n
 
 /**
  * The list behind `GET /curatedlists?creatorAccountId=&type=&name=` once D1 has been asked
- * and had nothing — the static captures, resolved most-specific first and never empty.
+ * and had nothing — the static captures, resolved most-specific first. UNDEFINED when
+ * nothing matches, which the route turns into a 404: a name this server has nothing under
+ * is a list that does not exist, and answering it with an unrelated capture puts one page's
+ * rows under another page's heading.
  *
  * `type` is the `ListEntityType`: what the `ItemIds` ARE. (The client asks for
  * `__SavedForLater_Rooms` with `type=1`, Rooms, and every capture here is `type=7`,
  * DiscoverySection — which is exactly what their ItemIds hold. It is NOT the page-source
  * enum, whose 7 is PlayCategories and would make two of the three captures wrong.)
  *
- * The fallback chain ends at a real list because an empty body or a 404 renders as a blank
- * page, and the store's Featured tab depends on it: it asks for its rows by the reference's
- * numeric list id (`name=17859340`), which is nothing's name here.
+ * Two things still answer without a name match:
  *
- * A RESERVED name is the exception, and stops before that fallback. `__SavedForLater_Rooms`
- * is a name this server is meant to have nothing under until the player saves something, so
- * falling through would answer their empty Saved for Later row with the Play/Explore rows —
- * the default list, under someone else's heading. An empty list hides the row instead, which
- * is what its `minItemsToShowSection` asks for.
+ *  - A RESERVED name (`__SavedForLater_Rooms`), which comes back EMPTY rather than missing:
+ *    it is a list the client creates for itself, so "the player has saved nothing" is the
+ *    right answer until they do, and an empty list hides the row the way its
+ *    `minItemsToShowSection` asks for.
+ *  - A request naming no list at all, which gets the page default for its type — the only
+ *    list it could be asking for.
  */
 export function resolveCuratedList(
 	creatorAccountId: string | undefined,
 	type: string | undefined,
 	name: string | undefined
-): CuratedList {
+): CuratedList | undefined {
 	const key = nameKey(name ?? '')
 	const parsedType = Number.parseInt(type ?? '', 10)
 	const hasType = Number.isInteger(parsedType)
@@ -173,7 +166,6 @@ export function resolveCuratedList(
 		(isReservedListName(name)
 			? emptyReservedList(creatorAccountId, hasType ? parsedType : 0, name ?? '')
 			: undefined) ??
-		(hasType ? BY_TYPE.get(parsedType) : undefined) ??
-		DEFAULT_CURATED_LIST
+		(key === '' && hasType ? BY_TYPE.get(parsedType) : undefined)
 	)
 }

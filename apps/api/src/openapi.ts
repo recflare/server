@@ -50,6 +50,13 @@ export const UNAUTHORIZED_RESPONSE = { description: 'Missing or invalid bearer t
 /** Bearer-JWT security requirement, for the auth-gated routes. */
 export const AUTHED = [{ bearerAuth: [] }]
 
+/**
+ * A bearer token is honoured but not required: anonymous is a valid alternative. For routes
+ * that serve public data but show more to a known caller (a creator's own unpublished
+ * custom avatar items) instead of 401ing.
+ */
+export const OPTIONAL_AUTHED: OpenAPIV3_1.SecurityRequirementObject[] = [{}, { bearerAuth: [] }]
+
 /** An integer path parameter (ids are constrained to `[0-9]+` by the route pattern). */
 export function idParam(name: string, description: string): OpenAPIV3_1.ParameterObject {
 	return { name, in: 'path', required: true, description, schema: { type: 'integer' } }
@@ -90,6 +97,9 @@ export const JsonArray = z.array(z.unknown())
 
 /** A bare JSON boolean — several routes answer `true`/`false` with no envelope. */
 export const BareBoolean = z.boolean()
+
+/** A bare JSON integer (e.g. `/api/customAvatarItems/v1/minPriceForPublicItem`). */
+export const BareInteger = z.number().int()
 
 /** A bare JSON string (`POST /api/sanitize/v1` echoes one back). */
 export const BareString = z.string()
@@ -214,6 +224,15 @@ export const SendMultipleMessagesRequest = z.object({
 })
 
 /**
+ * `POST /api/messages/v3/delete` JSON body — the messages the client is dropping from
+ * its inbox. Ids are the `Id` of a stored message, which this server has never issued:
+ * with no message store the list is only ever echoed back as accepted.
+ */
+export const DeleteMessagesRequest = z.object({
+	MessageIds: z.array(z.int()).describe('Ids of the messages to delete'),
+})
+
+/**
  * `POST /api/messages/v1/friendOnlineStatus` — how many of the caller's friends are
  * online, wrapped in the client's `{ success, value }` envelope.
  */
@@ -241,16 +260,20 @@ export const MutualFriendDto = z.object({
 // ---- Progression -----------------------------------------------------------
 
 /**
- * A player's reputation (cheer counters). Nobody has earned cheers yet, so every
- * counter is 0 and everyone has their full credit. `SelectedCheer` is an int (0 = none),
- * not null, and `IsCheerful` is true — the client reads it to decide whether the player
- * may hand out cheers at all.
+ * A player's reputation (cheer counters), read from the `reputation` table. A player
+ * nobody has cheered yet has no row and reads back all-zero with full cheer credit.
+ * `SelectedCheer` is an int (0 = none), not null, and `IsCheerful` is a bool the client
+ * reads to decide whether the player may hand out cheers at all.
+ *
+ * `CheerCredit` is the odd one out: it is what the player has left to GIVE (out of 20 per
+ * day), not something they have received, and it comes from `player_cheer` rather than
+ * from the reputation row.
  */
 export const ReputationDto = z.object({
 	AccountId: z.int(),
 	IsCheerful: z.boolean(),
 	Noteriety: z.int(),
-	SelectedCheer: z.int().describe('0 = none selected'),
+	SelectedCheer: z.int().describe('The cheer pinned to the profile; 0 = none selected'),
 	CheerCredit: z.int(),
 	CheerGeneral: z.int(),
 	CheerHelpful: z.int(),
@@ -266,6 +289,113 @@ export const ProgressionDto = z.object({
 	PlayerId: z.int(),
 	Level: z.int(),
 	XP: z.int(),
+})
+
+/**
+ * The form body of `POST /api/PlayerCheer/v1/create`. Nothing here is stored beyond the
+ * counter the cheer increments: `Anonymous` is spent on the notification it triggers and
+ * `RoomId` is dropped outright — see the route.
+ */
+export const CheerPlayerRequest = z.object({
+	PlayerIdTo: z.string().describe('The account being cheered'),
+	CheerCategory: z
+		.string()
+		.describe('0 General, 10 Helpful, 20 Sportmanship, 30 GreatHost, 40 Creative'),
+	RoomId: z
+		.string()
+		.optional()
+		.describe(
+			'The room it happened in. Accepted but NOT used — the audience for the cheer’s ' +
+				'effect comes from the caller’s live presence, so a client cannot aim it at a room ' +
+				'it is not in'
+		),
+	Anonymous: z
+		.string()
+		.optional()
+		.describe(
+			'`True`/`False` (default `False`). Not stored — it picks the `PlayerCheerAnonymous` ' +
+				'message type (sender 0) over `PlayerCheer` for the frame that plays the cheer'
+		),
+})
+
+/** The form body of `POST /api/PlayerCheer/v1/SetSelectedCheer`. */
+export const SetSelectedCheerRequest = z.object({
+	CheerCategory: z
+		.string()
+		.describe(
+			'The category to pin: 0 General, 10 Helpful, 20 Sportmanship, 30 GreatHost, 40 Creative; -1 unpins'
+		),
+})
+
+/**
+ * What a cheer answers — the reference's PascalCase `{ Success, Message }`, NOT the
+ * lowercase `{ success, error }` envelope the reports use, and `Message` is NULL on success
+ * where that one sends an empty string. On a refusal it names the reason (out of credit,
+ * bad category, cheering yourself), which the client shows the player.
+ */
+export const CheerPlayerResponse = z.object({
+	Success: z.boolean(),
+	Message: z.string().nullable().describe('Null when the cheer landed'),
+})
+
+/** The `metadata` JSON field of a custom-avatar-item creation. */
+export const CreateCustomAvatarItemMetadata = z.object({
+	Name: z.string(),
+	Description: z.string().optional(),
+	Price: z.number().int().optional(),
+	BaseAvatarItemId: z.number().int(),
+	BaseAvatarItemColor: z.string().describe('Hex colour, e.g. `#F55C1A`'),
+	Accessibility: z.number().int().optional(),
+})
+
+/** The multipart body `POST /api/customAvatarItems/v1` takes. */
+export const CreateCustomAvatarItemRequest = z.object({
+	metadata: z.string().describe('JSON `CreateCustomAvatarItemMetadata`, posted as a text field'),
+	thumbnailImage: z.string().describe('The thumbnail PNG (binary file part)'),
+	design: z.string().describe('The design blob (binary file part)'),
+})
+
+/** The client's `CustomAvatarItem` record. */
+export const CustomAvatarItemDto = z.object({
+	CustomAvatarItemId: z.string(),
+	CreatorAccountId: z.number().int(),
+	Name: z.string(),
+	Description: z.string(),
+	Price: z.number().int(),
+	Accessibility: z.number().int(),
+	ForceCannotPublish: z.boolean(),
+	IsFeatured: z.boolean(),
+	IsRecRoomApproved: z.boolean(),
+	BaseAvatarItemId: z.number().int(),
+	BaseAvatarItemColor: z.string(),
+	DesignFilename: z.string(),
+	ThumbnailImageFilename: z.string(),
+	CreatedAt: z.string(),
+	ModifiedAt: z.string(),
+	PreviewOrientation: z.number().int(),
+	RankingContext: z.null(),
+	OutfitType: z.number().int(),
+	CurrentSaves: z.array(z.unknown()),
+	PurchaseInfo: z.null(),
+})
+
+/** The JSON body `PUT /api/customAvatarItems/v1/:id` takes; null leaves a field unchanged. */
+export const UpdateCustomAvatarItemRequest = z.object({
+	Name: z.string().nullable().optional(),
+	Description: z.string().nullable().optional(),
+	Price: z.number().int().nullable().optional(),
+	Accessibility: z.number().int().nullable().optional(),
+})
+
+/** A bare list of custom avatar items (the featured feed). */
+export const CustomAvatarItemList = z.array(CustomAvatarItemDto)
+
+/** The PascalCase `{ Value, Success, Error, error_id }` envelope custom-avatar-item routes answer with. */
+export const CustomAvatarItemResponse = z.object({
+	Value: CustomAvatarItemDto.nullable(),
+	Success: z.boolean(),
+	Error: z.string().nullable(),
+	error_id: z.string().nullable(),
 })
 
 /** The `Ids` form body the bulk POST endpoints take. */
@@ -449,7 +579,7 @@ export const BulkCustomAvatarItemsRequest = z.object({
 
 /** A paginated custom-avatar-item page (no storage yet, so always empty). */
 export const CustomAvatarItemsPage = z.object({
-	Results: JsonArray,
+	Results: CustomAvatarItemList,
 	TotalResults: z.int(),
 })
 
@@ -478,13 +608,8 @@ export const LegacyAvatarItemSaves = z.object({
 	customAvatarItemSavesByAvatarItemDesc: z.record(z.string(), CustomAvatarItemSave),
 })
 
-/**
- * `GET /outfits/me` — the outfit envelope. Either the outfit stored in slot 0, served
- * back exactly as it was saved, or (for a player who has never saved) the brand-new-
- * account form, where every field that would carry an outfit is null/empty and
- * `DataVersion` is 9.
- */
-export const OutfitsMeResponse = z.object({
+/** `GET /outfits/me` — the outfit stored in slot 0, served back exactly as it was saved. */
+export const StoredOutfit = z.object({
 	LegacyData: z.object({
 		SelectionsV1: z.string().nullable().describe('Semicolon-delimited legacy descriptors'),
 		SelectionsV2: z.string().nullable().describe('JSON-in-a-string: `{ selections: [...] }`'),
@@ -493,7 +618,7 @@ export const OutfitsMeResponse = z.object({
 		HairColor: z.string().nullable(),
 	}),
 	Selections: JsonArray,
-	DataVersion: z.int().describe('9 in the new-account envelope; whatever was saved otherwise'),
+	DataVersion: z.int().describe('The client’s outfit format version, as saved'),
 	CustomizationSettings: z
 		.string()
 		.nullable()
@@ -503,6 +628,22 @@ export const OutfitsMeResponse = z.object({
 	Accessibility: z.int(),
 	Slot: z.int().describe('0 — the outfit being worn'),
 })
+
+/**
+ * `GET /outfits/me` for a player who has never saved — the brand-new-account envelope.
+ * Flatter than a stored outfit rather than a nulled-out copy of it: four empty strings and
+ * nothing else, no `LegacyData`, no `Selections`, no `DataVersion`. `OutfitSelections` is
+ * the flat field name here, not `SelectionsV1`/`SelectionsV2`.
+ */
+export const EmptyOutfit = z.object({
+	FaceFeatures: z.string(),
+	HairColor: z.string(),
+	OutfitSelections: z.string(),
+	SkinColor: z.string(),
+})
+
+/** `GET /outfits/me` — the stored outfit, or the empty envelope for a new player. */
+export const OutfitsMeResponse = z.union([StoredOutfit, EmptyOutfit])
 
 /**
  * `PUT /outfits/me` JSON body — the outfit the client is saving, in the newer envelope.
@@ -531,6 +672,36 @@ export const OutfitsMeRequest = z.object({
 	Name: z.string().nullable(),
 	Accessibility: z.int(),
 	ThumbnailFileName: z.string().nullable(),
+})
+
+/**
+ * `POST /outfits/bulk` JSON body — whose outfits to fetch. The client sends the accounts it
+ * needs to dress (a room's roster, typically), and the two `UnityAsset*` fields name the
+ * baked-asset build it would like them for.
+ */
+export const OutfitsBulkRequest = z.object({
+	AccountIds: z.array(z.int()).describe('The accounts whose worn outfit is wanted'),
+	UnityAssetTarget: z
+		.string()
+		.nullable()
+		.describe('Baked-asset platform. Accepted and ignored — nothing bakes assets here'),
+	UnityAssetVersion: z
+		.string()
+		.nullable()
+		.describe('Baked-asset version. Accepted and ignored, like its sibling'),
+})
+
+/**
+ * `POST /outfits/bulk` — the worn outfit of each account asked for, keyed by account id.
+ *
+ * The key is the id as a STRING (a JSON object key always is) and the value is the same
+ * stored outfit `GET /outfits/me` serves. An account with nothing saved is ABSENT from the
+ * map rather than present with a null — a map expresses "no outfit" by not carrying the key.
+ */
+export const OutfitsBulkResponse = z.object({
+	OutfitsByAccountId: z
+		.record(z.string(), StoredOutfit)
+		.describe('Keyed by account id as a string. Accounts with no saved outfit are omitted'),
 })
 
 /**
@@ -654,11 +825,21 @@ export const PlayerEventBaseDto = PlayerEventDto.omit({ State: true, ImageName: 
 
 /**
  * The event as the v2 envelope carries it: the stored record MINUS `State`, PLUS `Tags`
- * (tag names, not the `{ tag, type }` pairs the v1 read's lowercase `tags` serves) and
- * `BroadcastingRoomInstanceId`. `ImageName` is `""` rather than null when there is no image.
+ * and `BroadcastingRoomInstanceId`. `ImageName` is `""` rather than null when there is no
+ * image.
+ *
+ * `Tags` has two shapes, picked from the caller's build: Rec Room reshaped it without
+ * minting a new path, so a build newer than `20230414` gets the tag NAMES and every older
+ * one (and any caller whose token names no build) gets the `{ Tag, Type }` pairs. Neither
+ * is the lowercase `{ tag, type }` the v1 read serves.
  */
 export const PlayerEventEnvelopeDto = PlayerEventBaseDto.extend({
-	Tags: z.array(z.string()).describe('The event’s tag names'),
+	Tags: z
+		.union([z.array(z.string()), z.array(z.object({ Tag: z.string(), Type: z.int() }))])
+		.describe(
+			'The event’s tags: names for a build newer than 20230414, `{ Tag, Type }` pairs for ' +
+				'that build and older'
+		),
 })
 
 /**
@@ -676,6 +857,17 @@ export const PlayerEventResultDto = z.object({
 		Result: z.int().describe('0 = success'),
 		Tags: z.array(z.string()).describe('The tags the event now carries'),
 	}),
+})
+
+/**
+ * The envelope a delete answers with. Same three keys as {@link PlayerEventResultDto},
+ * but both payload fields are null — the event is gone, so there is nothing to redraw
+ * and the client reads only `Result`.
+ */
+export const PlayerEventDeletedDto = z.object({
+	PlayerEvent: z.null(),
+	Result: z.int().describe('0 = success'),
+	TagModifyResult: z.null(),
 })
 
 /**
@@ -771,6 +963,21 @@ export const PlayerEventReportRequest = z.object({
 		.int()
 		.optional()
 		.describe('The reason picked in the report UI, e.g. `101`. Stored verbatim; unmapped'),
+	Details: z.string().optional().describe('The free-text description the reporter typed'),
+})
+
+/**
+ * `POST /api/inventions/v1/report` JSON body — a report against an invention. JSON, like
+ * the event report and unlike the form-encoded player report. The reporter is NOT in the
+ * body: it's the bearer token's player, and neither is the invention's creator, who is
+ * read from the invention.
+ */
+export const InventionReportRequest = z.object({
+	InventionId: z.int().describe('The invention being reported'),
+	ReportCategory: z
+		.int()
+		.optional()
+		.describe('The reason picked in the report UI. Stored verbatim; unmapped'),
 	Details: z.string().optional().describe('The free-text description the reporter typed'),
 })
 

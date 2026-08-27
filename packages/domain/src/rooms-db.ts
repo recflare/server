@@ -63,10 +63,16 @@ export const ROOM_SCHEMA_DDL: string[] = [
 	// feed (a discovery category row, a `#tag` search) select in SQL instead of parsing
 	// every room blob to ask. `type` is the client's tag-category int — 0 user, 2 the
 	// auto-derived ones like `rro` — echoed back as stored.
+	//
+	// `is_primary_genre` (migrations/0015_room_tag_primary_genre.sql) flags the ONE tag
+	// that is the room's genre, which the 2025 client sets with `primaryGenreTag=` and
+	// draws differently from the rest. It is orthogonal to `type`: the flagged tag is
+	// still an ordinary Type 0 user tag, and a room carries other tags alongside it.
 	`CREATE TABLE IF NOT EXISTS room_tag (
 		room_id INTEGER NOT NULL,
 		tag TEXT NOT NULL,
 		type INTEGER NOT NULL DEFAULT 0,
+		is_primary_genre INTEGER NOT NULL DEFAULT 0,
 		PRIMARY KEY (room_id, tag)
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_room_tag_tag ON room_tag (tag)`,
@@ -361,10 +367,23 @@ export async function setRoomDescription(
 		.run()
 }
 
-/** Set a room's Name in place (the caller checks ownership + name uniqueness first). */
+/**
+ * Set a room's Name in place (the caller checks ownership + name uniqueness first).
+ *
+ * Writes `FriendlyName` to the same string. That is the DISPLAY name — what the client
+ * labels the room with — and it is only defaulted to `Name` on read
+ * ({@link attachRoomDtoDefaults}), with `??=`, so a room whose blob has ever carried one
+ * keeps it. Renaming without this leaves that room displaying its old name forever while
+ * every name-keyed lookup uses the new one.
+ *
+ * The reference lets a creator set a display name apart from the unique `Name`; nothing
+ * here exposes that, so the two are kept in step rather than allowed to diverge silently.
+ */
 export async function setRoomName(db: D1Database, roomId: number, name: string): Promise<void> {
 	await db
-		.prepare("UPDATE room SET data = json_set(data, '$.Name', ?2) WHERE room_id = ?1")
+		.prepare(
+			"UPDATE room SET data = json_set(data, '$.Name', ?2, '$.FriendlyName', ?2) WHERE room_id = ?1"
+		)
 		.bind(roomId, name)
 		.run()
 }
@@ -438,47 +457,150 @@ export async function setRoomRole(
 }
 
 /**
- * Mutually-exclusive "main" room tags. The UI presents these as radio buttons, so
- * setting one clears any other main tag. Compared case-insensitively.
+ * Mutually-exclusive "main" room tags. The 2023 UI presents these as radio buttons, so
+ * toggling one on clears any other main tag. Compared case-insensitively.
+ *
+ * Only the TOGGLE body obeys this — the newer whole-set body says outright which tags the
+ * room has, and its genre is the `IsPrimaryGenre` flag rather than membership of this set.
  */
 const MAIN_TAGS = new Set(['pvp', 'quest', 'game', 'hangout', 'art'])
 
 /**
- * Add a user tag (`Type: 0`) to a room's tags, or remove it when it's already there
- * (case-insensitive). The caller supplies the already-loaded room (owner-checked) to avoid
- * a re-read. Returns the updated room.
+ * A tag's `Type` — the client's tag CATEGORY, echoed back as stored.
  *
- * Only `room_tag` is written — the room blob no longer carries tags at all, so the room row
- * is left alone. The whole resulting set is written rather than a single insert/delete, so
- * the radio-button behaviour below stays one atomic batch.
+ * `user` is what a player types or picks. `auto` is what the client derives about the room
+ * and posts as `autoTag` (`limitsv2`, `beta`). `derived` is this server's own (`rro`).
+ * A tag's category is orthogonal to whether it is the room's primary genre.
  */
-export async function toggleRoomTag(
+export const RoomTagType = {
+	user: 0,
+	auto: 1,
+	derived: 2,
+} as const
+
+/**
+ * The tag changes ONE `PUT /rooms/{id}/tags` request asks for. Every field is optional and
+ * they compose: a single request may replace the user tags, add a derived one and move the
+ * genre, and it is applied as one write.
+ */
+export interface RoomTagEdit {
+	/**
+	 * The 2023 single-tag TOGGLE: the tag is added when the room lacks it and removed when
+	 * it has it, and adding one of {@link MAIN_TAGS} clears the others.
+	 */
+	toggle?: string
+	/**
+	 * The whole set of USER tags, replacing every `Type: 0` tag the room carries. The
+	 * derived tags (`auto`, `derived`) are not the client's to send and are left alone.
+	 */
+	tags?: string[]
+	/**
+	 * Tags to ensure present at `Type: 1`. Additive — nothing here removes an auto tag,
+	 * since the client posts the ones it wants rather than the full set. A tag already on
+	 * the room is re-categorised rather than duplicated.
+	 */
+	autoTags?: string[]
+	/**
+	 * The tag to flag as the room's genre. Added (as a user tag) when the room lacks it;
+	 * every other tag keeps its place and loses the flag.
+	 */
+	primaryGenre?: string
+}
+
+/** A tag's name, lowercased — every comparison in here is case-insensitive. */
+const tagKey = (t: RoomTag): string => String(t?.Tag).toLowerCase()
+
+/**
+ * Apply one request's worth of tag changes to a room and store the result. The caller
+ * supplies the already-loaded (owner-checked) room, so nothing is re-read.
+ *
+ * The changes are composed into ONE set and written once: a request naming tags, an auto
+ * tag and a genre is a single state for the room, and applying it in three writes would
+ * let a reader (or a failure) land between them.
+ *
+ * Only `room_tag` is written — the room blob carries no tags at all, so the room row is
+ * left alone.
+ */
+export async function applyRoomTagEdit(
 	db: D1Database,
 	roomId: number,
 	room: Room,
-	tag: string
+	edit: RoomTagEdit
 ): Promise<Room> {
-	const tags = Array.isArray(room.Tags) ? (room.Tags as RoomTag[]) : []
-	const lower = tag.toLowerCase()
-	const tagLower = (t: RoomTag): string => String(t?.Tag).toLowerCase()
-	const existing = tags.findIndex((t) => tagLower(t) === lower)
+	const current = Array.isArray(room.Tags) ? (room.Tags as RoomTag[]) : []
+	// Copies throughout: the room handed in is answered to the client, and the steps below
+	// mutate what they build.
+	let next: RoomTag[] = current.map((t) => ({ ...t }))
 
-	// The client has no delete/patch endpoint — the same call toggles a tag: remove
-	// it if already present, add it otherwise. Adding a main tag is a radio pick, so
-	// it also clears any other main tag already set.
-	let nextTags: RoomTag[]
-	if (existing !== -1) {
-		nextTags = tags.filter((_, i) => i !== existing)
-	} else if (MAIN_TAGS.has(lower)) {
-		nextTags = [...tags.filter((t) => !MAIN_TAGS.has(tagLower(t))), { Tag: tag, Type: 0 }]
-	} else {
-		nextTags = [...tags, { Tag: tag, Type: 0 }]
+	if (edit.tags !== undefined) {
+		// A SET, not a merge. The posted list is exactly the room's user tags afterwards; a
+		// tag already there keeps its row (and its genre flag, until the genre step below
+		// says otherwise) rather than being deleted and re-added.
+		const posted = new Set(edit.tags.map((t) => t.toLowerCase()))
+		next = [
+			...next.filter((t) => t.Type !== RoomTagType.user && !posted.has(tagKey(t))),
+			...edit.tags.map(
+				(tag) =>
+					next.find((t) => tagKey(t) === tag.toLowerCase()) ?? { Tag: tag, Type: RoomTagType.user }
+			),
+		]
+	} else if (edit.toggle !== undefined) {
+		// The 2023 client has no delete/patch endpoint, so the same call toggles: remove the
+		// tag if present, add it otherwise. Adding a main tag is a radio pick, so it also
+		// clears any other main tag. Removing the flagged tag takes the genre with it, which
+		// is right — the room's genre WAS that tag.
+		const lower = edit.toggle.toLowerCase()
+		const existing = next.findIndex((t) => tagKey(t) === lower)
+		if (existing !== -1) {
+			next = next.filter((_, i) => i !== existing)
+		} else {
+			const kept = MAIN_TAGS.has(lower) ? next.filter((t) => !MAIN_TAGS.has(tagKey(t))) : next
+			next = [...kept, { Tag: edit.toggle, Type: RoomTagType.user }]
+		}
 	}
 
-	await setRoomTags(db, roomId, nextTags)
-	// Reflect what was just stored, lowercased the way the table holds it, so the caller
-	// answers the client with the tags a re-read would give it.
-	return { ...room, Tags: nextTags.map((t) => ({ Tag: t.Tag.toLowerCase(), Type: t.Type })) }
+	for (const auto of edit.autoTags ?? []) {
+		const existing = next.find((t) => tagKey(t) === auto.toLowerCase())
+		// A tag the room already carries is re-categorised in place rather than duplicated —
+		// `tag` is the table's key, so there is only ever one row per name anyway.
+		if (existing) existing.Type = RoomTagType.auto
+		else next.push({ Tag: auto, Type: RoomTagType.auto })
+	}
+
+	if (edit.primaryGenre !== undefined) {
+		const lower = edit.primaryGenre.toLowerCase()
+		for (const tag of next) delete tag.IsPrimaryGenre
+		const chosen = next.find((t) => tagKey(t) === lower)
+		// A tag the room already carries keeps its category and simply becomes the genre;
+		// one it doesn't is added as an ordinary user tag.
+		if (chosen) chosen.IsPrimaryGenre = true
+		else next.push({ Tag: edit.primaryGenre, Type: RoomTagType.user, IsPrimaryGenre: true })
+	}
+
+	return storeRoomTags(db, roomId, room, next)
+}
+
+/**
+ * Write a room's whole tag set and answer the room carrying it, lowercased the way the
+ * table holds it — so the caller replies with exactly what a re-read would give, without
+ * paying for the re-read. `IsPrimaryGenre` survives only where it was set, and stays
+ * absent (not false) everywhere else.
+ */
+async function storeRoomTags(
+	db: D1Database,
+	roomId: number,
+	room: Room,
+	tags: RoomTag[]
+): Promise<Room> {
+	await setRoomTags(db, roomId, tags)
+	return {
+		...room,
+		Tags: tags.map((t) => {
+			const stored: RoomTag = { Tag: t.Tag.toLowerCase(), Type: t.Type }
+			if (t.IsPrimaryGenre) stored.IsPrimaryGenre = true
+			return stored
+		}),
+	}
 }
 
 /** Find a subroom (by SubRoomId) inside an already-hydrated room's `SubRooms`, or undefined. */
@@ -1123,16 +1245,31 @@ async function attachCurrentSaves(
 // place a tag is stored — and a tag lookup is an indexed query rather than a scan that
 // parses every room to ask.
 
-/** One of a room's tags, as the client's room DTO carries it. */
+/**
+ * One of a room's tags, as the client's room DTO carries it.
+ *
+ * `IsPrimaryGenre` is PRESENT ONLY on the one tag that is the room's genre — the key is
+ * left off the others rather than sent as false, which is the shape the client sends and
+ * reads back. At most one tag in an array carries it; see {@link setPrimaryGenreTag}.
+ */
 export interface RoomTag {
 	Tag: string
 	Type: number
+	IsPrimaryGenre?: boolean
 }
 
 interface RoomTagRow {
 	room_id: number
 	tag: string
 	type: number
+	is_primary_genre: number
+}
+
+/** Project a stored tag row, adding `IsPrimaryGenre` only when the row is flagged. */
+function toRoomTag(row: RoomTagRow): RoomTag {
+	const tag: RoomTag = { Tag: row.tag, Type: row.type }
+	if (row.is_primary_genre) tag.IsPrimaryGenre = true
+	return tag
 }
 
 /** Group tag rows by RoomId, preserving the order they arrived in (alphabetical by tag). */
@@ -1140,7 +1277,7 @@ function groupTags(rows: RoomTagRow[]): Map<number, RoomTag[]> {
 	const byRoom = new Map<number, RoomTag[]>()
 	for (const row of rows) {
 		const list = byRoom.get(row.room_id) ?? []
-		list.push({ Tag: row.tag, Type: row.type })
+		list.push(toRoomTag(row))
 		byRoom.set(row.room_id, list)
 	}
 	return byRoom
@@ -1170,7 +1307,7 @@ async function tagsByRoom(db: D1Database, roomIds: number[]): Promise<Map<number
 
 	if (ids.length > MAX_BOUND_PARAMS) {
 		const { results } = await db
-			.prepare('SELECT room_id, tag, type FROM room_tag ORDER BY tag')
+			.prepare('SELECT room_id, tag, type, is_primary_genre FROM room_tag ORDER BY tag')
 			.all<RoomTagRow>()
 		const wanted = new Set(ids)
 		return groupTags(results.filter((row) => wanted.has(row.room_id)))
@@ -1179,7 +1316,7 @@ async function tagsByRoom(db: D1Database, roomIds: number[]): Promise<Map<number
 	const placeholders = ids.map((_, i) => `?${i + 1}`).join(',')
 	const { results } = await db
 		.prepare(
-			`SELECT room_id, tag, type FROM room_tag
+			`SELECT room_id, tag, type, is_primary_genre FROM room_tag
 			 WHERE room_id IN (${placeholders}) ORDER BY tag`
 		)
 		.bind(...ids)
@@ -1221,14 +1358,14 @@ async function parseAllWithTags(db: D1Database, rows: RoomRow[]): Promise<Room[]
  */
 export async function setRoomTags(db: D1Database, roomId: number, tags: RoomTag[]): Promise<void> {
 	const statements = [db.prepare('DELETE FROM room_tag WHERE room_id = ?1').bind(roomId)]
-	for (const { Tag, Type } of tags) {
+	for (const { Tag, Type, IsPrimaryGenre } of tags) {
 		statements.push(
 			db
 				.prepare(
-					`INSERT INTO room_tag (room_id, tag, type) VALUES (?1, ?2, ?3)
-					 ON CONFLICT (room_id, tag) DO UPDATE SET type = ?3`
+					`INSERT INTO room_tag (room_id, tag, type, is_primary_genre) VALUES (?1, ?2, ?3, ?4)
+					 ON CONFLICT (room_id, tag) DO UPDATE SET type = ?3, is_primary_genre = ?4`
 				)
-				.bind(roomId, String(Tag).toLowerCase(), Number(Type) || 0)
+				.bind(roomId, String(Tag).toLowerCase(), Number(Type) || 0, IsPrimaryGenre ? 1 : 0)
 		)
 	}
 	await db.batch(statements)
@@ -2451,6 +2588,47 @@ export async function getRecommendedRooms(
 	)
 }
 
+/**
+ * Trending ("rising") rooms — the listable rooms someone is standing in RIGHT NOW, busiest
+ * first. What the `rising` carousel is filled from.
+ *
+ * This is the one feed where live presence FILTERS rather than merely ranks: the hot feed
+ * sorts by head-count but still lists the empty rooms underneath it, and a carousel of
+ * rooms nobody is in is not trending. So a quiet server serves an EMPTY carousel rather
+ * than falling back to stored engagement — a room with no one in it has not risen.
+ *
+ * Ties break the way the hot feed's do (stored engagement, then RoomId), so equally busy
+ * rooms page stably.
+ */
+export async function getTrendingRooms(
+	db: D1Database,
+	skip: number,
+	take: number
+): Promise<{ Results: Room[]; TotalResults: number }> {
+	const players = await countPlayersByRoom(db)
+	// Nobody anywhere: nothing can be trending, and the room table needn't be read at all.
+	if (players.size === 0) return { Results: [], TotalResults: 0 }
+
+	const { results } = await db
+		.prepare(`SELECT ${ROOM_COLUMNS} FROM room WHERE ${LISTABLE_WHERE}`)
+		.all<RoomRow>()
+	const stats = await getRoomStats(db)
+	const playerCount = (r: Room): number => players.get(roomIdOf(r)) ?? 0
+	const rooms = parseAll(results)
+		.filter((r) => isListable(r) && playerCount(r) > 0)
+		.sort(
+			(a, b) =>
+				playerCount(b) - playerCount(a) ||
+				hotScore(b, stats) - hotScore(a, stats) ||
+				roomIdOf(a) - roomIdOf(b)
+		)
+
+	return {
+		Results: await hydrateRooms(db, rooms.slice(skip, skip + take), stats),
+		TotalResults: rooms.length,
+	}
+}
+
 /** Compact room projection carried by a featured-room group. */
 export interface FeaturedRoom {
 	RoomId: number
@@ -2470,11 +2648,19 @@ export interface FeaturedRoomGroup {
 	Rooms: FeaturedRoom[]
 }
 
+/** How many rooms one featured group carries. See {@link getFeaturedRooms}. */
+export const FEATURED_ROOM_LIMIT = 10
+
 /**
  * Featured rooms group: public, non-dorm rooms not excluded from lists, in random
  * order. There's no editorial curation behind this yet, so "featured" is just a
  * random shuffle of the eligible rooms wrapped in a single always-active group.
  * Eligibility is filtered in SQL ({@link LISTABLE_WHERE}); the rest is in memory.
+ *
+ * At most {@link FEATURED_ROOM_LIMIT} rooms — a featured group is a short editorial
+ * selection, not the whole room list. The cap is applied AFTER the shuffle, so it is a
+ * random SAMPLE that varies between requests; a `LIMIT` in the SQL would instead pin the
+ * same handful of rooms forever and make the shuffle cosmetic.
  */
 export async function getFeaturedRooms(db: D1Database): Promise<FeaturedRoomGroup> {
 	const { results } = await db
@@ -2486,6 +2672,7 @@ export async function getFeaturedRooms(db: D1Database): Promise<FeaturedRoomGrou
 		const j = Math.floor(Math.random() * (i + 1))
 		;[rooms[i], rooms[j]] = [rooms[j], rooms[i]]
 	}
+	rooms.length = Math.min(rooms.length, FEATURED_ROOM_LIMIT)
 
 	const str = (v: unknown): string => (typeof v === 'string' ? v : '')
 	const num = (v: unknown): number => (typeof v === 'number' ? v : 0)

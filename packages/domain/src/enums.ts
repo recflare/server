@@ -65,6 +65,27 @@ export enum MessageType {
 }
 
 /**
+ * What a v2 game invite (`MessageType.GameInviteV2`) is ASKING FOR — the `InviteMode` in
+ * its `Data` envelope. It's the intent behind the invite, not the room being invited into:
+ * the same instance is named whether you're pulling a party along or asking one player to
+ * come play.
+ *
+ * The values are sparse and grouped: 0–4 are the party-management modes, 20+ the invite
+ * ones. A plain "join me" is {@link PlayTogether}; {@link InviteParty} is the other
+ * reading of it, and the two have not been told apart on the wire yet.
+ */
+export enum InviteMode {
+	None = 0,
+	LeaveParty = 1,
+	InviteParty = 2,
+	PartyAutoFollow = 3,
+	EveryoneAutoFollow = 4,
+	InviteOnlineFriends = 20,
+	FullInstanceReinvite = 21,
+	PlayTogether = 22,
+}
+
+/**
  * A room's (or image's) visibility, matching the client's `RoomAccessibility`. The
  * client declares the enum without explicit values, so these are its ordinals — and
  * it sends the NAME, not the number, on the subroom accessibility route.
@@ -140,6 +161,7 @@ export enum MatchmakingErrorCode {
 	MetaJuniorAccountRestriction = 83,
 	NotExclusivelyLoggedIn = 84,
 	AccountDoesNotExist = 85,
+	RoomInstanceBlockedByMatchmakingPolicy = 86,
 }
 
 /**

@@ -1,36 +1,46 @@
 /**
  * Weekly-challenge progress on the shared `recflare` D1 database — one row per
  * (account, challenge), written by `POST /api/challenge/v2/updateProgress` and read back
- * by `GET /api/challenge/v2/getCurrent` to stamp each challenge's per-player `Complete`.
+ * by `GET /api/challenge/v2/getCurrent` to stamp each challenge's per-player state.
  *
- * Only the completion flag is stored, not the `Config` rule tree the client posts with it.
- * That tree is the challenge's DEFINITION (it comes from static/weekly-challenge.json and
- * is identical for everyone), decorated with the client's running count in `cc`; the
- * server evaluates none of it, so persisting a per-player copy would only be a second,
- * staler copy of the catalog. See .agents/weekly-challenge-config/SKILL.md for the grammar.
+ * The CLIENT owns the evaluating: it walks the challenge's rule tree locally and posts the
+ * tree back with its own progress written into the nodes — `cc` on a counter is the running
+ * count, `c` marks a satisfied node (see .agents/skills/weekly-challenge-config/SKILL.md for
+ * the grammar). So the posted `Config` is not the catalog's copy of the definition, it is
+ * per-player STATE, and it is stored here alongside the completion flag; the server still
+ * evaluates none of it. `getCurrent` serves the static challenge with the stored `Config`
+ * and `Complete` overwritten onto it, which is how partial progress survives a session:
+ * without it a player who had two of three kills started over on every login.
  *
  * Completion LATCHES within a rotation: the client reports progress repeatedly, and a
  * report that arrives with the challenge no longer complete (a fresh session, a reordered
- * retry) must not un-finish something already finished. A report carrying a different
- * `ChallengeMapId` is a new rotation and REPLACES the row instead — challenge ids are only
- * unique within a rotation, so a challenge that returns in a later week would otherwise
- * start out already complete on the old week's row.
+ * retry) must not un-finish something already finished. `config` does NOT latch — it is the
+ * running tally, so the newest report wins — but a report that carries none leaves the
+ * stored tree alone rather than blanking it. A report carrying a different `ChallengeMapId`
+ * is a new rotation and REPLACES the row instead — challenge ids are only unique within a
+ * rotation, so a challenge that returns in a later week would otherwise start out already
+ * complete, and half-counted, on the old week's row.
  *
  * Finishing enough of a rotation's challenges earns its `Gift`, which is handed out from the
  * same `updateProgress` call that reaches the threshold. That payout is gated by a
  * second table here, `challenge_gift` — one row per (account, rotation), claimed once.
  *
  * The `econ` worker owns both tables and their migrations
- * (apps/econ/migrations/0009_challenge_status.sql, 0011_challenge_gift.sql).
+ * (apps/econ/migrations/0009_challenge_status.sql, 0011_challenge_gift.sql,
+ * 0014_challenge_status_config.sql).
  */
 
-/** Schema DDL (mirror of migrations 0009_challenge_status.sql) — also builds the table in tests. */
+/**
+ * Schema DDL (mirror of migrations 0009_challenge_status.sql + 0014_challenge_status_config.sql)
+ * — also builds the table in tests.
+ */
 export const CHALLENGE_STATUS_SCHEMA_DDL: string[] = [
 	`CREATE TABLE IF NOT EXISTS challenge_status (
 		account_id INTEGER NOT NULL,
 		challenge_id INTEGER NOT NULL,
 		challenge_map_id INTEGER NOT NULL,
 		complete INTEGER NOT NULL,
+		config TEXT,
 		updated_at TEXT NOT NULL,
 		PRIMARY KEY (account_id, challenge_id)
 	)`,
@@ -41,70 +51,90 @@ export interface ChallengeProgress {
 	challengeMapId: number
 	challengeId: number
 	complete: boolean
+	/** The client-evaluated rule tree, or null when the report carried none. */
+	config: string | null
+}
+
+/** What a stored row holds for one challenge, as `getCurrent` overwrites it onto the catalog. */
+export interface ChallengeStatus {
+	complete: boolean
+	/** The last tree the client posted; null means it never posted one — serve the static tree. */
+	config: string | null
 }
 
 /**
- * Record a progress report and return the completion the row now holds — which is what the
+ * Record a progress report and return the state the row now holds — which is what the
  * response must echo, since it isn't always what was posted: within a rotation `complete`
  * only ever goes false → true (see the latching note above), so a `false` report against a
- * finished challenge answers `true`.
+ * finished challenge answers `true`, and a report with no `Config` answers the tree already
+ * stored.
  *
  * SQLite evaluates every `DO UPDATE SET` expression against the pre-update row, so the
- * `CASE` can compare the stored `challenge_map_id` with the incoming one while the same
+ * `CASE`s can compare the stored `challenge_map_id` with the incoming one while the same
  * statement overwrites it.
  */
 export async function recordChallengeProgress(
 	db: D1Database,
 	accountId: number,
 	progress: ChallengeProgress
-): Promise<boolean> {
+): Promise<ChallengeStatus> {
 	const row = await db
 		.prepare(
-			`INSERT INTO challenge_status (account_id, challenge_id, challenge_map_id, complete, updated_at)
-			 VALUES (?1, ?2, ?3, ?4, ?5)
+			`INSERT INTO challenge_status (account_id, challenge_id, challenge_map_id, complete, config, updated_at)
+			 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
 			 ON CONFLICT (account_id, challenge_id) DO UPDATE SET
 			   complete = CASE
 			     WHEN challenge_status.challenge_map_id = excluded.challenge_map_id
 			     THEN MAX(challenge_status.complete, excluded.complete)
 			     ELSE excluded.complete
 			   END,
+			   config = CASE
+			     WHEN challenge_status.challenge_map_id = excluded.challenge_map_id
+			     THEN COALESCE(excluded.config, challenge_status.config)
+			     ELSE excluded.config
+			   END,
 			   challenge_map_id = excluded.challenge_map_id,
 			   updated_at = excluded.updated_at
-			 RETURNING complete`
+			 RETURNING complete, config`
 		)
 		.bind(
 			accountId,
 			progress.challengeId,
 			progress.challengeMapId,
 			progress.complete ? 1 : 0,
+			progress.config,
 			new Date().toISOString()
 		)
-		.first<{ complete: number }>()
-	return row?.complete === 1
+		.first<{ complete: number; config: string | null }>()
+	return { complete: row?.complete === 1, config: row?.config ?? null }
 }
 
 /**
- * The ids of the challenges a player has finished in one rotation. Scoped to the rotation
- * so a stale row from an earlier week — same challenge id, different `challenge_map_id` —
- * doesn't show up pre-completed before the client has reported anything against it.
+ * What a player has stored for one rotation's challenges, keyed by challenge id. Scoped to
+ * the rotation so a stale row from an earlier week — same challenge id, different
+ * `challenge_map_id` — doesn't show up pre-completed, or half-counted, before the client has
+ * reported anything against it.
  *
- * Also what earning the rotation's `Gift` is decided from: it is due once ENOUGH of the
- * challenges in static/weekly-challenge.json appear here — three of the five a week
- * publishes, not all of them (see `CHALLENGES_REQUIRED_FOR_GIFT` in econ.app.ts).
+ * Read by `getCurrent` to overwrite the static rotation, and by the gift path: the `Gift` is
+ * due once ENOUGH of the week's own challenges are complete here — three of the five a
+ * rotation publishes, not all of them (see `CHALLENGES_REQUIRED_FOR_GIFT` in econ.app.ts).
+ * The rotation itself is generated per week by src/challenge-rotation.ts.
  */
-export async function getCompletedChallengeIds(
+export async function getChallengeStatuses(
 	db: D1Database,
 	accountId: number,
 	challengeMapId: number
-): Promise<Set<number>> {
+): Promise<Map<number, ChallengeStatus>> {
 	const { results } = await db
 		.prepare(
-			`SELECT challenge_id FROM challenge_status
-			 WHERE account_id = ?1 AND challenge_map_id = ?2 AND complete = 1`
+			`SELECT challenge_id, complete, config FROM challenge_status
+			 WHERE account_id = ?1 AND challenge_map_id = ?2`
 		)
 		.bind(accountId, challengeMapId)
-		.all<{ challenge_id: number }>()
-	return new Set(results.map((r) => r.challenge_id))
+		.all<{ challenge_id: number; complete: number; config: string | null }>()
+	return new Map(
+		results.map((r) => [r.challenge_id, { complete: r.complete === 1, config: r.config }])
+	)
 }
 
 /** Schema DDL (mirror of migrations 0011_challenge_gift.sql) — also builds the table in tests. */

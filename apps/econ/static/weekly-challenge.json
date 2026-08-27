@@ -1,51 +1,10 @@
 {
-	"ChallengeMapId": 17,
+	"ChallengeMapId": 19,
 	"CompletedRequired": false,
-	"StartAt": "2026-03-25T21:00:00",
-	"EndAt": "2026-04-01T21:00:00",
-	"ServerTime": "2026-03-31T14:42:54.2754728Z",
-	"Challenges": [
-		{
-			"ChallengeId": 37,
-			"Name": "CompleteJT",
-			"Config": "{\"ct\":1,\"c\":true,\"ipc\":false,\"ctc\":[{\"ct\":0,\"ipc\":false,\"wc\":[{\"ct\":6,\"vs\":[2]},{\"ct\":7,\"vs\":[{\"l\":\"6d5eea4b-f069-4ed0-9916-0e2f07df0d03\"},{\"l\":\"4078dfed-24bb-4db7-863f-578ba48d726b\"}]}]}],\"t\":1,\"cc\":1}",
-			"Description": "Complete ^TheRiseOfJumbotron quest",
-			"Tooltip": "Vanquish Jumbotron in the Rise of Jumbotron quest!",
-			"Complete": false
-		},
-		{
-			"ChallengeId": 38,
-			"Name": "CompleteBloodMoon",
-			"Config": "{\"ct\":0,\"ipc\":false,\"wc\":[{\"ct\":6,\"vs\":[2]},{\"ct\":9,\"vs\":[true],\"v\":\"won\"},{\"ct\":7,\"vs\":[{\"l\":\"49cb8993-a956-43e2-86f4-1318f279b22a\"}]}]}",
-			"Description": "Complete the ^Crescendo quest",
-			"Tooltip": "Vanquish Dracula in the Crescendo of the Blood Moon quest!",
-			"Complete": false
-		},
-		{
-			"ChallengeId": 44,
-			"Name": "Complete10PaintballGames",
-			"Config": "{\"ct\":1,\"ipc\":false,\"ctc\":[{\"ct\":0,\"ipc\":false,\"wc\":[{\"ct\":6,\"vs\":[2]},{\"ct\":7,\"vs\":[{\"l\":\"e122fe98-e7db-49e8-a1b1-105424b6e1f0\"},{\"l\":\"a785267d-c579-42ea-be43-fec1992d1ca7\"},{\"l\":\"ff4c6427-7079-4f59-b22a-69b089420827\"},{\"l\":\"380d18b5-de9c-49f3-80f7-f4a95c1de161\"},{\"l\":\"58763055-2dfb-4814-80b8-16fac5c85709\"},{\"l\":\"65ddbb48-5a01-4e3e-972d-e5c7419e2bc3\"}]}]}],\"t\":10}",
-			"Description": "Complete 10 games in ^Paintball",
-			"Tooltip": "Go to ^Paintball and finish 10 games across any maps.",
-			"Complete": false
-		},
-		{
-			"ChallengeId": 49,
-			"Name": "Complete5Charades",
-			"Config": "{\"ct\":1,\"ipc\":false,\"ctc\":[{\"ct\":0,\"ipc\":false,\"wc\":[{\"ct\":6,\"vs\":[2]},{\"ct\":7,\"vs\":[{\"l\":\"a673712c-877f-4749-b69a-4a4c6310d545\"},{\"l\":\"4078dfed-24bb-4db7-863f-578ba48d726b\"}]}]}],\"t\":5}",
-			"Description": "Complete 5 Charades games",
-			"Tooltip": "Finish 5 games in ^3DCharades.",
-			"Complete": false
-		},
-		{
-			"ChallengeId": 63,
-			"Name": "Complete3SpillwayGames",
-			"Config": "{\"ct\":1,\"ipc\":false,\"ctc\":[{\"ct\":0,\"ipc\":false,\"wc\":[{\"ct\":6,\"vs\":[2]},{\"ct\":7,\"vs\":[{\"l\":\"380d18b5-de9c-49f3-80f7-f4a95c1de161\"}]}]}],\"t\":3}",
-			"Description": "Complete 3 games of Paintball: Clear Cut",
-			"Tooltip": "Go to ^Paintball.Clearcut and finish 3 games.",
-			"Complete": false
-		}
-	],
+	"StartAt": "2026-08-19T21:00:00",
+	"EndAt": "2026-09-26T21:00:00",
+	"ServerTime": "2026-08-25T14:42:54.2754728Z",
+	"Challenges": [],
 	"Gift": {
 		"GiftDropId": 3994,
 		"AvatarItemDesc": "",

@@ -54,5 +54,15 @@
 		],
 		"Accessibility": 1,
 		"CreatedAt": "2024-05-22T05:37:43.7726633Z"
+	},
+	{
+		"ListId": "1",
+		"CreatorAccountId": 1,
+		"Name": "RoomGenreTags",
+		"Description": "",
+		"ImageName": null,
+		"Type": 5,
+		"ItemIds": ["quest", "battle", "roleplay", "horror", "hangout", "casual", "explore"],
+		"CreatedAt": "2026-01-01T00:00:00Z"
 	}
 ]

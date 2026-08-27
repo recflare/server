@@ -1204,6 +1204,39 @@ describe('POST /thread/:id', () => {
 		expect(await getThreadMessages(env.DB, chatThreadId)).toEqual(body.chatThread.messages)
 	})
 
+	it('answers the PascalCase ChatMessage the client’s send handler dereferences', async () => {
+		const caller = 889020
+		const chatThreadId = await createThread(env.DB, [caller, 889021], null, caller)
+
+		const res = await send(caller, `/thread/${chatThreadId}`)
+		const body = (await res.json()) as {
+			ChatMessage: Record<string, unknown> | null
+			ChatResult: number
+			chatResult: number
+			chatThread: { messages: ChatMessage[] }
+		}
+
+		// The handler reads `ChatMessage` the moment `ChatResult` is 0 — a success answered
+		// without one is a null-reference exception inside the client, not a failed parse.
+		expect(body.ChatResult).toBe(0)
+		const posted = body.chatThread.messages[0]!
+		expect(body.ChatMessage).toEqual({
+			ChatMessageId: posted.chatMessageId,
+			ChatThreadId: chatThreadId,
+			SenderPlayerId: caller,
+			TimeSent: posted.timeSent,
+			// The envelope verbatim. The client parses this into `MessageJson` in a
+			// post-deserialize hook that only LOGS on failure and then dereferences the null,
+			// so `Contents` has to stay a `{ Type, Version, Data }` string with a non-null Data.
+			Contents: CONTENTS,
+			ModerationState: 0,
+		})
+
+		// The two result keys are one value serialized twice, so a decoder reading either
+		// spelling lands on the same answer.
+		expect(body.chatResult).toBe(body.ChatResult)
+	})
+
 	it('accepts the /thread/:id/message spelling too', async () => {
 		const caller = 889003
 		const chatThreadId = await createThread(env.DB, [caller, 889004], null, caller)
@@ -1238,8 +1271,17 @@ describe('POST /thread/:id', () => {
 		const res = await send(caller, `/thread/${chatThreadId}`, '   ')
 		expect(res.status).toBe(200)
 
-		const body = (await res.json()) as { chatResult: number; chatThread: { messages: unknown[] } }
+		const body = (await res.json()) as {
+			ChatMessage: unknown
+			ChatResult: number
+			chatResult: number
+			chatThread: { messages: unknown[] }
+		}
 		expect(body.chatResult).toBe(1)
+		expect(body.ChatResult).toBe(1)
+		// Nothing was posted, so there is no message to carry — and a null is safe here
+		// precisely because the client only dereferences `ChatMessage` on result 0.
+		expect(body.ChatMessage).toBeNull()
 		// The thread still comes back — only the opening notice is in it.
 		expect(body.chatThread.messages).toHaveLength(1)
 		expect(await getThreadMessages(env.DB, chatThreadId)).toHaveLength(1)

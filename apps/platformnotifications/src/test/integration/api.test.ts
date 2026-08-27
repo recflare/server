@@ -75,27 +75,33 @@ it('401s the gameplay-invites check without a bearer token', async () => {
 })
 
 it('serves the stub notification categories', async () => {
-	// A bare array of PascalCase categories, and no auth — the list is server-side config
-	// rather than anything per-player.
+	// A `{ Results, TotalResults }` page of PascalCase categories — not a bare array — and no
+	// auth: the list is server-side config rather than anything per-player.
 	const res = await SELF.fetch(`${ORIGIN}/config/categories`)
 	expect(res.status).toBe(200)
-	const categories = (await res.json()) as Array<{
-		CategoryId: number
-		Importance: number
-		Name: string
-		Description: string
-		IsMuteable: boolean
-	}>
-	expect(categories).toHaveLength(1)
-	expect(categories[0]).toMatchObject({
+	const page = (await res.json()) as {
+		Results: Array<{
+			CategoryId: number
+			Importance: number
+			Name: string
+			Description: string
+			IsMuteable: boolean
+		}>
+		TotalResults: number
+	}
+	expect(page.Results).toHaveLength(1)
+	expect(page.Results[0]).toMatchObject({
 		CategoryId: 2,
 		Importance: 0,
 		Name: 'Friends',
 		IsMuteable: true,
 	})
+	// The total counts the whole list, and this list is served in one page — so it has to
+	// agree with what came back rather than being a number of its own.
+	expect(page.TotalResults).toBe(page.Results.length)
 	// The stub marker is in the DISPLAYED text, so a category that does nothing says so
 	// in-game rather than looking like a real setting. Keep it there while this is a stub.
-	expect(categories[0].Description).toContain('STUB')
+	expect(page.Results[0].Description).toContain('STUB')
 })
 
 it('serves the caller’s notification preferences', async () => {

@@ -6,6 +6,7 @@ import {
 	addXp,
 	consumeGift,
 	createGift,
+	getAccount,
 	getGift,
 	getOutfits,
 	getPendingGifts,
@@ -21,7 +22,17 @@ import { validateAndGetAccountId, validateAndGetRoles } from '@repo/jwt'
 // Invention storage (owned by the `api` worker, on this same `recflare` database).
 // Imported directly rather than copied: these are plain D1 helpers with no bindings of
 // their own, and buyInvention has to read the very rows `api` writes.
+// Custom avatar items likewise live in an `api`-owned table; the UGC-purchasable bulk
+// lookup is the store's view of those rows.
+import {
+	getCustomAvatarItems,
+	toUgcPurchasable,
+	UGC_ITEM_TYPE_CUSTOM_AVATAR_ITEM,
+} from '../../api/src/custom-avatar-items-db'
 import { getInventionById, toSaveResult } from '../../api/src/inventions-db'
+// The profanity filter behind `api`'s `POST /api/sanitize/v1`, imported rather than copied
+// so a gift note is masked by the very same word list every other player-typed string is.
+import { censorSwears } from '../../api/src/sanitize'
 // The notification-type ids the hub carries, and the payload shapes recovered from the
 // client's own decoder (both owned by the `notify` worker). Imported rather than copied so
 // the frames this worker builds are typed by the shapes the client actually parses — a
@@ -33,7 +44,6 @@ import defaultAvatarItems from '../static/default-avatar-items.json'
 import defaultAvatar from '../static/default-avatar.json'
 import defaultBaseAvatarItems from '../static/default-base-avatar-items.json'
 import myProgress from '../static/my-progress.json'
-import weeklyChallenge from '../static/weekly-challenge.json'
 import { getAvatar, setAvatar } from './avatar-db'
 import {
 	ALL_PLATFORMS,
@@ -45,11 +55,8 @@ import {
 	isSpendable,
 	spendCurrency,
 } from './balance-db'
-import {
-	claimChallengeGift,
-	getCompletedChallengeIds,
-	recordChallengeProgress,
-} from './challenge-db'
+import { claimChallengeGift, getChallengeStatuses, recordChallengeProgress } from './challenge-db'
+import { buildRotation, rotationMapId, withWeeklyGift } from './challenge-rotation'
 import {
 	consumeConsumable,
 	countConsumable,
@@ -82,6 +89,7 @@ import {
 	form,
 	GameRewardRequest,
 	InfluencerIdsResponse,
+	InfluencerTierResponse,
 	json,
 	JsonArray,
 	jsonBody,
@@ -95,6 +103,8 @@ import {
 	SaveOutfitRequest,
 	SaveOutfitV4Response,
 	SubscriptionResponse,
+	UgcPurchasableBulkRequest,
+	UgcPurchasableItemList,
 	UNAUTHORIZED_RESPONSE,
 	UpdateObjectiveRequest,
 	UpdateObjectiveResponse,
@@ -108,6 +118,11 @@ import type {
 	PurchaseBalanceModificationPayload,
 } from '../../notify/src/notification-payloads'
 import type { Avatar } from './avatar-db'
+import type {
+	ChallengeGiftBlock,
+	EquipmentGift,
+	WeeklyChallengeRotation,
+} from './challenge-rotation'
 import type { ConsumeResult } from './consumables-db'
 import type { App } from './context'
 import type { Equipment } from './equipment-db'
@@ -357,8 +372,28 @@ async function pushBalancePurchase(
 	}
 }
 
+/**
+ * The influencer partner tier every account has here — the "not an influencer" one. It is
+ * the whole body of both `/api/influencerpartnerprogram/influencer` and `…/myinfluencer`,
+ * served as a bare number rather than wrapped in anything.
+ */
+const NOT_AN_INFLUENCER = 0
+
 /** The operator-granted role that comes with a complimentary subscription. */
 const DEVELOPER_ROLE = 'developer'
+
+/**
+ * Whether the caller currently holds a Rec Room Plus subscription — the ONE definition,
+ * shared by `UpdateAndGetSubscription` (which reports it) and the storefront buys (which
+ * price off it via `SubscriberPrices`). Nothing sells subscriptions here, so holding the
+ * `developer` role IS the subscription; if a real subscription store ever lands, this is
+ * the only place that has to learn about it. Read from the token's `role` claim, never the
+ * body; no or an invalid token is "not subscribed".
+ */
+async function isSubscriber(c: Context<App>): Promise<boolean> {
+	const roles = await authedRoles(c)
+	return roles?.includes(DEVELOPER_ROLE) ?? false
+}
 
 /** `SubscriptionLevel.Gold`. 1 is Platinum. */
 const SUBSCRIPTION_LEVEL_GOLD = 0
@@ -428,9 +463,10 @@ function toAvatarV2Dto(avatar: Avatar) {
 
 /**
  * The subset of a storefront catalog (`static/storefronts/sf{N}.json`) that `buyItem`
- * reads: each store item carries the `GiftDrop` describing what you get and a list of
- * `Prices` per currency. The catalogs hold more fields (SubscriberPrices, IsFeatured,
- * …) that the purchase path doesn't need.
+ * reads: each store item carries the `GiftDrop` describing what you get, a list of
+ * `Prices` per currency, and optionally `SubscriberPrices` — the discounted list a Rec Room
+ * Plus subscriber is shown and pays. The catalogs hold more fields (IsFeatured, …) that
+ * the purchase path doesn't need.
  */
 interface StoreGiftDrop {
 	FriendlyName: string
@@ -472,8 +508,78 @@ interface StorePrice {
 interface StoreItem {
 	GiftDrop: StoreGiftDrop
 	Prices: StorePrice[]
+	/**
+	 * The subscriber price list, where the catalog has one (sf300's item 2263 lists 95 tokens
+	 * in `Prices` and 85 in here). A subscriber's client renders and posts this as
+	 * `RequestedPrice`, so checking their buy against `Prices` alone 409s it as "Price has
+	 * changed". Treated as a FLOOR rather than the price to expect, because the client also
+	 * posts the FULL price for items whose two lists agree (sf3's 2208, 150/150) — see
+	 * {@link priceCheck}.
+	 */
+	SubscriberPrices?: StorePrice[] | null
 	PurchasableItemId: number
 }
+
+/**
+ * The most Rec Room Plus can take off an item, in percent of the regular price.
+ *
+ * The client applies the discount ITSELF and posts the result as `RequestedPrice`, but it
+ * does NOT apply it to everything: sf3's item 2208 is 150 tokens in both catalog lists and a
+ * subscriber's client posts 150, while sf300's 2263 is 95/85 and posts 85. Only 144 of the
+ * 1382 captured items carry a discounted `SubscriberPrices` at all, and whether the rest are
+ * genuinely full price for a subscriber or were merely captured through a non-subscriber's
+ * view isn't answerable from here. So the server doesn't predict the number: it accepts
+ * anything from the regular price down to this much off (see {@link priceCheck}) and charges
+ * what the client asked to pay. Deriving one exact subscriber price instead 409'd every buy
+ * the client priced the other way.
+ */
+const SUBSCRIBER_DISCOUNT_PERCENT = 10
+
+/** The lowest a subscriber's client can render an item whose regular price is `regular`. */
+function subscriberFloor(regular: number): number {
+	return Math.floor((regular * (100 - SUBSCRIBER_DISCOUNT_PERCENT)) / 100)
+}
+
+/**
+ * The outcome of confirming a client's `RequestedPrice` against the catalog: the price to
+ * actually charge, or why the line can't be sold.
+ */
+type PriceCheck =
+	| { charge: number }
+	/** The item isn't sold in the requested currency at all. */
+	| 'no-currency'
+	/** The catalog moved under a stale client, or the price was made up. */
+	| 'mismatch'
+
+/**
+ * Confirms what the buyer's client rendered, and answers what to charge them.
+ *
+ * A non-subscriber pays the `Prices` entry, exactly. A subscriber pays whatever they asked to
+ * pay within a BAND: the regular price at the top (their client posts it for items it doesn't
+ * discount) down to the catalog's `SubscriberPrices` entry or
+ * {@link SUBSCRIBER_DISCOUNT_PERCENT} off, whichever is lower.
+ *
+ * Charging `RequestedPrice` rather than a server-picked end of the band keeps the debit equal
+ * to the price the buyer was shown. The floor is what bounds the discount: a modified client
+ * can shave at most {@link SUBSCRIBER_DISCOUNT_PERCENT} off, and only while subscribed.
+ */
+function priceCheck(
+	item: StoreItem,
+	currencyType: number,
+	subscriber: boolean,
+	requestedPrice: unknown
+): PriceCheck {
+	const regular = item.Prices.find((p) => p.CurrencyType === currencyType)
+	if (regular === undefined) return 'no-currency'
+	if (!Number.isInteger(requestedPrice)) return 'mismatch'
+	const requested = requestedPrice as number
+	if (requested === regular.Price) return { charge: requested }
+	if (!subscriber) return 'mismatch'
+	const listed = item.SubscriberPrices?.find((p) => p.CurrencyType === currencyType)
+	const floor = Math.min(subscriberFloor(regular.Price), listed?.Price ?? regular.Price)
+	return requested >= floor && requested < regular.Price ? { charge: requested } : 'mismatch'
+}
+
 interface Storefront {
 	StoreItems: StoreItem[]
 }
@@ -546,15 +652,72 @@ const CONSUMABLE_GRANT_COUNT = 1
 /** The "Coach" system account — the sender a self-buy or anonymous gift is attributed to. */
 const COACH_ACCOUNT_ID = 1
 
-/** Build the stored gift-box content (the client's rendered "gift box") from a gift-drop. */
+/** What a box says when the buyer wrote nothing — a self-purchase, or a gift sent bare. */
+const DEFAULT_GIFT_MESSAGE = 'A gift for you <3'
+
+/**
+ * The most a gift note may carry — the same 150 the client's own input field stops typing at,
+ * so a longer one is a client that ignored its own limit rather than a longer note.
+ */
+const MAX_GIFT_MESSAGE_LENGTH = 150
+
+/**
+ * The note a gift box carries: capped at {@link MAX_GIFT_MESSAGE_LENGTH}, then masked the way
+ * every other string a player typed is.
+ *
+ * The buyer writes this and someone ELSE reads it — off the box, out of the hub frame, and
+ * for as long as the box goes unopened — so a gift is a way to put text in front of a player
+ * who never chose to hear from you. That is why both rules are re-applied here: nothing
+ * obliges a client to have called `POST /api/sanitize/v1` first, or to have honoured its own
+ * character limit, and this is the last point before the note is stored. `chat` censors its
+ * messages again for the same reason.
+ *
+ * Trimming and masking (rather than refusing) matches the rest of this server: the purchase
+ * goes through, the swear comes out as asterisks, the overrun is dropped, and the buyer is
+ * never told their gift was rejected. Blocked characters are deliberately left alone, as in
+ * chat — a note is emoji-carrying text, and stripping format characters would break the
+ * joiners inside a multi-person emoji.
+ *
+ * The cap is applied FIRST so what gets filtered is what gets stored: cutting a word in half
+ * can leave a swear where there wasn't one ("assassin" ending as "ass"), and cutting after
+ * the mask would leave a half-masked word instead. Both counts are UTF-16 units, as the
+ * client's are — a trailing lone surrogate is dropped rather than stored as half a character.
+ */
+function giftMessage(gift: GiftRequest | null): string {
+	if (typeof gift?.Message !== 'string') return DEFAULT_GIFT_MESSAGE
+	return censorSwears(truncateGiftMessage(gift.Message))
+}
+
+/** `message` cut to the cap, never through the middle of a surrogate pair. */
+function truncateGiftMessage(message: string): string {
+	if (message.length <= MAX_GIFT_MESSAGE_LENGTH) return message
+	const cut = message.slice(0, MAX_GIFT_MESSAGE_LENGTH)
+	const last = cut.charCodeAt(cut.length - 1)
+	// A high surrogate at the end lost its partner to the cut, and alone it is not a
+	// character at all — the client would draw the replacement glyph for it.
+	return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut
+}
+
+/**
+ * Build the stored gift-box content (the client's rendered "gift box") from a gift-drop.
+ *
+ * `fromPlayerId` and `giftContext` are stamped on because the box outlives the request that
+ * made it: a gift's receiver may well be offline and meets it in `GET /api/avatar/v2/gifts`,
+ * with nothing but the row to say who sent it or why. They default to Coach and the drop's
+ * own context — a box the server handed over on nobody's behalf.
+ */
 function toGiftContent(
 	giftDrop: StoreGiftDrop,
 	message: string,
 	consumableCount: number,
 	consumableMappingId = 0,
-	consumablePreExistingCount = 0
+	consumablePreExistingCount = 0,
+	fromPlayerId = COACH_ACCOUNT_ID,
+	giftContext: number | null = null
 ): GiftContent {
 	return {
+		FromPlayerId: fromPlayerId,
+		GiftContext: giftContext ?? giftDrop.Context,
 		ConsumableItemDesc: giftDrop.ConsumableItemDesc,
 		ConsumableCount: consumableCount,
 		ConsumableMappingId: consumableMappingId,
@@ -598,7 +761,8 @@ async function pushGiftReceived(
 	accountId: number,
 	gift: GrantedGift,
 	message: string,
-	fromPlayerId: number
+	fromPlayerId: number,
+	giftContext: number | null = null
 ): Promise<void> {
 	try {
 		await c.env.RECFLARE_NOTIFICATIONS_HUB.getByName(HUB_INSTANCE).notifyPlayer(
@@ -620,7 +784,7 @@ async function pushGiftReceived(
 				Platform: -1,
 				PlatformsToSpawnOn: -1,
 				BalanceType: ALL_PLATFORMS,
-				GiftContext: gift.drop.Context,
+				GiftContext: giftContext ?? gift.drop.Context,
 				GiftRarity: gift.drop.Rarity,
 				Message: message,
 			}
@@ -674,6 +838,43 @@ const ROLL_STOREFRONT_TYPE = 3
 async function loadRollCatalog(c: Context<App>): Promise<StoreItem[]> {
 	const storefront = await loadStorefront(c, ROLL_STOREFRONT_TYPE)
 	return storefront?.StoreItems ?? []
+}
+
+/**
+ * The equipment a weekly challenge gift can be drawn from: every roll-catalog item carrying
+ * an `EquipmentModificationGuid`. Weekly rewards are equipment — the captured rotation's is a
+ * camera skin — and in sf3 that guid is exactly what marks an item as equipment (187 of its
+ * 1161, all with a prefab, none with an avatar item or consumable attached).
+ *
+ * `GiftDropId` comes off `PurchasableItemId`, which every sf3 equipment entry agrees with.
+ */
+function toEquipmentGiftPool(catalog: StoreItem[]): EquipmentGift[] {
+	return catalog
+		.filter((item) => item.GiftDrop.EquipmentModificationGuid !== '')
+		.map((item) => ({
+			GiftDropId: item.PurchasableItemId,
+			EquipmentPrefabName: item.GiftDrop.EquipmentPrefabName,
+			EquipmentModificationGuid: item.GiftDrop.EquipmentModificationGuid,
+			Rarity: item.GiftDrop.Rarity,
+			// Carried so the rotation can theme the week on the item it rolled; the grant path
+			// resolves the same name from this entry when it hands the item over.
+			FriendlyName: item.GiftDrop.FriendlyName,
+		}))
+}
+
+/**
+ * The same pool, memoised for the life of the isolate. `getCurrent` needs it on every call
+ * just to show the week's reward, and sf3 is a megabyte and a half of JSON to fetch and parse
+ * — but it is a bundled asset, so it cannot change under a running isolate and a deploy
+ * builds new ones. A failed read is deliberately NOT cached: it would pin an empty pool (and
+ * so the static fallback gift) until the next deploy.
+ */
+let cachedGiftPool: EquipmentGift[] | null = null
+async function loadEquipmentGiftPool(c: Context<App>): Promise<EquipmentGift[]> {
+	if (cachedGiftPool !== null) return cachedGiftPool
+	const pool = toEquipmentGiftPool(await loadRollCatalog(c))
+	if (pool.length > 0) cachedGiftPool = pool
+	return pool
 }
 
 /**
@@ -793,6 +994,13 @@ interface GrantOptions extends RollOptions {
 	 * it is saying its own UI announces the items.
 	 */
 	skipGiftBox?: boolean
+	/**
+	 * Who the box says it is from, and why it exists — a purchase gifted to another player
+	 * carries the buyer (or Coach, when they sent it anonymously) and the `Gift` block's
+	 * `GiftContext`. Default: Coach and the drop's own context, i.e. a box from the server.
+	 */
+	fromPlayerId?: number
+	giftContext?: number | null
 }
 
 /**
@@ -879,7 +1087,15 @@ async function grantGiftDrop(
 	const { id } = await createGift(
 		db,
 		accountId,
-		toGiftContent(giftDrop, message, consumableCount, consumableMappingId, consumablePreExisting)
+		toGiftContent(
+			giftDrop,
+			message,
+			consumableCount,
+			consumableMappingId,
+			consumablePreExisting,
+			options.fromPlayerId,
+			options.giftContext
+		)
 	)
 	return { id, drop: giftDrop }
 }
@@ -1072,15 +1288,17 @@ function toPurchaseMethodId(raw: Partial<PurchaseMethodId> | null | undefined): 
  * Returns the failure — with the `UpdateResponse` its entry will carry — instead when the
  * line can't be bought.
  *
- * Pure — the catalog is passed in — so the whole bag resolves from ONE storefront read.
- * The price check is buyItem's, per line: `RequestedPrice` is the UNIT price the client
- * rendered, and a mismatch means the catalog moved under a stale client rather than that
- * the player agreed to today's price.
+ * Pure — the catalog and the buyer's subscriber status are passed in — so the whole bag
+ * resolves from ONE storefront read and ONE token read. The price check is buyItem's, per
+ * line: `RequestedPrice` is the UNIT price the client rendered (for a subscriber, anywhere in
+ * the discount band — see {@link priceCheck}), and a mismatch means the catalog moved under a
+ * stale client rather than that the player agreed to today's price.
  */
 function resolveBulkLine(
 	line: PurchaseItemRequest,
 	storefront: Storefront | null,
-	currencyType: number
+	currencyType: number,
+	subscriber: boolean
 ): BulkPurchaseLine | BulkLineFailure {
 	const method = toPurchaseMethodId(line.ItemPurchaseMethodId)
 	// Guid-keyed ids name UGC / custom avatar items, which no catalog here sells. Failing the
@@ -1129,30 +1347,25 @@ function resolveBulkLine(
 			error: 'This item can only be bought once per line',
 		}
 	}
-	const price = item.Prices.find((p) => p.CurrencyType === currencyType)
-	if (price === undefined) {
+	const checked = priceCheck(item, currencyType, subscriber, line.RequestedPrice)
+	if (checked === 'no-currency') {
 		return {
 			method,
 			code: UpdateResponse.NoItemAvailable,
 			error: 'Currency type not available for this item',
 		}
 	}
-	if (!Number.isInteger(line.RequestedPrice)) {
+	if (checked === 'mismatch') {
 		return {
 			method,
 			code: UpdateResponse.RequestedPriceDoesNotMatch,
-			error: 'RequestedPrice is required',
-		}
-	}
-	if (line.RequestedPrice !== price.Price) {
-		return {
-			method,
-			code: UpdateResponse.RequestedPriceDoesNotMatch,
-			error: 'Price has changed',
+			error: !Number.isInteger(line.RequestedPrice)
+				? 'RequestedPrice is required'
+				: 'Price has changed',
 		}
 	}
 	const gift = typeof line.Gift === 'object' && line.Gift !== null ? line.Gift : null
-	return { method, item, price: price.Price, count, gift }
+	return { method, item, price: checked.charge, count, gift }
 }
 
 /** Whether a resolved line is buyable or is already a failure. */
@@ -1285,30 +1498,6 @@ async function grantLevelUpGifts(
 	}
 }
 
-/**
- * The rotation's reward, as static/weekly-challenge.json writes it. Same item vocabulary as
- * a storefront `GiftDrop` but with `Context`/`Rarity` spelled `GiftContext`/`GiftRarity`,
- * so it has to be translated before the grant path can read it (see
- * {@link toChallengeGiftDrop}).
- *
- * `FriendlyName`/`Tooltip` are OPTIONAL because the captured rotation has neither — the
- * client resolves the reward's name from the item itself, falling back to
- * `FallbackGiftName`. A rotation we publish can carry them to name the granted item
- * properly without a code change.
- */
-interface ChallengeGift {
-	AvatarItemDesc: string
-	AvatarItemType: number
-	ConsumableItemDesc: string
-	EquipmentPrefabName: string
-	EquipmentModificationGuid: string
-	GiftContext: number
-	GiftRarity: number
-	Xp: number
-	FriendlyName?: string
-	Tooltip?: string
-}
-
 /** The message on the gift box the weekly reward arrives in. */
 const CHALLENGE_GIFT_MESSAGE = 'Weekly challenge complete!'
 
@@ -1330,8 +1519,8 @@ const DEFAULT_FALLBACK_STARS = 4
  * it is what the client renders when the gift resolves to a box rather than a named item —
  * so a rotation can retune the tier by renaming it, with no code change.
  */
-function fallbackGiftRarity(): number {
-	const stars = Number(/^(\d+)-star/i.exec(weeklyChallenge.FallbackGiftName)?.[1])
+function fallbackGiftRarity(rotation: WeeklyChallengeRotation): number {
+	const stars = Number(/^(\d+)-star/i.exec(rotation.FallbackGiftName)?.[1])
 	return STAR_RARITY[stars - 1] ?? STAR_RARITY[DEFAULT_FALLBACK_STARS - 1] ?? 0
 }
 
@@ -1346,8 +1535,11 @@ function fallbackGiftRarity(): number {
  * selling the same item, so the granted item reads as itself — "Camera Skin (Comic)" rather
  * than the name of the box it might have arrived in.
  */
-function toChallengeGiftDrop(catalog: StoreItem[]): StoreGiftDrop {
-	const gift = weeklyChallenge.Gift as ChallengeGift
+function toChallengeGiftDrop(
+	rotation: WeeklyChallengeRotation,
+	catalog: StoreItem[]
+): StoreGiftDrop {
+	const gift: ChallengeGiftBlock = rotation.Gift
 	const sold = catalog.find(
 		({ GiftDrop: drop }) =>
 			(gift.EquipmentModificationGuid !== '' &&
@@ -1355,7 +1547,7 @@ function toChallengeGiftDrop(catalog: StoreItem[]): StoreGiftDrop {
 			(gift.AvatarItemDesc !== '' && drop.AvatarItemDesc === gift.AvatarItemDesc)
 	)?.GiftDrop
 	return {
-		FriendlyName: gift.FriendlyName ?? sold?.FriendlyName ?? weeklyChallenge.FallbackGiftName,
+		FriendlyName: gift.FriendlyName ?? sold?.FriendlyName ?? rotation.FallbackGiftName,
 		Tooltip: gift.Tooltip ?? sold?.Tooltip ?? '',
 		ConsumableItemDesc: gift.ConsumableItemDesc,
 		AvatarItemDesc: gift.AvatarItemDesc,
@@ -1376,17 +1568,17 @@ function toChallengeGiftDrop(catalog: StoreItem[]): StoreGiftDrop {
  * it. Handed over instead of the rotation's item when that item would be a duplicate, which
  * is what the fallback name is for — the reward reads "the Camera Skin, or a 4-Star Box".
  */
-function toChallengeFallbackDrop(): StoreGiftDrop {
+function toChallengeFallbackDrop(rotation: WeeklyChallengeRotation): StoreGiftDrop {
 	return {
-		FriendlyName: weeklyChallenge.FallbackGiftName,
+		FriendlyName: rotation.FallbackGiftName,
 		Tooltip: '',
 		ConsumableItemDesc: '',
 		AvatarItemDesc: '',
 		AvatarItemType: null,
 		EquipmentPrefabName: '',
 		EquipmentModificationGuid: '',
-		Rarity: fallbackGiftRarity(),
-		Context: (weeklyChallenge.Gift as ChallengeGift).GiftContext,
+		Rarity: fallbackGiftRarity(rotation),
+		Context: rotation.Gift.GiftContext,
 		Currency: 0,
 		CurrencyType: 0,
 		IsQuery: true,
@@ -1406,11 +1598,9 @@ const CHALLENGES_REQUIRED_FOR_GIFT = 3
  * all-or-nothing when it's true — the reading its name and the partial default suggest —
  * and a rotation shorter than the threshold can only ever ask for what it publishes.
  */
-function challengesRequiredForGift(): number {
-	const published = weeklyChallenge.Challenges.length
-	return weeklyChallenge.CompletedRequired
-		? published
-		: Math.min(CHALLENGES_REQUIRED_FOR_GIFT, published)
+function challengesRequiredForGift(rotation: WeeklyChallengeRotation): number {
+	const published = rotation.Challenges.length
+	return rotation.CompletedRequired ? published : Math.min(CHALLENGES_REQUIRED_FOR_GIFT, published)
 }
 
 /**
@@ -1436,25 +1626,27 @@ function challengesRequiredForGift(): number {
  * would otherwise meet without playing.
  */
 async function awardChallengeGift(c: Context<App>, accountId: number): Promise<void> {
+	const rotation = buildRotation(new Date())
 	try {
-		if (weeklyChallenge.Challenges.length === 0) return
-		const complete = await getCompletedChallengeIds(
-			c.env.DB,
-			accountId,
-			weeklyChallenge.ChallengeMapId
-		)
-		const done = weeklyChallenge.Challenges.filter((ch) => complete.has(ch.ChallengeId)).length
-		if (done < challengesRequiredForGift()) return
+		if (rotation.Challenges.length === 0) return
+		const statuses = await getChallengeStatuses(c.env.DB, accountId, rotation.ChallengeMapId)
+		const done = rotation.Challenges.filter(
+			(ch) => statuses.get(ch.ChallengeId)?.complete === true
+		).length
+		if (done < challengesRequiredForGift(rotation)) return
 		// Claim first: this is what stops the next report paying out a second time.
-		const claimed = await claimChallengeGift(c.env.DB, accountId, weeklyChallenge.ChallengeMapId)
+		const claimed = await claimChallengeGift(c.env.DB, accountId, rotation.ChallengeMapId)
 		if (!claimed) return
+		// Only now is the catalog worth reading: it names the week's reward and is what the
+		// grant path rolls a duplicate's replacement from.
 		const catalog = await loadRollCatalog(c)
-		const reward = toChallengeGiftDrop(catalog)
+		const week = withWeeklyGift(rotation, toEquipmentGiftPool(catalog))
+		const reward = toChallengeGiftDrop(week, catalog)
 		const duplicate = await ownsGiftDrop(c.env.DB, accountId, reward)
 		const granted = await grantGiftDrop(
 			c,
 			accountId,
-			duplicate ? toChallengeFallbackDrop() : reward,
+			duplicate ? toChallengeFallbackDrop(week) : reward,
 			CHALLENGE_GIFT_MESSAGE,
 			{ rollCatalog: catalog }
 		)
@@ -1465,7 +1657,7 @@ async function awardChallengeGift(c: Context<App>, accountId: number): Promise<v
 		await pushGiftReceived(c, accountId, granted, CHALLENGE_GIFT_MESSAGE, COACH_ACCOUNT_ID)
 		logger.info('weekly challenge gift granted', {
 			accountId,
-			challengeMapId: weeklyChallenge.ChallengeMapId,
+			challengeMapId: rotation.ChallengeMapId,
 			giftId: granted.id,
 			fallbackRoll: duplicate,
 			challengesComplete: done,
@@ -1473,7 +1665,7 @@ async function awardChallengeGift(c: Context<App>, accountId: number): Promise<v
 	} catch (err) {
 		logger.error('failed to grant weekly challenge gift', {
 			accountId,
-			challengeMapId: weeklyChallenge.ChallengeMapId,
+			challengeMapId: rotation.ChallengeMapId,
 			error: err instanceof Error ? err.message : String(err),
 		})
 	}
@@ -2048,11 +2240,17 @@ const app = new Hono<App>({ strict: false })
 		}
 	)
 
-	// Favourite/un-favourite owned equipment. [Authorize]. The client PUTs the entries
-	// it wants changed (one request can carry several) and reads nothing back. Only
+	// Favourite/un-favourite owned equipment. [Authorize]. The client sends the entries it
+	// wants changed (one request can carry several) and reads nothing back. Only
 	// `Favorited` is written — the rest of each entry is the client echoing what it was
 	// served, and a guid the caller doesn't own matches no row and is dropped.
-	.put(
+	//
+	// PUT or POST: the client uses both spellings for this one call, with an identical body
+	// either way, so they are the same route rather than two handlers. A 404 on the POST
+	// leaves the star drawn on the item the client already redrew, and the favourite
+	// silently doesn't stick.
+	.on(
+		['PUT', 'POST'],
 		'/api/equipment/v1/update',
 		describeRoute({
 			tags: ['Equipment'],
@@ -2060,7 +2258,8 @@ const app = new Hono<App>({ strict: false })
 			description: [
 				'Applies the posted `Favorited` flags to the caller’s owned equipment, matched by',
 				'`ModificationGuid`. Everything else in each entry is ignored, and a guid the caller',
-				'doesn’t own is silently skipped. Empty body on success.',
+				'doesn’t own is silently skipped. Empty body on success. Accepts PUT or POST — the',
+				'client uses both, with the same body.',
 			].join(' '),
 			security: AUTHED,
 			requestBody: jsonBody(EquipmentUpdateRequest, 'The entries to update'),
@@ -2182,6 +2381,46 @@ const app = new Hono<App>({ strict: false })
 		'/api/ugcPurchasables/v1/items/room/:roomId',
 		listRoute('A room’s UGC purchasables', 'Empty stub so the client doesn’t 404'),
 		(c) => c.json([])
+	)
+
+	// Bulk lookup of UGC purchasables by `{ itemType, itemId }`. Only custom avatar items
+	// (type 3) exist to resolve; they come off the api-owned `custom_avatar_item` table.
+	.post(
+		'/api/ugcPurchasables/v1/items/bulk',
+		describeRoute({
+			tags: ['Rooms'],
+			summary: 'Look up UGC purchasables by id',
+			description:
+				'Resolves `Ids[]` (`{ itemType, itemId }`) against the `custom_avatar_item` table and ' +
+				'answers the store-facing `UgcPurchasableItem` view of each, in request order. ' +
+				'Only `itemType` 3 (custom avatar item) is served; other types and unknown ids are ' +
+				'dropped. `RoomId` is echoed onto every item — what the client wants it for is ' +
+				'not yet known. `PurchaseCurrencyId` is null until a currency exists.',
+			security: AUTHED,
+			requestBody: jsonBody(UgcPurchasableBulkRequest, 'The room and the ids to resolve'),
+			responses: {
+				200: json(UgcPurchasableItemList, 'The resolved items (unknown ids omitted)'),
+				400: json(ErrorResponse, 'Malformed body'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+			if (!body || !Array.isArray(body.Ids)) return c.json({ error: 'Ids is required' }, 400)
+			const roomId = typeof body.RoomId === 'number' ? body.RoomId : 0
+			const ids = (body.Ids as unknown[]).flatMap((ref) => {
+				if (!ref || typeof ref !== 'object') return []
+				const { itemType, itemId } = ref as Record<string, unknown>
+				return itemType === UGC_ITEM_TYPE_CUSTOM_AVATAR_ITEM && typeof itemId === 'string'
+					? [itemId]
+					: []
+			})
+			const items = await getCustomAvatarItems(c.env.DB, ids)
+			return c.json(items.map((item) => toUgcPurchasable(item, roomId)))
+		}
 	)
 
 	// Unlocked consumables. [Authorize]. The consumables the player has bought (from
@@ -2347,9 +2586,14 @@ const app = new Hono<App>({ strict: false })
 			summary: 'Buy a storefront item',
 			description: [
 				'Looks the item up in its storefront catalog, confirms the client’s `RequestedPrice`',
-				'still matches, debits the buyer atomically, grants the item (into the inventory or',
-				'consumable table), and returns a gift box. A `Gift` block routes the item to another',
-				'player, but the caller always pays. `Balance` in the response is the CHANGE (negated',
+				'still matches the `Prices` entry — a Rec Room Plus subscriber (the same check as',
+				'`UpdateAndGetSubscription`) may pay anywhere from that down to 10% off, since their',
+				'client applies the discount itself and not to every item — debits the buyer atomically,',
+				'grants the item (into the inventory or',
+				'consumable table), and returns a gift box. A `Gift` block routes the item — and its',
+				'box — to the player it names, who is handed it over the hub as',
+				'`GiftPackageReceivedImmediate`; the caller always pays, and `Anonymous` hides them',
+				'from the box rather than withholding it. `Balance` in the response is the CHANGE (negated',
 				'price), not the new total. Pushes a StorefrontBalancePurchase socket frame that SETS the',
 				'buyer’s account-wide bucket to the RESULTING total, so the frame, this body and a',
 				'`GET /balance` re-fetch all agree (`Delta` there is display-only).',
@@ -2360,7 +2604,7 @@ const app = new Hono<App>({ strict: false })
 				200: json(BuyItemResponse, 'The purchase result (gift box + balance change)'),
 				400: json(ErrorResponse, 'Invalid body, unavailable currency, or insufficient balance'),
 				401: UNAUTHORIZED_RESPONSE,
-				404: json(ErrorResponse, 'No such item'),
+				404: json(ErrorResponse, 'No such item, or a `Gift` naming a player that does not exist'),
 				409: json(ErrorResponse, 'The price has changed since the client rendered it'),
 			},
 		}),
@@ -2394,13 +2638,21 @@ const app = new Hono<App>({ strict: false })
 			const item = await findStoreItem(c, storefrontType as number, purchasableItemId as number)
 			if (item === null) return c.json({ error: 'Item not found' }, 404)
 
-			const price = item.Prices.find((p) => p.CurrencyType === currencyType)
-			if (price === undefined) {
+			// A subscriber's client prices the item itself and posts the result, so the check is a
+			// band rather than one number — see `priceCheck`. `charge` is what they asked to pay.
+			const checked = priceCheck(
+				item,
+				currencyType as number,
+				await isSubscriber(c),
+				requestedPrice
+			)
+			if (checked === 'no-currency') {
 				return c.json({ error: 'Currency type not available for this item' }, 400)
 			}
-			if (price.Price !== requestedPrice) {
+			if (checked === 'mismatch') {
 				return c.json({ error: 'Price has changed' }, 409)
 			}
+			const price = checked.charge
 			// The item's currency must be an account balance we can debit (RecCenterTokens et al),
 			// not a room-scoped or non-spendable currency.
 			if (!isSpendable(currencyType as number)) {
@@ -2414,18 +2666,20 @@ const app = new Hono<App>({ strict: false })
 			// A named (non-anonymous) gift shows the sender; a self-purchase or an anonymous gift
 			// is attributed to the "Coach" system account (id 1), never a null/0 sender.
 			const fromPlayerId = gift !== null && gift.Anonymous !== true ? id : COACH_ACCOUNT_ID
-			const message = typeof gift?.Message === 'string' ? gift.Message : 'A gift for you <3'
+			const message = giftMessage(gift)
+			const giftContext = Number.isInteger(gift?.GiftContext) ? (gift?.GiftContext as number) : null
+			// A gift is paid for here and granted THERE, so an id that names nobody would take the
+			// buyer's tokens and strand the box on an account that will never read it. The client
+			// only offers players it just looked up, so this is a tampered or stale id — refuse it
+			// before charging rather than after.
+			if (receiverId !== id && (await getAccount(c.env.DB, receiverId)) === null) {
+				return c.json({ error: 'No such player to gift to' }, 404)
+			}
 
 			const startingTokens = intVar(c.env.STARTING_TOKENS, DEFAULT_STARTING_TOKENS)
 			// Debit the buyer atomically; a false return means they couldn't afford it and
 			// nothing changed, so no item is granted.
-			const paid = await spendCurrency(
-				c.env.DB,
-				id,
-				currencyType as number,
-				price.Price,
-				startingTokens
-			)
+			const paid = await spendCurrency(c.env.DB, id, currencyType as number, price, startingTokens)
 			if (!paid) return c.json({ error: 'Insufficient balance' }, 400)
 
 			// Grant the item to the recipient, with the gift box that renders it. A box (an
@@ -2433,7 +2687,18 @@ const app = new Hono<App>({ strict: false })
 			// `granted.drop` is what the roll landed on — the response has to describe THAT, not
 			// the box, or a query purchase answers with every item field empty and the client
 			// draws an empty box.
-			const granted = await grantGiftDrop(c, receiverId, item.GiftDrop, message)
+			const granted = await grantGiftDrop(c, receiverId, item.GiftDrop, message, {
+				fromPlayerId,
+				giftContext,
+			})
+
+			// The buyer reads their own box out of the response below, but a gift's receiver has
+			// no response to read — they may not even be online. Hand them the box the way every
+			// other server-handed box arrives, so it pops in front of them instead of waiting for
+			// their client's next `GET /api/avatar/v2/gifts`.
+			if (receiverId !== id) {
+				await pushGiftReceived(c, receiverId, granted, message, fromPlayerId, giftContext)
+			}
 
 			// Push the spend to the buyer (`id` — the caller is who was charged) so their client
 			// updates without waiting for a `GET /balance` re-fetch. StorefrontBalancePurchase
@@ -2441,7 +2706,7 @@ const app = new Hono<App>({ strict: false })
 			// with both the response body below and any re-fetch instead of compounding with them
 			// — see the frame rule above pushBalanceUpdate. Best-effort.
 			const newBalance = await getBalance(c.env.DB, id, currencyType as number, startingTokens)
-			await pushBalancePurchase(c, id, currencyType as number, -price.Price, newBalance)
+			await pushBalancePurchase(c, id, currencyType as number, -price, newBalance)
 
 			// The response mirrors a captured real buyItem: `Balance` is the change applied (the
 			// negated price), not the resulting balance (the client reads its new total from
@@ -2450,17 +2715,10 @@ const app = new Hono<App>({ strict: false })
 				BalanceUpdates: [
 					{
 						UpdateResponse: 0,
-						Data: [
-							toBalanceUpdateData(
-								granted,
-								fromPlayerId,
-								message,
-								Number.isInteger(gift?.GiftContext) ? (gift?.GiftContext as number) : null
-							),
-						],
+						Data: [toBalanceUpdateData(granted, fromPlayerId, message, giftContext)],
 					},
 				],
-				Balance: -price.Price,
+				Balance: -price,
 				CurrencyType: currencyType,
 				BalanceType: ALL_PLATFORMS,
 			})
@@ -2505,6 +2763,7 @@ const app = new Hono<App>({ strict: false })
 				200: json(BulkPurchaseResponse, 'The bag’s result, or `Success: false` if nothing sold'),
 				400: json(BulkPurchaseResponse, 'A request that could not be evaluated at all'),
 				401: UNAUTHORIZED_RESPONSE,
+				404: json(BulkPurchaseResponse, 'A line gifts to a player that does not exist'),
 			},
 		}),
 		async (c) => {
@@ -2515,7 +2774,7 @@ const app = new Hono<App>({ strict: false })
 			// this shape never has to special-case one. A null `Value` is legal here (the client's
 			// validator only cascades into a non-null one), and it is the honest answer: nothing
 			// was bought, so there is no balance to report and nothing to render.
-			const refuse = (error: string, status: 200 | 400 = 200) =>
+			const refuse = (error: string, status: 200 | 400 | 404 = 200) =>
 				c.json({ Success: false, Error: error, error_id: null, Value: null }, status)
 
 			const body = (await c.req.json().catch(() => null)) as {
@@ -2547,8 +2806,9 @@ const app = new Hono<App>({ strict: false })
 
 			// One catalog read for the bag; every line resolves against it in memory.
 			const storefront = await loadStorefront(c, storefrontType as number)
+			const subscriber = await isSubscriber(c)
 			const resolved = lines.map((line) =>
-				resolveBulkLine(line, storefront, currencyType as number)
+				resolveBulkLine(line, storefront, currencyType as number, subscriber)
 			)
 			const buyable = resolved.filter(isBulkLine)
 
@@ -2560,6 +2820,20 @@ const app = new Hono<App>({ strict: false })
 			// client is told why by the first thing that was wrong with it.
 			const firstFailure = resolved.find((line): line is BulkLineFailure => !isBulkLine(line))
 			if (!allowPartial && firstFailure !== undefined) return refuse(firstFailure.error)
+
+			// Same as buyItem: a line gifting to an id that names nobody would charge the buyer and
+			// strand the box. One lookup per DISTINCT recipient, and the whole bag refuses — a bad
+			// recipient is a malformed request, not a line that merely didn't fit.
+			const recipients = new Set<number>()
+			for (const line of buyable) {
+				const to = line.gift?.ToPlayerId
+				if (Number.isInteger(to) && to !== id) recipients.add(to as number)
+			}
+			for (const to of recipients) {
+				if ((await getAccount(c.env.DB, to)) === null) {
+					return refuse('No such player to gift to', 404)
+				}
+			}
 
 			// Decide what the balance covers BEFORE spending: lines are taken in request order
 			// while they fit, so a bag that overruns still buys the items the player put in first.
@@ -2610,9 +2884,16 @@ const app = new Hono<App>({ strict: false })
 				// player while the caller pays, a named gift shows the sender, and a self-buy or an
 				// anonymous gift is attributed to the "Coach" system account.
 				const gift = line.gift
-				const receiverId = Number.isInteger(gift?.ToPlayerId) ? (gift?.ToPlayerId as number) : id
+				// Annotated: without it the inference of this handler's own type runs through the
+				// hub call below and back, and tsc gives up on the initializer (TS7022).
+				const receiverId: number = Number.isInteger(gift?.ToPlayerId)
+					? (gift?.ToPlayerId as number)
+					: id
 				const fromPlayerId = gift !== null && gift.Anonymous !== true ? id : COACH_ACCOUNT_ID
-				const message = typeof gift?.Message === 'string' ? gift.Message : 'A gift for you <3'
+				const message = giftMessage(gift)
+				const giftContext = Number.isInteger(gift?.GiftContext)
+					? (gift?.GiftContext as number)
+					: null
 				// One box per requested item, holding all `count` copies — the wire has one
 				// `GiftPackage` per entry, and only a consumable can be asked for more than once
 				// (`resolveBulkLine` refuses a bigger count on anything owned once).
@@ -2620,20 +2901,22 @@ const app = new Hono<App>({ strict: false })
 					rollCatalog,
 					skipGiftBox,
 					copies: line.count,
+					fromPlayerId,
+					giftContext,
 				})
+				// The bag's own response carries only the buyer's boxes, so a gifted line is
+				// announced to its receiver the same way buyItem's is. `BypassGiftPackages` skipped
+				// the box entirely, and there is nothing to announce.
+				if (receiverId !== id && !skipGiftBox) {
+					await pushGiftReceived(c, receiverId, granted, message, fromPlayerId, giftContext)
+				}
 				packages.set(
 					line,
 					// Null under `BypassGiftPackages`, which is the flag asking for exactly that —
 					// the item is granted either way.
 					skipGiftBox
 						? null
-						: toGiftPackage(
-								granted,
-								receiverId,
-								fromPlayerId,
-								message,
-								Number.isInteger(gift?.GiftContext) ? (gift?.GiftContext as number) : null
-							)
+						: toGiftPackage(granted, receiverId, fromPlayerId, message, giftContext)
 				)
 			}
 
@@ -2857,60 +3140,76 @@ const app = new Hono<App>({ strict: false })
 		(c) => c.json(adCarouselItems)
 	)
 
-	// Current weekly challenge. The rotation itself is the bundled static JSON (its format
-	// is documented in the README) but each challenge's `Complete` is per-player, so the
-	// caller's rows from `challenge_status` are stamped over the static `false`s.
-	// Auth is OPTIONAL: without a valid bearer the static catalog is served unchanged
-	// rather than 401, since the rotation is public information and a 404/401 on this
-	// route can stall the client's load orchestration.
+	// Current weekly challenge. The rotation is GENERATED from the calendar week (see
+	// challenge-rotation.ts — the same five challenges, window and gift for everyone, derived
+	// from the week index; static/weekly-challenge.json pins it instead when it carries
+	// challenges), but each challenge's state is per-player, so the caller's rows from
+	// `challenge_status` are stamped over the week's: `Complete` over the published `false`,
+	// and `Config` over the published rule tree — the client evaluates that tree locally and
+	// reports it back with its running counts written into it (`cc`/`c`), so serving the
+	// pristine tree back is what makes partial progress reset every session.
+	// Auth is OPTIONAL: without a valid bearer the week is served unstamped rather than 401,
+	// since the rotation is public information and a 404/401 on this route can stall the
+	// client's load orchestration.
 	.get(
 		'/api/challenge/v2/getCurrent',
 		describeRoute({
 			tags: ['Econ'],
 			summary: 'Current weekly challenge',
 			description: [
-				'The bundled static rotation, with each challenge’s `Complete` stamped from the',
-				'caller’s progress rows. Auth is optional — unauthenticated callers get the static',
-				'catalog with every `Complete` false.',
+				'This week’s rotation — generated from the calendar week — with each challenge’s',
+				'`Complete` and `Config` stamped from the caller’s progress rows, the stored `Config`',
+				'carrying the client’s running counts. Auth is optional: unauthenticated callers get',
+				'the week unstamped, every `Complete` false and every `Config` as published.',
 			].join(' '),
 			security: OPTIONAL_AUTHED,
 			responses: { 200: json(JsonObject, 'The current weekly challenge') },
 		}),
 		async (c) => {
+			const rotation = withWeeklyGift(buildRotation(new Date()), await loadEquipmentGiftPool(c))
 			const id = await authedId(c)
-			if (id === null) return c.json(weeklyChallenge)
-			const complete = await getCompletedChallengeIds(c.env.DB, id, weeklyChallenge.ChallengeMapId)
-			if (complete.size === 0) return c.json(weeklyChallenge)
-			// Rebuild rather than mutate: the static import is module state shared by every
-			// request this isolate serves, so stamping it in place would leak one player's
-			// completions to the next caller.
+			if (id === null) return c.json(rotation)
+			const statuses = await getChallengeStatuses(c.env.DB, id, rotation.ChallengeMapId)
+			if (statuses.size === 0) return c.json(rotation)
+			// Rebuild rather than mutate: the generated rotation is cached module state shared
+			// by every request this isolate serves, so stamping it in place would leak one
+			// player's progress to the next caller.
 			return c.json({
-				...weeklyChallenge,
-				Challenges: weeklyChallenge.Challenges.map((challenge) => ({
-					...challenge,
-					Complete: complete.has(challenge.ChallengeId),
-				})),
+				...rotation,
+				Challenges: rotation.Challenges.map((challenge) => {
+					const status = statuses.get(challenge.ChallengeId)
+					if (status === undefined) return challenge
+					// A row with no stored tree (never reported one) keeps the authored `Config`;
+					// overwriting it with null would hand the client a challenge it can't evaluate.
+					return {
+						...challenge,
+						Complete: status.complete,
+						Config: status.config ?? challenge.Config,
+					}
+				}),
 			})
 		}
 	)
 
 	// Report progress on a weekly challenge. [Authorize]. The client evaluates the
 	// challenge's rule tree locally and posts ChallengeMapId/ChallengeId, that tree in
-	// `Config`, and whether it now considers the challenge `Complete`. Only the
-	// completion is persisted (keyed by account + challenge); `Config` is the catalog's
-	// own definition plus the client's running count, so storing it would duplicate
-	// static data. Echoes the identifying fields back with the completion the row now
-	// holds — which is not always what was posted, since completion latches within a
-	// rotation.
+	// `Config`, and whether it now considers the challenge `Complete`. Both are persisted
+	// (keyed by account + challenge): the posted tree is the catalog's definition with the
+	// client's running counts written into it, so it is this player's progress, and
+	// `getCurrent` serves it back in place of the authored tree. Echoes the identifying
+	// fields back with the state the row now holds — which is not always what was posted,
+	// since completion latches within a rotation and a report with no `Config` keeps the
+	// stored tree.
 	.post(
 		'/api/challenge/v2/updateProgress',
 		describeRoute({
 			tags: ['Econ'],
 			summary: 'Report weekly-challenge progress',
 			description: [
-				'Persists the reported completion into `challenge_status`, keyed by account +',
-				'challenge. `Config` is accepted and echoed but not stored. Completion latches within',
-				'a rotation, so the echoed `Complete` is the stored value, not the posted one.',
+				'Persists the reported completion and rule tree into `challenge_status`, keyed by',
+				'account + challenge, so `getCurrent` can serve the player’s own progress back.',
+				'Completion latches within a rotation and a report carrying no `Config` keeps the',
+				'stored tree, so the echoed fields are the stored values, not the posted ones.',
 			].join(' '),
 			security: AUTHED,
 			requestBody: jsonBody(ChallengeProgressRequest, 'Challenge ids + the evaluated rule tree'),
@@ -2932,14 +3231,16 @@ const app = new Hono<App>({ strict: false })
 				.catch(() => ({}) as Record<string, never>)
 			const challengeMapId = Number(body.ChallengeMapId) || 0
 			const challengeId = Number(body.ChallengeId) || 0
+			const config = typeof body.Config === 'string' ? body.Config : null
 			// Nothing to key a row on — echo the body back rather than writing a (0, 0) row.
-			const complete =
+			const stored =
 				challengeId === 0
-					? parseBool(body.Complete)
+					? { complete: parseBool(body.Complete), config }
 					: await recordChallengeProgress(c.env.DB, id, {
 							challengeMapId,
 							challengeId,
 							complete: parseBool(body.Complete),
+							config,
 						})
 			// This report may have been the last one of the set. Only a completing report on
 			// the LIVE rotation can be — an old rotation's set can no longer be finished, and
@@ -2947,14 +3248,14 @@ const app = new Hono<App>({ strict: false })
 			// The response is unchanged whether or not a gift was won: the client learns about
 			// the box from `GET /api/avatar/v2/gifts`, and adding a field here would be
 			// inventing response shape the client never sent us.
-			if (complete && challengeId !== 0 && challengeMapId === weeklyChallenge.ChallengeMapId) {
+			if (stored.complete && challengeId !== 0 && challengeMapId === rotationMapId(new Date())) {
 				await awardChallengeGift(c, id)
 			}
 			return c.json({
 				ChallengeMapId: challengeMapId,
 				ChallengeId: challengeId,
-				Config: typeof body.Config === 'string' ? body.Config : '',
-				Complete: complete,
+				Config: stored.config ?? '',
+				Complete: stored.complete,
 			})
 		}
 	)
@@ -3107,8 +3408,7 @@ const app = new Hono<App>({ strict: false })
 			},
 		}),
 		async (c) => {
-			const roles = await authedRoles(c)
-			if (!roles?.includes(DEVELOPER_ROLE)) return c.json({})
+			if (!(await isSubscriber(c))) return c.json({})
 			const id = await authedId(c)
 			if (id === null) return c.json({})
 			return c.json({
@@ -3233,27 +3533,26 @@ const app = new Hono<App>({ strict: false })
 		}
 	)
 
-	// Whether the caller is in the influencer partner program. NOBODY is: this server runs
-	// no such program, and "not an influencer" is a 404 rather than a body saying so — the
-	// reference answers 404 with an EMPTY body typed `application/json`, which is what the
-	// client branches on. A 200 carrying null or `{}` is a different answer to it.
+	// One account's standing in the influencer partner program. NOBODY here has one: this
+	// server runs no such program, so the answer is the literal `0` — the "not an influencer"
+	// tier — for every account.
 	//
-	// Deliberately built by hand rather than through `c.notFound()`: the worker's not-found
-	// handler answers its own body, and this has to be empty with that content type.
+	// A BARE NUMBER is the whole body, like `…/makerai/checkfreetrialeligibility`'s bare
+	// `false`, not a number wrapped in an object. This used to answer 404 with an empty body;
+	// the tier is what the client actually reads.
 	//
-	// `accountId` is accepted and ignored — the reference binds it and never reads it, the
-	// answer being the same for everyone. The token is still validated first, so an
-	// unauthenticated caller gets 401 rather than the 404.
+	// `accountId` names the account being asked about. It makes no difference to the answer
+	// while nobody is an influencer, but it is read rather than ignored so this stays the
+	// question it looks like — the caller's own standing is `…/myinfluencer` below.
 	.get(
 		'/api/influencerpartnerprogram/influencer',
 		describeRoute({
 			tags: ['Econ'],
-			summary: 'The caller’s influencer partner program status',
+			summary: 'An account’s influencer partner program tier',
 			description: [
-				'Always 404 with an EMPTY body typed `application/json` — this server runs no partner',
-				'program, and 404 is how the reference says “not an influencer”. `accountId` is',
-				'accepted and ignored; the answer is the same for every caller. Auth is checked first,',
-				'so a missing or invalid token is 401, not 404.',
+				'The partner tier of the account named by `accountId`, as a BARE NUMBER — the whole',
+				'body is `0`, not an object around it. Always 0: this server runs no partner program,',
+				'so no account is an influencer. Auth-gated; a missing or invalid token is a 401.',
 			].join(' '),
 			security: AUTHED,
 			parameters: [
@@ -3261,19 +3560,47 @@ const app = new Hono<App>({ strict: false })
 					name: 'accountId',
 					in: 'query',
 					required: false,
-					description: 'The account being asked about. Accepted and ignored.',
+					description: 'The account being asked about. Every account answers 0.',
 					schema: { type: 'integer' },
 				},
 			],
 			responses: {
-				404: { description: 'Not in the partner program — always. Empty body' },
+				200: json(InfluencerTierResponse, 'The account’s tier — always 0'),
 				401: UNAUTHORIZED_RESPONSE,
 			},
 		}),
 		async (c) => {
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
-			return c.body('', 404, { 'Content-Type': 'application/json' })
+			return c.json(NOT_AN_INFLUENCER)
+		}
+	)
+
+	// The same question about the CALLER — the `my` form, which names no account because the
+	// token already does. Same bare `0`, for the same reason: nobody here is an influencer.
+	//
+	// Its own route rather than an alias of the one above, because the two differ in who they
+	// are about; they agree today only because the answer is currently the same for everyone.
+	.get(
+		'/api/influencerpartnerprogram/myinfluencer',
+		describeRoute({
+			tags: ['Econ'],
+			summary: 'The caller’s influencer partner program tier',
+			description: [
+				'The caller’s own partner tier — the `my` form of the route above, taking the account',
+				'from the token rather than a query parameter. A BARE NUMBER, always `0`: this server',
+				'runs no partner program. Auth-gated; a missing or invalid token is a 401.',
+			].join(' '),
+			security: AUTHED,
+			responses: {
+				200: json(InfluencerTierResponse, 'The caller’s tier — always 0'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+			return c.json(NOT_AN_INFLUENCER)
 		}
 	)
 

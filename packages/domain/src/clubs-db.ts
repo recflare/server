@@ -800,6 +800,63 @@ export async function deleteClub(db: D1Database, clubId: number): Promise<boolea
 }
 
 /**
+ * One row of the "most active clubhouses right now" search: a club, the room its
+ * clubhouse is, and how many players are standing in that room this second.
+ */
+export interface ActiveClubhouse {
+	RoomId: number
+	ClubId: number
+	PlayerCount: number
+}
+
+/**
+ * The most a single "most active now" answer carries. It fills a carousel, not a
+ * directory — nobody scrolls past the busiest few clubhouses — and the query behind it
+ * scans live presence, so it stays bounded rather than growing with the club table.
+ */
+export const MOST_ACTIVE_CLUBHOUSE_LIMIT = 50
+
+/**
+ * Clubhouses with players in them right now, busiest first — what
+ * `match`'s `/clubhousesearch/mostactivenow` serves.
+ *
+ * Active means someone is THERE: a club whose clubhouse is empty is absent from the
+ * result rather than listed with a `PlayerCount` of 0, and a club with no clubhouse at
+ * all can never appear (nothing joins to a null room). So a quiet server answers `[]`.
+ *
+ * Same eligibility as {@link searchClubs}, since this is a search too: public,
+ * non-subscription clubs only. Ties break on ClubId so equally busy clubhouses hold a
+ * stable order between calls. Counts unexpired presence only, and ignores lobby presence
+ * (no instance) the way every other head-count here does.
+ */
+export async function getMostActiveClubhouses(
+	db: D1Database,
+	limit = MOST_ACTIVE_CLUBHOUSE_LIMIT,
+	now = Math.floor(Date.now() / 1000)
+): Promise<ActiveClubhouse[]> {
+	// One grouped join rather than a count per club: the club blobs never cross the wire,
+	// only the clubhouse id `json_extract` pulls out of each.
+	const { results } = await db
+		.prepare(
+			`SELECT c.club_id AS ClubId,
+			        json_extract(c.data, '$.ClubhouseRoomId') AS RoomId,
+			        COUNT(*) AS PlayerCount
+			 FROM club c
+			 JOIN presence p ON p.room_id = json_extract(c.data, '$.ClubhouseRoomId')
+			 WHERE c.visibility = ?1
+			   AND json_extract(c.data, '$.ClubType') != ?2
+			   AND p.expires_at > ?3
+			   AND p.room_instance_id IS NOT NULL
+			 GROUP BY c.club_id
+			 ORDER BY PlayerCount DESC, c.club_id
+			 LIMIT ?4`
+		)
+		.bind(ClubVisibility.Public, SUBSCRIPTION_CLUB_TYPE, now, limit)
+		.all<ActiveClubhouse>()
+	return results
+}
+
+/**
  * Subscription clubs (`ClubType` 1) are a creator's paid-subscriber club, not a
  * club you browse or list among your own — they're excluded from the "my clubs"
  * lists (the client reaches them through the `/subscription/*` endpoints instead).

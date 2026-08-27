@@ -34,6 +34,16 @@ export const RECEIVED_GIFT_SCHEMA_DDL: string[] = [
  * `CreatedAt` are NOT part of this — they come from the row (see {@link StoredGift}).
  */
 export interface GiftContent extends Record<string, unknown> {
+	/**
+	 * Who the box is from — the buyer for a named gift, the "Coach" system account (1) for a
+	 * self-purchase or an anonymous one. The client draws the sender from the box itself, so
+	 * a gift that doesn't carry it reads as being from nobody once the receiving player has
+	 * to come back for it. Boxes written before this existed carry neither it nor
+	 * {@link GiftContent.GiftContext}.
+	 */
+	FromPlayerId?: number
+	/** Why the box exists (the buying `Gift` block's `GiftContext`, else the drop's own). */
+	GiftContext?: number
 	ConsumableItemDesc: string
 	ConsumableCount: number
 	// When the gift carries a consumable, the id of the `consumable` row granted at

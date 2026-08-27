@@ -16,8 +16,10 @@ import {
 	getRoomInstance,
 	PRESENCE_SCHEMA_DDL,
 	ROOM_INSTANCE_SCHEMA_DDL,
+	ROOM_INVITE_SCHEMA_DDL,
 	ROOM_SCHEMA_DDL,
 	seedRoomWithSubRooms,
+	setPresence,
 	SUBROOM_SCHEMA_DDL,
 } from '@repo/domain'
 
@@ -120,6 +122,8 @@ beforeAll(async () => {
 	for (const stmt of ROOM_INSTANCE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	// Presence table (owned by the rooms worker) — written/read by matchmake + heartbeat.
 	for (const stmt of PRESENCE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	// Room invites (owned by this worker) — POST /invite mints a row per invite.
+	for (const stmt of ROOM_INVITE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 
 	// Accounts table (owned by the auth worker) — dorm creation reads the username
 	// to name the room. Seed the players the dorm tests authenticate as.
@@ -140,7 +144,8 @@ beforeAll(async () => {
 	await env.DB.prepare(
 		`CREATE TABLE IF NOT EXISTS club (
 			data TEXT NOT NULL,
-			club_id INTEGER GENERATED ALWAYS AS (json_extract(data, '$.ClubId')) VIRTUAL
+			club_id INTEGER GENERATED ALWAYS AS (json_extract(data, '$.ClubId')) VIRTUAL,
+			visibility INTEGER GENERATED ALWAYS AS (json_extract(data, '$.Visibility')) VIRTUAL
 		)`
 	).run()
 	await env.DB.prepare(
@@ -154,9 +159,26 @@ beforeAll(async () => {
 	).run()
 	const insertClub = env.DB.prepare('INSERT OR IGNORE INTO club (data) VALUES (?1)')
 	await env.DB.batch([
-		// Club 4 has room 2 as its clubhouse; club 5 has none set.
-		insertClub.bind(JSON.stringify({ ClubId: 4, Name: 'Clubbers', ClubhouseRoomId: 2 })),
-		insertClub.bind(JSON.stringify({ ClubId: 5, Name: 'Homeless', ClubhouseRoomId: null })),
+		// Club 4 has room 2 as its clubhouse; club 5 has none set. Both public and ordinary
+		// (`ClubType` 0), which is what the clubhouse search lists.
+		insertClub.bind(
+			JSON.stringify({
+				ClubId: 4,
+				Name: 'Clubbers',
+				ClubhouseRoomId: 2,
+				Visibility: 1,
+				ClubType: 0,
+			})
+		),
+		insertClub.bind(
+			JSON.stringify({
+				ClubId: 5,
+				Name: 'Homeless',
+				ClubhouseRoomId: null,
+				Visibility: 1,
+				ClubType: 0,
+			})
+		),
 	])
 	const insertMember = env.DB.prepare(
 		'INSERT INTO club_member (club_id, account_id, membership_type) VALUES (?1, ?2, ?3)'
@@ -327,6 +349,113 @@ describe('public endpoints', () => {
 				experiments: null,
 			},
 		])
+	})
+
+	test('GET /clubhousesearch/mostactivenow lists clubhouses with players in them', async () => {
+		// Ungated, like /tachyon — no bearer token anywhere in this test.
+		const busiest = async () => {
+			const res = await exports.default.fetch(`${ORIGIN}/clubhousesearch/mostactivenow`)
+			expect(res.status).toBe(200)
+			return (await res.json()) as Array<{ RoomId: number; ClubId: number; PlayerCount: number }>
+		}
+
+		// Nobody is in club 4's clubhouse (room 2) yet, and an empty clubhouse is absent
+		// rather than listed at zero — so a quiet server answers [].
+		expect(await busiest()).toEqual([])
+
+		const at = (accountId: number, roomId: number | null, ttl = 900) =>
+			JSON.stringify({
+				accountId,
+				roomInstance: roomId === null ? null : { roomInstanceId: 1000000 + accountId, roomId },
+				expiresAt: Math.floor(Date.now() / 1000) + ttl,
+			})
+		const seed = env.DB.prepare('INSERT OR REPLACE INTO presence (data) VALUES (?1)')
+		await env.DB.batch([
+			seed.bind(at(7001, 2)),
+			seed.bind(at(7002, 2)),
+			// Room 3 is nobody's clubhouse, and a lobby presence is in no room at all: neither
+			// can put a club in the list.
+			seed.bind(at(7003, 3)),
+			seed.bind(at(7004, null)),
+		])
+
+		expect(await busiest()).toEqual([{ RoomId: 2, ClubId: 4, PlayerCount: 2 }])
+
+		// Expired presence is nobody standing there.
+		await env.DB.prepare(
+			`UPDATE presence SET data = json_set(data, '$.expiresAt', ?1)
+			 WHERE account_id BETWEEN 7001 AND 7004`
+		)
+			.bind(Math.floor(Date.now() / 1000) - 60)
+			.run()
+		expect(await busiest()).toEqual([])
+
+		await env.DB.prepare('DELETE FROM presence WHERE account_id BETWEEN 7001 AND 7004').run()
+	})
+
+	test('GET /tachyon?id=N answers the bare instance id the player is in', async () => {
+		// Ungated — no bearer token anywhere in this test. The player is named by the query.
+		const tachyon = async (query: string) => {
+			const res = await exports.default.fetch(`${ORIGIN}/tachyon${query}`)
+			expect(res.status).toBe(200)
+			return res.json()
+		}
+
+		// Nobody has presence for 4242, so they are in nothing. 0 rather than null: the body
+		// is a number, and a real instance id is never 0.
+		expect(await tachyon('?id=4242')).toBe(0)
+
+		// Put someone in a room the ordinary way, and the id is the one the matchmake handed
+		// them — the same field `/player` serves inside the whole presence blob.
+		const matchmake = await exports.default.fetch(`${ORIGIN}/matchmake/room/2`, {
+			method: 'POST',
+			headers: { ...(await bearer('4243')), 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({ JoinMode: '2' }).toString(),
+		})
+		const { roomInstance } = (await matchmake.json()) as {
+			roomInstance: { roomInstanceId: number } | null
+		}
+		expect(roomInstance).not.toBeNull()
+		expect(await tachyon('?id=4243')).toBe(roomInstance!.roomInstanceId)
+
+		// A synthetic instance id is a real answer and passes through — -2 is the Orientation
+		// presence `auth` seeds a new player with.
+		await env.DB.prepare('INSERT OR REPLACE INTO presence (data) VALUES (?1)')
+			.bind(
+				JSON.stringify({
+					accountId: 4244,
+					roomInstance: { roomInstanceId: -2 },
+					statusVisibility: 0,
+					deviceClass: 0,
+					vrMovementMode: 1,
+					platform: 0,
+					appVersion: GAME_VERSION,
+					expiresAt: Math.floor(Date.now() / 1000) + 900,
+				})
+			)
+			.run()
+		expect(await tachyon('?id=4244')).toBe(-2)
+
+		// An expired row is not presence, so its player is in nothing.
+		await env.DB.prepare('INSERT OR REPLACE INTO presence (data) VALUES (?1)')
+			.bind(
+				JSON.stringify({
+					accountId: 4245,
+					roomInstance: { roomInstanceId: 987 },
+					statusVisibility: 0,
+					deviceClass: 0,
+					vrMovementMode: 1,
+					platform: 0,
+					appVersion: GAME_VERSION,
+					expiresAt: Math.floor(Date.now() / 1000) - 60,
+				})
+			)
+			.run()
+		expect(await tachyon('?id=4245')).toBe(0)
+
+		// No id, and an unparseable one, answer the same 0 rather than erroring.
+		expect(await tachyon('')).toBe(0)
+		expect(await tachyon('?id=notanumber')).toBe(0)
 	})
 
 	test('GET /player?id=&id= returns one payload per id, in order', async () => {
@@ -2242,6 +2371,25 @@ describe('auth-gated endpoints', () => {
 		// The client's exact request: player 42 invites 153 into their instance.
 		const res = await invite(`playerId=153&roomInstanceId=${instance.roomInstanceId}`, '42')
 		expect(res.status).toBe(200)
+		// The response is the `room_invite` row the invite just created.
+		const created = (await res.json()) as Record<string, unknown>
+		expect(created).toMatchObject({ FromPlayerId: 42, ToPlayerId: 153, RoomId: 2 })
+		expect(created.RoomInviteId).toBeGreaterThan(0)
+
+		// ...and the row is really there, `created_at` stamped in epoch seconds so the
+		// eventual expiry sweep can compare it.
+		const row = await env.DB.prepare(
+			'SELECT from_player_id, to_player_id, room_id, created_at FROM room_invite WHERE room_invite_id = ?1'
+		)
+			.bind(created.RoomInviteId)
+			.first<{
+				from_player_id: number
+				to_player_id: number
+				room_id: number | null
+				created_at: number
+			}>()
+		expect(row).toMatchObject({ from_player_id: 42, to_player_id: 153, room_id: 2 })
+		expect(row!.created_at).toBeGreaterThan(1_700_000_000)
 
 		const notes = await sent()
 		expect(notes).toHaveLength(1)
@@ -2269,10 +2417,87 @@ describe('auth-gated endpoints', () => {
 		// RoomId (which the real hub drops from the frame).
 		const noRoom = await invite('playerId=153&roomInstanceId=999999', '42')
 		expect(noRoom.status).toBe(200)
+		const noRoomInvite = (await noRoom.json()) as Record<string, unknown>
+		expect(noRoomInvite).toMatchObject({ RoomId: null })
+		// Each invite gets its own id.
+		expect(noRoomInvite.RoomInviteId).not.toBe(created.RoomInviteId)
 		const after = await sent()
 		expect(after).toHaveLength(1)
 		expect(after[0].data.RoomId).toBeNull()
 		expect(after[0].data.Data).toBe('999999')
+	})
+
+	test('POST /invite picks the invite message type off the token’s build', async () => {
+		type Sent = { data: { Type: number; Data: string; RoomId: number | null } }
+		const hub = () => env.RECFLARE_NOTIFICATIONS_HUB.getByName('global')
+		const sent = async (): Promise<Sent[]> =>
+			(await (await hub().fetch('http://do/all')).json()) as Sent[]
+
+		const instance = await createRoomInstance(env.DB, {
+			ownerAccountId: 42,
+			roomId: 2,
+			subRoomId: 2,
+			photonRoomId: crypto.randomUUID(),
+			name: '^RecCenter',
+			maxCapacity: 12,
+		})
+
+		// The one frame an invite from a client on `version` pushes, with the RoomInviteId
+		// the call answered — a v2 invite names it in its Data.
+		const inviteFrom = async (
+			version?: string
+		): Promise<{ frame: Sent; roomInviteId: number }> => {
+			await hub().fetch('http://do/all', { method: 'DELETE' })
+			const res = await exports.default.fetch(`${ORIGIN}/invite`, {
+				method: 'POST',
+				headers: {
+					...(await bearer('42', version)),
+					'Content-Type': 'application/x-www-form-urlencoded',
+				},
+				body: `playerId=153&roomInstanceId=${instance.roomInstanceId}`,
+			})
+			expect(res.status).toBe(200)
+			const { RoomInviteId } = (await res.json()) as { RoomInviteId: number }
+			const notes = await sent()
+			expect(notes).toHaveLength(1)
+			return { frame: notes[0], roomInviteId: RoomInviteId }
+		}
+		const typeFor = async (version?: string): Promise<number> =>
+			(await inviteFrom(version)).frame.data.Type
+
+		// The cutoff build and anything newer → GameInviteV2 (6). The cutoff is INCLUSIVE, and
+		// the point release after the date is not part of the comparison.
+		expect(await typeFor('20250718.01')).toBe(6)
+		expect(await typeFor('20230415')).toBe(6)
+		expect(await typeFor('20230414')).toBe(6)
+		expect(await typeFor('20230414.99')).toBe(6)
+
+		// Only builds OLDER than the cutoff get the original (0) — including the day before.
+		expect(await typeFor('20230413')).toBe(0)
+		expect(await typeFor('20230413.99')).toBe(0)
+		expect(await typeFor('20220101')).toBe(0)
+
+		// No `rn.ver` on the token, or one that isn't a build at all: fall back to the
+		// original rather than move an unknown client onto v2.
+		expect(await typeFor()).toBe(0)
+		expect(await typeFor('not-a-build')).toBe(0)
+
+		// v2 carries an escaped JSON object as its Data — a STRING holding JSON, not a
+		// nested object — naming the instance and the invite row behind it.
+		const v2 = await inviteFrom('20250718.01')
+		expect(typeof v2.frame.data.Data).toBe('string')
+		expect(JSON.parse(v2.frame.data.Data)).toEqual({
+			InviteId: v2.roomInviteId, // the row POST /invite just answered with
+			Name: '^RecCenter', // the instance's `^`-prefixed wire name
+			InviteMode: 22, // verbatim, as observed off the client
+		})
+		// RoomId still rides on the message itself, in both versions.
+		expect(v2.frame.data.RoomId).toBe(2)
+
+		// v1 is unchanged: the bare roomInstanceId as a string, no JSON.
+		const v1 = await inviteFrom('20220101')
+		expect(v1.frame.data.Data).toBe(String(instance.roomInstanceId))
+		expect(v1.frame.data.RoomId).toBe(2)
 	})
 
 	test('matchmake pushes SubscriptionUpdatePresence to the player’s friends', async () => {
@@ -2600,6 +2825,114 @@ describe('auth-gated endpoints', () => {
 		expect(await sent()).toEqual([])
 	})
 
+	test('POST /matchmake/invite/:id lands the invitee in the inviter’s instance', async () => {
+		// 8801 invites 8802. The invite row is what POST /invite answers with.
+		const instance = await createRoomInstance(env.DB, {
+			ownerAccountId: 8801,
+			roomId: 2,
+			subRoomId: 2,
+			photonRoomId: crypto.randomUUID(),
+			name: '^RecCenter',
+			maxCapacity: 12,
+		})
+		const stand = async (accountId: number, roomInstance: unknown) =>
+			setPresence(env.DB, {
+				accountId,
+				roomInstance,
+				statusVisibility: 0,
+				deviceClass: 0,
+				vrMovementMode: 1,
+				platform: 0,
+				appVersion: GAME_VERSION,
+			})
+		await stand(8801, instance)
+
+		const invite = async (sub: string) =>
+			exports.default.fetch(`${ORIGIN}/invite`, {
+				method: 'POST',
+				headers: {
+					...(await bearer(sub)),
+					'Content-Type': 'application/x-www-form-urlencoded',
+				},
+				body: `playerId=8802&roomInstanceId=${instance.roomInstanceId}`,
+			})
+		const accept = async (inviteId: number, sub: string) =>
+			exports.default.fetch(`${ORIGIN}/matchmake/invite/${inviteId}`, {
+				method: 'POST',
+				headers: {
+					...(await bearer(sub)),
+					'Content-Type': 'application/x-www-form-urlencoded',
+				},
+				body: 'CorrelationId=acc97dc2-be74-4722-99c3-36530491f5ff',
+			})
+
+		const { RoomInviteId } = (await (await invite('8801')).json()) as { RoomInviteId: number }
+
+		// Anyone who isn't the addressee is refused, the INVITER included — the row is the
+		// authorization, and an invite id is a small integer somebody else is holding.
+		for (const stranger of ['8801', '8803']) {
+			const res = await accept(RoomInviteId, stranger)
+			expect(res.status).toBe(200)
+			expect(await res.json()).toMatchObject({ ErrorCode: 76, RoomInstance: null })
+		}
+
+		// The addressee lands in the instance the inviter is standing in, answered in the
+		// PascalCase envelope with the CorrelationId echoed back.
+		const ok = await accept(RoomInviteId, '8802')
+		expect(ok.status).toBe(200)
+		expect(await ok.json()).toMatchObject({
+			ErrorCode: 0,
+			CorrelationId: 'acc97dc2-be74-4722-99c3-36530491f5ff',
+			RoomInstance: {
+				RoomInstanceId: instance.roomInstanceId,
+				RoomId: 2,
+				Name: '^RecCenter',
+				MatchmakingPolicy: 0,
+			},
+		})
+
+		// ...and it really moved them: presence now names that instance.
+		const presence = await exports.default.fetch(`${ORIGIN}/player?id=8802`, {
+			headers: await bearer('8802'),
+		})
+		expect(
+			((await presence.json()) as Array<{ roomInstance: { roomInstanceId: number } | null }>)[0]
+				?.roomInstance?.roomInstanceId
+		).toBe(instance.roomInstanceId)
+
+		// Standing there already is 17, not a second join.
+		const again = await accept(RoomInviteId, '8802')
+		expect(await again.json()).toMatchObject({ ErrorCode: 17, RoomInstance: null })
+
+		// An invite id that isn't there is 40 — expiry deletes rows, so "gone" and "expired"
+		// are one answer.
+		expect(await (await accept(99_999_999, '8802')).json()).toMatchObject({
+			ErrorCode: 40,
+			RoomInstance: null,
+		})
+
+		// The inviter walking out leaves nothing to join: 2, PlayerNotOnline. (The invitee is
+		// moved out of the instance first so the AlreadyIn check doesn't answer ahead of it.)
+		await stand(8802, null)
+		await env.DB.prepare('DELETE FROM presence WHERE account_id = 8801').run()
+		const { RoomInviteId: staleId } = (await (await invite('8801')).json()) as {
+			RoomInviteId: number
+		}
+		expect(await (await accept(staleId, '8802')).json()).toMatchObject({
+			ErrorCode: 2,
+			RoomInstance: null,
+		})
+
+		// Unauthenticated is a 401, not a refusal code.
+		expect(
+			(
+				await exports.default.fetch(`${ORIGIN}/matchmake/invite/${RoomInviteId}`, {
+					method: 'POST',
+				})
+			).status
+		).toBe(401)
+	})
+
 	test('GET /openapi.json documents every route', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/openapi.json`)
 		expect(res.status).toBe(200)
@@ -2621,6 +2954,7 @@ describe('auth-gated endpoints', () => {
 			)
 		)
 		expect([...documented].sort()).toEqual([
+			'GET /clubhousesearch/mostactivenow',
 			'GET /player',
 			'GET /player/avoidjuniors',
 			'GET /player/connection-info',
@@ -2628,11 +2962,13 @@ describe('auth-gated endpoints', () => {
 			'GET /room/{roomId}/instances',
 			'GET /rooms/requiring/developer',
 			'GET /rooms/requiring/rrplus',
+			'GET /tachyon',
 			'POST /invite',
 			'POST /matchmake/club/{clubId}',
 			'POST /matchmake/dorm',
 			'POST /matchmake/event/{eventId}',
 			'POST /matchmake/instance/{instanceId}',
+			'POST /matchmake/invite/{inviteId}',
 			'POST /matchmake/none',
 			'POST /matchmake/player/{playerId}',
 			'POST /matchmake/room/{roomId}',

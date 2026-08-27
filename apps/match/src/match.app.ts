@@ -7,6 +7,7 @@ import {
 	areFriends,
 	canManageRoom,
 	createRoomInstance,
+	createRoomInvite,
 	deleteEmptyRoomInstances,
 	deleteExpiredPresence,
 	deletePresence,
@@ -16,6 +17,7 @@ import {
 	getExpiredPresenceInstanceIds,
 	getFriendIds,
 	getJoinableInstance,
+	getMostActiveClubhouses,
 	getOrCreateDormRoom,
 	getPresence,
 	getPresences,
@@ -23,12 +25,15 @@ import {
 	getRoomByName,
 	getRoomInstance,
 	getRoomInstancesByRoom,
+	getRoomInvite,
 	getRoomInstanceSummariesByRoom,
 	getStoredRoomInstance,
+	InviteMode,
 	isClubMember,
 	isPlayerBannedFromRoom,
 	MatchmakingErrorCode,
 	MessageType,
+	MOST_ACTIVE_CLUBHOUSE_LIMIT,
 	recordRoomVisit,
 	refreshInstanceFullness,
 	RoomInstanceType,
@@ -51,6 +56,7 @@ import { getEventById, getEventResponse } from '../../api/src/events-db'
 // deps), so /invite sends a typed MessageReceived frame instead of a magic number.
 import { NotificationType } from '../../notify/src/notification-types'
 import {
+	ActiveClubhouseDto,
 	AUTHED,
 	AvoidJuniorsRequest,
 	AvoidJuniorsResponse,
@@ -60,7 +66,9 @@ import {
 	ExclusiveLoginResponse,
 	form,
 	InProgressRequest,
+	InstanceIdResponse,
 	InviteRequest,
+	InviteResponse,
 	JoinModeRequest,
 	json,
 	jsonBody,
@@ -611,10 +619,104 @@ function nextLiveMessageId(): number {
 }
 
 /**
+ * The first build that gets a game invite as {@link MessageType.GameInviteV2} rather than
+ * the original {@link MessageType.GameInvite}. Inclusive — a client reporting exactly this
+ * build is on v2; only OLDER builds get v1.
+ */
+const GAME_INVITE_V2_MIN_BUILD = 20230414
+
+/**
+ * The date portion of a client build (`20250718.01` → `20250718`) as a number, or null when
+ * there's nothing parseable to compare. Builds are `<yyyymmdd>[.<n>]`, so the leading date
+ * orders them; the point release after it never decides this gate.
+ */
+function buildNumber(version: string | null): number | null {
+	const date = Number.parseInt(version?.split('.')[0] ?? '', 10)
+	return Number.isNaN(date) ? null : date
+}
+
+/**
+ * Which game-invite message type this caller's client gets, from the `rn.ver` claim on
+ * their token — v2 from {@link GAME_INVITE_V2_MIN_BUILD} onward, the original below it.
+ *
+ * A token that names no build (an older one issued before the claim carried it, or no
+ * token at all) falls back to v1: that is what every client got before this gate existed,
+ * so an unknown build is left where it was known to work rather than moved onto a message
+ * type it may not have.
+ *
+ * The claim is the INVITER's, since theirs is the only token in the request — while the
+ * message is parsed by the INVITEE. The two agree whenever a party is on one build, which
+ * is the normal case; the invitee's own build is on their presence row (`appVersion`) if
+ * this ever needs to key off the client that actually reads the frame.
+ */
+async function gameInviteType(c: Context<App>): Promise<MessageType> {
+	const build = buildNumber(await callerVersion(c))
+	return build !== null && build >= GAME_INVITE_V2_MIN_BUILD
+		? MessageType.GameInviteV2
+		: MessageType.GameInvite
+}
+
+/**
+ * The {@link InviteMode} a v2 game invite carries — what the invite is ASKING FOR, as
+ * distinct from the instance it names.
+ *
+ * `PlayTogether` (22) is the plain "come join me", which is what both paths here send:
+ * `POST /invite` is exactly that, and the party fan-out is the same ask aimed at several
+ * people at once. `InviteParty` (2) is the other reading of a join-me, and the fan-out is
+ * where it would go if the two turn out to be distinguishable — they have not been told
+ * apart on the wire yet.
+ */
+const GAME_INVITE_V2_INVITE_MODE = InviteMode.PlayTogether
+
+/**
+ * The placeholder `InviteId` on a v2 invite that has no `room_invite` row behind it — the
+ * party fan-out, which invites without recording anything. What the client does with the
+ * field isn't known yet; `POST /invite` passes the real row id (see {@link RoomInvite}),
+ * which is the obvious candidate, and this stands in where there is no row to name.
+ */
+const UNKNOWN_INVITE_ID = 0
+
+/** What an invite points at, in the shape both message versions need to describe it. */
+type GameInviteTarget = {
+	/** The raw roomInstanceId string — the WHOLE `Data` of a v1 invite. */
+	instanceId: string
+	/** The instance's room, or null when it didn't resolve. Rides on the message itself. */
+	roomId: number | null
+	/** The instance's `^`-prefixed wire name, `''` when the instance didn't resolve. */
+	name: string
+	/** The `room_invite` row this came from, or {@link UNKNOWN_INVITE_ID}. */
+	inviteId: number
+}
+
+/**
+ * The `Data` a game invite carries, which is a different thing per message version:
+ *
+ * - v1 ({@link MessageType.GameInvite}) is the bare roomInstanceId as a string.
+ * - v2 ({@link MessageType.GameInviteV2}) is an escaped JSON object,
+ *   `{"InviteId":…,"Name":"^GoldenTrophy","InviteMode":22}` — a STRING holding JSON, not a
+ *   nested object, since `Data` is a string field on the Message either way.
+ *
+ * `Name` is the instance's wire name, the same `^`/`@`-prefixed string presence carries.
+ */
+function gameInviteData(type: MessageType, target: GameInviteTarget): string {
+	if (type !== MessageType.GameInviteV2) return target.instanceId
+	return JSON.stringify({
+		InviteId: target.inviteId,
+		Name: target.name,
+		InviteMode: GAME_INVITE_V2_INVITE_MODE,
+	})
+}
+
+/**
  * Deliver a game invite from `fromId` to `toId` for a room instance — a `MessageReceived`
- * frame carrying a game-invite `Message` the client renders the join prompt from. `data`
- * is the raw roomInstanceId string the message carries; `roomId` (nullable) tells the
- * client which room it points at. Best-effort: a hub failure is logged and swallowed.
+ * frame carrying a game-invite `Message` the client renders the join prompt from. `target`
+ * describes the instance being invited into; what of it reaches the wire depends on the
+ * message version (see {@link gameInviteData}), except `RoomId`, which rides on the message
+ * itself in both. Best-effort: a hub failure is logged and swallowed.
+ *
+ * `type` is the caller's game-invite message type from {@link gameInviteType}, resolved by
+ * the call site rather than here so the party fan-out settles it once for the whole party
+ * instead of re-reading the same token per member.
  *
  * Shared by `POST /invite` (a single explicit invite) and the party fan-out on a room
  * matchmake (one per `AdditionalPlayerIds` entry), so the two can't drift.
@@ -623,17 +725,17 @@ async function sendGameInvite(
 	c: Context<App>,
 	fromId: number,
 	toId: number,
-	data: string,
-	roomId: number | null
+	target: GameInviteTarget,
+	type: MessageType
 ): Promise<void> {
 	const message = {
 		Id: nextLiveMessageId(),
 		FromPlayerId: fromId,
 		ToPlayerId: toId,
-		Type: MessageType.GameInvite,
-		Data: data,
+		Type: type,
+		Data: gameInviteData(type, target),
 		SentTime: new Date().toISOString(),
-		RoomId: roomId,
+		RoomId: target.roomId,
 	}
 	try {
 		await c.env.RECFLARE_NOTIFICATIONS_HUB.getByName(HUB_INSTANCE).notifyPlayer(
@@ -658,6 +760,13 @@ async function sendGameInvite(
  * bounces the new player to the dorm.
  */
 const ORIENTATION_INSTANCE_ID = -2
+
+/**
+ * What `/tachyon` answers for a player who is not in an instance. A stored
+ * `room_instance` id is never 0 — the table is AUTOINCREMENT from 1 — so the sentinel can't
+ * be mistaken for a real instance, and the body stays a number the way the caller reads it.
+ */
+const NO_INSTANCE = 0
 
 /**
  * Instance-relevant fields pulled from a stored room (scene, name, capacity, …).
@@ -856,6 +965,16 @@ function toV2RoomInstance(instance: RoomInstance) {
 }
 
 /**
+ * The matchmake paths whose responses are the PascalCase envelope (`ErrorCode`,
+ * `CorrelationId`, `RoomInstance`) rather than the lowercase one with its `result` twin.
+ *
+ * `/matchmake/v2/` is the 2025 client's rewrite of the older routes. `/matchmake/invite/`
+ * has no older spelling — it only ever existed on the 2025 client, and so only ever spoke
+ * this shape.
+ */
+const PASCAL_CASE_MATCHMAKE_PATHS = ['/matchmake/v2/', '/matchmake/invite/']
+
+/**
  * A matchmake response: the join-result code, the instance (null on a refusal), and the
  * request's correlation id echoed back. Every matchmake route answers through here, so
  * none of them can forget the echo.
@@ -865,11 +984,13 @@ function toV2RoomInstance(instance: RoomInstance) {
  * every other consumer (and this worker's own tests) reads. They must never disagree —
  * that's why nothing builds this envelope by hand.
  *
- * The `/matchmake/v2/*` routes answer a different envelope — PascalCase `ErrorCode`,
- * `CorrelationId`, `RoomInstance`, no `result` twin — so the shape is chosen HERE, off
- * the request path, rather than in the handlers. That keeps the two spellings from
- * drifting and, more importantly, means everything that answers on a v2 path answers in
- * v2: the ban gate, a refusal, and the success all go through this one function.
+ * Some routes answer a different envelope — PascalCase `ErrorCode`, `CorrelationId`,
+ * `RoomInstance`, no `result` twin — so the shape is chosen HERE, off the request path,
+ * rather than in the handlers. That keeps the two spellings from drifting and, more
+ * importantly, means everything answering on such a path answers in that shape: the ban
+ * gate, a refusal, and the success all go through this one function.
+ *
+ * See {@link PASCAL_CASE_MATCHMAKE_PATHS} for which paths those are.
  */
 async function matchmakeResult(
 	c: Context<App>,
@@ -877,7 +998,7 @@ async function matchmakeResult(
 	roomInstance: RoomInstance | null
 ) {
 	const correlationId = await readCorrelationId(c)
-	if (c.req.path.startsWith('/matchmake/v2/')) {
+	if (PASCAL_CASE_MATCHMAKE_PATHS.some((prefix) => c.req.path.startsWith(prefix))) {
 		return c.json({
 			ErrorCode: errorCode,
 			CorrelationId: correlationId,
@@ -950,11 +1071,21 @@ async function inviteParty(
 	playerIds: number[],
 	instance: RoomInstance
 ): Promise<void> {
-	const data = String(instance.roomInstanceId)
+	// The leader's own instance, which every member is being pulled into. Nothing records
+	// a `room_invite` row on this path, so a v2 invite has no real id to name.
+	const target: GameInviteTarget = {
+		instanceId: String(instance.roomInstanceId),
+		roomId: instance.roomId,
+		name: instance.name,
+		inviteId: UNKNOWN_INVITE_ID,
+	}
+	// One read of the leader's token for the whole party — every member gets the same
+	// message, so the type can't differ between them.
+	const type = await gameInviteType(c)
 	await Promise.all(
 		playerIds
 			.filter((pid) => pid !== leaderId)
-			.map((pid) => sendGameInvite(c, leaderId, pid, data, instance.roomId))
+			.map((pid) => sendGameInvite(c, leaderId, pid, target, type))
 	)
 }
 
@@ -1384,6 +1515,86 @@ const app = new Hono<App>()
 			})
 			return c.body(null, 200)
 		}
+	)
+
+	// Which room instance a player is in, as a bare number (`/tachyon?id=123`). The whole
+	// presence blob is what `/player` serves; this answers the one field out of it, for a
+	// caller that only needs to know where someone is.
+	//
+	// UNGATED, unlike the rest of this worker's presence surface: it takes the player id from
+	// the query rather than from a token, so anyone can ask about anyone. What it discloses
+	// is an instance id and nothing else — no room, no name, no status — and `/player` is
+	// already ungated on the same rows.
+	//
+	// 0 for "not in an instance": the body is a number, so absence has to be one too, and a
+	// real instance id is never 0 (the `room_instance` table is AUTOINCREMENT from 1). The
+	// synthetic negatives ARE real answers and pass through — -2 is the Orientation seed.
+	.get(
+		'/tachyon',
+		describeRoute({
+			tags: ['Presence'],
+			summary: 'The room instance a player is in',
+			description: [
+				'The `roomInstanceId` from a player’s live presence (`?id=123`), as a BARE NUMBER —',
+				'the whole body is the id, not an object around it. The single field out of what',
+				'`/player` serves whole.',
+				'',
+				'0 means not in an instance: no live presence, an expired row, or no usable `id`. A',
+				'real instance id is never 0, so the sentinel can’t collide with one. Synthetic ids',
+				'pass through as they stand — -2 is the Orientation presence the `auth` worker seeds',
+				'a brand-new player with.',
+				'',
+				'Ungated: the player is named by the query rather than by a token, so anyone may ask',
+				'about anyone. It discloses an instance id and nothing else.',
+			].join(' '),
+			parameters: [
+				{
+					name: 'id',
+					in: 'query',
+					required: false,
+					description: 'The account to look up. Absent or unparseable answers 0',
+					schema: { type: 'integer' },
+				},
+			],
+			responses: { 200: json(InstanceIdResponse, 'The instance id, or 0') },
+		}),
+		async (c) => {
+			const playerId = Number.parseInt(c.req.query('id') ?? '', 10)
+			if (!Number.isInteger(playerId)) return c.json(NO_INSTANCE)
+
+			const presence = await getPresence<RoomInstance>(c.env.DB, playerId)
+			return c.json(presence?.roomInstance?.roomInstanceId ?? NO_INSTANCE)
+		}
+	)
+
+	// The busiest clubhouses right now — a bare array of `{ RoomId, ClubId, PlayerCount }`,
+	// which is why it lives here rather than in `clubs`: the answer is live presence, and
+	// presence is this worker's. Active means someone is THERE, so an empty clubhouse is
+	// absent rather than listed at zero and a quiet server answers `[]`.
+	//
+	// Ungated, like `/tachyon`: nothing in it is per-caller, and it names only public clubs
+	// and how busy they are.
+	.get(
+		'/clubhousesearch/mostactivenow',
+		describeRoute({
+			tags: ['Presence'],
+			summary: 'The busiest clubhouses right now',
+			description: [
+				'One row per clubhouse with players in it this second, busiest first — a bare array',
+				'of `{ RoomId, ClubId, PlayerCount }`.',
+				'',
+				'Live presence FILTERS here rather than merely ranking: a club whose clubhouse is',
+				'empty is absent rather than listed with a `PlayerCount` of 0, and a club with no',
+				'clubhouse can never appear at all, so this is `[]` when nobody is anywhere. Public,',
+				'non-subscription clubs only — the same eligibility `clubs` `/club/search` applies,',
+				`since this is a search too. Ties break on ClubId, and at most ${MOST_ACTIVE_CLUBHOUSE_LIMIT} rows`,
+				'come back: it fills a carousel, not a directory.',
+				'',
+				'Ungated — nothing in the answer is per-caller.',
+			].join(' '),
+			responses: { 200: json(ActiveClubhouseDto.array(), 'The busiest clubhouses, or []') },
+		}),
+		async (c) => c.json(await getMostActiveClubhouses(c.env.DB))
 	)
 
 	.get(
@@ -1829,6 +2040,153 @@ const app = new Hono<App>()
 		}
 	)
 
+	// Accept a game invite and land in the inviter's instance
+	// (`/matchmake/invite/{roomInviteId}`). The 2025 client's join button on an invite: it
+	// carries the `RoomInviteId` minted by `POST /invite`, and this resolves that row to the
+	// instance the INVITER is standing in right now.
+	//
+	// The row is the authorization. Only the player the invite was addressed to
+	// (`ToPlayerId`) may redeem it, checked against the caller's own token — an invite id is
+	// a small integer handed out to somebody else, so an ungated version of this would let
+	// anyone walk into any private instance by counting upward. It is also single-target:
+	// the inviter can't redeem their own invite, since they aren't its `ToPlayerId`.
+	//
+	// Where the caller goes is read from the inviter's LIVE presence, not from the invite's
+	// `RoomId`: the row records which room was named when the invite was sent, while the
+	// invitee needs the instance the inviter is in when they actually click, which may be a
+	// different one (or none). Registered before `/matchmake/:room` so `invite` isn't read
+	// as a room name.
+	.post(
+		'/matchmake/invite/:inviteId{[0-9]+}',
+		describeRoute({
+			tags: ['Navigation', '2025'],
+			summary: 'Accept a game invite',
+			description: [
+				'Places the caller into the room instance the INVITER is currently in, resolved from',
+				'the `room_invite` row named by `roomInviteId` and the inviter’s live presence (not the',
+				'invite’s stored `RoomId`, which records where they were when they sent it).',
+				'',
+				'ADDRESSEE ONLY: the caller must be the invite’s `ToPlayerId`, or it answers 76',
+				'(InstanceJoinNotPermitted) — the id is a small integer held by another player, so an',
+				'ungated form of this would be a way into any private instance. Answers 40',
+				'(RoomInviteExpired) for an invite that isn’t there any more, 2 (PlayerNotOnline) when',
+				'the inviter isn’t in a room, 17 (AlreadyInTargetInstance) when the caller is already',
+				'standing in it, 3 (InsufficientSpace) when it filled up, and 55 (BannedFromRoom) when',
+				'the caller is banned from the room they’d be joining.',
+				'',
+				'2025-client route: it answers the PascalCase `ErrorCode`/`RoomInstance` envelope, as',
+				'the `/matchmake/v2/*` routes do, and has no older lowercase spelling.',
+			].join(' '),
+			security: AUTHED,
+			requestBody: form(CorrelationIdRequest, 'The attempt’s CorrelationId'),
+			parameters: [
+				{
+					name: 'inviteId',
+					in: 'path',
+					required: true,
+					description: 'The `RoomInviteId` from `POST /invite` (digits only)',
+					schema: { type: 'string', pattern: '^[0-9]+$' },
+				},
+			],
+			responses: {
+				200: json(
+					MatchmakeV2Response,
+					'The inviter’s instance, or a null instance with the refusal code'
+				),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const inviteId = Number.parseInt(c.req.param('inviteId'), 10)
+			const invite = await getRoomInvite(c.env.DB, inviteId)
+			// No row means no longer good — expiry deletes rows rather than flagging them, and
+			// ids are never reused, so "never existed" and "expired" are the same answer here.
+			// (78 ChatPartyInviteNotFound is for a CHAT party invite, a different object.)
+			if (invite === null) {
+				logger.info('invite matchmake refused: no such invite', { inviteId, id })
+				return matchmakeResult(c, MatchmakingErrorCode.RoomInviteExpired, null)
+			}
+
+			// The gate: an invite is redeemable only by the player it was addressed to. Told
+			// as "not permitted" rather than "no such invite" — the caller is holding an id
+			// that is real, and pretending otherwise doesn't hide anything they don't have.
+			if (invite.ToPlayerId !== id) {
+				logger.info('invite matchmake refused: caller is not the invitee', {
+					inviteId,
+					toPlayerId: invite.ToPlayerId,
+					id,
+				})
+				return matchmakeResult(c, MatchmakingErrorCode.InstanceJoinNotPermitted, null)
+			}
+
+			// Where the inviter is NOW. An inviter who has left (or whose presence lapsed) has
+			// nothing to join, which is what PlayerNotOnline says.
+			const inviterPresence = await getPresence<RoomInstance>(c.env.DB, invite.FromPlayerId)
+			const instance = inviterPresence?.roomInstance ?? null
+			if (!instance) {
+				logger.info('invite matchmake refused: inviter is not in a room', {
+					inviteId,
+					fromPlayerId: invite.FromPlayerId,
+					id,
+				})
+				return matchmakeResult(c, MatchmakingErrorCode.PlayerNotOnline, null)
+			}
+
+			// Already standing there: nothing to do, and re-entering would churn presence and
+			// re-fire the friend fan-out for a move that didn't happen.
+			const own = await getPresence<RoomInstance>(c.env.DB, id)
+			if (own?.roomInstance?.roomInstanceId === instance.roomInstanceId) {
+				return matchmakeResult(c, MatchmakingErrorCode.AlreadyInTargetInstance, null)
+			}
+
+			// Like the follow-a-friend path, this hands out real Photon coordinates without
+			// going through resolveRoomInstance, so the room's bans have to be checked here —
+			// otherwise an invite is a way around one.
+			if (await isPlayerBannedFromRoom(c.env.DB, instance.roomId, id)) {
+				logger.info('invite matchmake refused: player banned from room', {
+					roomId: instance.roomId,
+					id,
+				})
+				return matchmakeResult(c, BANNED_FROM_ROOM, null)
+			}
+
+			// Nor does it get the build scoping a room matchmake has by construction. Compared
+			// against the INVITER's presence — they're the person actually standing in there.
+			const refusal = crossBuildRefusal(
+				await callerGameVersion(c),
+				inviterPresence?.appVersion ?? GAME_VERSION
+			)
+			if (refusal !== null) {
+				logger.info('invite matchmake refused: inviter is on another client build', {
+					roomInstanceId: instance.roomInstanceId,
+					fromPlayerId: invite.FromPlayerId,
+					id,
+				})
+				return matchmakeResult(c, refusal, null)
+			}
+
+			// Fullness read fresh rather than off the stored flag, which is only as current as
+			// the last person to move: an invite is usually redeemed seconds after it's sent,
+			// which is exactly when a nearly-full instance is still filling. Null means a
+			// synthetic instance with no row (a dorm), which has no head-count to check.
+			if ((await refreshInstanceFullness(c.env.DB, instance.roomInstanceId)) === true) {
+				logger.info('invite matchmake refused: instance is full', {
+					roomInstanceId: instance.roomInstanceId,
+					id,
+				})
+				return matchmakeResult(c, MatchmakingErrorCode.InsufficientSpace, null)
+			}
+
+			// Same instance, same Photon room, stored as the caller's presence so their
+			// heartbeat replays it and their own friend fan-out fires.
+			await enterRoom(c, id, instance)
+			return matchmakeResult(c, MatchmakingErrorCode.Success, instance)
+		}
+	)
+
 	// Join one SPECIFIC live instance by id (`/matchmake/instance/{roomInstanceId}`) —
 	// the action behind the owner's instance listing (`GET /room/{roomId}/instances`),
 	// where they pick a session of their room and drop into it. Unlike every other
@@ -2147,8 +2505,9 @@ const app = new Hono<App>()
 				'The realtime (Photon) credentials the caller should connect with, in a',
 				'`{ success, value, error }` envelope: a freshly minted `photonAuthToken`, the',
 				'Photon application ids, and the `photonRoomId` of the instance the caller is in',
-				'(from their presence, falling back to the `roomInstanceId` query param). There is',
-				'no separate voice server, so the voice fields are null. `experiments` carries the',
+				'(from their presence, falling back to the `roomInstanceId` query param). The voice',
+				'fields carry the Tachyon voice server (`TACHYON_HOST_PORT`/`TACHYON_NAME`),',
+				'empty when none is configured. `experiments` carries the',
 				'client’s networking flags.',
 			].join(' '),
 			security: AUTHED,
@@ -2202,12 +2561,13 @@ const app = new Hono<App>()
 					photonAuthToken,
 					...apps,
 					photonRoomId,
-					// Empty strings rather than null: there's no separate voice server either
-					// way, and the client's decoder is likelier to accept a missing-value string
-					// than a null on a string field. The presence payload's
-					// NULL_CONNECTION_INFO keeps its nulls — that one never carries credentials.
-					voiceConnectionInfo: '',
-					voiceServerId: '',
+					// The Tachyon voice server, from the operator's vars — empty strings when
+					// unset (no separate voice server). Empty rather than null: the client's
+					// decoder is likelier to accept a missing-value string than a null on a
+					// string field. The presence payload's NULL_CONNECTION_INFO keeps its
+					// nulls — that one never carries credentials.
+					voiceConnectionInfo: varOr(c.env.TACHYON_HOST_PORT, ''),
+					voiceServerId: varOr(c.env.TACHYON_NAME, ''),
 					experiments: PHOTON_EXPERIMENTS,
 				},
 				error: null,
@@ -2262,9 +2622,11 @@ const app = new Hono<App>()
 	// `roomInstanceId` they're being invited into. Delivers a game-invite Message to the
 	// target over the notify hub as a MessageReceived frame — the client renders the
 	// join prompt from it. When the room instance resolves, its RoomId rides along on the
-	// message so the client knows which room the invite points at. Always acks 200 (a bad
-	// playerId is a 400, a missing token a 401); hub delivery is best-effort, so a target
-	// who's offline simply has the frame queued (or dropped) without failing the invite.
+	// message so the client knows which room the invite points at. The invite is also
+	// recorded as a `room_invite` row, and that row IS the response —
+	// `{ RoomInviteId, FromPlayerId, ToPlayerId, RoomId }` (a bad playerId is a 400, a
+	// missing token a 401). Hub delivery is best-effort, so a target who's offline simply
+	// has the frame queued (or dropped) without failing the invite.
 	.post(
 		'/invite',
 		describeRoute({
@@ -2274,14 +2636,16 @@ const app = new Hono<App>()
 				'Sends a game invite from the caller (the Bearer token) to `playerId` for',
 				'`roomInstanceId`. Delivered to the target over the notify hub as a `MessageReceived`',
 				'notification carrying a game-invite `Message`; the resolved instance’s `RoomId` rides',
-				'on the message. Acks 200 (bad `playerId` → 400); hub delivery is best-effort.',
+				'on the message. The invite is recorded as a `room_invite` row and that row is the',
+				'response (bad `playerId` → 400); hub delivery is best-effort.',
 			].join(' '),
 			security: AUTHED,
 			requestBody: form(InviteRequest, 'The target player and the room instance'),
 			responses: {
-				200: EMPTY_OK,
+				200: json(InviteResponse, 'The invite that was sent'),
 				400: { description: 'Missing, non-numeric, or zero playerId (empty body)' },
 				401: UNAUTHORIZED_RESPONSE,
+				500: { description: 'The invite could not be recorded; nothing was sent (empty body)' },
 			},
 		}),
 		async (c) => {
@@ -2300,14 +2664,40 @@ const app = new Hono<App>()
 			// Resolve the instance to stamp the invite's RoomId — the client reads it to know
 			// which room the invite points at. A missing/unknown instance just leaves RoomId
 			// null (buildNotificationPayload drops it from the frame), as the reference does.
-			let roomId: number | null = null
-			if (!Number.isNaN(roomInstanceId) && roomInstanceId > 0) {
-				const instance = await getRoomInstance(c.env.DB, roomInstanceId)
-				if (instance) roomId = instance.roomId
+			// The whole instance, not just its room: a v2 invite names it by `Name` too, and an
+			// unresolved one leaves that empty rather than guessing at a name.
+			const instance =
+				!Number.isNaN(roomInstanceId) && roomInstanceId > 0
+					? await getRoomInstance(c.env.DB, roomInstanceId)
+					: null
+			const roomId: number | null = instance?.roomId ?? null
+
+			// Record the invite before delivering it: the row is what mints the `RoomInviteId`
+			// the response carries, while the frame itself is fire-and-forget.
+			const invite = await createRoomInvite(c.env.DB, id, toPlayerId, roomId)
+			// No row, no id to answer with — and nothing for a later lookup or expiry to find.
+			// A server fault rather than the caller's, so don't push the frame either: an
+			// invite the response can't name is worse than no invite.
+			if (invite === null) {
+				logger.error('failed to record room invite', { fromPlayerId: id, toPlayerId, roomId })
+				return c.body(null, 500)
 			}
 
-			await sendGameInvite(c, id, toPlayerId, roomInstanceIdStr, roomId)
-			return c.body(null, 200)
+			// The `room_invite` row just written is what a v2 invite names as its `InviteId` —
+			// the only real invite id this server has.
+			await sendGameInvite(
+				c,
+				id,
+				toPlayerId,
+				{
+					instanceId: roomInstanceIdStr,
+					roomId,
+					name: instance?.name ?? '',
+					inviteId: invite.RoomInviteId,
+				},
+				await gameInviteType(c)
+			)
+			return c.json(invite)
 		}
 	)
 

@@ -205,8 +205,9 @@ export const ConnectionExperiments = z.object({
  * `{ success, value, error }` envelope. The applications and region are fixed for
  * recflare; what varies per caller is `photonAuthToken` (minted for them on the spot)
  * and `photonRoomId`, the Photon room of the instance their presence says they're in
- * — the same name every other player in that instance is handed. There's no separate
- * voice server, so both voice fields are null. `photonRegion` matches the one stamped
+ * — the same name every other player in that instance is handed. The voice fields name
+ * the Tachyon voice server (`TACHYON_HOST_PORT`/`TACHYON_NAME` vars), empty when none
+ * is configured. `photonRegion` matches the one stamped
  * on every room instance, so the two can't disagree.
  */
 export const ConnectionInfo = z.object({
@@ -216,8 +217,10 @@ export const ConnectionInfo = z.object({
 	photonChatAppId: z.string().describe('Photon Chat application id'),
 	photonRegion: z.string().describe('Region id, matching a room instance’s `photonRegion`'),
 	photonRoomId: z.string().describe('The caller’s current instance; empty when they’re in none'),
-	voiceConnectionInfo: z.literal('').describe('Empty — no separate voice server'),
-	voiceServerId: z.literal('').describe('Empty — no separate voice server'),
+	voiceConnectionInfo: z
+		.string()
+		.describe('The Tachyon voice server, `host:port`; empty when none is configured'),
+	voiceServerId: z.string().describe('The Tachyon voice server id; empty when none is configured'),
 	experiments: ConnectionExperiments,
 })
 
@@ -383,4 +386,43 @@ export const InviteRequest = z.object({
 		.string()
 		.optional()
 		.describe('The caller’s room instance to invite them into; resolves the invite’s RoomId'),
+})
+
+/**
+ * `POST /invite` response — the `room_invite` row the invite just created. The frame the
+ * invitee receives is ephemeral; the row is what gives the invite an id of its own.
+ */
+export const InviteResponse = z.object({
+	RoomInviteId: z.int().describe('Id of the new `room_invite` row'),
+	FromPlayerId: z.int().describe('The caller (the Bearer token)'),
+	ToPlayerId: z.int().describe('The invited account'),
+	RoomId: z
+		.int()
+		.nullable()
+		.describe('The room the invite points at; null when the room instance didn’t resolve'),
+})
+
+/**
+ * `GET /tachyon?id=…` — the room instance a player is in, as a BARE NUMBER: the whole body
+ * is the id, with no object around it.
+ *
+ * 0 means "not in one" — no live presence for that account, an expired row, or no `id`
+ * given. Presence rows carry synthetic ids too, which are passed through as they stand:
+ * -2 is the Orientation seed the `auth` worker writes for a brand-new player.
+ */
+export const InstanceIdResponse = z
+	.int()
+	.describe('The player’s room instance id, or 0 when they are not in one')
+
+/**
+ * `GET /clubhousesearch/mostactivenow` — one row per clubhouse someone is standing in
+ * right now, busiest first.
+ *
+ * A bare array, and only the clubs with players in them: an empty clubhouse is absent
+ * rather than listed with a `PlayerCount` of 0, so a quiet server answers `[]`.
+ */
+export const ActiveClubhouseDto = z.object({
+	RoomId: z.int().describe('The club’s clubhouse room'),
+	ClubId: z.int().describe('The club that clubhouse belongs to'),
+	PlayerCount: z.int().describe('How many players are in the room this second'),
 })

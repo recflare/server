@@ -36,6 +36,18 @@ const ALLOWED_DIMENSIONS = new Set([128, 256, 512, 1024])
 /** JPEG quality used when re-encoding a resized image. */
 const RESIZE_JPEG_QUALITY = 90
 
+/** The eight-byte PNG signature. */
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+
+/**
+ * Whether these bytes are a PNG, by signature rather than the stored content-type: the
+ * type on an R2 object is whatever the uploader claimed, and a custom avatar item's
+ * design is posted under a `.bin` filename.
+ */
+function isPng(bytes: Uint8Array): boolean {
+	return PNG_SIGNATURE.every((b, i) => bytes[i] === b)
+}
+
 /** A requested transform, from `?width=`/`?height=`/`?cropSquare=1`. At least one applies. */
 interface Transform {
 	width?: number
@@ -65,13 +77,22 @@ function parseTransform(
 	return { width: w, height: h, cropSquare: square }
 }
 
+/** A transformed image and the type it was encoded as. */
+interface Transformed {
+	bytes: Uint8Array
+	contentType: 'image/png' | 'image/jpeg'
+}
+
 /**
  * Decode `input`, apply the requested transform (optional center-crop to a
  * square, then resize preserving aspect ratio when only one dimension is given),
- * and re-encode as JPEG. Runs the Photon WASM codec in-isolate; edge caching
+ * and re-encode. A PNG source stays PNG — JPEG has no alpha channel, and flattening
+ * a transparent design onto black is what broke custom avatar items in-game;
+ * anything else becomes JPEG. Runs the Photon WASM codec in-isolate; edge caching
  * (see `wrangler.jsonc`) means each variant only pays this cost once.
  */
-function resizeImage(input: Uint8Array, transform: Transform): Uint8Array {
+function resizeImage(input: Uint8Array, transform: Transform): Transformed {
+	const png = isPng(input)
 	let img = PhotonImage.new_from_byteslice(input)
 	// Every PhotonImage we allocate (source + each stage) must be freed.
 	const owned = [img]
@@ -99,7 +120,9 @@ function resizeImage(input: Uint8Array, transform: Transform): Uint8Array {
 			owned.push(img)
 		}
 
-		return img.get_bytes_jpeg(RESIZE_JPEG_QUALITY)
+		return png
+			? { bytes: img.get_bytes(), contentType: 'image/png' }
+			: { bytes: img.get_bytes_jpeg(RESIZE_JPEG_QUALITY), contentType: 'image/jpeg' }
 	} finally {
 		for (const image of owned) image.free()
 	}
@@ -238,9 +261,11 @@ async function finalizeImage(
 ): Promise<Response> {
 	let body: BufferSource = bytes
 	if (transform) {
-		body = resizeImage(new Uint8Array(bytes), transform)
-		// Output is always JPEG, and the source etag no longer describes the body.
-		headers.set('content-type', 'image/jpeg')
+		const out = resizeImage(new Uint8Array(bytes), transform)
+		body = out.bytes
+		// The output is re-encoded (PNG stays PNG, everything else is JPEG), and the
+		// source etag no longer describes the body.
+		headers.set('content-type', out.contentType)
 		headers.delete('etag')
 	}
 
@@ -370,8 +395,9 @@ app.get(
 			'Responses carry `Cache-Control: public, max-age=31536000, immutable` — an uploaded',
 			'image is never rewritten in place, a new image gets a new key.',
 			'',
-			'`?width`/`?height`/`?cropSquare=1` run the body through the Photon codec and always',
-			'return JPEG with no `ETag` (the source etag no longer describes the body), and the',
+			'`?width`/`?height`/`?cropSquare=1` run the body through the Photon codec and',
+			're-encode it — a PNG source stays PNG (alpha preserved), anything else becomes JPEG —',
+			'with no `ETag` (the source etag no longer describes the body), and the',
 			'`If-None-Match` precondition is skipped. An out-of-range or non-integer dimension is',
 			'ignored and the original is served — never an error.',
 			'',

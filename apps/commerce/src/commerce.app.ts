@@ -114,6 +114,26 @@ const app = new Hono<App>()
 		(c) => c.json(catalog)
 	)
 
+	// Pending purchases the client asks the server to reconcile — platform transactions
+	// it started but never saw finish. Nothing is ever recorded here, so there is never
+	// anything pending and the answer is always an empty list. Accepts GET or POST since
+	// the client may use either.
+	.on(
+		['GET', 'POST'],
+		'/purchase/v1/cleanuppending',
+		describeRoute({
+			tags: ['Purchase'],
+			summary: 'Reconcile pending purchases (no-op)',
+			description: [
+				'Always `[]` — no purchase is ever recorded, so nothing can be left pending. A 404',
+				'here makes the client treat the call as an error, so the empty list is served',
+				'instead. Accepts GET or POST.',
+			].join(' '),
+			responses: { 200: json(JsonArray, 'Always empty (nothing pending)') },
+		}),
+		(c) => c.json([])
+	)
+
 	// Current purchase campaigns (limited-time offers/promos). None exist, and
 	// an empty list is the client's "no active campaigns" state.
 	.get(

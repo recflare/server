@@ -28,7 +28,8 @@ export function json(schema: z.ZodType, description: string) {
 /**
  * An image-bytes response. The stored object's own content type is served verbatim
  * (usually `image/jpeg`, occasionally `image/png`); any response that went through the
- * Photon resize/crop path is re-encoded and is always `image/jpeg`.
+ * Photon resize/crop path is re-encoded: `image/png` when the source is a PNG (so alpha
+ * survives), `image/jpeg` otherwise.
  */
 export function imageBytes(description: string): OpenAPIV3_1.ResponseObject {
 	const schema: OpenAPIV3_1.SchemaObject = { type: 'string', format: 'binary' }

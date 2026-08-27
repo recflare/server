@@ -132,10 +132,20 @@ export const RoomRoleDto = z.object({
 	InvitedRole: z.int(),
 })
 
-/** A tag on a room. `Type` 0 = set by the owner, 2 = auto-derived (e.g. `rro`). */
+/**
+ * A tag on a room. `Type` 0 = set by the owner, 2 = auto-derived (e.g. `rro`).
+ *
+ * `IsPrimaryGenre` marks the one tag that is the room's genre, and is PRESENT ONLY on
+ * that tag — the key is absent on the others rather than sent as false. It is orthogonal
+ * to `Type`: the flagged tag is an ordinary owner-set tag that happens to be the genre.
+ */
 export const RoomTagDto = z.object({
 	Tag: z.string(),
-	Type: z.int().describe('0 = owner-set, 2 = auto'),
+	Type: z.int().describe('0 = owner-set, 1 = client-derived (`autoTag`), 2 = server-derived'),
+	IsPrimaryGenre: z
+		.literal(true)
+		.optional()
+		.describe('Present only on the room’s primary genre tag; absent, never false, on the rest'),
 })
 
 /**
@@ -401,6 +411,23 @@ export const IsBannedEnvelope = z.object({
 	value: z.boolean().describe('Whether that player is banned from that room'),
 })
 
+/**
+ * `GET /rooms/{roomId}/bans/{playerId}/isBanned` — the same check, in the shape the client
+ * reads on the UNPREFIXED path.
+ *
+ * PascalCase, and deliberately not unified with {@link IsBannedEnvelope}: the two paths are
+ * two calls the client makes with two different decoders, and its decoder drops members it
+ * does not recognise silently, so a `value` served where it wants `Value` reads as `false` —
+ * a banned player looking unbanned — rather than as an error. `error_id` stays lowercase
+ * even here; that is how it comes off the wire, not a slip.
+ */
+export const IsBannedPascalEnvelope = z.object({
+	Value: z.boolean().describe('Whether that player is banned from that room'),
+	Success: z.literal(true).describe('The check ran; whether the player is banned is `Value`'),
+	Error: z.string().nullable().describe('Null — the check itself does not fail'),
+	error_id: z.string().nullable().describe('Null. Lowercase, unlike its three siblings'),
+})
+
 /** The bare JSON string the bulk lookups answer when the id list is over the cap. */
 export const TooManyLookupIds = z
 	.string()
@@ -437,7 +464,9 @@ export const FeaturedRoomGroupDto = z.object({
 	name: z.string(),
 	StartAt: z.string(),
 	EndAt: z.string(),
-	Rooms: z.array(FeaturedRoomDto).describe('Randomly ordered — no editorial curation yet'),
+	Rooms: z
+		.array(FeaturedRoomDto)
+		.describe('Randomly ordered, at most 10 — no editorial curation yet'),
 })
 
 // ---- Envelopes -------------------------------------------------------------
@@ -505,9 +534,33 @@ export const NameRequest = z.object({
 	name: z.string().describe('Non-empty, and not already taken by another room'),
 })
 
-/** `PUT /rooms/{roomId}/tags` — a toggle, not a set. */
+/**
+ * `PUT /rooms/{roomId}/tags` — one route, two bodies, told apart by their FIELDS.
+ *
+ * A lone `tag` is the 2023 toggle: added when absent, removed when present. A `tag`
+ * alongside anything else is part of a whole-state save, where nothing toggles — `tag`
+ * repeats and is the complete user-tag set, `autoTag` adds a derived (Type 1) tag, and
+ * `primaryGenreTag` flags the genre. They compose into one write.
+ */
 export const TagRequest = z.object({
-	tag: z.string().describe('Added when absent, removed when present'),
+	tag: z
+		.union([z.string(), z.array(z.string())])
+		.optional()
+		.describe(
+			'Alone: toggled (added when absent, removed when present). Alongside any other field, or repeated: the COMPLETE set of user (Type 0) tags — an omitted one is removed'
+		),
+	autoTag: z
+		.union([z.string(), z.array(z.string())])
+		.optional()
+		.describe(
+			'A derived tag to add at Type 1 (`limitsv2`, `beta`). Repeatable and additive — never removes one'
+		),
+	primaryGenreTag: z
+		.string()
+		.optional()
+		.describe(
+			'Set as the room’s primary genre. Added as a Type 0 tag if the room lacks it; every other tag keeps its place and loses the flag'
+		),
 })
 
 /** `PUT /rooms/{roomId}/image`. */
@@ -795,6 +848,15 @@ export const PlayerDataDto = z.object({
 export const RoomExperiencePlayer = z
 	.array(z.unknown())
 	.describe('Always empty — no per-room experience is tracked')
+
+/**
+ * `GET /rooms/curated_playlists` — the curated room playlists the discovery pages'
+ * playlist sections draw from. Nothing curates one on this server, so the list is always
+ * empty and the element shape is unknown until something fills it.
+ */
+export const CuratedPlaylists = z
+	.array(z.unknown())
+	.describe('Always empty — nothing curates a room playlist yet')
 
 /**
  * `GET /publishState/configs` — the limits the client enforces on republishing a room:

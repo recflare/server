@@ -41,6 +41,7 @@ export const SCHEMA_DDL: string[] = [
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_event_id ON event (id)`,
 	`CREATE INDEX IF NOT EXISTS idx_event_creator ON event (creator_player_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_event_club ON event (club_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_event_room ON event (room_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_event_start ON event (start_time)`,
 	`CREATE TABLE IF NOT EXISTS event_attendee (
 		event_id INTEGER NOT NULL,
@@ -173,13 +174,28 @@ interface EventRow {
 }
 
 /**
- * The event as the `v2` envelope carries it: {@link PlayerEventBase} plus `Tags`, a plain
- * array of tag NAMES. (The stored tags are `{ tag, type }` pairs, which is what the v1
- * read's lowercase `tags` serves.) Defined on top of the base rather than beside it, so the
- * feed and the envelope cannot drift apart on the fields they share.
+ * A tag as the 2023 build's `v2` envelope carries it: the PascalCase form of the stored
+ * `{ tag, type }` pair. NOT the lowercase pair the v1 read serves — three casings of one
+ * tag, and the client parses each in exactly one place.
+ */
+export interface PlayerEventEnvelopeTag {
+	Tag: string
+	Type: number
+}
+
+/**
+ * The event as the `v2` envelope carries it: {@link PlayerEventBase} plus `Tags`. Defined
+ * on top of the base rather than beside it, so the feed and the envelope cannot drift
+ * apart on the fields they share.
+ *
+ * `Tags` is the one field whose shape depends on the caller's BUILD, because Rec Room
+ * changed it under the same unversioned path rather than minting a `v3`: the 2023 build
+ * parses `[{ Tag, Type }]` and the 2025 build parses `["celebration"]`. Serving either
+ * one to the other build leaves the event's tag chips empty — the decoder drops what it
+ * can't read rather than erroring. {@link toEventResult} picks; nothing else should.
  */
 export interface PlayerEventEnvelope extends PlayerEventBase {
-	Tags: string[]
+	Tags: string[] | PlayerEventEnvelopeTag[]
 }
 
 /**
@@ -198,17 +214,45 @@ export interface PlayerEventResult {
 }
 
 /**
- * Wrap a stored event and its tags in the `v2` envelope. `tags` are the event's stored tag
- * names — pass what `getEventTags` returns, so the answer reflects what was actually
+ * Wrap a stored event and its tags in the `v2` envelope. `tags` are the event's stored
+ * tags — pass what `getEventTags` returns, so the answer reflects what was actually
  * written rather than what was asked for.
+ *
+ * `legacyTags` picks the shape of `PlayerEvent.Tags` for the caller's build (see
+ * {@link PlayerEventEnvelope}): the 2023 pairs when set, the 2025 names when not. It
+ * changes nothing else — `TagModifyResult.Tags` is a name list to both builds.
  */
-export function toEventResult(event: PlayerEvent, tags: EventTag[] = []): PlayerEventResult {
+export function toEventResult(
+	event: PlayerEvent,
+	tags: EventTag[] = [],
+	legacyTags = false
+): PlayerEventResult {
 	const names = tags.map((t) => t.tag)
+	const carried = legacyTags ? tags.map((t) => ({ Tag: t.tag, Type: t.type })) : names
 	return {
-		PlayerEvent: { Tags: names, ...toEventBase(event) },
+		PlayerEvent: { Tags: carried, ...toEventBase(event) },
 		Result: 0,
 		TagModifyResult: { Result: 0, Tags: names },
 	}
+}
+
+/**
+ * The envelope a DELETE answers with. Both payload fields are null: the reference reports
+ * only that the delete happened, and the client reads nothing but `Result` — there is no
+ * event left to redraw. Deliberately NOT {@link toEventResult}'s shape, even though both
+ * are the v2 envelope.
+ */
+export interface PlayerEventDeletedResult {
+	PlayerEvent: null
+	Result: number
+	TagModifyResult: null
+}
+
+/** The one value {@link PlayerEventDeletedResult} ever takes: a successful delete. */
+export const EVENT_DELETED_RESULT: PlayerEventDeletedResult = {
+	PlayerEvent: null,
+	Result: 0,
+	TagModifyResult: null,
 }
 
 /**
@@ -857,6 +901,30 @@ export async function getEventsByClubs(db: D1Database, clubIds: number[]): Promi
 	const { results } = await db
 		.prepare(`SELECT data FROM event WHERE club_id IN (${placeholders})`)
 		.bind(...clubIds)
+		.all<EventRow>()
+	return results.map((r) => JSON.parse(r.data) as PlayerEvent).sort(bySoonest)
+}
+
+/**
+ * A room's events — what is happening in this room and what is coming up, soonest first.
+ * Backs the room's event shelf (`GET /api/playerevents/v1/room/{roomId}`).
+ *
+ * FINISHED events are left out, like the browse feed's: this answers "what can I still turn
+ * up to in this room", and an event that ended last month is not that. Running events count
+ * as current — the filter is on the END time, so an event stays listed until it is over
+ * rather than disappearing the moment it starts.
+ *
+ * Selected on the indexed room_id column, with the time bound in SQL too: end_time is a
+ * generated column of an ISO-8601 UTC string, so it compares lexicographically.
+ */
+export async function getEventsByRoom(
+	db: D1Database,
+	roomId: number,
+	now = Date.now()
+): Promise<PlayerEvent[]> {
+	const { results } = await db
+		.prepare('SELECT data FROM event WHERE room_id = ?1 AND end_time >= ?2')
+		.bind(roomId, eventTime(now))
 		.all<EventRow>()
 	return results.map((r) => JSON.parse(r.data) as PlayerEvent).sort(bySoonest)
 }

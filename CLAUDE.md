@@ -151,6 +151,30 @@ inconsistency here without checking the client first.
   served under TWO names, `result` (what the client reads) and `errorCode` (what this
   server has always sent); they are the same number and must never disagree, which is why
   everything answers through `matchmakeResult` rather than building the envelope by hand.
+- What PLAYS a cheer on the cheered player's client is a `MessageReceived` frame carrying a
+  Message of type 50 `PlayerCheer` (51 `PlayerCheerAnonymous`, `FromPlayerId` 0, when the
+  body says `Anonymous`) with `Data` = the category as a string — the same frame every
+  reference server (meownet-api, DorkNet, E12354) sends. `ReputationUpdate` alone refreshes
+  the counters and shows nothing: the cheer "worked" server-side and nobody saw it. The
+  `ReputationUpdate` frames the cheer (`api`: `POST /api/PlayerCheer/v1/create`) sends are
+  the RECORD, trimmed — `IsCheerful` (a profile flag, always true) and `SelectedCheer` (the
+  cheer pinned via `POST /api/PlayerCheer/v1/SetSelectedCheer`, stored on `reputation`) come
+  off the row exactly as the DTO serves them. This server once overrode both per frame to
+  "play" the cheer; no reference does, and it played nothing.
+- A cheer is a thing that happens in FRONT of people, so the `ReputationUpdate` naming the
+  cheered player goes to everyone in the room instance, not just the two players. The
+  cheered player gets it durably (their counters moved); the rest of the room gets it
+  ephemerally. The audience comes from the giver's live `presence` row, NOT the body's
+  `RoomId`, which is accepted and unused. Neither `RoomId` nor `Anonymous` is stored.
+- The cheer's reply is `{ Success, Message }` — PascalCase, with `Message` NULL on success.
+  That is NOT the lowercase `{ success, error: "" }` envelope the reports and warnings use;
+  the two live side by side in the same worker and must not be unified.
+- Leaderboard `Rank` (`leaderboard`: `GetRanks`, `GetNearbyScores`, `GetPlayerRank`) is
+  0-BASED — the client adds one before it draws, so a `Rank` of 1 shows in game as second
+  place and the top of a board must be 0. Its own slice says the same: it asks for the first
+  ten rows as `RankStart` 0, `RankEnd` 9, both inclusive, so reading them as 1-based also
+  serves nine rows starting at the runner-up. The unranked sentinel stays a big number
+  (99999) precisely because 0 is now a real rank, first place.
 - Accessibility is sent as the `RoomAccessibility` enum NAME on
   `rooms` `PUT /rooms/:id/subrooms/:sid/accessibility` (`accessibility=Private`), not the
   ordinal the room-level `/rooms/:id/accessibility` takes. The enum has five members

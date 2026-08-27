@@ -4,6 +4,7 @@ import { useWorkersLogger } from 'workers-tagged-logger'
 
 import {
 	Accessibility,
+	applyRoomTagEdit,
 	areFriends,
 	autocompleteRoomSearch,
 	banPlayerFromRoom,
@@ -34,6 +35,7 @@ import {
 	getSubRoomPermissions,
 	getSubRoomSaveById,
 	getSubRoomSaves,
+	getTrendingRooms,
 	getVisitedRooms,
 	isPlayerBannedFromRoom,
 	modifySubRoom,
@@ -50,7 +52,6 @@ import {
 	setSubRoomPermissions,
 	toggleCheer,
 	toggleFavorite,
-	toggleRoomTag,
 	unbanPlayerFromRoom,
 	updateRoomFields,
 } from '@repo/domain'
@@ -76,6 +77,7 @@ import {
 	CloneRoomRequest,
 	CloningRequest,
 	CreateSubRoomRequest,
+	CuratedPlaylists,
 	DescriptionRequest,
 	DormRoomId,
 	FeaturedRoomGroupDto,
@@ -85,6 +87,7 @@ import {
 	InteractionDto,
 	intQuery,
 	IsBannedEnvelope,
+	IsBannedPascalEnvelope,
 	json,
 	jsonBody,
 	LoadScreenRequest,
@@ -359,6 +362,21 @@ const STAFF_ROLES: ReadonlySet<string> = new Set(['developer', 'moderator'])
 async function isStaff(c: Context<App>): Promise<boolean> {
 	const roles = await validateAndGetRoles(c.req.raw, await c.env.JWT_SECRET.get())
 	return roles?.some((role) => STAFF_ROLES.has(role)) ?? false
+}
+
+/**
+ * Whether the `:playerId` in the path is banned from the `:roomId` in it — the read behind
+ * both `isBanned` routes, which differ only in the envelope they wrap the answer in.
+ *
+ * Reads the same `room_ban` rows the ban writes make and `match` refuses matchmakes on, so
+ * the answer is what would actually happen. A room that does not exist simply has no ban
+ * rows and comes back false: the question is about the ban, not about the room.
+ */
+async function pathBan(c: Context<App>): Promise<boolean> {
+	// Both routes constrain these to `[0-9]+`, so neither is ever missing — the fallback is
+	// only here because a helper is typed against the whole app rather than one route.
+	const id = (name: string) => Number.parseInt(c.req.param(name) ?? '', 10)
+	return isPlayerBannedFromRoom(c.env.DB, id('roomId'), id('playerId'))
 }
 
 /** 401 for the auth-gated `*by/me` endpoints — no stub-account fallback. */
@@ -848,6 +866,58 @@ const app = new Hono<App>()
 		}
 	)
 
+	// Curated room playlists — the editorially grouped room lists the discovery pages'
+	// `PlaylistById` sections draw from. Nothing curates one yet, so this is an empty array:
+	// the client reads that as "no playlists" and simply draws no playlist rows, where a 404
+	// leaves it retrying a feed that isn't coming.
+	.get(
+		'/rooms/curated_playlists',
+		describeRoute({
+			tags: ['Discovery'],
+			summary: 'Curated room playlists',
+			description: [
+				'The curated room playlists the discovery pages’ playlist sections draw from. There',
+				'is no editorial curation on this server yet, so this is always an empty array —',
+				'which the client reads as “no playlists” and draws nothing, rather than the 404 it',
+				'would keep retrying.',
+			].join(' '),
+			responses: { 200: json(CuratedPlaylists, 'Always an empty list') },
+		}),
+		(c) => c.json([])
+	)
+
+	// The `rising` carousel — the discovery pages fill a `CarouselEndpoint` section by
+	// slug, and this is the one the client asks for by name. Trending means someone is IN
+	// the room right now: unlike the hot feed, which ranks by head-count but still lists
+	// the empty rooms underneath, this one FILTERS on live presence, so a quiet server
+	// serves an empty carousel rather than a stale one.
+	//
+	// Paged like the hot feed (`skip`/`take`, take defaults to 100) and answers the same
+	// `{ Results, TotalResults }` envelope its sibling feeds do. Only `rising` is served —
+	// the other slugs in the discovery catalogue (`foryou`, `staffpicks`, the
+	// `*_algoendpoint` rows) keep 404ing until each is given a feed of its own.
+	.get(
+		'/rooms/carousel/rising',
+		describeRoute({
+			tags: ['Discovery'],
+			summary: 'The “rising” rooms carousel',
+			description: [
+				'The rooms players are in RIGHT NOW, busiest first — the trending carousel. Live',
+				'presence is a filter here, not just a sort: a room nobody is standing in is absent',
+				'entirely, so this is empty when the server is quiet rather than falling back to',
+				'stored engagement the way `/rooms/hot` does. Ties break on engagement and then',
+				'RoomId, so equally busy rooms page stably. Public, non-dorm, listable rooms only.',
+			].join(' '),
+			parameters: pageParams(100),
+			responses: { 200: json(PagedRooms, 'The carousel page') },
+		}),
+		async (c) => {
+			const skip = Number.parseInt(c.req.query('skip') ?? '0', 10) || 0
+			const take = Number.parseInt(c.req.query('take') ?? '100', 10) || 100
+			return c.json(await getTrendingRooms(c.env.DB, skip, take))
+		}
+	)
+
 	// "Base" rooms — template rooms (tagged `base`) the client offers when creating
 	// a room. Returned regardless of accessibility. Paginated via skip/take (take
 	// defaults to 100). Returns a bare array.
@@ -899,8 +969,8 @@ const app = new Hono<App>()
 	)
 
 	// Featured rooms — a single always-active group whose `Rooms` are a randomly
-	// ordered set of public, non-dorm rooms. No real curation yet, so `current`
-	// just returns a shuffled list of eligible rooms in the featured-group shape.
+	// ordered set of public, non-dorm rooms, at most ten of them. No real curation yet, so
+	// `current` just returns a shuffled sample of eligible rooms in the featured-group shape.
 	//
 	// Gated on the caller's BUILD, not just their token: this payload breaks the 2023
 	// client — its other room listings start failing with NREs, apparently because the
@@ -917,7 +987,9 @@ const app = new Hono<App>()
 			summary: 'Featured rooms',
 			description: [
 				'A single always-active group of featured rooms: a random shuffle of eligible public',
-				'rooms, since there is no editorial curation yet.',
+				'rooms, since there is no editorial curation yet. Capped at 10 rooms — a featured',
+				'group is a short selection, not the whole room list — and the cap is applied after',
+				'the shuffle, so each request serves a different sample.',
 				'',
 				'Restricted by CLIENT BUILD. Serving this to the 2023 client breaks its other room',
 				'listings (NREs, apparently from the featured-room load corrupting its room cache), so',
@@ -1489,7 +1561,9 @@ const app = new Hono<App>()
 			description: [
 				'Owner-only (the room’s `CreatorAccountId` — co-owners cannot). An unknown room or a',
 				'non-owner is HTTP 200 with `Success: false` and an `ErrorId`; only a missing token is',
-				'a real 401. An absent `description` field clears the description.',
+				'a real 401. An absent `description` field clears the description. Pushes a',
+				'`RoomUpdate` to the owner — this envelope carries no room, so the push is the only',
+				'thing that tells their client to redraw.',
 			].join(' '),
 			security: AUTHED,
 			parameters: [roomIdParam],
@@ -1523,6 +1597,9 @@ const app = new Hono<App>()
 			const body = (await c.req.parseBody().catch(() => ({}))) as Record<string, unknown>
 			const description = typeof body.description === 'string' ? body.description : ''
 			await setRoomDescription(c.env.DB, roomId, description)
+			// Same reason as the rename below: the envelope carries no room, so without this
+			// the client redraws the room from what it already had — the old description.
+			await pushRoomUpdate(c, accountId, { ...room, Description: description })
 			return roomResult(c, { Success: true })
 		}
 	)
@@ -1599,29 +1676,65 @@ const app = new Hono<App>()
 				})
 			}
 
+			// Writes `FriendlyName` too — see `setRoomName`. The two are the same string here,
+			// and the client labels the room from the display one.
 			await setRoomName(c.env.DB, roomId, name)
+			// The rename answers a bare `{ Success }` with no room in it, so the client has
+			// nothing to re-render from and kept showing the old name until the push arrived.
+			// Built from the room already in hand rather than re-read, like the image route's.
+			await pushRoomUpdate(c, accountId, { ...room, Name: name, FriendlyName: name })
 			return roomResult(c, { Success: true })
 		}
 	)
 
-	// Toggle a tag on a room. Auth-gated (401) and owner/co-owner-only (403). Body is
-	// the `tag` form field. There's no delete/patch endpoint, so this call toggles: it
-	// adds the tag (Type 0) if absent and removes it if present. The "main" tags
-	// (#pvp/#quest/#game/#hangout/#art) are radio buttons — setting one clears the
-	// others. Returns the `{ success, error, value }` envelope with the updated
-	// room as `value`; business failures are 200 with success:false.
+	// Change a room's tags. Auth-gated (401) and owner/co-owner-only (403). Returns the
+	// `{ success, error, value }` envelope with the updated room as `value`; business
+	// failures are 200 with success:false.
+	//
+	// TWO BODIES reach this one path — Rec Room reshaped the request rather than minting a
+	// second route, so the fields, not the URL, say which one this is:
+	//
+	//  - `tag=<name>` ALONE is the 2023 toggle. There is no delete/patch counterpart, so
+	//    the same call adds the tag (Type 0) when absent and removes it when present, and
+	//    the five "main" tags (pvp/quest/game/hangout/art) act as radio buttons.
+	//  - Anything else is the whole-state save both clients send from room settings:
+	//    `autoTag=limitsv2&tag=roleplay&tag=social&tag=sports&primaryGenreTag=roleplay`.
+	//    `tag` repeats and is the complete set of USER tags, `autoTag` adds a derived one
+	//    (Type 1), and `primaryGenreTag` flags the genre. All three compose into one write.
+	//
+	// The discriminator is deliberately "is there more than a lone `tag`": a save that
+	// happens to carry one selected tag must not TOGGLE it back off, which is what made
+	// this worth spelling out rather than counting `tag` alone.
 	.put(
 		'/rooms/:roomId{[0-9]+}/tags',
 		describeRoute({
 			tags: ['Room settings'],
 			summary: 'Toggle a tag on a room',
 			description: [
-				'Owner or co-owner only (403 otherwise). There is no delete/patch counterpart, so',
-				'this call TOGGLES: it adds the tag (Type 0) when absent and removes it when',
-				'present. The “main” tags (`pvp`/`quest`/`game`/`hangout`/`art`) behave as radio',
-				'buttons — setting one clears the others. Answers the lowercase envelope with the',
-				'updated room, which the client re-renders from.',
-			].join(' '),
+				'Owner or co-owner only (403 otherwise). Two bodies reach this one path, and the',
+				'FIELDS say which — not the URL.',
+				'',
+				'**A lone `tag=<name>` TOGGLES** (the 2023 form): there is no delete/patch',
+				'counterpart, so the same call adds the tag (Type 0) when absent and removes it when',
+				'present, and the “main” tags (`pvp`/`quest`/`game`/`hangout`/`art`) behave as radio',
+				'buttons among themselves.',
+				'',
+				'**Anything else is a whole-state save** — the form room settings posts, e.g.',
+				'`autoTag=limitsv2&tag=roleplay&tag=social&tag=sports&primaryGenreTag=roleplay`.',
+				'Nothing toggles here; the three fields compose into one write:',
+				'',
+				'- `tag` repeats and is the COMPLETE set of user (Type 0) tags — one the body omits',
+				'is removed. Derived tags are not the client’s to send and are left alone.',
+				'- `autoTag` repeats and adds a derived tag at **Type 1** (`limitsv2`, `beta`). It is',
+				'additive: it never removes one, since the client posts what it wants rather than the',
+				'full set. A tag already on the room is re-categorised rather than duplicated.',
+				'- `primaryGenreTag` flags the room’s genre. The tag is added as a Type 0 tag when',
+				'the room lacks it and left as it stands when it has it; `IsPrimaryGenre: true` moves',
+				'onto it, and every OTHER tag loses the flag but KEEPS its place.',
+				'',
+				'Answers the lowercase envelope with the updated room, which the client re-renders',
+				'from, and pushes a `RoomUpdate` to the owner for their other sessions.',
+			].join('\n'),
 			security: AUTHED,
 			parameters: [roomIdParam],
 			requestBody: form(TagRequest, 'The tag to toggle'),
@@ -1642,11 +1755,37 @@ const app = new Hono<App>()
 			// already returned 401 for a missing/invalid token).
 			if (!canManageRoom(room, accountId)) return c.body(null, 403)
 
-			const body = (await c.req.parseBody().catch(() => ({}))) as Record<string, unknown>
-			const tag = typeof body.tag === 'string' ? body.tag.trim() : ''
-			if (tag === '') return roomEnvelope(c, null, 'You must provide a tag!')
+			// `all: true` because `tag` REPEATS on the whole-state save; without it Hono keeps
+			// only the last value and a three-tag save would land as one tag.
+			const body: Record<string, unknown> = await c.req.parseBody({ all: true }).catch(() => ({}))
+			// An empty value is the same nothing as an absent field. There is no "clear the
+			// genre" request, so a blank `primaryGenreTag` is a malformed post rather than an
+			// instruction to unset — and a blank `tag` can't name what to toggle.
+			const values = (name: string): string[] =>
+				(Array.isArray(body[name]) ? body[name] : [body[name]])
+					.filter((v): v is string => typeof v === 'string')
+					.map((v) => v.trim())
+					.filter((v) => v !== '')
 
-			const updated = await toggleRoomTag(c.env.DB, roomId, room, tag)
+			const tags = values('tag')
+			const autoTags = values('autoTag')
+			const primaryGenre = values('primaryGenreTag')[0]
+			if (tags.length === 0 && autoTags.length === 0 && primaryGenre === undefined) {
+				return roomEnvelope(c, null, 'You must provide a tag!')
+			}
+
+			// A LONE tag is the 2023 toggle; a tag alongside anything else — another tag, an
+			// auto tag, a genre — is part of a whole-state save, where nothing toggles.
+			const isToggle = tags.length === 1 && autoTags.length === 0 && primaryGenre === undefined
+			const updated = await applyRoomTagEdit(c.env.DB, roomId, room, {
+				toggle: isToggle ? tags[0] : undefined,
+				tags: isToggle ? undefined : tags.length > 0 ? tags : undefined,
+				autoTags,
+				primaryGenre,
+			})
+			// This one DOES answer the updated room, so the caller's own client redraws from
+			// the response; the push is for their other sessions, as on every mutation below.
+			await pushRoomUpdate(c, accountId, updated)
 			return roomEnvelope(c, updated)
 		}
 	)
@@ -2008,12 +2147,50 @@ const app = new Hono<App>()
 			const accountId = await authedAccountId(c)
 			if (accountId === null) return unauthorized(c)
 
-			const banned = await isPlayerBannedFromRoom(
-				c.env.DB,
-				Number.parseInt(c.req.param('roomId'), 10),
-				Number.parseInt(c.req.param('playerId'), 10)
-			)
-			return c.json({ success: true, error: null, error_id: null, value: banned })
+			return c.json({ success: true, error: null, error_id: null, value: await pathBan(c) })
+		}
+	)
+
+	// The SAME check on the unprefixed path (`GET /rooms/112/bans/1/isBanned`), which is the
+	// spelling the client uses on the rooms host itself. Registered as its own route rather
+	// than as an alias because the answer is not the same bytes: this one is PascalCase
+	// (`Value`/`Success`/`Error`, `error_id` still lowercase), and the client's decoder drops
+	// members it doesn't know silently — a lowercase `value` here would read as `false` and
+	// show a banned player as unbanned.
+	//
+	// Same gate as its sibling: auth-gated, not owner-gated. A ban is not a secret from the
+	// player it stops, and the client asks this before offering a room action so it can grey
+	// it out rather than let the attempt fail.
+	.get(
+		'/rooms/:roomId{[0-9]+}/bans/:playerId{[0-9]+}/isBanned',
+		describeRoute({
+			tags: ['Room settings'],
+			summary: 'Whether a player is banned from a room (unprefixed path)',
+			description: [
+				'The same `room_ban` check as the `/Room_server/` route, on the path the client uses',
+				'against the rooms host directly — and in the PascalCase envelope it reads there:',
+				'`{ Value, Success, Error, error_id }`, with `error_id` lowercase.',
+				'',
+				'The two envelopes are NOT unified. The client’s decoder drops members it does not',
+				'recognise, so serving the other route’s lowercase `value` here would decode as',
+				'`false` — a banned player shown as unbanned — rather than fail.',
+				'',
+				'Auth-gated, but any authenticated caller may ask: a ban is not a secret from the',
+				'player it stops. A room that does not exist has no bans, so it answers',
+				'`Value: false` rather than 404ing — the check is about the ban row, not the room.',
+			].join('\n'),
+			security: AUTHED,
+			parameters: [roomIdParam, bannedPlayerIdParam],
+			responses: {
+				200: json(IsBannedPascalEnvelope, 'Whether that player is banned from that room'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const accountId = await authedAccountId(c)
+			if (accountId === null) return unauthorized(c)
+
+			return c.json({ Value: await pathBan(c), Success: true, Error: null, error_id: null })
 		}
 	)
 

@@ -146,12 +146,57 @@ export const CreateThreadResponse = z.object({
 })
 
 /**
- * `POST /thread/:id` and `/thread/:id/message` — the whole thread with its messages, not
- * just the message that was sent, so the client re-renders the conversation from one
- * response.
+ * The message the SEND answers with, in the PascalCase spelling the client's SendMessage
+ * handler reads. Six keys — the CLR type has thirteen fields, but the rest are filled in
+ * after deserialization; notably `MessageJson` is NOT a wire key, it is parsed out of
+ * `Contents` by a post-deserialize hook.
+ *
+ * That hook is why `Contents` must be an escaped JSON envelope with a non-null `Data`
+ * (`"{\"Type\":0,\"Version\":1,\"Data\":\"hello\"}"`): plain text, an empty string, a
+ * nested object instead of a string, or `Data: null` all leave `MessageJson` null, the hook
+ * only LOGS the failure, and the handler then dereferences it — a null-reference exception
+ * with no other symptom.
+ *
+ * Deliberately not {@link ChatMessageDto}, which is the camelCase shape the thread payloads
+ * carry. Same six fields, two spellings, because the client reads them in two places.
+ */
+export const SentChatMessage = z.object({
+	ChatMessageId: z.int(),
+	ChatThreadId: z.int(),
+	SenderPlayerId: z.int(),
+	TimeSent: z.string().describe('ISO-8601 UTC instant'),
+	Contents: z
+		.string()
+		.describe(
+			'The escaped envelope — must parse to `{ Type, Version, Data }` with a non-null Data'
+		),
+	ModerationState: z
+		.int()
+		.describe('0 Active · 11 Junior_Pending · 100/101/102 Moderation_* · 255 MarkedForDelete'),
+})
+
+/**
+ * `POST /thread/:id` and `/thread/:id/message`.
+ *
+ * FOUR keys, in two spellings, because the client reads this response two ways and neither
+ * can be dropped:
+ *
+ * - `ChatMessage` / `ChatResult` are what the SendMessage handler itself reads. On
+ *   `ChatResult == 0` it dereferences `ChatMessage` immediately, so a success answered
+ *   without one is a null-reference exception in the client. That is what a response of
+ *   only the lowercase pair caused.
+ * - `chatResult` / `chatThread` carry the WHOLE thread with its messages, which is what the
+ *   conversation re-renders from.
+ *
+ * The two result keys are the same number by construction — they are one value serialized
+ * twice — so a case-insensitive decoder reading either lands on the same answer.
  */
 export const SendMessageResponse = z.object({
-	chatResult: ChatResult,
+	ChatMessage: SentChatMessage.nullable().describe(
+		'The message just posted; null only when nothing was posted (ChatResult ≠ 0)'
+	),
+	ChatResult: ChatResult,
+	chatResult: ChatResult.describe('The same value as `ChatResult` — see above'),
 	chatThread: ChatThreadWithMessagesDto.nullable(),
 })
 

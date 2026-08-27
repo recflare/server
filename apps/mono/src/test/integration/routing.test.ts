@@ -1,5 +1,6 @@
+import { adminSecretsStore, env } from 'cloudflare:test'
 import { exports } from 'cloudflare:workers'
-import { describe, expect, test } from 'vitest'
+import { beforeAll, describe, expect, test } from 'vitest'
 
 import type { Env } from '../../context'
 
@@ -11,9 +12,16 @@ const ORIGIN = 'https://example.com'
 
 // The facade's job is routing, not business logic, so one request that reaches a
 // mounted app through the path prefix is enough to prove the wiring. `api` serves a
-// static game-config with no auth/DB, so it's a clean target. The api worker namespaces
+// static game-config with no DB behind it, so it's a clean target. The api worker namespaces
 // its own routes under `/api`, hence the `/api` prefix (service) + `/api/...` (real path).
 describe('mono routing', () => {
+	// `gameconfigs` reads the token's build claim to pick which catalog to serve, so it
+	// resolves JWT_SECRET even for an unauthenticated request. Seed the key into the local
+	// Secrets Store or the handler throws before the routing assertion can run.
+	beforeAll(async () => {
+		await adminSecretsStore(env.JWT_SECRET).create('test-signing-key')
+	})
+
 	test('path prefix routes to the api worker (gameconfigs)', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/api/api/gameconfigs/v1/all`)
 		expect(res.status).toBe(200)

@@ -227,6 +227,18 @@ export const InfluencerIdsResponse = z.object({
 })
 
 /**
+ * `GET /api/influencerpartnerprogram/influencer` and `…/myinfluencer` — one account's
+ * standing in the partner program.
+ *
+ * A BARE NUMBER, not an object: the body is the literal `0`, which is the "not an
+ * influencer" tier. Nobody on this server is one, so 0 is the answer for every account, the
+ * caller's own included.
+ */
+export const InfluencerTierResponse = z
+	.literal(0)
+	.describe('The account’s partner tier. Always 0 — nobody here is an influencer')
+
+/**
  * `GET /api/incentivizedreferrals/progress` — how far the caller has got with the
  * refer-a-friend rewards: how many referrals have been verified, and which rewards they
  * have taken from that track.
@@ -257,7 +269,9 @@ export const MakerAiFreeTrialEligibilityResponse = z
 export const ChallengeProgressResponse = z.object({
 	ChallengeMapId: z.int(),
 	ChallengeId: z.int(),
-	Config: z.string().describe('Echoed back verbatim; not stored'),
+	Config: z
+		.string()
+		.describe('The STORED rule tree — a report carrying none keeps (and echoes) the last one'),
 	Complete: z
 		.boolean()
 		.describe('The STORED completion — latches true within a rotation, so it may differ'),
@@ -387,6 +401,34 @@ export const BuyInventionResponse = z.object({
 })
 
 /** buyItem / buyInvention error body (`{ error }`), returned on 400/403/404/409. */
+/** The JSON body `POST /api/ugcPurchasables/v1/items/bulk` takes. */
+export const UgcPurchasableBulkRequest = z.object({
+	RoomId: z.number().int().describe('Echoed back on each item; not otherwise used'),
+	Ids: z.array(
+		z.object({
+			itemType: z.number().int().describe('3 = custom avatar item (the only type served)'),
+			itemId: z.string().describe('The `CustomAvatarItemId`'),
+		})
+	),
+})
+
+/** The client's `UgcPurchasableItem` — a store-facing view of a custom avatar item. */
+export const UgcPurchasableItemDto = z.object({
+	ItemType: z.number().int(),
+	ItemId: z.string(),
+	Name: z.string(),
+	Description: z.string(),
+	ImageName: z.string(),
+	RoomId: z.number().int(),
+	Price: z.number().int(),
+	PurchaseCurrencyId: z.string().nullable(),
+	CreatedAt: z.string(),
+	ModifiedAt: z.string(),
+})
+
+/** What the bulk lookup answers: the resolved items, unknown ids omitted. */
+export const UgcPurchasableItemList = z.array(UgcPurchasableItemDto)
+
 export const ErrorResponse = z.object({ error: z.string() })
 
 // ---- Request schemas -------------------------------------------------------
@@ -472,7 +514,9 @@ export const ChallengeProgressRequest = z.object({
 	Config: z
 		.string()
 		.optional()
-		.describe('The client-evaluated rule tree, with its running count in `cc`; not stored'),
+		.describe(
+			'The client-evaluated rule tree, with its running count in `cc`; stored as the player’s progress'
+		),
 	Complete: z
 		.union([z.string(), z.boolean()])
 		.optional()

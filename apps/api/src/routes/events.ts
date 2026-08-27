@@ -1,8 +1,9 @@
 import { Hono } from 'hono'
 import { describeRoute } from 'hono-openapi'
 
-import { Accessibility } from '@repo/domain'
+import { Accessibility, GAME_VERSION } from '@repo/domain'
 import { logger } from '@repo/hono-helpers'
+import { validateAndGetVersion } from '@repo/jwt'
 
 // The notification-type ids the hub carries (owned by the `notify` worker). Imported
 // as a value — the enum has no runtime dependencies.
@@ -10,6 +11,7 @@ import { NotificationType } from '../../../notify/src/notification-types'
 import {
 	createEvent,
 	deleteEvent,
+	EVENT_DELETED_RESULT,
 	eventInputRejection,
 	getEventAttendees,
 	getEventById,
@@ -17,6 +19,7 @@ import {
 	getEventsByClubs,
 	getEventsByCreator,
 	getEventsByIds,
+	getEventsByRoom,
 	getEventTags,
 	getLiveEvents,
 	inviteToEvent,
@@ -44,6 +47,7 @@ import {
 	PlayerEventAccessibilityRequest,
 	PlayerEventBaseDto,
 	PlayerEventBulkInviteRequest,
+	PlayerEventDeletedDto,
 	PlayerEventDescriptionRequest,
 	PlayerEventDetailsDto,
 	PlayerEventDto,
@@ -143,6 +147,26 @@ async function notifyInvited(
 }
 
 /**
+ * Wrap an event in the v2 envelope for THIS caller's build.
+ *
+ * Rec Room reshaped `PlayerEvent.Tags` without minting a new path, so the same endpoint
+ * owes the 2023 build `[{ Tag, Type }]` and the 2025 build `["celebration"]`. The build
+ * comes off the token's `rn.ver` claim — the request carries no version of its own — and
+ * the split is the one `/api/gameconfigs/v1/all` already makes: anything NEWER than
+ * `GAME_VERSION` (20230414) is the 2025 client; that build, anything older, and a request
+ * with no readable token version all get the 2023 shape. Builds are date-stamped, so they
+ * order as strings.
+ *
+ * Like the other version gates here the claim is unverified — a client that lies about its
+ * build only empties its own tag chips.
+ */
+async function eventResult(c: Context<App>, event: PlayerEvent, tags: EventTag[]) {
+	const version = await validateAndGetVersion(c.req.raw, await c.env.JWT_SECRET.get())
+	const isModernBuild = version !== null && version > GAME_VERSION
+	return toEventResult(event, tags, !isModernBuild)
+}
+
+/**
  * The shared front half of the single-field event edits (`PUT …/v2/{id}/{field}`):
  * authenticate, load the event, check the caller created it, then apply whatever patch
  * `parse` reads out of the body and answer the same `{ Result, TagModifyResult,
@@ -174,7 +198,7 @@ function editEventField(
 		if (input === null) return c.body(null, 400)
 		const updated = await updateEvent(c.env.DB, eventId, input)
 		// updateEvent only returns null when the row vanished, which the read above rules out.
-		return c.json(toEventResult(updated!, await getEventTags(c.env.DB, eventId)))
+		return c.json(await eventResult(c, updated!, await getEventTags(c.env.DB, eventId)))
 	}
 }
 
@@ -358,6 +382,30 @@ export const eventRoutes = new Hono<App>({ strict: false })
 		}
 	)
 
+	// A room's event shelf (`/room/12`) — what is on in this room, current and upcoming.
+	// A bare array of the stored record, like the multi-club shelf and `/searchlive`: the
+	// single-club form's `{ ContinuationToken, Events }` envelope is the odd one out, and a
+	// room's shelf is small enough that there is nothing to page.
+	.get(
+		'/api/playerevents/v1/room/:roomId{[0-9]+}',
+		describeRoute({
+			tags: ['Events'],
+			summary: 'Player events in one room',
+			description:
+				'The events scheduled in a room — the shelf on the room’s page — soonest first. A ' +
+				'bare array of the stored record, the same projection `/searchlive` and the ' +
+				'multi-club shelf serve.\n\n' +
+				'CURRENT and UPCOMING only: the filter is on the END time, so a running event stays ' +
+				'listed until it is over rather than vanishing the moment it starts, and an event ' +
+				'that has finished is dropped — this answers what someone can still turn up to. A ' +
+				'room with nothing scheduled, and a room id that does not exist, both answer an ' +
+				'empty array; the shelf is about events, not about whether the room is real.',
+			parameters: [idParam('roomId', 'Room id')],
+			responses: { 200: json(PlayerEventDto.array(), 'The room’s current and upcoming events') },
+		}),
+		async (c) => c.json(await getEventsByRoom(c.env.DB, Number.parseInt(c.req.param('roomId'), 10)))
+	)
+
 	// Live player-event search (the "happening now" browse query) — events that have
 	// started and not yet finished. A bare array, like the multi-club feed.
 	.get(
@@ -472,7 +520,7 @@ export const eventRoutes = new Hono<App>({ strict: false })
 
 			const updated = await setEventResponse(c.env.DB, eventId, id, type)
 			if (updated === null) return c.body(null, 404)
-			return c.json(toEventResult(updated, await getEventTags(c.env.DB, eventId)))
+			return c.json(await eventResult(c, updated, await getEventTags(c.env.DB, eventId)))
 		}
 	)
 
@@ -603,7 +651,7 @@ export const eventRoutes = new Hono<App>({ strict: false })
 			const result = await inviteToEvent(c.env.DB, eventId, invited)
 			// inviteToEvent only returns null when the row vanished, which the read above rules out.
 			await notifyInvited(c, result!.event, result!.added)
-			return c.json(toEventResult(result!.event, await getEventTags(c.env.DB, eventId)))
+			return c.json(await eventResult(c, result!.event, await getEventTags(c.env.DB, eventId)))
 		}
 	)
 
@@ -656,7 +704,7 @@ export const eventRoutes = new Hono<App>({ strict: false })
 			await notifyEventCreated(c, event, input.tags ?? [])
 			// Read the tags back rather than echoing what was posted: the envelope reports what
 			// the event now carries, which is what the client redraws its chips from.
-			return c.json(toEventResult(event, await getEventTags(c.env.DB, event.PlayerEventId)))
+			return c.json(await eventResult(c, event, await getEventTags(c.env.DB, event.PlayerEventId)))
 		}
 	)
 
@@ -668,8 +716,9 @@ export const eventRoutes = new Hono<App>({ strict: false })
 	// which is how the reference exposes it, and a client that reaches for the HTTP verb
 	// instead should not get a 404 for being right.
 	//
-	// Answers the v2 envelope carrying the event as it WAS, so the caller can report what it
-	// removed; an unknown event is 404, and someone else's is 403.
+	// Answers the v2 envelope with both payload fields nulled —
+	// `{ PlayerEvent: null, Result: 0, TagModifyResult: null }`, which is what the reference
+	// sends: there is nothing left to redraw. An unknown event is 404, and someone else's 403.
 	.on(
 		['POST', 'DELETE'],
 		'/api/playerevents/v2/delete/:eventId{[0-9]+}',
@@ -681,12 +730,14 @@ export const eventRoutes = new Hono<App>({ strict: false })
 				'whose attendee rows outlived it would still be counted, and its tags would still ' +
 				'answer `#tag` searches.\n\n' +
 				'Creator only: anyone else gets 403, and an unknown event 404. Answers the v2 ' +
-				'envelope carrying the event as it was just before it went. Both POST and DELETE ' +
-				'reach it — the path names the verb, which is the form the client uses.',
+				'envelope with `PlayerEvent` and `TagModifyResult` both null — the event is gone, ' +
+				'so there is nothing for the client to redraw from, and it reads only `Result`. ' +
+				'Both POST and DELETE reach it — the path names the verb, which is the form the ' +
+				'client uses.',
 			security: AUTHED,
 			parameters: [idParam('eventId', 'Event id')],
 			responses: {
-				200: json(PlayerEventResultDto, 'The event that was deleted'),
+				200: json(PlayerEventDeletedDto, 'The nulled envelope a delete answers with'),
 				401: UNAUTHORIZED_RESPONSE,
 				403: { description: 'Not the event’s creator (empty body)' },
 				404: { description: 'No such event (empty body)' },
@@ -701,12 +752,10 @@ export const eventRoutes = new Hono<App>({ strict: false })
 			if (existing === null) return c.body(null, 404)
 			if (existing.CreatorPlayerId !== id) return c.body(null, 403)
 
-			// Read the tags before the delete takes them, so the envelope can still report what
-			// the event carried.
-			const tags = await getEventTags(c.env.DB, eventId)
-			const deleted = await deleteEvent(c.env.DB, eventId)
-			// deleteEvent only answers null when the row vanished, which the read above rules out.
-			return c.json(toEventResult(deleted!, tags))
+			await deleteEvent(c.env.DB, eventId)
+			// Both payload fields are null here — the delete envelope is not the one the other
+			// v2 routes answer with. Nothing is left to redraw, and the client reads `Result`.
+			return c.json(EVENT_DELETED_RESULT)
 		}
 	)
 
@@ -738,7 +787,7 @@ export const eventRoutes = new Hono<App>({ strict: false })
 			const eventId = Number.parseInt(c.req.param('eventId'), 10)
 			const event = await getEventById(c.env.DB, eventId)
 			if (event === null) return c.body(null, 404)
-			return c.json(toEventResult(event, await getEventTags(c.env.DB, eventId)))
+			return c.json(await eventResult(c, event, await getEventTags(c.env.DB, eventId)))
 		}
 	)
 
@@ -790,7 +839,7 @@ export const eventRoutes = new Hono<App>({ strict: false })
 			if (eventInputRejection(input, existing) !== null) return c.body(null, 400)
 			const updated = await updateEvent(c.env.DB, eventId, input)
 			// updateEvent only returns null when the row vanished, which the read above rules out.
-			return c.json(toEventResult(updated!, await getEventTags(c.env.DB, eventId)))
+			return c.json(await eventResult(c, updated!, await getEventTags(c.env.DB, eventId)))
 		}
 	)
 

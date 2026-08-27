@@ -1,0 +1,19 @@
+-- Which of a room's tags is its PRIMARY GENRE.
+--
+-- Generated from packages/domain/src/rooms-db.ts (ROOM_SCHEMA_DDL) — keep in sync.
+--
+-- The 2023 client picked a genre by toggling one of five "main" tags
+-- (`pvp`/`quest`/`game`/`hangout`/`art`) as radio buttons, which the tag row alone could
+-- express: whichever of the five was present was the genre. The 2025 client instead posts
+-- `primaryGenreTag=<tag>` to `PUT /rooms/{id}/tags` over a genre vocabulary it reads from
+-- the `RoomGenreTags` curated list, and it renders the chosen one differently from the
+-- room's other tags — so "is this tag the genre" is now a fact about the ROW, separate
+-- from whether the tag is there at all. A room can carry `puzzle` and `social` as ordinary
+-- tags with only `social` flagged.
+--
+-- A real column rather than a `type` value: `type` is the client's tag-CATEGORY int
+-- (0 user, 1 beta, 2 auto-derived like `rro`) which is echoed back as stored, and the
+-- primary genre is orthogonal to it — the flagged tag is still a plain Type 0 user tag.
+--
+-- Defaults to 0, so every existing row reads as "not the genre", which is what they were.
+ALTER TABLE room_tag ADD COLUMN is_primary_genre INTEGER NOT NULL DEFAULT 0;
