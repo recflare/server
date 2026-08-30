@@ -651,14 +651,6 @@ const app = new Hono<App>()
 			// form body.
 			const body = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>)
 			const grantType = typeof body.grant_type === 'string' ? body.grant_type : ''
-	logger.info('DEBUG token grant', {
-		grantType,
-		hasAccountId: typeof body.account_id === 'string' && body.account_id !== '',
-		hasUsername: typeof body.username === 'string' && body.username !== '',
-		hasPassword: typeof body.password === 'string' && body.password !== '',
-		platform: typeof body.platform === 'string' ? body.platform : null,
-		platformIdLen: typeof body.platform_id === 'string' ? body.platform_id.length : 0,
-	})
 			// `platform`/`platform_id` come from the body for a fresh login; a refresh
 			// grant overrides them below with what was stored when the token was issued.
 			let platformId = typeof body.platform_id === 'string' ? body.platform_id : ''
@@ -990,13 +982,7 @@ const app = new Hono<App>()
 				// — this closes the id/username-only takeover.
 				const storedHash = await getPasswordHash(c.env.DB, resolvedId)
 				const password = typeof body.password === 'string' ? body.password : ''
-				const passwordMatches = storedHash ? await verifyPassword(password, storedHash) : false
-				logger.info('DEBUG password check', {
-					resolvedId,
-					hasStoredHash: !!storedHash,
-					passwordMatches,
-				})
-				if (!storedHash || !passwordMatches) {
+				if (!storedHash || !(await verifyPassword(password, storedHash))) {
 					return c.json(
 						{ error: 'invalid_grant', error_description: 'invalid account_id or password' },
 						400

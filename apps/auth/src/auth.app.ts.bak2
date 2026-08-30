@@ -990,13 +990,7 @@ const app = new Hono<App>()
 				// — this closes the id/username-only takeover.
 				const storedHash = await getPasswordHash(c.env.DB, resolvedId)
 				const password = typeof body.password === 'string' ? body.password : ''
-				const passwordMatches = storedHash ? await verifyPassword(password, storedHash) : false
-				logger.info('DEBUG password check', {
-					resolvedId,
-					hasStoredHash: !!storedHash,
-					passwordMatches,
-				})
-				if (!storedHash || !passwordMatches) {
+				if (!storedHash || !(await verifyPassword(password, storedHash))) {
 					return c.json(
 						{ error: 'invalid_grant', error_description: 'invalid account_id or password' },
 						400
