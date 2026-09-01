@@ -2940,11 +2940,11 @@ const app = new Hono<App>({ strict: false })
 			if (Number.isNaN(currencyType)) return c.body(null, 400)
 			const amount = isSpendable(currencyType)
 				? await getBalance(
-						c.env.DB,
-						id,
-						currencyType,
-						intVar(c.env.STARTING_TOKENS, DEFAULT_STARTING_TOKENS)
-					)
+					c.env.DB,
+					id,
+					currencyType,
+					intVar(c.env.STARTING_TOKENS, DEFAULT_STARTING_TOKENS)
+				)
 				: 0
 			return c.json([{ CurrencyType: currencyType, Platform: ALL_PLATFORMS, Balance: amount }])
 		}
@@ -3247,12 +3247,12 @@ const app = new Hono<App>({ strict: false })
 			const catalogItems =
 				build !== null && build > LEGACY_CLIENT_BUILD
 					? await catalogStoreItems(
-							c.env.DB,
-							lines.flatMap((line) => {
-								const numberId = toPurchaseMethodId(line.ItemPurchaseMethodId).NumberId
-								return numberId !== null && numberId >= CATALOG_ID_BASE ? [numberId] : []
-							})
-						)
+						c.env.DB,
+						lines.flatMap((line) => {
+							const numberId = toPurchaseMethodId(line.ItemPurchaseMethodId).NumberId
+							return numberId !== null && numberId >= CATALOG_ID_BASE ? [numberId] : []
+						})
+					)
 					: []
 			const bagCatalog: Storefront | null =
 				catalogItems.length === 0
@@ -3689,11 +3689,11 @@ const app = new Hono<App>({ strict: false })
 				challengeId === 0
 					? { complete: parseBool(body.Complete), config }
 					: await recordChallengeProgress(c.env.DB, id, {
-							challengeMapId,
-							challengeId,
-							complete: parseBool(body.Complete),
-							config,
-						})
+						challengeMapId,
+						challengeId,
+						complete: parseBool(body.Complete),
+						config,
+					})
 			// This report may have been the last one of the set. Only a completing report on
 			// the LIVE rotation can be — an old rotation's set can no longer be finished, and
 			// an unfinished challenge means the set isn't either, so neither is worth a read.
@@ -3981,7 +3981,7 @@ const app = new Hono<App>({ strict: false })
 		async (c) => {
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
-			return c.json({ InfluencerIds: [] })
+			return c.json({ InfluencerIds: [8, 2] }) // Here are our influencer ids - hardcoded for now, will add config with dash and db control later
 		}
 	)
 
