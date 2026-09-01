@@ -83,6 +83,30 @@ export async function validateAndGetRoles(
 }
 
 /**
+ * Whether a request's bearer token says the caller has Rec Room Plus — the `rn.plus`
+ * claim stamped by {@link generateToken} from `account.hasPlus`. This is the ONE way Plus
+ * is decided (see `econ`'s `isSubscriber`); nothing re-reads the account for it, which is
+ * why a freshly-claimed player must sign in again before it applies.
+ *
+ * False for a missing, malformed or expired token, and false for a valid token that
+ * simply carries no claim — the two are not worth telling apart, since neither is a
+ * subscriber. Only a literal `true` counts, so a token carrying some other value in that
+ * key can't read as Plus.
+ */
+export async function validateAndGetPlus(request: Request, secret: string): Promise<boolean> {
+	const authHeader = request.headers.get('Authorization')
+	if (!authHeader || !authHeader.toLowerCase().startsWith('bearer ')) return false
+
+	const token = authHeader.slice('bearer '.length)
+	try {
+		const payload = await verify(token, secret, 'HS256') // checks exp/nbf/signature
+		return payload['rn.plus'] === true
+	} catch {
+		return false
+	}
+}
+
+/**
  * Validate a request's bearer token and return its `rn.ver` claim — the game build the
  * caller posted to `/connect/token`, stamped by {@link generateToken}. `null` when the
  * request carries no valid token, and `null` too when a valid token has no `rn.ver` (an
@@ -189,7 +213,8 @@ export async function generateToken(
 	secret: string,
 	extraRoles: string[] = [],
 	privileges: string[] = [],
-	version: string = GAME_VERSION
+	version: string = GAME_VERSION,
+	hasPlus = false
 ): Promise<string> {
 	const now = Math.floor(Date.now() / 1000)
 	// The client reads `role`/`scope` (and expects a well-formed iss/aud) to
@@ -220,6 +245,20 @@ export async function generateToken(
 			// `scope`. Omitted entirely when empty, so an unrestricted token is byte-for-byte
 			// what it was before privileges existed.
 			...(privileges.length > 0 ? { 'rn.privilege': privileges } : {}),
+			// Whether the account has Rec Room Plus (`account.hasPlus`) — a CLAIM, like
+			// `rn.privilege` and for the same reason: it is ours, the client has never heard of
+			// it, and `scope` is a fixed list the client parses. `econ` reads it to answer the
+			// CampusCard lookup and to price the subscriber discount, which is the whole point
+			// of carrying it here: those calls then need no database read at all.
+			//
+			// Omitted when false, so a non-subscriber's token is byte-for-byte what it was
+			// before Plus existed, and `validateAndGetPlus` reads an absent claim as "no Plus".
+			//
+			// STAMPED AT LOGIN, so it is only as fresh as the token: a player who claims Plus on
+			// the website has to sign in again (and restart the game) before it takes effect.
+			// Tokens last a day and the client does not refresh them — see TOKEN_TTL_SECONDS —
+			// so that wait is real, and it is the accepted trade for making the check free.
+			...(hasPlus ? { 'rn.plus': true } : {}),
 			scope: TOKEN_SCOPES,
 			jti: crypto.randomUUID(),
 		},

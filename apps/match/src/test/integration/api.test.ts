@@ -20,6 +20,7 @@ import {
 	ROOM_SCHEMA_DDL,
 	seedRoomWithSubRooms,
 	setPresence,
+	STAT_SCHEMA_DDL,
 	SUBROOM_SCHEMA_DDL,
 } from '@repo/domain'
 
@@ -124,6 +125,8 @@ beforeAll(async () => {
 	for (const stmt of PRESENCE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	// Room invites (owned by this worker) — POST /invite mints a row per invite.
 	for (const stmt of ROOM_INVITE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	// Stats (owned by this worker) — the presence cron samples the online count into it.
+	for (const stmt of STAT_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 
 	// Accounts table (owned by the auth worker) — dorm creation reads the username
 	// to name the room. Seed the players the dorm tests authenticate as.
@@ -1909,6 +1912,30 @@ describe('auth-gated endpoints', () => {
 		expect((await getRoomInstance(env.DB, solo))?.isFull).toBe(false)
 	})
 
+	test('records an `online` stat sample of the live presence count on each run', async () => {
+		await env.DB.prepare('DELETE FROM stat').run()
+		const before = (await env.DB.prepare('SELECT COUNT(*) AS n FROM presence WHERE expires_at > ?1')
+			.bind(nowSeconds())
+			.first<{ n: number }>())!.n
+
+		const ctx = createExecutionContext()
+		await scheduled(createScheduledController(), env, ctx)
+		await waitOnExecutionContext(ctx)
+
+		const rows = (
+			await env.DB.prepare('SELECT stat_type, value, datetime FROM stat').all<{
+				stat_type: string
+				value: number
+				datetime: string
+			}>()
+		).results
+		expect(rows).toHaveLength(1)
+		expect(rows[0]!.stat_type).toBe('online')
+		expect(rows[0]!.value).toBe(before)
+		// Stamped with the current time, as ISO-8601.
+		expect(Math.abs(Date.parse(rows[0]!.datetime) - Date.now())).toBeLessThan(10_000)
+	})
+
 	// Age an instance past EMPTY_INSTANCE_GRACE_SECONDS by backdating its `createdAt`
 	// (the generated `created_at` column follows the blob), so the empty-instance sweep
 	// can be exercised without waiting out the grace window.
@@ -2444,9 +2471,7 @@ describe('auth-gated endpoints', () => {
 
 		// The one frame an invite from a client on `version` pushes, with the RoomInviteId
 		// the call answered — a v2 invite names it in its Data.
-		const inviteFrom = async (
-			version?: string
-		): Promise<{ frame: Sent; roomInviteId: number }> => {
+		const inviteFrom = async (version?: string): Promise<{ frame: Sent; roomInviteId: number }> => {
 			await hub().fetch('http://do/all', { method: 'DELETE' })
 			const res = await exports.default.fetch(`${ORIGIN}/invite`, {
 				method: 'POST',
@@ -2933,6 +2958,127 @@ describe('auth-gated endpoints', () => {
 		).toBe(401)
 	})
 
+	test('POST /matchmake/v2/player/:id joins the inviter, invite row required', async () => {
+		// 8811 stands in an instance and invites 8812 (writing the room_invite row).
+		const instance = await createRoomInstance(env.DB, {
+			ownerAccountId: 8811,
+			roomId: 2,
+			subRoomId: 2,
+			photonRoomId: crypto.randomUUID(),
+			name: '^RecCenter',
+			maxCapacity: 12,
+		})
+		await setPresence(env.DB, {
+			accountId: 8811,
+			roomInstance: instance,
+			statusVisibility: 0,
+			deviceClass: 0,
+			vrMovementMode: 1,
+			platform: 0,
+			appVersion: GAME_VERSION,
+		})
+
+		const join = async (targetId: number, sub: string) =>
+			exports.default.fetch(`${ORIGIN}/matchmake/v2/player/${targetId}`, {
+				method: 'POST',
+				headers: {
+					...(await bearer(sub)),
+					'Content-Type': 'application/x-www-form-urlencoded',
+				},
+				body: 'BypassMovementModeRestriction=False&LoginLock=40bacd8f-7c60-4d49-93f9-462b096602de&VoiceServerVersion=gameserver-2&CorrelationId=82c12c19-a3fc-4734-9abc-e912aeb1f351&MaxPersistenceVersion=227&PlayerIsPartyMember=False',
+			})
+
+		// No invite from the target yet → 40, and nothing about their state leaks.
+		expect(await (await join(8811, '8812')).json()).toMatchObject({
+			ErrorCode: 40,
+			RoomInstance: null,
+		})
+
+		await exports.default.fetch(`${ORIGIN}/invite`, {
+			method: 'POST',
+			headers: {
+				...(await bearer('8811')),
+				'Content-Type': 'application/x-www-form-urlencoded',
+			},
+			body: `playerId=8812&roomInstanceId=${instance.roomInstanceId}`,
+		})
+
+		// An invite from a DIFFERENT player doesn't authorize this target: 8813 holds no
+		// invite from 8811.
+		expect(await (await join(8811, '8813')).json()).toMatchObject({
+			ErrorCode: 40,
+			RoomInstance: null,
+		})
+
+		// The invitee lands in the inviter's instance, in the PascalCase v2 envelope with
+		// the CorrelationId echoed back.
+		const ok = await join(8811, '8812')
+		expect(ok.status).toBe(200)
+		const okBody = (await ok.json()) as Record<string, unknown>
+		expect(okBody).toMatchObject({
+			ErrorCode: 0,
+			CorrelationId: '82c12c19-a3fc-4734-9abc-e912aeb1f351',
+			RoomInstance: {
+				RoomInstanceId: instance.roomInstanceId,
+				RoomId: 2,
+				Name: '^RecCenter',
+				MatchmakingPolicy: 0,
+			},
+		})
+		// The exact wire shape, confirmed against the live client: the three-key envelope
+		// and the 15-key v2 instance, nothing extra (no Photon coordinates, no DataBlob).
+		expect(Object.keys(okBody).sort()).toEqual(['CorrelationId', 'ErrorCode', 'RoomInstance'])
+		expect(Object.keys(okBody.RoomInstance as object).sort()).toEqual(
+			[
+				'RoomInstanceId',
+				'RoomId',
+				'SubRoomId',
+				'Location',
+				'EventId',
+				'ClubId',
+				'RoomCode',
+				'Name',
+				'MaxCapacity',
+				'IsFull',
+				'IsPrivate',
+				'IsInProgress',
+				'EncryptVoiceChat',
+				'RoomInstanceType',
+				'MatchmakingPolicy',
+			].sort()
+		)
+
+		// Standing there already is 17, not a second join.
+		expect(await (await join(8811, '8812')).json()).toMatchObject({
+			ErrorCode: 17,
+			RoomInstance: null,
+		})
+
+		// The inviter walking out leaves nothing to join: 2, PlayerNotOnline. (The invitee
+		// is moved out first so the AlreadyIn check doesn't answer ahead of it.)
+		await setPresence(env.DB, {
+			accountId: 8812,
+			roomInstance: null,
+			statusVisibility: 0,
+			deviceClass: 0,
+			vrMovementMode: 1,
+			platform: 0,
+			appVersion: GAME_VERSION,
+		})
+		await env.DB.prepare('DELETE FROM presence WHERE account_id = 8811').run()
+		expect(await (await join(8811, '8812')).json()).toMatchObject({
+			ErrorCode: 2,
+			RoomInstance: null,
+		})
+
+		// Unauthenticated is a 401, not a refusal code.
+		expect(
+			(
+				await exports.default.fetch(`${ORIGIN}/matchmake/v2/player/8811`, { method: 'POST' })
+			).status
+		).toBe(401)
+	})
+
 	test('GET /openapi.json documents every route', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/openapi.json`)
 		expect(res.status).toBe(200)
@@ -2973,6 +3119,7 @@ describe('auth-gated endpoints', () => {
 			'POST /matchmake/player/{playerId}',
 			'POST /matchmake/room/{roomId}',
 			'POST /matchmake/room/{roomId}/{subRoomId}',
+			'POST /matchmake/v2/player/{playerId}',
 			'POST /matchmake/v2/room/{roomId}',
 			'POST /matchmake/v2/room/{roomId}/{subRoomId}',
 			'POST /player/exclusivelogin',
@@ -3083,6 +3230,85 @@ describe('account bans', () => {
 			headers: await bearer('6007'),
 		})
 		expect(res.status).toBe(200)
+	})
+})
+
+// A 2023 client (`rn.ver` 20230414) can't load a scene saved at persistence version 227 or
+// later, so any room with such a subroom refuses it with UpdateRequired. Every other build
+// gets in as usual.
+describe('persistence version gate for the 2023 client', () => {
+	const matchmake = async (roomId: number, sub: string, version?: string) => {
+		const res = await exports.default.fetch(`${ORIGIN}/matchmake/room/${roomId}`, {
+			method: 'POST',
+			headers: {
+				...(await bearer(sub, version)),
+				'Content-Type': 'application/x-www-form-urlencoded',
+			},
+			body: new URLSearchParams({ JoinMode: '0' }).toString(),
+		})
+		expect(res.status).toBe(200)
+		return (await res.json()) as {
+			errorCode: number
+			result: number
+			roomInstance: { roomId: number } | null
+		}
+	}
+
+	beforeAll(async () => {
+		// Published scene at 227 — the first version the 2023 client can't load.
+		await seedRoomWithSubRooms(env.DB, {
+			RoomId: 7227,
+			Name: 'NewFormatRoom',
+			IsDorm: false,
+			Accessibility: 1,
+			CreatorAccountId: 7300,
+			SubRooms: [
+				{ SubRoomId: 7227, UnitySceneId: RECCENTER_SCENE, MaxPlayers: 10 },
+				{
+					SubRoomId: 7228,
+					UnitySceneId: SECOND_SUBROOM_SCENE,
+					MaxPlayers: 10,
+					CurrentSave: { DataBlob: 'new.room', PersistenceVersion: 227 },
+				},
+			],
+		} as unknown as Record<string, unknown>)
+		// Published at 226 — still loadable.
+		await seedRoomWithSubRooms(env.DB, {
+			RoomId: 7226,
+			Name: 'OldFormatRoom',
+			IsDorm: false,
+			Accessibility: 1,
+			CreatorAccountId: 7300,
+			SubRooms: [
+				{
+					SubRoomId: 7226,
+					UnitySceneId: RECCENTER_SCENE,
+					MaxPlayers: 10,
+					CurrentSave: { DataBlob: 'old.room', PersistenceVersion: 226 },
+				},
+			],
+		} as unknown as Record<string, unknown>)
+	})
+
+	test('the 2023 build is refused a room with a subroom at 227+', async () => {
+		const res = await matchmake(7227, '7301', '20230414')
+		expect(res.errorCode).toBe(16) // UpdateRequired
+		expect(res.result).toBe(16)
+		expect(res.roomInstance).toBeNull()
+
+		// A point release of the same build is the same client.
+		expect((await matchmake(7227, '7302', '20230414.02')).errorCode).toBe(16)
+	})
+
+	test('the 2023 build still enters a room saved below 227', async () => {
+		const res = await matchmake(7226, '7303', '20230414')
+		expect(res.errorCode).toBe(0)
+		expect(res.roomInstance?.roomId).toBe(7226)
+	})
+
+	test('newer builds and unversioned tokens are not gated', async () => {
+		expect((await matchmake(7227, '7304', '20250718.01')).errorCode).toBe(0)
+		expect((await matchmake(7227, '7305')).errorCode).toBe(0)
 	})
 })
 

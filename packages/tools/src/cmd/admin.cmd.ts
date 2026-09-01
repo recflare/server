@@ -18,6 +18,7 @@ import type { D1ExecResult } from '../d1'
  *   runx admin clear-password  --username alice [--remote]
  *   runx admin lookup          --username alice [--remote]
  *   runx admin grant-developer --account 1 [--revoke] [--remote]
+ *   runx admin grant-plus      --username alice [--revoke] [--remote]
  */
 
 /**
@@ -123,16 +124,21 @@ const clearPassword = new Command('clear-password')
 	})
 
 /**
- * Build a `grant-<role>` command that toggles a boolean role flag on the account
- * blob. `jsonKey` is the account field (e.g. `isDeveloper`) — a fixed literal, not
- * user input. Both the /role/:role lookup and the token's `role` claim read it.
+ * Build a `grant-<thing>` command that toggles a boolean flag on the account blob.
+ * `jsonKey` is the account field (e.g. `isDeveloper`) — a fixed literal, not user input.
+ *
+ * `noun` is what the flag IS, and it is not always "role": the role flags feed the
+ * /role/:role lookup and the token's `role` claim, while `hasPlus` is an entitlement that
+ * rides on its own `rn.plus` claim and confers no role at all. Getting that word right in
+ * the output is the difference between an operator believing they granted a staff power
+ * and knowing they granted a subscription.
  */
-function grantRoleCommand(name: string, jsonKey: string, roleLabel: string) {
+function grantRoleCommand(name: string, jsonKey: string, roleLabel: string, noun = 'role') {
 	return new Command(name)
-		.description(`Grant (or, with --revoke, remove) the ${roleLabel} role on an account`)
+		.description(`Grant (or, with --revoke, remove) ${roleLabel} on an account`)
 		.option('--account <id>', 'Account id to target')
 		.option('--username <name>', 'Username to target (case-insensitive)')
-		.option('--revoke', `Remove the ${roleLabel} role instead of granting it`, false)
+		.option('--revoke', `Remove ${roleLabel} instead of granting it`, false)
 		.option('--local', 'Target the local dev database (the default).', false)
 		.option('--remote', 'Target the deployed database instead of the local dev database.', false)
 		.action(async (opts) => {
@@ -141,16 +147,31 @@ function grantRoleCommand(name: string, jsonKey: string, roleLabel: string) {
 			const value = opts.revoke ? 'false' : 'true'
 			const sql = `UPDATE account SET data = json_set(data, '$.${jsonKey}', json('${value}')) WHERE ${where} RETURNING account_id`
 			const verb = opts.revoke ? 'Revoking' : 'Granting'
-			console.log(`${verb} ${roleLabel} role for ${label} on ${target(remote)}`)
+			console.log(`${verb} ${roleLabel} ${noun} for ${label} on ${target(remote)}`)
 			assertMatched(await execSql(sql, remote), label)
 			console.log(
-				chalk.green(`✓ ${roleLabel} role ${opts.revoke ? 'revoked' : 'granted'} for ${label}`)
+				chalk.green(`✓ ${roleLabel} ${noun} ${opts.revoke ? 'revoked' : 'granted'} for ${label}`)
 			)
 		})
 }
 
 const grantDeveloper = grantRoleCommand('grant-developer', 'isDeveloper', 'developer')
 const grantModerator = grantRoleCommand('grant-moderator', 'isModerator', 'moderator')
+
+/**
+ * Rec Room Plus, the account's `hasPlus` flag. Players normally get it themselves by
+ * claiming a Discord role on the website; this is the operator's way in — and the ONLY
+ * one, since the `developer` role deliberately no longer confers Plus.
+ *
+ * Granting does not take effect until the account's NEXT login: `auth` stamps `hasPlus`
+ * into the token as `rn.plus` when it mints one, and `econ` reads nothing else. Tokens
+ * last a day and the client never refreshes them, so tell the player to restart the game
+ * and sign in again.
+ *
+ * Revoking has the same lag in reverse — a player keeps Plus until their current token
+ * expires. It is not a way to cut someone off immediately.
+ */
+const grantPlus = grantRoleCommand('grant-plus', 'hasPlus', 'Rec Room Plus', 'subscription')
 
 const lookup = new Command('lookup')
 	.description('Print an account by id or username')
@@ -202,6 +223,7 @@ export const adminCmd = new Command('admin')
 	.addCommand(clearPassword)
 	.addCommand(grantDeveloper)
 	.addCommand(grantModerator)
+	.addCommand(grantPlus)
 	.addCommand(lookup)
 	.addHelpText(
 		'after',
@@ -216,5 +238,6 @@ Examples:
   $ runx admin clear-password --username alice
   $ runx admin grant-developer --account 1 [--revoke]
   $ runx admin grant-moderator --username alice --remote
+  $ runx admin grant-plus --username alice          # Rec Room Plus; takes effect next login
   $ runx admin lookup --username alice --remote`
 	)

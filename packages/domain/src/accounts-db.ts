@@ -101,6 +101,30 @@ export interface Account {
 	 * `runx admin grant-moderator`. Absent/false means no role.
 	 */
 	isModerator?: boolean
+	/**
+	 * Whether this account has Rec Room Plus — the paid tier the client's API calls a
+	 * `CampusCard`. Nothing SELLS one here. Absent/false means no Plus.
+	 *
+	 * This flag ALONE is what confers it, and it stands on its own: two things set it, and
+	 * neither is a precondition of the other.
+	 *
+	 *  - the website's benefits claim (`www` `POST /api/benefits/claim`), where a player
+	 *    proves a qualifying role in the community Discord. That path also links their
+	 *    Discord identity into `platform_account` as a `PlatformType.Discord` row — but the
+	 *    link exists to keep the CLAIM once-only per Discord user, not to justify the flag.
+	 *  - an operator, via `runx admin grant-plus`, with no Discord anywhere in sight.
+	 *
+	 * So never read a Discord link as a precondition for Plus, and never revoke one because
+	 * the other is missing: a manually granted account has `hasPlus` and no link at all, and
+	 * that is a normal, supported state.
+	 *
+	 * Nothing reads this per request. `auth` stamps it into every token it mints as the
+	 * `rn.plus` claim, and `econ` decides the CampusCard and the subscriber discount from
+	 * that claim alone — so setting it takes effect on the account's NEXT login, not
+	 * immediately. Tokens last a day and the client never refreshes them, so that lag is
+	 * real: the website's claim page warns about it, and so does `grant-plus`.
+	 */
+	hasPlus?: boolean
 }
 
 interface AccountRow {

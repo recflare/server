@@ -222,7 +222,8 @@ body {
 	text-wrap: balance;
 }
 
-/* The one place the orange carries meaning in the headline: the year it restores. */
+/* The one accented word in the headline — it carries the whole emphasis, so the markup
+   always wraps exactly one word in <em>. */
 .stage-title em {
 	font-style: normal;
 	color: var(--accent);

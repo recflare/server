@@ -1,8 +1,19 @@
 import { adminSecretsStore, env, SELF } from 'cloudflare:test'
 import { beforeAll, expect, it } from 'vitest'
 
+import { SCHEMA_DDL as ACCOUNT_SCHEMA_DDL, updateAccount } from '@repo/domain/src/accounts-db'
+import { PlatformType } from '@repo/domain/src/enums'
 import { PRESENCE_SCHEMA_DDL, PRESENCE_TTL_SECONDS } from '@repo/domain/src/presence-db'
+import { generateToken } from '@repo/jwt'
 
+import {
+	CACHED_LOGIN_PLATFORMS,
+	countAccountsForPlatformIdentity,
+	isPlatformIdentityLinked,
+	linkPlatformIdentity,
+	PLATFORM_SCHEMA_DDL,
+} from '../../../../auth/src/platform-db'
+import { discordConfig, parseRoleIds, qualifies } from '../../discord'
 import { DOCUMENTED_SERVICES } from '../../docs'
 import { DISCORD_INVITE, ISSUES_URL, PRIVACY_EMAIL } from '../../links'
 import { turnstileKeys } from '../../turnstile'
@@ -21,12 +32,37 @@ declare module 'cloudflare:test' {
 const TEST_SITE_KEY = '1x00000000000000000000AA'
 const TEST_SECRET_KEY = '1x0000000000000000000000000000000AA'
 
+// The shared HS256 key. www verifies tokens itself for exactly one route (the benefits
+// claim), so the tests have to be able to MINT one — hence a known value here rather than
+// whatever a deployed store holds.
+const TEST_JWT_SECRET = 'test-jwt-secret'
+
+/** A bearer token for `accountId`, signed the way `auth` signs one. */
+const tokenFor = (accountId: number): Promise<string> =>
+	generateToken(String(accountId), '', 4, TEST_JWT_SECRET)
+
+// A Discord app that is HALF configured: credentials seeded below, but wrangler.jsonc
+// leaves DISCORD_GUILD_ID / DISCORD_BENEFITS_ROLE_IDS empty. This is deliberately the most
+// dangerous half — an operator who registers an app and stops has something that can sign
+// a player in and no question left to ask about them — so it is the state the route-level
+// tests pin: the claim must still be CLOSED. The fully-configured path is covered by
+// unit-testing `discordConfig`, since exercising it end to end would call discord.com.
+const TEST_DISCORD_CLIENT_ID = 'test-discord-client-id'
+const TEST_DISCORD_CLIENT_SECRET = 'test-discord-client-secret'
+
 beforeAll(async () => {
 	await adminSecretsStore(env.TURNSTILE_SITE_KEY).create(TEST_SITE_KEY)
 	await adminSecretsStore(env.TURNSTILE_SECRET_KEY).create(TEST_SECRET_KEY)
+	await adminSecretsStore(env.JWT_SECRET).create(TEST_JWT_SECRET)
+	await adminSecretsStore(env.DISCORD_CLIENT_ID).create(TEST_DISCORD_CLIENT_ID)
+	await adminSecretsStore(env.DISCORD_CLIENT_SECRET).create(TEST_DISCORD_CLIENT_SECRET)
 	// `presence` is owned (and migrated) by other workers — www only reads it — so the
 	// table has to be created here for the head-count behind /server-status.
 	for (const stmt of PRESENCE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	// `account` likewise: owned by `auth`, read and (for the benefits claim) written here.
+	for (const stmt of ACCOUNT_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	// And `platform_account`, where a claimed Discord identity is linked.
+	for (const stmt of PLATFORM_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 })
 
 // Web signup is open, but only behind the Turnstile check. These pin the closed door:
@@ -42,6 +78,11 @@ it('advertises signup and where the other workers live', async () => {
 	expect(await res.json()).toEqual({
 		signupEnabled: true,
 		turnstileSiteKey: TEST_SITE_KEY,
+		// Closed, because the Discord app here has no guild/role to check against — and with
+		// it closed the SPA is given no authorize URL to send anyone to, so the claim can't
+		// even be started. Note the client id is NOT leaked by a closed config.
+		benefitsEnabled: false,
+		discordAuthorizeUrl: null,
 		hosts: {
 			auth: 'https://auth.rec.example.com',
 			accounts: 'https://accounts.rec.example.com',
@@ -279,6 +320,220 @@ it('404s a spec proxy for an unknown service (not an open proxy)', async () => {
 	// turned into a proxy to `https://<anything>.<DOMAIN>`.
 	const res = await SELF.fetch('https://example.com/docs/openapi/evil.json')
 	expect(res.status).toBe(404)
+})
+
+// ---- Discord benefits claim ------------------------------------------------
+
+// All four settings are the switch, exactly as the Turnstile keypair is for signup: a
+// half-configured app must read as OFF. The dangerous half is a client id and secret with
+// no guild/role — that authenticates a player and then has no question left to ask about
+// them, so treating it as configured would hand Rec Room Plus to anyone with a Discord
+// account. Checked directly because the configured path can't be reached from here (it
+// would call discord.com for real).
+it('treats a half-configured discord app as benefit claims being off', async () => {
+	const stub = (value: string | null): SecretsStoreSecret =>
+		({ get: async () => value ?? '' }) as SecretsStoreSecret
+	const throws = (): SecretsStoreSecret =>
+		({
+			get: async () => {
+				throw new Error('secret not found')
+			},
+		}) as unknown as SecretsStoreSecret
+
+	const withDiscord = (
+		id: SecretsStoreSecret,
+		secret: SecretsStoreSecret,
+		guildId?: string,
+		roleIds?: string
+	) =>
+		({
+			ENVIRONMENT: 'development',
+			DISCORD_CLIENT_ID: id,
+			DISCORD_CLIENT_SECRET: secret,
+			DISCORD_GUILD_ID: guildId,
+			DISCORD_BENEFITS_ROLE_IDS: roleIds,
+		}) as Env
+
+	const id = stub('client-id')
+	const secret = stub('client-secret')
+	// Snowflakes, as the real vars hold: ids are all digits, never a role's display name.
+	const guild = '1077000000000000000'
+	const role = '1077000000000000001'
+
+	// Nothing at all, and a store this worker can't read: both closed, never a 500.
+	await expect(discordConfig(withDiscord(throws(), throws()))).resolves.toBeNull()
+	await expect(discordConfig(withDiscord(stub(''), stub(''), '', ''))).resolves.toBeNull()
+	// Each single missing piece, including the two that would otherwise grant Plus for a
+	// bare Discord login.
+	await expect(discordConfig(withDiscord(throws(), secret, guild, role))).resolves.toBeNull()
+	await expect(discordConfig(withDiscord(id, throws(), guild, role))).resolves.toBeNull()
+	await expect(discordConfig(withDiscord(id, secret, '', role))).resolves.toBeNull()
+	await expect(discordConfig(withDiscord(id, secret, guild, ''))).resolves.toBeNull()
+	await expect(discordConfig(withDiscord(id, secret))).resolves.toBeNull()
+	// A role list that parses to NO ids is unset, not configured — otherwise a stray comma
+	// left in the var would open the claim with nothing to check against.
+	await expect(discordConfig(withDiscord(id, secret, guild, ' , , '))).resolves.toBeNull()
+	// All four present is the only configured state.
+	await expect(discordConfig(withDiscord(id, secret, guild, role))).resolves.toEqual({
+		clientId: 'client-id',
+		clientSecret: 'client-secret',
+		guildId: guild,
+		roleIds: [role],
+	})
+	// Several qualifying roles is the ordinary case, not a special one.
+	const second = '1077000000000000002'
+	await expect(discordConfig(withDiscord(id, secret, guild, `${role},${second}`))).resolves.toEqual(
+		{
+			clientId: 'client-id',
+			clientSecret: 'client-secret',
+			guildId: guild,
+			roleIds: [role, second],
+		}
+	)
+})
+
+// Several roles can qualify for the same benefit (a supporter role, a booster role,
+// staff…), so the list is parsed leniently: an operator pasting ids out of Discord gets
+// one per line, and a trailing comma is a typo rather than a role of '' that nothing
+// could ever match. Every id is a snowflake — all digits, kept as a string.
+it('parses a qualifying-role list however an operator writes it', () => {
+	expect(parseRoleIds('1077000000000000001')).toEqual(['1077000000000000001'])
+	expect(parseRoleIds('1077000000000000001,1077000000000000002')).toEqual([
+		'1077000000000000001',
+		'1077000000000000002',
+	])
+	expect(parseRoleIds(' 1077000000000000001 , 1077000000000000002 ')).toEqual([
+		'1077000000000000001',
+		'1077000000000000002',
+	])
+	// Pasted a line at a time, straight out of Discord.
+	expect(parseRoleIds('1077000000000000001\n1077000000000000002\n')).toEqual([
+		'1077000000000000001',
+		'1077000000000000002',
+	])
+	// Kept as STRINGS, never parsed to numbers: a snowflake exceeds 2^53, so
+	// Number('1077000000000000001') would round and stop matching the real role.
+	expect(parseRoleIds('1077000000000000001')[0]).toBe('1077000000000000001')
+	// Nothing to match on — these are the values that must close the claim.
+	expect(parseRoleIds('')).toEqual([])
+	expect(parseRoleIds('  ')).toEqual([])
+	expect(parseRoleIds(',,')).toEqual([])
+	// A trailing separator adds no empty id, which would match no role and never qualify.
+	expect(parseRoleIds('1077000000000000001,')).toEqual(['1077000000000000001'])
+})
+
+// ANY one of the configured roles qualifies — they are alternatives, not requirements.
+// Testing for a subset instead would mean a player had to hold every tier at once, i.e.
+// nobody would ever claim.
+it('qualifies a member holding any one of the roles', () => {
+	// Ids on both sides — Discord reports a member's roles as snowflakes, never as names.
+	const supporter = '1077000000000000001'
+	const booster = '1077000000000000002'
+	const qualifying = [supporter, booster]
+
+	expect(qualifies([supporter], qualifying)).toBe(true)
+	expect(qualifies([booster], qualifying)).toBe(true)
+	expect(qualifies([booster, supporter], qualifying)).toBe(true)
+	// Holding some other role in the server is not enough.
+	expect(qualifies(['1077000000000000009'], qualifying)).toBe(false)
+	expect(qualifies([], qualifying)).toBe(false)
+})
+
+// The closed door, from the outside. This must be refused BEFORE the token is looked at,
+// so an unconfigured server can't be talked into a claim by a valid session.
+it('refuses a benefits claim when discord is only half configured', async () => {
+	const res = await SELF.fetch('https://example.com/api/benefits/claim', {
+		method: 'POST',
+		headers: {
+			'content-type': 'application/json',
+			authorization: `Bearer ${await tokenFor(4001)}`,
+		},
+		body: JSON.stringify({ code: 'whatever' }),
+	})
+	expect(res.status).toBe(403)
+	expect(await res.json()).toEqual({ error: 'Benefit claims are currently disabled.' })
+})
+
+// The benefits routes act on ONE account — the claim writes `hasPlus` onto its row — so
+// which account it is has to come from a verified token and never from the request. Both
+// halves of "verified" are pinned: no token, and a token signed with a key this server
+// doesn't use (i.e. one it never issued).
+//
+// Asserted on `/api/benefits/status` because it's the benefits route whose auth gate is
+// reachable here: the claim refuses on the config gate FIRST (covered above), which is
+// the right order — an unconfigured server shouldn't be examining credentials for a
+// feature it doesn't run — but it means an unconfigured project can't observe its 401.
+it('requires a valid session to read benefits', async () => {
+	const path = 'https://example.com/api/benefits/status'
+
+	// No token at all.
+	expect((await SELF.fetch(path)).status).toBe(401)
+
+	// A token that is well-formed but signed with the wrong key.
+	const forged = await generateToken('4002', '', 4, 'not-the-real-secret')
+	const res = await SELF.fetch(path, { headers: { authorization: `Bearer ${forged}` } })
+	expect(res.status).toBe(401)
+})
+
+// What the claim page renders before anyone presses anything. `hasPlus` is read off the
+// account ROW rather than a token claim, because it's set after the browser's token was
+// issued — a freshly-claimed player's token says nothing about it.
+it('reports where an account stands on benefits', async () => {
+	const token = await tokenFor(4003)
+
+	// An account with no row at all reads as "nothing claimed" rather than 404ing: every
+	// account has a benefits status, whether or not it has been written to yet.
+	let res = await SELF.fetch('https://example.com/api/benefits/status', {
+		headers: { authorization: `Bearer ${token}` },
+	})
+	expect(res.status).toBe(200)
+	expect(await res.json()).toEqual({ hasPlus: false, linked: false })
+
+	await updateAccount(env.DB, 4003, { hasPlus: true })
+	await linkPlatformIdentity(env.DB, 4003, PlatformType.Discord, '99001')
+	res = await SELF.fetch('https://example.com/api/benefits/status', {
+		headers: { authorization: `Bearer ${token}` },
+	})
+	// `linked` says THAT a Discord identity is attached, never which one — the id is of no
+	// use to the page, and an account's linked identities have no business on the wire.
+	expect(await res.json()).toEqual({ hasPlus: true, linked: true })
+})
+
+// The once-only guard the claim is built on. Without it, one Discord member holding the
+// role could walk it around every RecFlare account they own; with it, the second claim is
+// refused and the first account keeps the benefit. Exercised at the two lookups the route
+// asks, since the route's own path to them runs through discord.com.
+it('tells a repeat claim from a second account claiming the same discord identity', async () => {
+	await updateAccount(env.DB, 4004, { hasPlus: true })
+	await linkPlatformIdentity(env.DB, 4004, PlatformType.Discord, '99002')
+
+	// The identity is taken, so a DIFFERENT account claiming it is the 409 case…
+	await expect(
+		countAccountsForPlatformIdentity(env.DB, PlatformType.Discord, '99002')
+	).resolves.toBe(1)
+	await expect(isPlatformIdentityLinked(env.DB, 4005, PlatformType.Discord, '99002')).resolves.toBe(
+		false
+	)
+
+	// …while the account that already holds it re-claims idempotently, which is what makes
+	// the page safe to reload and a lapsed-then-restored role re-claimable.
+	await expect(isPlatformIdentityLinked(env.DB, 4004, PlatformType.Discord, '99002')).resolves.toBe(
+		true
+	)
+
+	// A Discord member who has claimed nowhere yet.
+	await expect(
+		countAccountsForPlatformIdentity(env.DB, PlatformType.Discord, '99003')
+	).resolves.toBe(0)
+})
+
+// A Discord link must never become a way INTO an account. The login picker is public and
+// unauthenticated, so listing one would both offer the client an account it can't redeem
+// (the grant refuses platform 101) and tell anyone which RecFlare account a Discord user
+// owns — a snowflake is readable by anyone sharing a server with them. `auth` owns that
+// gate; this pins that the platform www writes to is one the gate actually excludes.
+it('stores the discord identity on a platform the login picker will not list', () => {
+	expect(CACHED_LOGIN_PLATFORMS).not.toContain(PlatformType.Discord)
 })
 
 // The privacy policy is what the Meta Horizon Store's VRC.Privacy.1–4 checks are run

@@ -21,7 +21,9 @@ import {
 	createReport,
 	SCHEMA_DDL as REPORTS_SCHEMA_DDL,
 } from '../../../../api/src/reports-db'
+import { PlatformType } from '../../openapi'
 import {
+	countAccountsForPlatformIdentity,
 	getLinksForAccount,
 	linkPlatformIdentity,
 	PLATFORM_BACKFILL_SQL,
@@ -421,6 +423,52 @@ describe('auth worker routes', () => {
 		])
 	})
 
+	// A Discord link is an external identity, not a credential — `www`'s benefits claim
+	// writes one so a claimed Discord user can't claim again on a second account. It must
+	// stay invisible to BOTH picker routes, for two independent reasons:
+	//
+	//  - Every entry the picker lists is promised to be redeemable by a `cached_login`
+	//    grant, and that grant refuses platform 101 outright (verifyPlatformProof answers
+	//    `unsupported`). Listing one offers the client an account it can never log into.
+	//  - These routes are PUBLIC and unauthenticated, and a Discord snowflake is readable by
+	//    anyone sharing a server with its owner. Answering here would turn the login picker
+	//    into a lookup from "Discord user" to "their RecFlare account", for every player who
+	//    ever claimed benefits.
+	//
+	// The bare-id route is checked too, and it is the easier one to miss: it matches on ANY
+	// platform, so it would resolve the snowflake even though naming 101 explicitly did not.
+	test('never lists a Discord link in either cached-login picker', async () => {
+		const discordId = '308994132968210433'
+		await env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
+			.bind(JSON.stringify({ accountId: 31399, username: 'DiscordClaimer', hasPlus: true }))
+			.run()
+		await linkPlatformIdentity(env.DB, 31399, PlatformType.Discord, discordId)
+
+		// Named explicitly…
+		const named = await exports.default.fetch(
+			`${ORIGIN}/cachedlogin/forplatformid/${PlatformType.Discord}/${discordId}`
+		)
+		expect(named.status).toBe(200)
+		expect(await named.json()).toEqual([])
+
+		// …and via the bare id, which matches across platforms.
+		const bare = await exports.default.fetch(`${ORIGIN}/cachedlogin/forplatformid/any/${discordId}`)
+		expect(await bare.json()).toEqual([])
+
+		// …and through the bulk friends-resolution route, which takes bare ids only.
+		const bulk = await exports.default.fetch(`${ORIGIN}/cachedlogin/forplatformids`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({ id: discordId }).toString(),
+		})
+		expect(await bulk.json()).toEqual([])
+
+		// The link is still really there — this is a filtered READ, not a failed write.
+		await expect(
+			countAccountsForPlatformIdentity(env.DB, PlatformType.Discord, discordId)
+		).resolves.toBe(1)
+	})
+
 	// The 20250424.01 build POSTs the picker lookup with a platform-attestation form body
 	// instead of GETting it. Nothing reads that body yet, so both methods must answer the
 	// same list — otherwise the newer client's login screen comes up empty.
@@ -577,6 +625,9 @@ describe('auth worker routes', () => {
 		expect(payload.role).not.toContain('junior')
 		// No privileges to carry, so the claim is absent rather than an empty array.
 		expect(payload['rn.privilege']).toBeUndefined()
+		// Same for Plus: omitted rather than `false`, so a non-subscriber's token is
+		// byte-for-byte what it was before `rn.plus` existed.
+		expect(payload['rn.plus']).toBeUndefined()
 		expect(payload.scope).toContain('rn.api')
 	})
 
@@ -613,6 +664,64 @@ describe('auth worker routes', () => {
 			.run()
 		const payload = await tokenFor(`account_id=91&password=${LOGIN_PASSWORD}`)
 		expect(payload.role).toEqual(expect.arrayContaining(['gameClient', 'developer', 'moderator']))
+	})
+
+	// Rec Room Plus rides on the token as `rn.plus`, stamped from `account.hasPlus` — which
+	// the website's Discord benefits claim sets. `econ` decides the CampusCard and the
+	// subscriber discount from this claim ALONE and never reads the account, so if this
+	// stops being stamped, Plus silently stops existing for everyone.
+	//
+	// It is a CLAIM, not a scope: `scope` is a fixed list the client parses, and this is
+	// ours. And it is not a role — the `developer` role does not confer Plus.
+	test('POST /connect/token stamps rn.plus for a hasPlus account', async () => {
+		await env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
+			.bind(
+				JSON.stringify({
+					accountId: 93,
+					username: 'PlusPlayer',
+					passwordHash: await hashPassword(LOGIN_PASSWORD),
+					hasPlus: true,
+				})
+			)
+			.run()
+		const payload = await tokenFor(`account_id=93&password=${LOGIN_PASSWORD}`)
+		expect(payload['rn.plus']).toBe(true)
+		expect(payload.scope).not.toContain('rn.plus')
+		// Plus is not an elevated role, and does not come with one.
+		expect(payload.role).not.toContain('developer')
+	})
+
+	// The flag is read at LOGIN, so signing in again is what activates it — the website's
+	// claim page and `runx admin grant-plus` both say so, and this is the mechanism behind it.
+	//
+	// This also pins that `hasPlus` stands ALONE: the flag is set here by raw SQL, exactly as
+	// `runx admin grant-plus` sets it, with no Discord app configured, no OAuth exchange and
+	// no `platform_account` link anywhere. An operator must be able to grant Plus outright.
+	test('rn.plus refreshes on the next login after hasPlus is set, with no Discord link', async () => {
+		await env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
+			.bind(
+				JSON.stringify({
+					accountId: 94,
+					username: 'LateClaimer',
+					passwordHash: await hashPassword(LOGIN_PASSWORD),
+				})
+			)
+			.run()
+		// Before claiming: no Plus.
+		expect((await tokenFor(`account_id=94&password=${LOGIN_PASSWORD}`))['rn.plus']).toBeUndefined()
+
+		// The website's claim writes the flag…
+		await env.DB.prepare(
+			"UPDATE account SET data = json_set(data, '$.hasPlus', json('true')) WHERE account_id = 94"
+		).run()
+
+		// …and the NEXT token carries it. The one already in the player's hands does not,
+		// which is exactly why they have to sign in again.
+		expect((await tokenFor(`account_id=94&password=${LOGIN_PASSWORD}`))['rn.plus']).toBe(true)
+
+		// Nothing linked a Discord identity to this account, and Plus does not care.
+		const links = await getLinksForAccount(env.DB, 94)
+		expect(links.filter((l) => l.platform === PlatformType.Discord)).toEqual([])
 	})
 
 	test('POST /connect/token stamps the junior role for an isJunior account', async () => {

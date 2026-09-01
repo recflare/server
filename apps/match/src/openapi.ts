@@ -278,10 +278,11 @@ export const NotifyDisconnectRequest = z.object({
  * matchmakes that post no body at all.
  *
  * This is the whole body of the target-less matchmakes (`/matchmake/dorm`,
- * `/matchmake/none`, `/matchmake/player/:id`, `/matchmake/instance/:id`), which is why
- * it's a schema of its own; the room matchmakes extend it. Other fields the client sends
- * (`LoginLock`, `MaxPersistenceVersion`, `VoiceServerVersion`,
- * `BypassMovementModeRestriction`) are accepted and ignored.
+ * `/matchmake/none`, `/matchmake/player/:id`, `/matchmake/v2/player/:id`,
+ * `/matchmake/instance/:id`), which is why it's a schema of its own; the room matchmakes
+ * extend it. Other fields the client sends (`LoginLock`, `MaxPersistenceVersion`,
+ * `VoiceServerVersion`, `BypassMovementModeRestriction`, `PlayerIsPartyMember`) are
+ * accepted and ignored.
  */
 export const CorrelationIdRequest = z.object({
 	CorrelationId: z.string().optional().describe('Per-attempt GUID; echoed on the response'),

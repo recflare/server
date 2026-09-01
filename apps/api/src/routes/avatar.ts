@@ -6,6 +6,7 @@ import {
 	getOutfit,
 	getOutfitsByAccounts,
 	inventionDescriptionRejection,
+	inventionLongDescriptionRejection,
 	inventionNameRejection,
 	inventionTagRejection,
 	MAX_BULK_OUTFIT_ACCOUNTS,
@@ -26,6 +27,7 @@ import {
 import { authedId, unauthorized } from '../http'
 import {
 	createInvention,
+	deleteInvention,
 	getFeaturedInventions,
 	getInventionById,
 	getInventionsByIds,
@@ -35,6 +37,10 @@ import {
 	getInventionVersion,
 	getMyInventions,
 	getTopInventions,
+	INVENTION_TAG_RESULT,
+	inventionDeleteResult,
+	inventionSaveV9Failure,
+	normalizeInventionTags,
 	ownsAllInventions,
 	parsePermissionLevel,
 	publishInvention,
@@ -42,6 +48,7 @@ import {
 	setInventionPrice,
 	setInventionTags,
 	toSaveResult,
+	toSaveResultV9,
 	updateInvention,
 } from '../inventions-db'
 import {
@@ -54,17 +61,20 @@ import {
 	CustomAvatarItemReportRequest,
 	CustomAvatarItemResponse,
 	CustomAvatarItemsPage,
+	DeleteInventionRequest,
 	ErrorResponse,
 	form,
 	GeneratedGift,
 	GenerateGiftRequest,
 	idParam,
 	intQuery,
+	InventionDeleteResult,
 	InventionDetails,
 	InventionDto,
 	InventionPersonalDetails,
 	InventionReportRequest,
 	InventionSaveResult,
+	InventionSaveV9Result,
 	InventionVersionDto,
 	json,
 	JsonArray,
@@ -77,7 +87,9 @@ import {
 	OutfitsMeRequest,
 	OutfitsMeResponse,
 	pageParams,
+	PublishInventionRequest,
 	SaveInventionRequest,
+	SaveInventionV9Request,
 	SetTagsRequest,
 	SetTagsResponse,
 	stringParam,
@@ -87,13 +99,14 @@ import {
 	TagFilters,
 	UNAUTHORIZED_RESPONSE,
 	UpdateCustomAvatarItemRequest,
+	UpdateInventionMetadataRequest,
 	UpdatePriceRequest,
 } from '../openapi'
 import { createReport } from '../reports-db'
 
 import type { Context } from 'hono'
 import type { App } from '../context'
-import type { SavedInvention } from '../inventions-db'
+import type { InventionTag, SavedInvention } from '../inventions-db'
 
 /**
  * The most ids `POST /api/customAvatarItems/v1/bulk` will resolve. A batch over this answers
@@ -133,24 +146,150 @@ async function bulkCustomAvatarItemIds(c: Context<App>): Promise<string[]> {
 
 /**
  * The gate every invention write runs through: the caller must be signed in, the
- * invention must exist, and it must be theirs. Yields the loaded invention, or the
- * error response to return as-is (401 / 404 / 403).
+ * invention must exist, and it must be theirs. Yields the loaded invention, or why not —
+ * as a reason and the status it maps to, so that a caller answering an envelope can put
+ * the reason where its client will read it instead of in a body that client can't parse.
+ * {@link creatorsInvention} is the rendering the older routes want.
+ */
+async function creatorsInventionResult(
+	c: Context<App>,
+	inventionId: number
+): Promise<
+	{ invention: SavedInvention } | { rejection: string; status: 400 | 401 | 403 | 404 }
+> {
+	const playerId = await authedId(c)
+	if (playerId === null) return { rejection: 'Unauthorized', status: 401 }
+	if (Number.isNaN(inventionId)) return { rejection: 'inventionId is required', status: 400 }
+
+	const invention = await getInventionById(c.env.DB, inventionId)
+	if (invention === null) return { rejection: 'No such invention', status: 404 }
+	if (invention.CreatorPlayerId !== playerId) {
+		return { rejection: 'Not your invention', status: 403 }
+	}
+	return { invention }
+}
+
+/**
+ * {@link creatorsInventionResult} as the older invention writes answer it: the loaded
+ * invention, or the response to return as-is (400 / 401 / 403 / 404).
  */
 async function creatorsInvention(
 	c: Context<App>,
 	inventionId: number
 ): Promise<{ invention: SavedInvention } | { response: Response | Promise<Response> }> {
-	const playerId = await authedId(c)
-	if (playerId === null) return { response: unauthorized(c) }
-	if (Number.isNaN(inventionId)) {
-		return { response: c.json({ error: 'inventionId is required' }, 400) }
+	const gate = await creatorsInventionResult(c, inventionId)
+	if ('invention' in gate) return gate
+	if (gate.status === 401) return { response: unauthorized(c) }
+	if (gate.status === 404) return { response: c.notFound() }
+	return { response: c.json({ error: gate.rejection }, gate.status) }
+}
+
+/**
+ * The tags a `{ AutoTags, CustomTags }` request asks for, and whether they were taken —
+ * the block the v9 save sends as `tagsRequest` and `v2/metadata` sends as `TagsRequest`.
+ * Null when the client named no block at all, which each caller reads its own way: a save
+ * stores no tags, an edit leaves the stored ones alone.
+ *
+ * Tags are held to the same rule `v1/settags` applies, but a tag that breaks it costs the
+ * TAGS and not the write: both replies carry a tag result of their own precisely because
+ * the two outcomes are separate, and refusing a save would make the player redo a build
+ * over a hyphen. All the tags go rather than the offending one alone, so nothing is
+ * silently half-applied — the creator re-submits the list and sees what took. Blanks are
+ * skipped rather than counted against it; the client pads its lists with empties.
+ */
+function requestedTags(request: unknown): { tags: InventionTag[]; tagResult: number } | null {
+	if (typeof request !== 'object' || request === null) return null
+
+	const lists = request as Record<string, unknown>
+	const strings = (v: unknown): string[] =>
+		Array.isArray(v) ? v.filter((t): t is string => typeof t === 'string') : []
+	const autoTags = strings(lists.AutoTags)
+	const customTags = strings(lists.CustomTags)
+
+	const rejected = [...autoTags, ...customTags].some((raw) => {
+		const tag = raw.trim().toLowerCase()
+		return tag !== '' && inventionTagRejection(tag) !== null
+	})
+	return rejected
+		? { tags: [], tagResult: INVENTION_TAG_RESULT.rejected }
+		: { tags: normalizeInventionTags(autoTags, customTags), tagResult: INVENTION_TAG_RESULT.success }
+}
+
+/**
+ * What an invention save produced: the stored record and how its tags fared, or the one
+ * message that refuses it. Both save routes go through {@link createInventionFromBody} to
+ * get one of these and then render it their own way — v6 bare, v9 enveloped — because the
+ * two versions disagree about the shape of a reply, not about what a save is.
+ */
+type InventionSaveOutcome =
+	| { rejection: string }
+	| { invention: SavedInvention; tags: InventionTag[]; tagResult: number }
+
+/**
+ * The invention save both `v6/save` and `v9/save` run through. v9 sends everything v6 does
+ * plus what the invention points at (`referencedUnityAssetIds`), what it says about itself
+ * (`longDescription`, `displayMetadataJson`, `convertedFromInventionId`), `ugcVersion` and
+ * `hasBetaContent`, and the tags that until now needed a second `v1/settags` call. One
+ * reader takes them all: a v6 client sends none of them, and each is optional, so parsing
+ * them here changes nothing about the record a v6 save stores.
+ */
+async function createInventionFromBody(
+	c: Context<App>,
+	creatorPlayerId: number,
+	body: Record<string, unknown>
+): Promise<InventionSaveOutcome> {
+	const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined)
+	const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined)
+	const bool = (v: unknown): boolean | undefined => (typeof v === 'boolean' ? v : undefined)
+	const list = <T>(v: unknown, is: (x: unknown) => x is T): T[] | undefined =>
+		Array.isArray(v) ? v.filter(is) : undefined
+	const isString = (v: unknown): v is string => typeof v === 'string'
+	const isNumber = (v: unknown): v is number => typeof v === 'number'
+
+	const inventionDataFilename = str(body.inventionDataFilename)?.trim()
+	if (!inventionDataFilename) return { rejection: 'inventionDataFilename is required' }
+
+	// An omitted or blank name/description is defaulted by `createInvention` ("Untitled",
+	// "No description yet"), so only a supplied one is held to the rules — otherwise
+	// saving an unnamed invention would fail the 3-character minimum on a name the
+	// player never typed.
+	const name = str(body.name)?.trim()
+	const nameRejection = name === undefined || name === '' ? null : inventionNameRejection(name)
+	if (nameRejection !== null) return { rejection: nameRejection }
+
+	const description = str(body.description)
+	const descriptionRejection =
+		description === undefined ? null : inventionDescriptionRejection(description)
+	if (descriptionRejection !== null) return { rejection: descriptionRejection }
+
+	// v9 folds `v1/settags` into the save; a client that names no tags gets none.
+	const requested = requestedTags(body.tagsRequest) ?? {
+		tags: [],
+		tagResult: INVENTION_TAG_RESULT.success,
 	}
-	const invention = await getInventionById(c.env.DB, inventionId)
-	if (invention === null) return { response: c.notFound() }
-	if (invention.CreatorPlayerId !== playerId) {
-		return { response: c.json({ error: 'Not your invention' }, 403) }
-	}
-	return { invention }
+
+	const invention = await createInvention(c.env.DB, c.env.CDN_ASSETS, {
+		creatorPlayerId,
+		inventionDataFilename,
+		name,
+		description,
+		imageName: str(body.imageName),
+		instantiationCost: num(body.instantiationCost),
+		lightsCost: num(body.lightsCost),
+		chipsCost: num(body.chipsCost),
+		cloudVariablesCost: num(body.cloudVariablesCost),
+		aiCost: num(body.aiCost),
+		creationRoomId: num(body.creationRoomId),
+		referencedInventions: list(body.referencedInventions, isNumber),
+		ugcVersion: num(body.ugcVersion),
+		hasBetaContent: bool(body.hasBetaContent),
+		referencedUnityAssetIds: list(body.referencedUnityAssetIds, isString),
+		longDescription: str(body.longDescription),
+		displayMetadataJson: str(body.displayMetadataJson),
+		convertedFromInventionId: num(body.convertedFromInventionId),
+		tags: requested.tags,
+	})
+	return { invention, ...requested }
 }
 
 /**
@@ -1216,12 +1355,11 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 			const permissionLevel = c.req.query('permissionLevel')
 			const price = Number.parseInt(c.req.query('price') ?? '', 10)
 
-			const published = await publishInvention(
-				c.env.DB,
-				gate.invention.InventionId,
-				permissionLevel === undefined ? undefined : parsePermissionLevel(permissionLevel),
-				Number.isNaN(price) || price < 0 ? undefined : price
-			)
+			const published = await publishInvention(c.env.DB, gate.invention.InventionId, {
+				permissionLevel:
+					permissionLevel === undefined ? undefined : parsePermissionLevel(permissionLevel),
+				price: Number.isNaN(price) || price < 0 ? undefined : price,
+			})
 			return published === null ? c.notFound() : c.json(toSaveResult(published))
 		}
 	)
@@ -1670,43 +1808,289 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 			const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
 			if (body === null) return c.json({ error: 'Invalid request body' }, 400)
 
-			const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined)
-			const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined)
+			const outcome = await createInventionFromBody(c, id, body)
+			if ('rejection' in outcome) return c.json({ error: outcome.rejection }, 400)
+			return c.json(toSaveResult(outcome.invention))
+		}
+	)
 
-			const inventionDataFilename = str(body.inventionDataFilename)?.trim()
-			if (!inventionDataFilename) {
-				return c.json({ error: 'inventionDataFilename is required' }, 400)
+	// The same save as the newer client sends it: v6's body plus the invention's
+	// references, its long description and display metadata, what the saved blob is, and
+	// the tags — which v6 clients set afterwards through `v1/settags`. It stores the same
+	// record; what differs is the REPLY, which is enveloped. See `InventionSaveV9Result`:
+	// the client reads `Success` and then `Value.Invention.InventionId`, and a body that
+	// isn't this envelope — a bare `{ error }`, or the empty 401 the other routes answer —
+	// takes it down rather than failing it, which is why every branch below answers one.
+	.post(
+		'/api/inventions/v9/save',
+		describeRoute({
+			tags: ['Inventions'],
+			summary: 'Save a new invention (v9)',
+			description:
+				'`v6/save` plus the fields the newer client sends: `referencedUnityAssetIds`, ' +
+				'`longDescription`, `displayMetadataJson`, `convertedFromInventionId`, ' +
+				'`ugcVersion`, `hasBetaContent`, and a `tagsRequest` carrying the same ' +
+				'`AutoTags`/`CustomTags` lists `v1/settags` takes. Every one is optional and is ' +
+				'stored only when sent, so a body v6 would accept produces the same record here.' +
+				'\n\n' +
+				'The reply is where the two versions part: v9 is ENVELOPED as ' +
+				'`{ Value, Success, Error, error_id }`, with v6’s ' +
+				'`{ Status, Invention, InventionVersion }` inside `Value` alongside a ' +
+				'`TagsResponse`. The client reads `Success` and then ' +
+				'`Value.Invention.InventionId`; `Error` is the only text it ever shows a human.' +
+				'\n\n' +
+				'So a refusal is *also* a 200 carrying `{ Success: false, Error, Value: null }` — ' +
+				'the client dereferences `Value` unguarded when `Success` is true, and treats ' +
+				'anything that isn’t this envelope as a null one. Tags are held to the ' +
+				'`v1/settags` rule (at most 15 letters each), but one that breaks it costs the ' +
+				'tags and not the save: `TagsResponse.Result` comes back non-zero and the creator ' +
+				're-submits them through `v1/settags`.\n\n' +
+				'A freshly saved invention is private: it shows up only in the creator’s own list ' +
+				'until they call `v3/publish`.',
+			security: AUTHED,
+			requestBody: jsonBody(SaveInventionV9Request, 'The invention metadata (camelCase)'),
+			responses: {
+				200: json(
+					InventionSaveV9Result,
+					'The envelope — the stored invention under `Value`, or `Success: false` with ' +
+						'`Error` when the save was refused'
+				),
+				401: json(InventionSaveV9Result, 'The same envelope, refused — not an empty body'),
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return c.json(inventionSaveV9Failure('Unauthorized'), 401)
+
+			const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+			if (body === null) return c.json(inventionSaveV9Failure('Invalid request body'))
+
+			const outcome = await createInventionFromBody(c, id, body)
+			return c.json(
+				'rejection' in outcome
+					? inventionSaveV9Failure(outcome.rejection)
+					: toSaveResultV9(outcome.invention, outcome.tags, outcome.tagResult)
+			)
+		}
+	)
+
+	// Edit an invention's metadata, as the newer client sends it: one PUT with a PascalCase
+	// body where every field but the id is nullable, and NULL means "leave this alone" —
+	// the client sends the whole shape every time and marks the fields it isn't touching.
+	// The tags ride along the way they do on `v9/save`, and the reply is that same
+	// envelope: `v1/update` is the older client's version of this endpoint, query params
+	// and a bare body and all.
+	.put(
+		'/api/inventions/v2/metadata',
+		describeRoute({
+			tags: ['Inventions'],
+			summary: 'Edit an invention’s metadata (v2)',
+			description:
+				'Creator only. Every field but `InventionId` is nullable and a null one is left ' +
+				'as it is — the client sends the whole shape on every edit — so this is a patch, ' +
+				'not a replace. An empty string is not a null: it is how a creator CLEARS a ' +
+				'description, long description or image. `Name` is the exception, since a nameless ' +
+				'invention isn’t a thing the client can draw: it is held to the same 3–24 ' +
+				'character rule `v6/save` enforces, which an empty name fails.\n\n' +
+				'`TagsRequest` replaces both tag lists wholesale, exactly as `v1/settags` does; a ' +
+				'null one leaves the stored tags alone. A tag that breaks the tag rule costs the ' +
+				'tags and not the edit — `TagsResponse.Result` comes back non-zero.\n\n' +
+				'Answers the enveloped result `v9/save` answers, carrying the UPDATED invention: ' +
+				'the client re-renders the detail page from `Value.Invention`. Refusals — an ' +
+				'unknown invention and someone else’s alike — are `Success: false` with a null ' +
+				'`Value` rather than a bare error body, which that client cannot parse.',
+			security: AUTHED,
+			requestBody: jsonBody(UpdateInventionMetadataRequest, 'The fields to change'),
+			responses: {
+				200: json(
+					InventionSaveV9Result,
+					'The envelope — the updated invention under `Value`, or `Success: false` with ' +
+						'`Error` when the edit was refused'
+				),
+				401: json(InventionSaveV9Result, 'The same envelope, refused — not an empty body'),
+			},
+		}),
+		async (c) => {
+			const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+			if (body === null) return c.json(inventionSaveV9Failure('Invalid request body'))
+
+			// The id rides in the body here, not the query string.
+			const gate = await creatorsInventionResult(
+				c,
+				typeof body.InventionId === 'number' ? body.InventionId : Number.NaN
+			)
+			// Only a missing token is answered as a transport failure. An unknown invention
+			// or someone else's is a domain answer the client is meant to read — its own
+			// status enum has DoesNotExist and NotCreator members — so it goes in the
+			// envelope, where the message reaches a human.
+			if ('rejection' in gate) {
+				return gate.status === 401
+					? c.json(inventionSaveV9Failure(gate.rejection), 401)
+					: c.json(inventionSaveV9Failure(gate.rejection))
 			}
 
-			// An omitted or blank name/description is defaulted by `createInvention` ("Untitled",
-			// "No description yet"), so only a supplied one is held to the rules — otherwise
-			// saving an unnamed invention would fail the 3-character minimum on a name the
-			// player never typed.
-			const name = str(body.name)?.trim()
-			const nameRejection = name === undefined || name === '' ? null : inventionNameRejection(name)
-			if (nameRejection !== null) return c.json({ error: nameRejection }, 400)
+			// Null is "leave it"; a string, empty or not, is an edit.
+			const edited = (key: string): string | undefined =>
+				typeof body[key] === 'string' ? body[key] : undefined
+			const name = edited('Name')?.trim()
+			const description = edited('Description')
+			const longDescription = edited('LongDescription')
 
-			const description = str(body.description)
-			const descriptionRejection =
-				description === undefined ? null : inventionDescriptionRejection(description)
-			if (descriptionRejection !== null) return c.json({ error: descriptionRejection }, 400)
+			for (const rejection of [
+				name === undefined ? null : inventionNameRejection(name),
+				description === undefined ? null : inventionDescriptionRejection(description),
+				longDescription === undefined
+					? null
+					: inventionLongDescriptionRejection(longDescription),
+			]) {
+				if (rejection !== null) return c.json(inventionSaveV9Failure(rejection))
+			}
 
-			const invention = await createInvention(c.env.DB, c.env.CDN_ASSETS, {
-				creatorPlayerId: id,
-				inventionDataFilename,
+			// A null TagsRequest leaves the stored tags alone, and the reply still reports
+			// them: the client reads the list back as the tags the invention now has, not as
+			// the ones this call changed.
+			const requested = requestedTags(body.TagsRequest)
+			const updated = await updateInvention(c.env.DB, gate.invention.InventionId, {
 				name,
 				description,
-				imageName: str(body.imageName),
-				instantiationCost: num(body.instantiationCost),
-				lightsCost: num(body.lightsCost),
-				chipsCost: num(body.chipsCost),
-				cloudVariablesCost: num(body.cloudVariablesCost),
-				aiCost: num(body.aiCost),
-				creationRoomId: num(body.creationRoomId),
-				referencedInventions: Array.isArray(body.referencedInventions)
-					? body.referencedInventions.filter((v): v is number => typeof v === 'number')
-					: undefined,
+				longDescription,
+				imageName: edited('ImageName'),
+				tags: requested?.tags,
 			})
-			return c.json(toSaveResult(invention))
+			if (updated === null) return c.json(inventionSaveV9Failure('No such invention'))
+			return c.json(
+				toSaveResultV9(
+					updated,
+					updated.Tags ?? [],
+					requested?.tagResult ?? INVENTION_TAG_RESULT.success
+				)
+			)
+		}
+	)
+
+	// Publish an invention, as the newer client sends it: a PascalCase body instead of a
+	// query string, and an Accessibility of its own — where `v3/publish` only ever flipped
+	// the published flag, this decides whether the result can be FOUND. Same enveloped
+	// reply as `v9/save`, carrying the published invention.
+	.post(
+		'/api/inventions/v4/publish',
+		describeRoute({
+			tags: ['Inventions'],
+			summary: 'Publish an invention (v4)',
+			description:
+				'What puts an invention into search and the feeds. Creator only.\n\n' +
+				'`Permission` is the `GeneralPermission` other players get, as a raw ladder ' +
+				'number (the publish sheet sends 20, UseOnly). `Accessibility` says where it can ' +
+				'be found — 1 (Public) lists it, 2 (Unlisted) publishes it reachable by id but ' +
+				'keeps it out of browse and search. A null `Price` leaves the price alone rather ' +
+				'than zeroing it, so re-publishing something that was for sale doesn’t give it ' +
+				'away; every field but `InventionId` is nullable and an omitted one keeps what ' +
+				'the invention has.\n\n' +
+				'Publishing is not undone here, and re-publishing doesn’t re-date the first ' +
+				'publish. Refusals answer `Success: false` with a null `Value`, the way ' +
+				'`v9/save` does.',
+			security: AUTHED,
+			requestBody: jsonBody(PublishInventionRequest, 'What the publish decides'),
+			responses: {
+				200: json(
+					InventionSaveV9Result,
+					'The envelope — the published invention under `Value`, or `Success: false` ' +
+						'with `Error` when the publish was refused'
+				),
+				401: json(InventionSaveV9Result, 'The same envelope, refused — not an empty body'),
+			},
+		}),
+		async (c) => {
+			const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+			if (body === null) return c.json(inventionSaveV9Failure('Invalid request body'))
+
+			const gate = await creatorsInventionResult(
+				c,
+				typeof body.InventionId === 'number' ? body.InventionId : Number.NaN
+			)
+			// As on `v2/metadata`: only a missing token is a transport failure. The rest are
+			// answers the client is meant to read out of the envelope.
+			if ('rejection' in gate) {
+				return gate.status === 401
+					? c.json(inventionSaveV9Failure(gate.rejection), 401)
+					: c.json(inventionSaveV9Failure(gate.rejection))
+			}
+
+			// Null is "leave it". The permission and accessibility are taken as sent rather
+			// than checked against the ladder, the way `parsePermissionLevel` already accepts
+			// a raw number: the ladders are the client's, and a level this server hasn't heard
+			// of is better stored than swapped for one the creator didn't pick.
+			const int = (key: string): number | undefined =>
+				typeof body[key] === 'number' && Number.isInteger(body[key]) ? body[key] : undefined
+			const price = int('Price')
+
+			const published = await publishInvention(c.env.DB, gate.invention.InventionId, {
+				permissionLevel: int('Permission'),
+				accessibility: int('Accessibility'),
+				// A negative price is dropped rather than stored, as it is on `v3/publish`.
+				price: price !== undefined && price < 0 ? undefined : price,
+			})
+			if (published === null) return c.json(inventionSaveV9Failure('No such invention'))
+			return c.json(toSaveResultV9(published, published.Tags ?? []))
+		}
+	)
+
+	// Delete an invention. The newer client's shape: a POST with a PascalCase body
+	// carrying nothing but the id. Auth-gated, creator only — the only thing that may
+	// remove an invention is the account that made it, not a co-owner and not a buyer.
+	//
+	// The record and everything inside it (versions, tags, referenced-invention lists)
+	// go in one DELETE; the data blob in R2 and the `inventory_invention` rows of
+	// players who bought it are left alone. See `deleteInvention` for why.
+	.post(
+		'/api/inventions/v2/delete',
+		describeRoute({
+			tags: ['Inventions'],
+			summary: 'Delete an invention',
+			description:
+				'Creator only — a buyer or a co-owner cannot delete someone else’s invention. ' +
+				'The record goes entirely: its versions, tags and referenced-invention lists live ' +
+				'in the same row.\n\n' +
+				'What survives is deliberate. The data blob stays in storage, because nothing ' +
+				'here knows whether another record still points at that filename. The ownership ' +
+				'rows of players who bought it stay too — a delete must not rewrite what someone ' +
+				'else paid for — and they fall out of every list on their own, since an owned id ' +
+				'with no invention row behind it is skipped.\n\n' +
+				'Answers the `{ Value, Success, Error, error_id }` envelope the other v2+ ' +
+				'invention routes use, with `Value` NULL: the invention is gone, so there is ' +
+				'nothing to redraw from and the client reads only `Success`. Refusals — an ' +
+				'unknown invention and someone else’s alike — are `Success: false` with a ' +
+				'message, not a bare error body that client cannot parse.',
+			security: AUTHED,
+			requestBody: jsonBody(DeleteInventionRequest, 'The invention to delete'),
+			responses: {
+				200: json(InventionDeleteResult, 'The delete envelope, `Value` null either way'),
+				401: json(InventionDeleteResult, 'The same envelope, refused — not an empty body'),
+			},
+		}),
+		async (c) => {
+			const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+			if (body === null) return c.json(inventionDeleteResult('Invalid request body'))
+
+			// The id rides in the body, as it does on `v2/metadata` and `v4/publish`.
+			const gate = await creatorsInventionResult(
+				c,
+				typeof body.InventionId === 'number' ? body.InventionId : Number.NaN
+			)
+			// As on those two: only a missing token is a transport failure. An unknown
+			// invention or someone else's is a domain answer the client reads out of the
+			// envelope, where the message reaches a human.
+			if ('rejection' in gate) {
+				return gate.status === 401
+					? c.json(inventionDeleteResult(gate.rejection), 401)
+					: c.json(inventionDeleteResult(gate.rejection))
+			}
+
+			// The gate already loaded the row, so a null here is a race — someone deleted it
+			// between the two reads — and lands where the client would put it anyway: gone.
+			const deleted = await deleteInvention(c.env.DB, gate.invention.InventionId)
+			return c.json(
+				deleted === null ? inventionDeleteResult('No such invention') : inventionDeleteResult()
+			)
 		}
 	)

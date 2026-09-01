@@ -116,8 +116,9 @@ export const CustomAvatarItemsResponse = z.object({
 
 /**
  * A Rec Room Plus subscription (the client calls it a `CampusCard`). Nothing here sells one,
- * so this is the complimentary subscription a `developer` account reports — see
- * `developerSubscription` in econ.app.ts for why each field reads the way it does.
+ * so this is the complimentary subscription reported by a caller whose token carries
+ * `rn.plus` — stamped from `account.hasPlus`, which the website's Discord benefits claim
+ * sets. See `plusSubscription` in econ.app.ts for why each field reads the way it does.
  */
 export const SubscriptionDto = z.object({
 	SubscriptionId: z.int().describe('Placeholder — no subscription is stored'),
@@ -592,7 +593,9 @@ export const GameRewardRequest = z.object({
 	giftContext: z
 		.string()
 		.optional()
-		.describe('The activity it came from, e.g. `Soccer` — part of the cooldown key'),
+		.describe(
+			'The activity it came from, e.g. `Soccer` — part of the cooldown key. A key of `quest-rewards.json` (`Dodgeball`, `Quest_Goblin_S`, …) also picks the prize from that activity’s table'
+		),
 })
 
 /**

@@ -6,6 +6,7 @@ import {
 	Accessibility,
 	areFriends,
 	canManageRoom,
+	countOnlinePlayers,
 	createRoomInstance,
 	createRoomInvite,
 	deleteEmptyRoomInstances,
@@ -17,6 +18,7 @@ import {
 	getExpiredPresenceInstanceIds,
 	getFriendIds,
 	getJoinableInstance,
+	getLatestRoomInviteBetween,
 	getMostActiveClubhouses,
 	getOrCreateDormRoom,
 	getPresence,
@@ -35,6 +37,7 @@ import {
 	MessageType,
 	MOST_ACTIVE_CLUBHOUSE_LIMIT,
 	recordRoomVisit,
+	recordStat,
 	refreshInstanceFullness,
 	RoomInstanceType,
 	setPresence,
@@ -593,6 +596,63 @@ function crossBuildRefusal(
 ): MatchmakingErrorCode | null {
 	if (callerVersion === instanceVersion) return null
 	return instanceVersion > callerVersion ? MatchmakingErrorCode.UpdateRequired : NO_SUCH_ROOM
+}
+
+/**
+ * The 2023 client build, as its token's `rn.ver` date stamps it (`20230414`, or a point
+ * release of it). See {@link persistenceVersionRefusal}.
+ */
+const BUILD_2023 = 20230414
+
+/**
+ * The first scene persistence version the 2023 client cannot load. A room whose published
+ * scene was saved at this version or later was built on a newer client; the old one fails
+ * to deserialize it.
+ */
+const MIN_UNLOADABLE_PERSISTENCE_VERSION_2023 = 227
+
+/**
+ * The persistence version of the scene a subroom LOADS — the published `CurrentSave`'s,
+ * the same save {@link subRoomDataBlob} serves, falling back to the flat legacy field.
+ * `null` when nothing recorded one (a fresh subroom, or one saved before the field
+ * existed): unknown is not "new".
+ */
+function subRoomPersistenceVersion(sub: Record<string, unknown> | undefined): number | null {
+	const save = sub?.CurrentSave
+	if (save && typeof save === 'object') {
+		const v = (save as Record<string, unknown>).PersistenceVersion
+		if (typeof v === 'number') return v
+	}
+	return typeof sub?.PersistenceVersion === 'number' ? sub.PersistenceVersion : null
+}
+
+/**
+ * Whether a player on `callerVersion` may enter `room` at all — `null` when they may,
+ * otherwise the code to refuse with.
+ *
+ * A caller on the 2023 build ({@link BUILD_2023}) is refused any room with a subroom whose
+ * published scene is at persistence version {@link MIN_UNLOADABLE_PERSISTENCE_VERSION_2023}
+ * or above: that scene was saved by a newer client and the 2023 one can't load it, so
+ * the honest answer is `UpdateRequired` — "your client can't go there" — rather than
+ * handing out an instance that never finishes loading. The WHOLE room is gated, not just
+ * the requested subroom, since the client walks between subrooms without re-matchmaking.
+ *
+ * Every other build, and a token that names none, passes: the gate is about one known
+ * client, not a general ordering.
+ */
+function persistenceVersionRefusal(
+	room: Room,
+	callerVersion: string | null
+): MatchmakingErrorCode | null {
+	if (buildNumber(callerVersion) !== BUILD_2023) return null
+	const subRooms = (Array.isArray(room.SubRooms) ? room.SubRooms : []) as Array<
+		Record<string, unknown>
+	>
+	const tooNew = subRooms.some((sub) => {
+		const v = subRoomPersistenceVersion(sub)
+		return v !== null && v >= MIN_UNLOADABLE_PERSISTENCE_VERSION_2023
+	})
+	return tooNew ? MatchmakingErrorCode.UpdateRequired : null
 }
 
 /**
@@ -1203,6 +1263,20 @@ async function resolveRoomInstance(
 		return { instance: null, errorCode: BANNED_FROM_ROOM }
 	}
 
+	// The build this player is on, from their token. A 2023 client can't load a scene
+	// saved at a newer persistence version, so it is refused the room outright (see
+	// persistenceVersionRefusal) before any instance is created or reused.
+	const tokenVersion = await callerVersion(c)
+	const tooNew = persistenceVersionRefusal(room, tokenVersion)
+	if (tooNew !== null) {
+		logger.info('matchmake refused: room persistence version too new for client build', {
+			roomId: f.roomId,
+			ownerId,
+			gameVersion: tokenVersion,
+		})
+		return { instance: null, errorCode: tooNew }
+	}
+
 	// Never place the player back into the instance they're already in: the client
 	// keys the room transition off a changing `roomInstanceId`, so re-matchmaking into
 	// your current instance (e.g. the only public instance of a room you're already in)
@@ -1213,10 +1287,10 @@ async function resolveRoomInstance(
 	const currentInstanceId = isPrivate
 		? undefined
 		: (await getPresence<RoomInstance>(c.env.DB, ownerId))?.roomInstance?.roomInstanceId
-	// The build this player is on, from their token. It scopes the search below and is
-	// stamped on the instance when one is created, which is what keeps a session to a
-	// single client version.
-	const gameVersion = await callerGameVersion(c)
+	// The same build, with GAME_VERSION standing in for a token that names none. It scopes
+	// the search below and is stamped on the instance when one is created, which is what
+	// keeps a session to a single client version.
+	const gameVersion = tokenVersion ?? GAME_VERSION
 	// Reuse an existing joinable public instance *of the same subroom and the same
 	// build* — subrooms are separate places, so joining one must never land you in
 	// another, and neither must a session running a different version of the room.
@@ -2037,6 +2111,129 @@ const app = new Hono<App>()
 			// presence, so the heartbeat replays it and their own friend fan-out fires.
 			await enterRoom(c, id, instance)
 			return matchmakeResult(c, 0, instance)
+		}
+	)
+
+	// The newer client's join-by-player (`/matchmake/v2/player/{playerId}`). Same move as
+	// the v1 follow above — land in the instance the target is standing in — but gated on
+	// the `room_invite` table rather than friendship: the caller must hold a standing
+	// invite FROM the target (the newer client's invite frame doesn't always carry a
+	// redeemable `InviteId` — the party fan-out sends 0 — so it redeems by player instead
+	// of by row id, and this is that path). Everything the target sent stays checkable:
+	// the newest row is enough, since any live row is authorization.
+	//
+	// Like the follow and invite paths, this hands out real Photon coordinates without
+	// going through resolveRoomInstance, so it carries its own ban and build checks.
+	// `/matchmake/v2/` answers the PascalCase envelope via `matchmakeResult`, as the v2
+	// room routes do.
+	.post(
+		'/matchmake/v2/player/:playerId{[0-9]+}',
+		describeRoute({
+			tags: ['Navigation', '2025'],
+			summary: 'Join the player who invited you (v2)',
+			description: [
+				'Places the caller into the room instance the target player is currently in, read from',
+				'the target’s stored presence. INVITEES ONLY: the caller must hold a `room_invite` row',
+				'FROM the target (as `POST /invite` writes them) — the newer client redeems an invite by',
+				'its sender when the frame carries no usable `RoomInviteId`. Answers 40',
+				'(RoomInviteExpired) when no invite stands (expiry deletes rows, so “never invited” and',
+				'“expired” are one answer), 2 (PlayerNotOnline) when the target isn’t in a room, 17',
+				'(AlreadyInTargetInstance) when the caller is already standing there, 3',
+				'(InsufficientSpace) when it filled up, and 55 (BannedFromRoom) when the caller is',
+				'banned from that room.',
+				'',
+				'2025-client route: it answers the PascalCase `ErrorCode`/`RoomInstance` envelope, as',
+				'the other `/matchmake/v2/*` routes do.',
+			].join(' '),
+			security: AUTHED,
+			requestBody: form(CorrelationIdRequest, 'The attempt’s CorrelationId'),
+			parameters: [
+				{
+					name: 'playerId',
+					in: 'path',
+					required: true,
+					description: 'The player to join (digits only)',
+					schema: { type: 'string', pattern: '^[0-9]+$' },
+				},
+			],
+			responses: {
+				200: json(
+					MatchmakeV2Response,
+					'The target’s instance, or a null RoomInstance with the refusal code'
+				),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const targetId = Number.parseInt(c.req.param('playerId'), 10)
+			// The gate: a standing invite from the target to the caller. No row means never
+			// invited or already swept — the same answer either way, since expiry deletes
+			// rows. This also refuses joining yourself: nobody holds a self-invite.
+			const invite = await getLatestRoomInviteBetween(c.env.DB, targetId, id)
+			if (invite === null) {
+				logger.info('v2 player matchmake refused: no invite from target', { targetId, id })
+				return matchmakeResult(c, MatchmakingErrorCode.RoomInviteExpired, null)
+			}
+
+			// Where the inviter is NOW, straight off their presence row — not the invite's
+			// stored RoomId, which records where they were when they sent it.
+			const targetPresence = await getPresence<RoomInstance>(c.env.DB, targetId)
+			const instance = targetPresence?.roomInstance ?? null
+			if (!instance) {
+				logger.info('v2 player matchmake refused: target is not in a room', { targetId, id })
+				return matchmakeResult(c, MatchmakingErrorCode.PlayerNotOnline, null)
+			}
+
+			// Already standing there: nothing to do, and re-entering would churn presence and
+			// re-fire the friend fan-out for a move that didn't happen.
+			const own = await getPresence<RoomInstance>(c.env.DB, id)
+			if (own?.roomInstance?.roomInstanceId === instance.roomInstanceId) {
+				return matchmakeResult(c, MatchmakingErrorCode.AlreadyInTargetInstance, null)
+			}
+
+			// Real Photon coordinates without resolveRoomInstance, so the room's bans have to
+			// be checked here — otherwise an invite is a way around one.
+			if (await isPlayerBannedFromRoom(c.env.DB, instance.roomId, id)) {
+				logger.info('v2 player matchmake refused: player banned from room', {
+					roomId: instance.roomId,
+					id,
+				})
+				return matchmakeResult(c, BANNED_FROM_ROOM, null)
+			}
+
+			// Nor the build scoping a room matchmake has by construction. Compared against the
+			// TARGET's presence — they're the person actually standing in there.
+			const refusal = crossBuildRefusal(
+				await callerGameVersion(c),
+				targetPresence?.appVersion ?? GAME_VERSION
+			)
+			if (refusal !== null) {
+				logger.info('v2 player matchmake refused: target is on another client build', {
+					roomInstanceId: instance.roomInstanceId,
+					targetId,
+					id,
+				})
+				return matchmakeResult(c, refusal, null)
+			}
+
+			// Fullness read fresh, like the invite path: joins off an invite cluster exactly
+			// when a nearly-full instance is still filling. Null means a synthetic instance
+			// with no row (a dorm), which has no head-count to check.
+			if ((await refreshInstanceFullness(c.env.DB, instance.roomInstanceId)) === true) {
+				logger.info('v2 player matchmake refused: instance is full', {
+					roomInstanceId: instance.roomInstanceId,
+					id,
+				})
+				return matchmakeResult(c, MatchmakingErrorCode.InsufficientSpace, null)
+			}
+
+			// Same instance, same Photon room, stored as the caller's presence so their
+			// heartbeat replays it and their own friend fan-out fires.
+			await enterRoom(c, id, instance)
+			return matchmakeResult(c, MatchmakingErrorCode.Success, instance)
 		}
 	)
 
@@ -2903,10 +3100,14 @@ async function sweepExpiredPresence(env: Env): Promise<void> {
 	for (const instanceId of staleInstanceIds) {
 		await refreshInstanceFullness(env.DB, instanceId)
 	}
+	// Sample the player count into `stat` — taken after the purge, so it's the live
+	// rows and not the ones that just lapsed. One row per cron run: the `online` series.
+	const online = await countOnlinePlayers(env.DB)
+	await recordStat(env.DB, 'online', online)
 	// The tagged logger is request-scoped (its middleware never runs for a cron), so
 	// log plainly here — Workers observability picks it up either way.
 	console.log(
-		`presence sweep: removed ${removed} expired rows, deleted ${emptyInstanceIds.length} empty instances, refreshed ${staleInstanceIds.length} instances`
+		`presence sweep: removed ${removed} expired rows, deleted ${emptyInstanceIds.length} empty instances, refreshed ${staleInstanceIds.length} instances, ${online} online`
 	)
 }
 

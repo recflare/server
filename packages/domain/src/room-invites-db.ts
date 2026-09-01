@@ -86,6 +86,38 @@ export async function getRoomInvite(
 }
 
 /**
+ * The newest live invite from `fromPlayerId` to `toPlayerId`, or null when none stands.
+ *
+ * This is the by-PLAYER-pair lookup behind `POST /matchmake/v2/player/:playerId`, where
+ * the caller redeems "an invite from that player" without holding a `RoomInviteId` (the
+ * newer client's invite frame doesn't always carry a usable one). Newest by id — ids are
+ * AUTOINCREMENT, so the largest is the most recently sent — and, like
+ * {@link getRoomInvite}, a miss covers both "never invited" and "already swept".
+ */
+export async function getLatestRoomInviteBetween(
+	db: D1Database,
+	fromPlayerId: number,
+	toPlayerId: number
+): Promise<RoomInvite | null> {
+	const row = await db
+		.prepare(
+			`SELECT ${SELECT_COLUMNS} FROM room_invite
+			 WHERE from_player_id = ?1 AND to_player_id = ?2
+			 ORDER BY room_invite_id DESC LIMIT 1`
+		)
+		.bind(fromPlayerId, toPlayerId)
+		.first<RoomInviteRow>()
+
+	if (!row) return null
+	return {
+		RoomInviteId: row.room_invite_id,
+		FromPlayerId: row.from_player_id,
+		ToPlayerId: row.to_player_id,
+		RoomId: row.room_id,
+	}
+}
+
+/**
  * Record an invite from `fromPlayerId` to `toPlayerId` for a room, returning it as the
  * client reads it back. `roomId` is null when the caller's room instance didn't resolve.
  *

@@ -65,7 +65,12 @@ interface HubRecord {
 async function connect(
 	id: string,
 	opts: { headers?: Record<string, string>; query?: string } = {}
-): Promise<{ ws: WebSocket; waitFor: (pred: (r: HubRecord) => boolean) => Promise<HubRecord> }> {
+): Promise<{
+	ws: WebSocket
+	waitFor: (pred: (r: HubRecord) => boolean) => Promise<HubRecord>
+	/** Everything this socket has received so far — for asserting something did NOT arrive. */
+	records: HubRecord[]
+}> {
 	// The hub only accepts identified connections, so default to a token; pass explicit
 	// `headers` (`{}` for none) where the test is about who is connecting.
 	const auth = opts.headers ?? (await bearer(String(DEFAULT_CONNECT_PLAYER), ['gameClient']))
@@ -113,7 +118,7 @@ async function connect(
 	ws.send(`{"protocol":"json","version":1}${RS}`)
 	await waitFor((r) => r.type === 1 && r.target === 'OnConnect')
 
-	return { ws, waitFor }
+	return { ws, waitFor, records }
 }
 
 const send = (ws: WebSocket, msg: HubRecord) => ws.send(JSON.stringify(msg) + RS)
@@ -335,6 +340,72 @@ describe('notification delivery', () => {
 
 		a.ws.close()
 		b.ws.close()
+	})
+
+	test('coach-message reaches only the named player, addressed to them', async () => {
+		const playerId = 9010
+		const target = await connect('coach-one', {
+			headers: await bearer(String(playerId), ['gameClient']),
+		})
+		const bystander = await connect('coach-one-bystander')
+		send(target.ws, {
+			type: 1,
+			invocationId: 's',
+			target: 'SubscribeToPlayers',
+			arguments: [{ playerIds: [playerId] }],
+		})
+		await target.waitFor((r) => r.type === 3 && r.invocationId === 's')
+
+		const res = await post('/internal/coach-message', { playerId, messageContent: 'just you' })
+		expect(res.status).toBe(200)
+		expect(await res.json()).toMatchObject({ delivered: 1, queued: false })
+
+		const note = await target.waitFor((r) => r.type === 1 && r.target === 'Notification')
+		const payload = JSON.parse((note.arguments as string[])[0]) as {
+			Id: string
+			Msg: Record<string, unknown>
+		}
+		expect(payload.Id).toBe('2') // MessageReceived
+		// Same Coach frame as the broadcast, plus the recipient the broadcast can't name.
+		expect(payload.Msg).toMatchObject({
+			FromPlayerId: 1,
+			ToPlayerId: playerId,
+			Type: 100,
+			Data: 'just you',
+		})
+
+		// The point of the targeted send: nobody else's socket sees it. The bystander is
+		// subscribed to nothing, and a broadcast would have reached it regardless.
+		expect(bystander.records.some((r) => r.target === 'Notification')).toBe(false)
+
+		target.ws.close()
+		bystander.ws.close()
+	})
+
+	test('coach-message queues for a player who is offline', async () => {
+		const playerId = 9011
+		const res = await post('/internal/coach-message', {
+			playerId,
+			messageContent: 'catch you later',
+		})
+		expect(await res.json()).toMatchObject({ delivered: 0, queued: true })
+
+		// Unlike the broadcast, it survives until they connect.
+		const { ws, waitFor } = await connect('coach-one-late')
+		send(ws, { type: 1, target: 'SubscribeToPlayers', arguments: [{ playerIds: [playerId] }] })
+		const note = await waitFor((r) => r.type === 1 && r.target === 'Notification')
+		expect(
+			(JSON.parse((note.arguments as string[])[0]) as { Msg: Record<string, unknown> }).Msg
+		).toMatchObject({ FromPlayerId: 1, ToPlayerId: playerId, Data: 'catch you later' })
+		ws.close()
+	})
+
+	test('coach-message 400s without a player or a message', async () => {
+		expect((await post('/internal/coach-message', { messageContent: 'nobody' })).status).toBe(400)
+		expect((await post('/internal/coach-message', { playerId: 9012 })).status).toBe(400)
+		expect(
+			(await post('/internal/coach-message', { playerId: 9012, messageContent: '   ' })).status
+		).toBe(400)
 	})
 
 	test('coach-message-all 400s on an empty message', async () => {

@@ -23,8 +23,8 @@ import { getInventionAcquisitionCounts, getOwnedInventionIds } from '@repo/domai
 /**
  * Schema DDL (mirror of migrations/0002_invention.sql + 0003_invention_featured.sql +
  * 0008_invention_visibility.sql, sans any seed rows). `is_featured` backs the featured
- * feed's query and `is_published`/`hide_from_player` the "may anyone see this" filter
- * every feed shares; json_extract of a JSON `true` is 1, so those columns are 1/0 — and
+ * feed's query and `is_published`/`hide_from_player` most of the "may anyone see this"
+ * filter every feed shares (see `VISIBLE_IN_FEEDS`, which also excludes unlisted ones); json_extract of a JSON `true` is 1, so those columns are 1/0 — and
  * NULL when the key is missing, which fails a `= 1` or `= 0` test either way.
  */
 export const SCHEMA_DDL: string[] = [
@@ -53,6 +53,16 @@ export interface InventionVersion {
 	ChipsCost: number
 	CloudVariablesCost: number
 	AICost: number
+	/**
+	 * Whether the blob uses content still in beta, sent from `v9/save` on. It sits on the
+	 * VERSION, where the client's own `RRInventionVersion` carries it and for the same
+	 * reason the costs do: it describes the one revision saved, not the invention across
+	 * all of them. `UgcVersion`, which reads like its twin, is an INVENTION field — see
+	 * {@link SavedInvention}. Absent on a record saved through `v6/save`, which sends
+	 * neither; the client's decoder reads a missing member as its default, so an old
+	 * record is not retroactively wrong.
+	 */
+	HasBetaContent?: boolean
 }
 
 /**
@@ -103,9 +113,32 @@ export interface SavedInvention {
 	HideFromPlayer: boolean
 	ReferencedInventions: number[]
 	/**
-	 * Tags served by `v1/details` and written by `v1/settags`. Optional and unset on
-	 * save: the real `RRInvention` carries no Tags field and the client sends no tags
-	 * when saving, so an untagged invention's DTO stays identical to the real one.
+	 * The rest of what `v9/save` sends, kept beside `ReferencedInventions` — the field
+	 * they most resemble, and the one this record has always carried on the invention.
+	 * Note the v9 client's own `RRInvention` has no `Referenced*` at all (its VERSION
+	 * carries them) and no `LongDescription`/`ConvertedFromInventionId` (it sends both and
+	 * never reads them back); they are stored anyway, because what the client sent is
+	 * worth keeping, and `toSaveResultV9` puts each where that client expects it.
+	 *
+	 * `UgcVersion` is the exception that has to be got right rather than tolerated: it is
+	 * an invention field there, not a version one, next to `CurrentVersionNumber`.
+	 *
+	 * `DisplayMetadataJson` is stored as the opaque string the client sent: it is the
+	 * client's own display state (`{"0":0,"99":0}`), and re-encoding it would be
+	 * inventing a schema for something only the client reads.
+	 *
+	 * Each is absent on a `v6/save` record, which sends none of them.
+	 */
+	ReferencedUnityAssetIds?: string[]
+	UgcVersion?: number
+	LongDescription?: string
+	DisplayMetadataJson?: string
+	ConvertedFromInventionId?: number
+	/**
+	 * Tags served by `v1/details` and written by `v1/settags`. Optional: the real
+	 * `RRInvention` carries no Tags field, so an untagged invention's DTO stays
+	 * identical to the real one. `v6/save` never sets it (that client tags in a second
+	 * call); `v9/save` sets it when its `tagsRequest` names at least one tag.
 	 */
 	Tags?: InventionTag[]
 }
@@ -128,6 +161,208 @@ export interface InventionSaveResult {
 /** Wrap a stored invention in the save envelope, lifting out its current version. */
 export function toSaveResult(invention: SavedInvention): InventionSaveResult {
 	return { Status: 0, Invention: invention, InventionVersion: invention.CurrentVersion }
+}
+
+/**
+ * `TagsResponse.Result` on a v9 save — the client's own tag-result enum, whose members
+ * run Success 0 … ReservedWordViolation 13. Only Success is named: the members between
+ * were not recovered from the client, and it never reads this field anyway, so a refused
+ * tag needs only to be something other than Success.
+ */
+export const INVENTION_TAG_RESULT = {
+	success: 0,
+	rejected: 1,
+} as const
+
+/**
+ * The `Invention` inside a v9 save response — the client's 28-key `RRInvention`, which is
+ * NOT the record this server stores (that one mirrors the older shape the read endpoints
+ * still serve). The differences that matter: no nested `CurrentVersion` (the version rides
+ * beside it), no `Referenced*` (they moved onto the version), no `IsPublished` (the client
+ * infers it from `FirstPublishedAt`), and `UgcVersion`/`LatestVersionNumber`/
+ * `ForceCannotPublish`/`IsRecRoomApproved` that the stored record has no equivalent for.
+ *
+ * The client reads exactly one of these keys — `InventionId` — and its decoder null-checks
+ * every member and drops the ones it doesn't know, so this projection is about being right
+ * rather than about being parseable.
+ */
+export interface InventionV9Dto {
+	InventionId: number
+	ReplicationId: string
+	CreatorPlayerId: number
+	Name: string
+	Description: string
+	ImageName: string
+	UgcVersion: number
+	CurrentVersionNumber: number
+	LatestVersionNumber: number
+	Accessibility: number
+	ForceCannotPublish: boolean
+	ModifiedAt: string
+	CreatedAt: string
+	FirstPublishedAt: string | null
+	CreationRoomId: number | null
+	NumPlayersHaveUsedInRoom: number
+	NumDownloads: number
+	CheerCount: number
+	CreatorPermission: number
+	GeneralPermission: number
+	IsAGInvention: boolean
+	IsCertifiedInvention: boolean
+	IsRecRoomApproved: boolean
+	AllowTrial: boolean
+	Price: number | null
+	HideFromPlayer: boolean
+	DisplayMetadataJson: string | null
+}
+
+/**
+ * The `InventionVersion` inside a v9 save response — the client's 13-key
+ * `RRInventionVersion`. It carries `HasBetaContent`, a `CreatedAt` of its own and a
+ * nullable `UgcAccessibility` the stored version has no field for, and notably NO
+ * `AICost`, which the request body still sends and this server still stores.
+ *
+ * Both `Referenced*` lists are emitted here even though the client's DTO has room for one:
+ * which of the two it is wasn't recovered, and an unknown member is dropped silently while
+ * a missing one would be the list the client asked for going astray.
+ */
+export interface InventionVersionV9Dto {
+	InventionId: number
+	ReplicationId: string
+	VersionNumber: number
+	HasBetaContent: boolean
+	InstantiationCost: number
+	LightsCost: number
+	ChipsCost: number
+	CloudVariablesCost: number
+	BlobName: string
+	BlobHash: string | null
+	CreatedAt: string
+	UgcAccessibility: number | null
+	ReferencedInventions: number[]
+	ReferencedUnityAssetIds: string[]
+}
+
+/** The tag half of a v9 save — `v1/settags`' answer, folded into the save response. */
+export interface InventionTagsV9Dto {
+	Result: number
+	Tags: string[]
+}
+
+/** The four keys inside a v9 save envelope's `Value`. `Status` is 0 on success. */
+export interface InventionSaveV9Value {
+	Status: number
+	Invention: InventionV9Dto
+	InventionVersion: InventionVersionV9Dto
+	TagsResponse: InventionTagsV9Dto
+}
+
+/**
+ * What `v9/save` answers, and the whole reason it isn't just v6 with a bigger body: the
+ * result is ENVELOPED, where v6 serves the bare `{ Status, Invention, InventionVersion }`.
+ *
+ * The client's contract is two fields deep. It checks `Success`, then reads
+ * `Value.Invention.InventionId` and tags the invention with it; `Error` is the only text
+ * that ever reaches a human (it is logged as "Invention datablob upload failed"). `Status`
+ * is deserialized and never read on this route — the failure channel is the envelope, not
+ * the 55-member status enum — and so are `InventionVersion` and `TagsResponse`.
+ *
+ * The one shape that CRASHES the client is `Success: true` with `Value` null or absent: it
+ * dereferences `Value.Invention` unguarded. `Success: false` with a null `Value` is safe —
+ * that branch reads only `Error` — which is why every refusal goes through
+ * {@link inventionSaveV9Failure} rather than answering a bare `{ error }` like v6 does. A
+ * body that doesn't deserialize into this envelope at all is the same crash, so even the
+ * 401 answers it.
+ */
+export interface InventionSaveV9Result {
+	Value: InventionSaveV9Value | null
+	Success: boolean
+	Error: string | null
+	error_id: string | null
+}
+
+/**
+ * Project a stored invention into the v9 save envelope. `tags` are the ones stored with
+ * it, answered as the bare names `v1/settags` answers with; `tagResult` says whether they
+ * were taken (see {@link INVENTION_TAG_RESULT}) — a tag the rules refuse costs the tags,
+ * never the save, because the save is the thing the player would have to redo.
+ *
+ * Fields the stored record has no equivalent for are served as what they are here rather
+ * than guessed: nothing forces an invention not to publish, and nothing in this server
+ * approves one.
+ */
+export function toSaveResultV9(
+	invention: SavedInvention,
+	tags: InventionTag[],
+	tagResult: number = INVENTION_TAG_RESULT.success
+): InventionSaveV9Result {
+	const version = invention.CurrentVersion
+	return {
+		Value: {
+			Status: 0,
+			Invention: {
+				InventionId: invention.InventionId,
+				ReplicationId: invention.ReplicationId,
+				CreatorPlayerId: invention.CreatorPlayerId,
+				Name: invention.Name,
+				Description: invention.Description,
+				ImageName: invention.ImageName,
+				UgcVersion: invention.UgcVersion ?? 0,
+				CurrentVersionNumber: invention.CurrentVersionNumber,
+				// One save, one version: the newest is the current one.
+				LatestVersionNumber: invention.CurrentVersionNumber,
+				Accessibility: invention.Accessibility,
+				ForceCannotPublish: false,
+				ModifiedAt: invention.ModifiedAt,
+				CreatedAt: invention.CreatedAt,
+				FirstPublishedAt: invention.FirstPublishedAt,
+				CreationRoomId: invention.CreationRoomId,
+				NumPlayersHaveUsedInRoom: invention.NumPlayersHaveUsedInRoom,
+				NumDownloads: invention.NumDownloads,
+				CheerCount: invention.CheerCount,
+				CreatorPermission: invention.CreatorPermission,
+				GeneralPermission: invention.GeneralPermission,
+				IsAGInvention: invention.IsAGInvention,
+				IsCertifiedInvention: invention.IsCertifiedInvention,
+				IsRecRoomApproved: false,
+				AllowTrial: invention.AllowTrial,
+				Price: invention.Price,
+				HideFromPlayer: invention.HideFromPlayer,
+				DisplayMetadataJson: invention.DisplayMetadataJson ?? null,
+			},
+			InventionVersion: {
+				InventionId: version.InventionId,
+				ReplicationId: version.ReplicationId,
+				VersionNumber: version.VersionNumber,
+				HasBetaContent: version.HasBetaContent ?? false,
+				InstantiationCost: version.InstantiationCost,
+				LightsCost: version.LightsCost,
+				ChipsCost: version.ChipsCost,
+				CloudVariablesCost: version.CloudVariablesCost,
+				BlobName: version.BlobName,
+				BlobHash: version.BlobHash,
+				// The version is minted with the invention, so they share a timestamp.
+				CreatedAt: invention.CreatedAt,
+				UgcAccessibility: null,
+				ReferencedInventions: invention.ReferencedInventions,
+				ReferencedUnityAssetIds: invention.ReferencedUnityAssetIds ?? [],
+			},
+			TagsResponse: { Result: tagResult, Tags: tags.map((t) => t.Tag) },
+		},
+		Success: true,
+		Error: null,
+		error_id: null,
+	}
+}
+
+/**
+ * A refused v9 save. `Value` is null, which is safe precisely because `Success` is false:
+ * the client reads `Error` on that branch and nothing else. See
+ * {@link InventionSaveV9Result} for why the alternative — a bare `{ error }` body — would
+ * take the client down instead.
+ */
+export function inventionSaveV9Failure(message: string): InventionSaveV9Result {
+	return { Value: null, Success: false, Error: message, error_id: null }
 }
 
 /**
@@ -189,6 +424,19 @@ export interface NewInvention {
 	aiCost?: number
 	creationRoomId?: number | null
 	referencedInventions?: number[]
+	/**
+	 * The rest of what `v9/save` sends. Every one is optional and is written onto the
+	 * record only when the caller actually supplied it, so a `v6/save` — which sends
+	 * none of them — stores and answers exactly the record it always did.
+	 */
+	ugcVersion?: number
+	hasBetaContent?: boolean
+	referencedUnityAssetIds?: string[]
+	longDescription?: string | null
+	displayMetadataJson?: string | null
+	convertedFromInventionId?: number | null
+	/** Tags to store with the record, already normalized by {@link normalizeInventionTags}. */
+	tags?: InventionTag[]
 }
 
 /**
@@ -201,6 +449,11 @@ export interface NewInvention {
  * what narrows `GeneralPermission` down (to UseOnly by default). Trials are allowed.
  * The client's `creatorAccountRole` is ignored: it's the player's role in the room
  * they built it in, not a permission over the invention.
+ *
+ * The fields `v9/save` added over `v6/save` are written only when the caller supplies
+ * them, so the record a v6 client stores is byte-for-byte the one it always stored —
+ * the new keys appear on new records rather than being back-filled with defaults onto
+ * every old one.
  */
 export async function createInvention(
 	db: D1Database,
@@ -233,6 +486,7 @@ export async function createInvention(
 			ChipsCost: input.chipsCost ?? 0,
 			CloudVariablesCost: input.cloudVariablesCost ?? 0,
 			AICost: input.aiCost ?? 0,
+			...(input.hasBetaContent === undefined ? {} : { HasBetaContent: input.hasBetaContent }),
 		},
 		Accessibility: 0,
 		IsPublished: false,
@@ -252,6 +506,16 @@ export async function createInvention(
 		AllowTrial: true,
 		HideFromPlayer: false,
 		ReferencedInventions: input.referencedInventions ?? [],
+		...(input.referencedUnityAssetIds === undefined
+			? {}
+			: { ReferencedUnityAssetIds: input.referencedUnityAssetIds }),
+		...(input.ugcVersion === undefined ? {} : { UgcVersion: input.ugcVersion }),
+		...(input.longDescription ? { LongDescription: input.longDescription } : {}),
+		...(input.displayMetadataJson ? { DisplayMetadataJson: input.displayMetadataJson } : {}),
+		...(typeof input.convertedFromInventionId === 'number'
+			? { ConvertedFromInventionId: input.convertedFromInventionId }
+			: {}),
+		...(input.tags?.length ? { Tags: input.tags } : {}),
 	}
 	await db.prepare('INSERT INTO invention (data) VALUES (?1)').bind(JSON.stringify(invention)).run()
 	return invention
@@ -379,7 +643,7 @@ export async function searchInventions(
 	const offset = Math.max(skip, 0)
 	if (limit === 0) return []
 
-	const where = ['is_published = 1', 'hide_from_player = 0']
+	const where = [...VISIBLE_IN_FEEDS]
 	const binds: Array<string | number> = []
 	/** Bind a value and get its placeholder, so the numbering can't drift as terms are added. */
 	const bind = (v: string | number): string => `?${binds.push(v)}`
@@ -421,8 +685,7 @@ async function publicInventions(db: D1Database, featuredOnly = false): Promise<S
 	const { results } = await db
 		.prepare(
 			`SELECT data FROM invention
-			 WHERE is_published = 1
-			   AND hide_from_player = 0
+			 WHERE ${VISIBLE_IN_FEEDS.join(' AND ')}
 			   ${featuredOnly ? 'AND is_featured = 1' : ''}`
 		)
 		.all<InventionRow>()
@@ -499,10 +762,9 @@ export async function getFeaturedInventions(
 /**
  * Replace an invention's tags (the `v1/settags` write). Auto tags are the ones the
  * client derives from the invention itself (Type 2); custom tags are the creator's
- * own (Type 0). Both lists are replaced wholesale — auto first, then custom, the
- * order the tags come back in — and are lowercased/trimmed and de-duplicated so
- * `details` doesn't echo back near-duplicates. Returns the stored tag list, or null
- * when there's no such invention.
+ * own (Type 0). Both lists are replaced wholesale, normalized as
+ * {@link normalizeInventionTags} describes. Returns the stored tag list, or null when
+ * there's no such invention.
  */
 export async function setInventionTags(
 	db: D1Database,
@@ -513,6 +775,21 @@ export async function setInventionTags(
 	const invention = await getInventionById(db, inventionId)
 	if (invention === null) return null
 
+	const tags = normalizeInventionTags(autoTags, customTags)
+	await writeInvention(db, { ...invention, Tags: tags })
+	return tags
+}
+
+/**
+ * The two tag lists as they are stored: auto first (Type 2), then custom (Type 0) —
+ * the order they come back in — each trimmed, lowercased and de-duplicated across both
+ * lists so `details` doesn't echo back near-duplicates. Blanks are dropped: the client
+ * pads its lists with empties.
+ *
+ * Shared by `v1/settags` and by `v9/save`, which carries the same two lists in its
+ * `tagsRequest` — a tag has to mean the same thing however it arrived.
+ */
+export function normalizeInventionTags(autoTags: string[], customTags: string[]): InventionTag[] {
 	const tags: InventionTag[] = []
 	const seen = new Set<string>()
 	for (const [list, type] of [
@@ -526,8 +803,6 @@ export async function setInventionTags(
 			tags.push({ Tag: tag, Type: type })
 		}
 	}
-
-	await writeInvention(db, { ...invention, Tags: tags })
 	return tags
 }
 
@@ -540,12 +815,45 @@ export async function setInventionTags(
 export const INVENTION_PERMISSION = {
 	unassigned: 0,
 	limitedoneuseonly: 10,
+	// Recovered from the client's own ladder; nothing here sends it, and no name for it
+	// appears in `v1/update`'s picker.
+	disallowkeylock: 15,
 	useonly: 20,
 	editandsave: 40,
 	publish: 60,
 	charge: 80,
 	unlimited: 100,
 } as const
+
+/**
+ * Where a published invention may be FOUND, which `v4/publish` sets and nothing before it
+ * did — every record written before that endpoint carries 0, the value a save mints.
+ *
+ * Only `unlisted` is recovered from the client for certain; the other two mirror the room
+ * accessibility enum, which they match member-for-member, and the publish sheet sends 1 for
+ * an ordinary publish.
+ *
+ * Note what that leaves ambiguous: a stored 0 is either "private" or "written before this
+ * enum meant anything", and the two are indistinguishable without a backfill. So the browse
+ * filter excludes `unlisted` by name rather than requiring `public` — the latter reads
+ * every invention published through `v3/publish` as private and empties the feeds.
+ */
+export const INVENTION_ACCESSIBILITY = {
+	private: 0,
+	public: 1,
+	unlisted: 2,
+} as const
+
+/**
+ * The "anyone may come across this" test the browse feeds and search share: published, not
+ * hidden, and not unlisted. An unlisted invention is still reachable BY ID — that is what
+ * unlisted means — so the by-id reads deliberately don't apply it.
+ */
+const VISIBLE_IN_FEEDS = [
+	'is_published = 1',
+	'hide_from_player = 0',
+	`COALESCE(json_extract(data, '$.Accessibility'), 0) <> ${INVENTION_ACCESSIBILITY.unlisted}`,
+]
 
 /**
  * Parse a permission level the way the client sends it: a name (`useonly`,
@@ -567,6 +875,13 @@ export interface InventionPatch {
 	imageName?: string
 	allowTrial?: boolean
 	generalPermission?: number
+	/**
+	 * The rest of what `v2/metadata` can edit. Undefined leaves the stored value alone,
+	 * which is how both editors say "not this field" — `v1/update` by omitting the query
+	 * param, `v2/metadata` by sending the key as null.
+	 */
+	longDescription?: string
+	tags?: InventionTag[]
 }
 
 /**
@@ -591,9 +906,25 @@ export async function updateInvention(
 		ImageName: patch.imageName ?? invention.ImageName,
 		AllowTrial: patch.allowTrial ?? invention.AllowTrial,
 		GeneralPermission: patch.generalPermission ?? invention.GeneralPermission,
+		// Both of these are optional ON the record, so an untouched one resolves to
+		// undefined and JSON.stringify drops the key — an invention that never had a long
+		// description doesn't acquire an empty one by being edited.
+		LongDescription: patch.longDescription ?? invention.LongDescription,
+		Tags: patch.tags ?? invention.Tags,
 	}
 	await writeInvention(db, updated)
 	return updated
+}
+
+/**
+ * What a publish decides. Each is optional and an omitted one keeps what the invention
+ * has — except the permission, which falls back to UseOnly, the level the older
+ * `v3/publish` has always defaulted to when its query string named none.
+ */
+export interface InventionPublish {
+	permissionLevel?: number
+	accessibility?: number
+	price?: number
 }
 
 /**
@@ -605,8 +936,7 @@ export async function updateInvention(
 export async function publishInvention(
 	db: D1Database,
 	inventionId: number,
-	permissionLevel: number | undefined,
-	price: number | undefined
+	publish: InventionPublish = {}
 ): Promise<SavedInvention | null> {
 	const invention = await getInventionById(db, inventionId)
 	if (invention === null) return null
@@ -614,8 +944,13 @@ export async function publishInvention(
 	const updated: SavedInvention = {
 		...invention,
 		IsPublished: true,
-		GeneralPermission: permissionLevel ?? INVENTION_PERMISSION.useonly,
-		Price: price ?? 0,
+		GeneralPermission: publish.permissionLevel ?? INVENTION_PERMISSION.useonly,
+		Accessibility: publish.accessibility ?? invention.Accessibility,
+		// An unmentioned price is the price it already has, not zero: a republish that says
+		// nothing about money must not quietly give away something that was for sale. A
+		// first publish is unaffected — a fresh invention's price is 0 either way.
+		Price: publish.price ?? invention.Price,
+		// The FIRST publish is the one that gets dated; re-publishing doesn't reset it.
 		FirstPublishedAt: invention.FirstPublishedAt ?? new Date().toISOString(),
 	}
 	await writeInvention(db, updated)
@@ -636,6 +971,55 @@ export async function setInventionPrice(
 	const updated: SavedInvention = { ...invention, Price: price }
 	await writeInvention(db, updated)
 	return updated
+}
+
+/**
+ * Delete an invention (`v2/delete`), returning the record that was removed, or null
+ * when there's no such row. The whole invention lives in the one JSON blob, so its
+ * versions, tags and referenced-invention lists go with it in a single DELETE.
+ *
+ * Two things are deliberately LEFT behind.
+ *
+ * The data blob in R2 stays: it is named by the file the creator uploaded through the
+ * `storage` worker, and nothing here knows whether another record still points at that
+ * name (a converted invention carries the same lineage, and a save that reuses a
+ * filename reuses the object). An orphan blob costs storage; a missing one breaks
+ * whatever still references it.
+ *
+ * The `inventory_invention` rows stay too — deleting a creator's invention must not
+ * rewrite what other players bought. They already fall out of every list on their own:
+ * `getMyInventions` resolves owned ids against this table and an id with no row left
+ * simply drops out, and `ownsAllInventions` reads a missing row as not-owned. Purging
+ * them would also erase the acquisition history that ranks the "top today" feed.
+ */
+export async function deleteInvention(
+	db: D1Database,
+	inventionId: number
+): Promise<SavedInvention | null> {
+	const invention = await getInventionById(db, inventionId)
+	if (invention === null) return null
+	await db.prepare('DELETE FROM invention WHERE id = ?1').bind(inventionId).run()
+	return invention
+}
+
+/**
+ * What `v2/delete` answers: the same `{ Value, Success, Error, error_id }` envelope the
+ * other newer-client invention routes use, with `Value` always NULL — the invention is
+ * gone, so there is nothing for the client to redraw from and it reads only `Success`
+ * (and `Error`, the one string that reaches a human). This is why the delete does not
+ * borrow {@link InventionSaveV9Result}: that envelope's `Value` carries an invention the
+ * client dereferences, and a delete has none to give.
+ */
+export interface InventionDeleteResult {
+	Value: null
+	Success: boolean
+	Error: string | null
+	error_id: string | null
+}
+
+/** The delete envelope: a refusal when given a message, success when given null. */
+export function inventionDeleteResult(error: string | null = null): InventionDeleteResult {
+	return { Value: null, Success: error === null, Error: error, error_id: null }
 }
 
 /** The tag filter chips the client offers when browsing inventions. */
@@ -714,8 +1098,7 @@ export async function getInventionsByRoom(
 		.prepare(
 			`SELECT data FROM invention
 			 WHERE json_extract(data, '$.CreationRoomId') = ?1
-			   AND is_published = 1
-			   AND hide_from_player = 0`
+			   AND ${VISIBLE_IN_FEEDS.join(' AND ')}`
 		)
 		.bind(roomId)
 		.all<InventionRow>()

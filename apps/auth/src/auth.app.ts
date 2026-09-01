@@ -1040,8 +1040,9 @@ const app = new Hono<App>()
 
 			// Stamp the account's elevated roles into the token's `role` claim so the client
 			// authorizes developer/moderator powers from the token itself (not just the
-			// /role/* lookups). One read of the just-resolved account; roles thus refresh on
-			// every login and every refresh_token grant.
+			// /role/* lookups), and its Plus flag into `rn.plus`. One read of the just-resolved
+			// account serves both; they thus refresh on every login and every refresh_token
+			// grant.
 			const roleAccount = await getAccount(c.env.DB, Number(accountId))
 			// A refresh grant posts no platform of its own, so the identity comes off the
 			// account — the same read, and the only place the bound identity is authoritative.
@@ -1056,7 +1057,13 @@ const app = new Hono<App>()
 				jwtSecret,
 				accountRoles(roleAccount),
 				accountPrivileges(roleAccount),
-				version
+				version,
+				// Rec Room Plus, off the same account read as the roles above — `econ` decides the
+				// CampusCard and the subscriber discount from this claim alone, so it never has to
+				// load the account. It therefore refreshes on every login and every refresh_token
+				// grant, and only then: a player who claims Plus on the website keeps a token that
+				// says otherwise until they sign in again.
+				roleAccount?.hasPlus === true
 			)
 			// Issue a fresh, persisted refresh token (single-use; the client redeems it via
 			// grant_type=refresh_token). A refresh grant thus rotates its token.

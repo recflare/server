@@ -1,5 +1,6 @@
 export {
 	validateAndGetAccountId,
+	validateAndGetPlus,
 	validateAndGetRoles,
 	validateAndGetVersion,
 	generateToken,

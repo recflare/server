@@ -81,6 +81,125 @@ printf '1x0000000000000000000000000000000AA' |
 
 The tests seed the same pair into their own local store in `beforeAll`.
 
+### Benefits claim and Discord
+
+The **Claim benefits** tab on the account page lets a player prove they hold one of
+the qualifying roles in the community Discord and, if they do, gives their account Rec
+Room Plus (`account.hasPlus`). The same panel also renders at `/claim`, which is the
+app's registered `redirect_uri` — Discord sends the browser back there mid-flow, so
+that route has to keep working on a cold load even though nothing links to it. It runs a standard
+OAuth2 **authorization code** flow:
+
+1. The tab sends the browser to Discord's consent screen, using the URL `www`
+   assembles in `/api/config` plus a `state` nonce the page mints and stashes in
+   `sessionStorage`.
+2. Discord redirects back to `/claim?code=…&state=…`. The page checks the nonce is
+   the one it minted, strips the query, and posts only the `code` to
+   `POST /api/benefits/claim` with the player's bearer token.
+3. The worker swaps the code for an access token with the client secret, reads
+   `GET /users/@me/guilds/{guild}/member` to get the player's roles, revokes the
+   token, and — if any one of the configured roles is there — writes `hasPlus` onto
+   the account and links the Discord id.
+
+**A claim takes effect on the player's next sign-in, not immediately.** `auth` stamps
+`hasPlus` into every token it mints as the `rn.plus` claim, and `econ` decides the
+CampusCard and the subscriber discount from that claim alone — no database read on
+either path. The token the player's game is holding was minted before they claimed, it
+lasts a day, and the client never refreshes it, so they have to restart Rec Room and
+sign in again. The claim page says so.
+
+The browser never holds a Discord access token: the client secret can't ship to a
+page, which is why this is the second feature (after signup) with a server side.
+The scopes are `identify` and `guilds.members.read`, which let the token's owner
+read **their own** membership in one guild — so no bot is needed and this worker
+holds no credential that could read anyone else's roles.
+
+The verified Discord id is stored as a link in `platform_account` (the `auth`
+worker's table of account ↔ external identities, migration 0007) under
+`PlatformType.Discord` (101) — the same place a Steam or Meta identity lives,
+because that is what it is. Only `hasPlus` goes on the account itself.
+
+Nobody logs in with it. `auth`'s `verifyPlatformProof` can prove exactly two
+platforms (Steam and Meta), so a `cached_login` naming 101 is refused outright, and
+the login picker filters to those same platforms (`CACHED_LOGIN_PLATFORMS`). That
+filter matters for privacy as well as correctness: the picker is public and
+unauthenticated, so without it `GET /cachedlogin/forplatformid/101/<snowflake>`
+would tell anyone which RecFlare account a given Discord user owns.
+
+Storing the link there is what makes the claim once-only **per Discord user**, not
+per account: a second claim from the same Discord member on a different account is
+refused (409), answered from the table's index rather than a scan of every account
+blob. Re-claiming on the same account is idempotent — the link is `INSERT OR
+IGNORE`, so `linkedAt` keeps the first claim's time — so the page is safe to
+reload. Nothing revokes Plus: losing the role later leaves the flag set, so it
+records "held the role once", not "holds it today".
+
+Four settings configure it, and **all four** are required or the claim stays
+closed (`/api/config` reports `benefitsEnabled: false`, so the SPA hides the tab,
+and `/api/benefits/claim` returns 403). A half-configured app is
+treated as unconfigured on purpose: a client id and secret with no guild/roles
+would authenticate a player and have no question left to ask about them.
+
+- `DISCORD_CLIENT_ID` / `DISCORD_CLIENT_SECRET` — Secrets Store, same account-level
+  store as `JWT_SECRET` and the Turnstile pair. The id is public (it ships to the
+  browser inside the authorize URL) but lives beside its secret so one place
+  configures the feature.
+- `DISCORD_GUILD_ID` / `DISCORD_BENEFITS_ROLE_IDS` — plain vars in `wrangler.jsonc`,
+  not credentials. Both hold Discord **snowflakes: all digits, no letters**. Turn on
+  Developer Mode in Discord (Settings → Advanced), then right-click the server or the
+  role and Copy ID. These are ids, not names — `Supporter` is what the role is
+  _called_, `1077000000000000002` is what goes in the var — and they're quoted as
+  strings because a snowflake is too large to survive as a JSON number.
+
+`DISCORD_BENEFITS_ROLE_IDS` is a **list**, separated by commas and/or whitespace, so
+several tiers can qualify for the same benefit. **Any one** of them is enough — they
+are alternatives, not requirements:
+
+```jsonc
+"DISCORD_BENEFITS_ROLE_IDS": "1077000000000000001,1077000000000000002"
+```
+
+Blank entries are dropped, so a trailing comma is harmless. A value that parses to no
+ids at all counts as unset and closes the claim, rather than opening it with nothing
+to check against.
+
+```sh
+printf '<client id>' |
+  wrangler secrets-store secret create <store-id> --name DISCORD_CLIENT_ID --scopes workers --remote
+printf '<client secret>' |
+  wrangler secrets-store secret create <store-id> --name DISCORD_CLIENT_SECRET --scopes workers --remote
+```
+
+The two ids are **not secrets**, and setting only the secrets is the usual reason the
+page never appears. Put them in the root `.env` as operator knobs, where they ride
+along as `--var` on deploy (see `recflare_vars`), rather than editing `wrangler.jsonc`
+— that keeps your server's ids out of the repo:
+
+```sh
+RECFLARE_DISCORD_GUILD_ID=1077000000000000000
+RECFLARE_DISCORD_BENEFITS_ROLE_IDS=1077000000000000001,1077000000000000002
+```
+
+Use **commas with no spaces** there. Those knobs become `--var` flags that the deploy
+script word-splits, so a value containing a space breaks it. (`parseRoleIds` also
+accepts whitespace, which is fine in `wrangler.jsonc` but not via `.env`.)
+
+Then redeploy `www` — the Secrets Store `.get()` caches per isolate, so a warm worker
+won't pick up newly created secrets until it restarts.
+
+**Diagnosing a claim that won't appear:** fetch `/api/config`. If `benefitsEnabled` is
+`false`, the gate is closed and it isn't a UI problem — `www` logs
+`discord is half-configured, so benefit claims are closed` with a flag per input
+(`hasClientId`, `hasClientSecret`, `hasGuildId`, `roleIdCount`), which names exactly
+which one is missing. `wrangler tail www` shows it.
+
+In the [Discord developer portal](https://discord.com/developers/applications),
+add `https://<your domain>/claim` to the app's **Redirects**. It has to match byte
+for byte: `www` derives the redirect URI from the incoming request's own origin
+(never from the request body, which would turn the client secret into a redemption
+oracle for someone else's app), so add `http://localhost:5173/claim` too if you
+want the flow to work under `pnpm turbo dev`.
+
 ## Development
 
 ### Run in dev mode

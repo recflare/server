@@ -17,7 +17,7 @@ import {
 	setOutfit,
 } from '@repo/domain'
 import { intVar, logger, withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
-import { validateAndGetAccountId, validateAndGetRoles, validateAndGetVersion } from '@repo/jwt'
+import { validateAndGetAccountId, validateAndGetPlus, validateAndGetVersion } from '@repo/jwt'
 
 import {
 	getCustomAvatarItems,
@@ -40,6 +40,7 @@ import defaultAvatarItems from '../static/default-avatar-items.json'
 import defaultAvatar from '../static/default-avatar.json'
 import defaultBaseAvatarItems from '../static/default-base-avatar-items.json'
 import myProgress from '../static/my-progress.json'
+import questRewards from '../static/quest-rewards.json'
 import { getAvatar, setAvatar } from './avatar-db'
 import {
 	ALL_PLATFORMS,
@@ -51,6 +52,7 @@ import {
 	isSpendable,
 	spendCurrency,
 } from './balance-db'
+import { getCatalogItem } from './catalog-db'
 // `LEGACY_CLIENT_BUILD` is shared with the storefront generator rather than restated: it picks
 // which store FILE a caller is served here, and which ITEMS go in that file there. The two must
 // name the same moment or a build gets a store built to a different cutoff.
@@ -163,16 +165,6 @@ import type { AvatarItem } from './inventory-db'
  */
 async function authedId(c: Context<App>): Promise<number | null> {
 	return validateAndGetAccountId(c.req.raw, await c.env.JWT_SECRET.get())
-}
-
-/**
- * The `role` claim from a Bearer token — the operator-granted roles the auth worker stamps
- * from the account's flags, so a plain player's token is just `['gameClient']`. `null` when
- * the request carries no valid token; an empty array means a valid token with no roles.
- * Shaped to mirror {@link authedId}.
- */
-async function authedRoles(c: Context<App>): Promise<string[] | null> {
-	return validateAndGetRoles(c.req.raw, await c.env.JWT_SECRET.get())
 }
 
 /**
@@ -413,20 +405,32 @@ async function pushBalancePurchase(
  */
 const NOT_AN_INFLUENCER = 0
 
-/** The operator-granted role that comes with a complimentary subscription. */
-const DEVELOPER_ROLE = 'developer'
-
 /**
- * Whether the caller currently holds a Rec Room Plus subscription — the ONE definition,
- * shared by `UpdateAndGetSubscription` (which reports it) and the storefront buys (which
- * price off it via `SubscriberPrices`). Nothing sells subscriptions here, so holding the
- * `developer` role IS the subscription; if a real subscription store ever lands, this is
- * the only place that has to learn about it. Read from the token's `role` claim, never the
- * body; no or an invalid token is "not subscribed".
+ * Whether the caller holds a Rec Room Plus subscription — the ONE definition, shared by
+ * `UpdateAndGetSubscription` (which reports it) and the storefront buys (which price off
+ * it via `SubscriberPrices`). Those two must never disagree: a subscriber whose client
+ * applied the discount itself and then had the buy refused as a price mismatch is exactly
+ * what one definition prevents.
+ *
+ * Nothing SELLS subscriptions here. Plus is `account.hasPlus`, claimed on the website by
+ * proving a qualifying role in the community Discord (`www` `POST /api/benefits/claim`),
+ * and it reaches this worker as the token's `rn.plus` claim — stamped by `auth` at login
+ * from that flag. So this is a pure token read: no database, no binding, nothing to load.
+ *
+ * The cost is FRESHNESS, deliberately accepted. The claim is only as current as the token,
+ * which lasts a day and is never refreshed (see TOKEN_TTL_SECONDS), so a player who claims
+ * on the website has to sign in again — and restart the game — before Plus applies. The
+ * website's claim page says so.
+ *
+ * The `developer` role does NOT grant Plus. It used to, as a stand-in while nothing else
+ * could confer it; now that the Discord claim exists, Plus is one thing with one source.
+ * An operator who wants a developer to have it sets `hasPlus` on their account like
+ * anyone else's.
+ *
+ * Never read from the body. No token, or an invalid one, is "not subscribed".
  */
 async function isSubscriber(c: Context<App>): Promise<boolean> {
-	const roles = await authedRoles(c)
-	return roles?.includes(DEVELOPER_ROLE) ?? false
+	return validateAndGetPlus(c.req.raw, await c.env.JWT_SECRET.get())
 }
 
 /** `SubscriptionLevel.Gold`. 1 is Platinum. */
@@ -446,20 +450,21 @@ const SUBSCRIPTION_PLATFORM_ALL = -1
 const STUB_SUBSCRIPTION_ID = 1
 
 /**
- * The complimentary subscription a `developer` account reports — Rec Room Plus, which the
- * client's API calls a `CampusCard`.
+ * The complimentary subscription a subscriber reports — Rec Room Plus, which the client's
+ * API calls a `CampusCard`. See `isSubscriber` for who counts as one: a `developer`, or a
+ * player who claimed `hasPlus` with a Discord role on the website.
  *
- * Nothing here sells subscriptions, so holding the role IS the subscription: it's how the
- * paid-tier surfaces get exercised without a store. Every field is computed per call and
- * none of it is persisted, so this is not a record of anything — revoking the role revokes
- * the subscription, and no expiry sweep or renewal exists.
+ * Nothing here sells subscriptions, so holding one of those IS the subscription. Every
+ * field is computed per call and none of it is persisted, so this is not a record of
+ * anything — dropping the role or the flag drops the subscription, and no expiry sweep or
+ * renewal exists.
  *
  * `ExpirationDate` is a year out from THIS call rather than a fixed date: a hard-coded one
  * lapses on a day nobody is expecting, and the client would start showing an expired
  * subscription with no way to renew it. `IsAutoRenewing` tells the client the same thing.
  * The dates are milliseconds-precision ISO like the rest of this worker's timestamps.
  */
-function developerSubscription(accountId: number) {
+function plusSubscription(accountId: number) {
 	const now = new Date()
 	// Calendar arithmetic, not now + 365 days: setUTCFullYear lands on the same date next
 	// year whether or not a leap day falls in between.
@@ -1719,6 +1724,87 @@ function toGameRewardDrop(): StoreGiftDrop {
 		Context: GIFT_CONTEXT_GAME_REWARDS,
 		Currency: 0,
 		CurrencyType: 0,
+		Xp: GAME_REWARD_XP,
+	}
+}
+
+/**
+ * One row of `static/quest-rewards.json`: the reward table of the live game's activities,
+ * keyed by the `giftContext` the client posts with a game-reward ask (`Dodgeball`,
+ * `Quest_Goblin_S`, `Paintball_Dam`, …). Each row is the gift-drop as the game's own reward
+ * server shaped it — a comma-laden `AvatarItemDesc` (the catalog's `item_key`), or for the
+ * Laser Tag entry a currency payout — with `GiftRarity` and the activity's own `Context`
+ * (8000 for dodgeball, 4003 for the goblin quest's S rank) spelled the way the client's box
+ * reads them. Untyped fields (`Id`, `Level`, `Message`) are carried but unused.
+ */
+interface QuestReward {
+	AvatarItemDesc: string
+	ConsumableItemDesc: string
+	EquipmentPrefabName: string
+	EquipmentModificationGuid: string
+	CurrencyType: number
+	Currency: number
+	Xp: number
+	GiftRarity: number
+	Context: number
+}
+
+const QUEST_REWARDS: Record<string, QuestReward[]> = questRewards
+
+/**
+ * The reward an activity pays, when `giftContext` names an entry in `quest-rewards.json`:
+ * one row drawn at random from that key's list, among the rows the player DOESN'T ALREADY
+ * OWN — the table is "what this activity can give you", and handing over a duplicate gives
+ * nothing (the inventory is a set). A currency row is never "owned", so it always stays in
+ * the pool.
+ *
+ * Null for a context the table doesn't know (or one whose every reward the player already
+ * has), which the caller pays as the plain XP box — the cooldown key is the same string
+ * either way, so an unknown or exhausted context is still rate-limited.
+ */
+async function pickQuestReward(
+	db: D1Database,
+	accountId: number,
+	giftContext: string
+): Promise<QuestReward | null> {
+	if (!Object.hasOwn(QUEST_REWARDS, giftContext)) return null
+	const rows = QUEST_REWARDS[giftContext] ?? []
+	if (rows.length === 0) return null
+	const ownedItems = new Set((await getInventory(db, accountId)).map((i) => i.AvatarItemDesc))
+	const ownedGuids = new Set((await getEquipment(db, accountId)).map((e) => e.ModificationGuid))
+	const pool = rows.filter(
+		(r) =>
+			!(r.AvatarItemDesc !== '' && ownedItems.has(r.AvatarItemDesc)) &&
+			!(r.EquipmentModificationGuid !== '' && ownedGuids.has(r.EquipmentModificationGuid))
+	)
+	if (pool.length === 0) {
+		logger.info('quest rewards exhausted for player', { accountId, giftContext })
+		return null
+	}
+	return pool[Math.floor(Math.random() * pool.length)] ?? null
+}
+
+/**
+ * A quest reward as the gift-drop `grantGiftDrop` hands over. The item fields come off the
+ * row, so the item IS granted — unlike {@link toGameRewardDrop}'s empty box. The catalog
+ * row for the item, when it resolves, supplies what the table doesn't carry (name, tooltip,
+ * `AvatarItemType`), so the inventory entry reads like a bought one rather than blank.
+ * The XP is the flat game-reward amount, not the row's (always 0): the reward is the item,
+ * and the XP is the same pat on the back every claim gets.
+ */
+function toQuestRewardDrop(reward: QuestReward, catalog: CatalogRow | null): StoreGiftDrop {
+	return {
+		FriendlyName: catalog?.friendly_name ?? '',
+		Tooltip: catalog?.tooltip ?? '',
+		ConsumableItemDesc: reward.ConsumableItemDesc,
+		AvatarItemDesc: reward.AvatarItemDesc,
+		AvatarItemType: catalog?.avatar_item_type ?? null,
+		EquipmentPrefabName: reward.EquipmentPrefabName,
+		EquipmentModificationGuid: reward.EquipmentModificationGuid,
+		Rarity: reward.GiftRarity,
+		Context: reward.Context,
+		Currency: reward.Currency,
+		CurrencyType: reward.CurrencyType,
 		Xp: GAME_REWARD_XP,
 	}
 }
@@ -3014,8 +3100,8 @@ const app = new Hono<App>({ strict: false })
 			summary: 'Buy a storefront item',
 			description: [
 				'Looks the item up in its storefront catalog, confirms the client’s `RequestedPrice`',
-				'still matches the `Prices` entry — a Rec Room Plus subscriber (the same check as',
-				'`UpdateAndGetSubscription`) may pay anywhere from that down to 10% off, since their',
+				'still matches the `Prices` entry — a Rec Room Plus subscriber (the same `rn.plus`',
+				'check as `UpdateAndGetSubscription`) may pay anywhere from that down to 10% off, since their',
 				'client applies the discount itself and not to every item — debits the buyer atomically,',
 				'grants the item (into the inventory or',
 				'consumable table), and returns a gift box. A `Gift` block routes the item — and its',
@@ -3737,6 +3823,11 @@ const app = new Hono<App>({ strict: false })
 	// activity of the day is per ACTIVITY, so a player who moves from Soccer to Paintball is
 	// owed another reward while a second Soccer match inside the hour is not. An ask that
 	// sends no context keys on `''`.
+	//
+	// It also picks the PRIZE: a context that is a key of `static/quest-rewards.json`
+	// (`Dodgeball`, `Quest_Goblin_S`, …) draws one of that activity's rewards — an avatar item
+	// granted into the inventory, or Laser Tag's ticket payout — and the box carries it, with
+	// the activity's own `GiftContext`. A context the table doesn't know gets the XP-only box.
 	.post(
 		'/api/gamerewards/v1/request',
 		describeRoute({
@@ -3746,8 +3837,10 @@ const app = new Hono<App>({ strict: false })
 				'Claims one reward of `rewardType` in `giftContext` per hour per player, recorded in',
 				'`reward_status`. The cooldown is per (type, activity), so a different activity is',
 				'owed another reward while the same one is not; an ask with no `giftContext` keys on',
-				'the empty context. The reward rides in a gift box, so a claim and a rejected',
-				'(on-cooldown) ask both answer `[]`.',
+				'the empty context. A `giftContext` that names an activity in `quest-rewards.json`',
+				'(`Dodgeball`, `Quest_Goblin_S`, …) draws one of that activity’s rewards and grants it;',
+				'any other claim pays XP only. The reward rides in a gift box, so a claim and a',
+				'rejected (on-cooldown) ask both answer `[]`.',
 			].join(' '),
 			security: AUTHED,
 			requestBody: form(GameRewardRequest, 'The reward type and its display message'),
@@ -3774,7 +3867,30 @@ const app = new Hono<App>({ strict: false })
 			// Bank the XP first: it is the reward, and the box is the wrapper the client shows.
 			// A failure here must not leave a box promising XP that was never credited.
 			const { progression, levelsGained } = await addXp(c.env.DB, id, GAME_REWARD_XP)
-			const granted = await grantGiftDrop(c, id, toGameRewardDrop(), message)
+			// An activity the reward table knows pays one of ITS rewards the player lacks — the
+			// item rides in the box and is granted with it. Anything else gets the plain XP box.
+			const questReward = await pickQuestReward(c.env.DB, id, giftContext)
+			const itemKey = questReward?.AvatarItemDesc || questReward?.EquipmentModificationGuid
+			const drop =
+				questReward === null
+					? toGameRewardDrop()
+					: toQuestRewardDrop(questReward, itemKey ? await getCatalogItem(c.env.DB, itemKey) : null)
+			// A currency reward (Laser Tag's tickets) is credited here: `grantGiftDrop` grants
+			// items, not balances. Seed the signup grant first — `creditCurrency` upserts the
+			// row, and a never-touched RecCenterTokens balance would otherwise lose it.
+			if (drop.Currency > 0 && drop.CurrencyType !== CurrencyType.Invalid) {
+				const startingTokens = intVar(c.env.STARTING_TOKENS, DEFAULT_STARTING_TOKENS)
+				await ensureStartingBalances(c.env.DB, id, startingTokens)
+				const balance = await creditCurrency(
+					c.env.DB,
+					id,
+					drop.CurrencyType,
+					drop.Currency,
+					startingTokens
+				)
+				await pushBalanceUpdate(c, id, drop.CurrencyType, balance)
+			}
+			const granted = await grantGiftDrop(c, id, drop, message)
 			await pushGiftReceived(c, id, granted, message, COACH_ACCOUNT_ID)
 			// Every grant moves the bar, whether or not it crossed a level.
 			await pushProgressionUpdate(c, id, progression)
@@ -3834,26 +3950,29 @@ const app = new Hono<App>({ strict: false })
 	)
 
 	// Subscription lookup (Rec Room Plus, the client's `CampusCard`). There is no store to
-	// buy one from, so the `developer` role stands in for a paid subscription: a developer
-	// reports an active Gold year, everyone else reports none. Nothing is stored — see
-	// `developerSubscription`.
+	// buy one from: Plus is claimed on the website by proving a Discord role, and reaches
+	// this worker as the token's `rn.plus` claim. A caller carrying it reports an active
+	// Gold year; everyone else reports none. Nothing about the subscription itself is
+	// stored, and nothing here reads the database — see `isSubscriber` and `plusSubscription`.
 	//
 	// Auth is OPTIONAL, and a missing or invalid token answers "no subscription" rather than
 	// 401: the client posts this while loading, so an error here can stall its load
 	// orchestration, and "you aren't subscribed" is the truthful answer for an anonymous
-	// caller anyway. The role is read from the token's `role` claim, never from the body.
+	// caller anyway. Never read from the body.
 	.post(
 		'/api/CampusCard/v1/UpdateAndGetSubscription',
 		describeRoute({
 			tags: ['Econ'],
 			summary: 'Subscription lookup',
 			description: [
-				'The caller’s Rec Room Plus subscription. Nothing sells subscriptions here, so the',
-				'operator-granted `developer` role stands in for one: a developer’s token reports an',
-				'active Gold (`Level` 0) yearly (`Period` 1) subscription on `PlatformType` -1 (All),',
-				'expiring a year from the call, and every other caller gets `{}`. Auth is optional —',
-				'a missing or invalid token reads as “not subscribed”, not 401. Nothing is persisted:',
-				'the role IS the subscription, so revoking it revokes this.',
+				'The caller’s Rec Room Plus subscription. Nothing sells subscriptions here: Plus is',
+				'claimed on the website by proving a qualifying role in the community Discord, and',
+				'arrives as the token’s `rn.plus` claim. A token carrying it reports an active Gold',
+				'(`Level` 0) yearly (`Period` 1) subscription on `PlatformType` -1 (All), expiring a',
+				'year from the call; every other caller gets `{}`. The `developer` role does NOT',
+				'confer it. Auth is optional — a missing or invalid token reads as “not subscribed”,',
+				'not 401. The subscription itself is not persisted, and because the claim is stamped',
+				'at login, a player who has just claimed must sign in again before it appears.',
 			].join(' '),
 			responses: {
 				200: json(SubscriptionResponse, 'The subscription, or `{}` for no subscription'),
@@ -3864,7 +3983,7 @@ const app = new Hono<App>({ strict: false })
 			const id = await authedId(c)
 			if (id === null) return c.json({})
 			return c.json({
-				Subscription: developerSubscription(id),
+				Subscription: plusSubscription(id),
 				PlatformAccountSubscribedPlayerId: null,
 			})
 		}

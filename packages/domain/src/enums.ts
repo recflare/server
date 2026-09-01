@@ -5,6 +5,39 @@
  * the tsconfig sets `isolatedModules` (which disallows `const enum` across files).
  */
 
+/**
+ * PlatformType, the client's platform enum. Declaration order is wire order. The
+ * `platform` form field is posted as the integer; a token's `platform` claim carries it
+ * too. `auth` re-exports this as the source for its OpenAPI schema and description.
+ *
+ * A plain `as const` object rather than an `enum` like its neighbours, and deliberately
+ * so: `auth` builds `PlatformTypeSchema`'s description by walking `Object.entries`, and a
+ * numeric TS enum also emits a REVERSE mapping (`{ '0': 'Steam', Steam: 0, … }`), which
+ * would double every member in the generated spec.
+ *
+ * Everything from `Steam` to `Pico` is a real Rec Room client platform, numbered by the
+ * client. `Discord` is OURS — it is not a platform anyone signs in from, and the client
+ * never sends it. It exists so a verified Discord identity can be stored as an account
+ * link like any other external identity (see `auth`'s platform-db and the website's
+ * benefits claim); it sits at 101, well clear of the client's range, so a future client
+ * platform can be added without colliding with it.
+ */
+export const PlatformType = {
+	All: -1,
+	Steam: 0,
+	Oculus: 1,
+	PlayStation: 2,
+	Xbox: 3,
+	RecNet: 4,
+	IOS: 5,
+	GooglePlay: 6,
+	Standalone: 7,
+	Pico: 8,
+	Discord: 101,
+} as const
+
+export type PlatformType = (typeof PlatformType)[keyof typeof PlatformType]
+
 /** The kind of a room instance (live session), matching the client's `RoomInstanceType`. */
 export enum RoomInstanceType {
 	Public = 0,

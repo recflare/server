@@ -119,12 +119,14 @@ export const SuccessErrorEnvelope = z.object({
 
 // ---- Config ----------------------------------------------------------------
 
-/** `GET /api/config/v1/amplitude` — analytics keys (all disabled on this server). */
+/** `GET /api/config/v1/amplitude` — the client's analytics keys (blank; RudderStack and StatSig off). */
 export const AmplitudeConfig = z.object({
 	AmplitudeKey: z.string(),
-	StatSigKey: z.string(),
-	RudderStackKey: z.string(),
 	UseRudderStack: z.boolean(),
+	RudderStackKey: z.string(),
+	UseStatSig: z.boolean(),
+	StatSigKey: z.string(),
+	StatSigEnvironment: z.number().int(),
 })
 
 /** `GET /api/config/v1/azurespeech` — speech-to-text config; `Enabled` is false here. */
@@ -420,6 +422,10 @@ export const InventionVersionDto = z.object({
 	ChipsCost: z.int(),
 	CloudVariablesCost: z.int(),
 	AICost: z.int(),
+	HasBetaContent: z
+		.boolean()
+		.optional()
+		.describe('Set from `v9/save` on — absent on a version saved through `v6/save`'),
 })
 
 /** A tag on an invention. `Type` 0 = custom (creator-submitted), 2 = auto-derived. */
@@ -456,10 +462,30 @@ export const InventionDto = z.object({
 	AllowTrial: z.boolean(),
 	HideFromPlayer: z.boolean(),
 	ReferencedInventions: z.array(z.int()),
+	ReferencedUnityAssetIds: z
+		.array(z.string())
+		.optional()
+		.describe('Set from `v9/save` on — absent on an invention saved through `v6/save`'),
+	UgcVersion: z
+		.int()
+		.optional()
+		.describe('An invention field, not a version one — set from `v9/save` on'),
+	LongDescription: z.string().optional().describe('Set from `v9/save` on, when non-empty'),
+	DisplayMetadataJson: z
+		.string()
+		.optional()
+		.describe('The client’s own display state, stored as the opaque string it sent'),
+	ConvertedFromInventionId: z
+		.int()
+		.optional()
+		.describe('The invention this one was converted from, when `v9/save` named one'),
 	Tags: z
 		.array(InventionTagDto)
 		.optional()
-		.describe('Unset on save — the real RRInvention carries no Tags field'),
+		.describe(
+			'The real RRInvention carries no Tags field. Unset by `v6/save`; set by `v9/save` ' +
+				'when its `tagsRequest` names at least one tag'
+		),
 })
 
 /** The `{ Status, Invention, InventionVersion }` envelope every invention write answers. */
@@ -467,6 +493,88 @@ export const InventionSaveResult = z.object({
 	Status: z.int().describe('0 = success'),
 	Invention: InventionDto,
 	InventionVersion: InventionVersionDto,
+})
+
+/**
+ * The `Invention` a v9 save answers with — the newer client's own `RRInvention`, which is
+ * not the record this server stores or the read endpoints serve: no nested
+ * `CurrentVersion` (the version rides beside it), no `Referenced*` (those moved onto the
+ * version), no `IsPublished`.
+ */
+export const InventionV9Dto = z.object({
+	InventionId: z.int(),
+	ReplicationId: z.string(),
+	CreatorPlayerId: z.int(),
+	Name: z.string(),
+	Description: z.string(),
+	ImageName: z.string(),
+	UgcVersion: z.int().describe('The UGC format the blob was written in; 0 when unsent'),
+	CurrentVersionNumber: z.int(),
+	LatestVersionNumber: z.int().describe('The same as CurrentVersionNumber on a fresh save'),
+	Accessibility: z.int(),
+	ForceCannotPublish: z.boolean().describe('Always false — nothing here forbids publishing'),
+	ModifiedAt: z.string(),
+	CreatedAt: z.string(),
+	FirstPublishedAt: z.string().nullable(),
+	CreationRoomId: z.int().nullable(),
+	NumPlayersHaveUsedInRoom: z.int(),
+	NumDownloads: z.int(),
+	CheerCount: z.int(),
+	CreatorPermission: z.int(),
+	GeneralPermission: z.int(),
+	IsAGInvention: z.boolean(),
+	IsCertifiedInvention: z.boolean(),
+	IsRecRoomApproved: z.boolean().describe('Always false — nothing here approves an invention'),
+	AllowTrial: z.boolean(),
+	Price: z.int().nullable(),
+	HideFromPlayer: z.boolean(),
+	DisplayMetadataJson: z.string().nullable(),
+})
+
+/**
+ * The `InventionVersion` a v9 save answers with. It carries `HasBetaContent`, a `CreatedAt`
+ * of its own and a nullable `UgcAccessibility`, and notably no `AICost` — which the request
+ * still sends and this server still stores.
+ */
+export const InventionVersionV9Dto = z.object({
+	InventionId: z.int(),
+	ReplicationId: z.string(),
+	VersionNumber: z.int(),
+	HasBetaContent: z.boolean(),
+	InstantiationCost: z.int(),
+	LightsCost: z.int(),
+	ChipsCost: z.int(),
+	CloudVariablesCost: z.int(),
+	BlobName: z.string(),
+	BlobHash: z.string().nullable(),
+	CreatedAt: z.string(),
+	UgcAccessibility: z.int().nullable().describe('Always null — versions carry no accessibility'),
+	ReferencedInventions: z.array(z.int()),
+	ReferencedUnityAssetIds: z.array(z.string()),
+})
+
+/**
+ * What `v9/save` answers — the enveloped result. The client checks `Success` and then reads
+ * `Value.Invention.InventionId`; `Error` is the only text it shows a human, and `Status`,
+ * `InventionVersion` and `TagsResponse` are deserialized and never read. `Success: true`
+ * with a null `Value` crashes it, so a refusal is `Success: false` with `Value: null`.
+ */
+export const InventionSaveV9Result = z.object({
+	Value: z
+		.object({
+			Status: z.int().describe('0 = success; the client never reads it on this route'),
+			Invention: InventionV9Dto,
+			InventionVersion: InventionVersionV9Dto,
+			TagsResponse: z.object({
+				Result: z.int().describe('0 = success; non-zero when a tag broke the tag rule'),
+				Tags: z.array(z.string()).describe('The stored tag NAMES, auto first, then custom'),
+			}),
+		})
+		.nullable()
+		.describe('Null when Success is false — and only then'),
+	Success: z.boolean(),
+	Error: z.string().nullable().describe('The refusal message; the only text the client shows'),
+	error_id: z.string().nullable().describe('Always null'),
 })
 
 /** The tag filter chips on a browse screen, derived from the tags actually in use. */
@@ -506,6 +614,76 @@ export const SetTagsResponse = z.object({
 	Tags: z.array(z.string()).describe('Auto tags first, then custom'),
 })
 
+/**
+ * `PUT /api/inventions/v2/metadata` JSON body — PascalCase, and every field but the id is
+ * NULLABLE: the newer client sends the whole shape on every edit and marks the fields it
+ * isn't touching as null. An empty string is not a null — it clears the field.
+ */
+export const UpdateInventionMetadataRequest = z.object({
+	InventionId: z.int(),
+	Name: z
+		.string()
+		.nullable()
+		.optional()
+		.describe('3–24 chars, letters/digits/spaces/dashes/colons; null leaves it alone'),
+	Description: z.string().nullable().optional().describe('Max 512 chars; empty clears it'),
+	LongDescription: z.string().nullable().optional().describe('Empty clears it'),
+	ImageName: z.string().nullable().optional().describe('New thumbnail; empty clears it'),
+	TagsRequest: z
+		.object({
+			AutoTags: z.array(z.string()).nullable().optional(),
+			CustomTags: z.array(z.string()).nullable().optional(),
+		})
+		.nullable()
+		.optional()
+		.describe('Replaces both lists wholesale, as `v1/settags` does; null leaves them alone'),
+})
+
+/**
+ * `POST /api/inventions/v4/publish` JSON body — PascalCase, and nullable the way
+ * `v2/metadata`'s is: a null field keeps what the invention already has.
+ */
+export const PublishInventionRequest = z.object({
+	InventionId: z.int(),
+	Permission: z
+		.int()
+		.nullable()
+		.optional()
+		.describe(
+			'The `GeneralPermission` other players get, as a raw ladder number: Unassigned 0, ' +
+				'LimitedOneUseOnly 10, DisallowKeyLock 15, UseOnly 20, EditAndSave 40, Publish 60, ' +
+				'Charge 80, Unlimited 100. Null publishes as UseOnly'
+		),
+	Accessibility: z
+		.int()
+		.nullable()
+		.optional()
+		.describe('Private 0, Public 1, Unlisted 2. Unlisted stays out of browse and search'),
+	Price: z
+		.int()
+		.nullable()
+		.optional()
+		.describe('Price in tokens; null leaves it as it is, and a negative one is ignored'),
+})
+
+/** `POST /api/inventions/v2/delete` JSON body — the id and nothing else. */
+export const DeleteInventionRequest = z.object({
+	InventionId: z.int().describe('The invention to delete; the caller must have created it'),
+})
+
+/**
+ * What `v2/delete` answers — the same `{ Value, Success, Error, error_id }` envelope the
+ * other newer-client invention routes use, with `Value` always null. The invention is
+ * gone, so there is nothing for the client to redraw from: it reads `Success`, and
+ * `Error` when that is false.
+ */
+export const InventionDeleteResult = z.object({
+	Value: z.null().describe('Always null — the invention no longer exists'),
+	Success: z.boolean(),
+	Error: z.string().nullable().describe('The refusal message; null on success'),
+	error_id: z.string().nullable().describe('Always null'),
+})
+
 /** `POST /api/inventions/v1/updateprice` JSON body. */
 export const UpdatePriceRequest = z.object({
 	InventionId: z.int(),
@@ -533,6 +711,34 @@ export const SaveInventionRequest = z.object({
 	aiCost: z.int().optional(),
 	creationRoomId: z.int().optional(),
 	referencedInventions: z.array(z.int()).optional(),
+	creatorAccountRole: z
+		.int()
+		.optional()
+		.describe('Accepted and ignored — a room role, not a permission over the invention'),
+})
+
+/**
+ * `POST /api/inventions/v9/save` JSON body — `v6`’s fields plus what the invention
+ * points at, what it says about itself, and the tags that used to need a second
+ * `v1/settags` call.
+ */
+export const SaveInventionV9Request = SaveInventionRequest.extend({
+	ugcVersion: z.int().optional().describe('The UGC format the blob was written in'),
+	hasBetaContent: z.boolean().optional(),
+	referencedUnityAssetIds: z.array(z.string()).optional(),
+	longDescription: z.string().optional().describe('Stored when non-empty'),
+	displayMetadataJson: z
+		.string()
+		.optional()
+		.describe('Opaque client display state, e.g. `{"0":0,"99":0}`; stored verbatim'),
+	convertedFromInventionId: z.int().nullable().optional(),
+	tagsRequest: z
+		.object({
+			AutoTags: z.array(z.string()).nullable().optional(),
+			CustomTags: z.array(z.string()).nullable().optional(),
+		})
+		.optional()
+		.describe('The same two lists `v1/settags` takes, folded into the save'),
 })
 
 // ---- Avatar / custom avatar items ------------------------------------------

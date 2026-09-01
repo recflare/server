@@ -66,6 +66,37 @@
 			"binding": "TURNSTILE_SECRET_KEY",
 			"store_id": "local",
 			"secret_name": "TURNSTILE_SECRET_KEY"
+		},
+		// The shared HS256 signing key, bound here for the ONE www route that acts on a
+		// specific account: the benefits claim writes `hasPlus` onto the caller's row, so it
+		// has to verify which account is calling rather than trust the SPA.
+		{
+			"binding": "JWT_SECRET",
+			"store_id": "local",
+			"secret_name": "JWT_SECRET"
+		},
+		// The Discord OAuth2 application behind the benefits claim. Same store, same
+		// public-key-beside-its-secret arrangement as the Turnstile pair: the client id
+		// ships to the browser to build the authorize URL, the secret never leaves the
+		// worker (see src/discord.ts).
+		//
+		//   wrangler secrets-store secret create <store-id> --name DISCORD_CLIENT_ID \
+		//     --scopes workers --remote
+		//   wrangler secrets-store secret create <store-id> --name DISCORD_CLIENT_SECRET \
+		//     --scopes workers --remote
+		//
+		// These two PLUS the DISCORD_GUILD_ID / DISCORD_BENEFITS_ROLE_IDS vars below are what
+		// OPENS the claim; with any of the four missing it stays closed, so an operator who
+		// skips this gets no claim rather than one that grants Plus without checking.
+		{
+			"binding": "DISCORD_CLIENT_ID",
+			"store_id": "local",
+			"secret_name": "DISCORD_CLIENT_ID"
+		},
+		{
+			"binding": "DISCORD_CLIENT_SECRET",
+			"store_id": "local",
+			"secret_name": "DISCORD_CLIENT_SECRET"
 		}
 	],
 	// The `auth` worker, reached directly instead of over its public hostname. This is
@@ -97,6 +128,25 @@
 		// (see run-wrangler-deploy). www serves these to the SPA via `/api/config`, which
 		// is how one client build works for any operator. For local dev, point it at a
 		// deployed domain so the page has real workers to call.
-		"DOMAIN": "rec.example.com"
+		"DOMAIN": "rec.example.com",
+		// The Discord server the benefits claim checks membership of, and the roles in it
+		// that grant Rec Room Plus. Every value here is a Discord SNOWFLAKE — all digits, no
+		// letters — copied off a client with Developer Mode on (right-click the server or the
+		// role → Copy ID). They are ids, not names: "Supporter" is what the role is called,
+		// 1077000000000000002 is what goes here. Not credentials, so they live in this file
+		// rather than in the Secrets Store; quoted as STRINGS because a snowflake exceeds
+		// 2^53 and would lose precision as a JSON number.
+		//
+		// ROLE_IDS is a LIST, separated by commas and/or whitespace. Any ONE of them
+		// qualifies, so several tiers can share the benefit:
+		//
+		//   "DISCORD_BENEFITS_ROLE_IDS": "1077000000000000001,1077000000000000002"
+		//
+		// Empty by default: an operator who hasn't set up a Discord app has no server to
+		// point at, and an empty value (or one that parses to no ids) closes the claim — see
+		// src/discord.ts `discordConfig` — instead of leaving a form that grants Plus to
+		// anyone who signs in with Discord.
+		"DISCORD_GUILD_ID": "",
+		"DISCORD_BENEFITS_ROLE_IDS": ""
 	}
 }
