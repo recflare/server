@@ -1,6 +1,20 @@
 import { Hono } from 'hono'
 import { describeRoute } from 'hono-openapi'
 
+import {
+	canModerateRoom,
+	deletePresence,
+	getPresences,
+	getRoomById,
+	getStoredRoomInstance,
+	refreshInstanceFullness,
+} from '@repo/domain'
+import { logger } from '@repo/hono-helpers'
+
+// The notification-type ids the hub carries (owned by the `notify` worker). Imported as a
+// value — the enum has no runtime dependencies.
+import { KickReportCategory } from '../../../notify/src/notification-payloads'
+import { NotificationType } from '../../../notify/src/notification-types'
 import { authedId, authedRoles, unauthorized } from '../http'
 import {
 	AUTHED,
@@ -9,8 +23,10 @@ import {
 	CreateWarningRequest,
 	DeviceIdRequest,
 	form,
+	InstantKickRequest,
 	json,
 	JsonArray,
+	jsonBody,
 	ModerationBlockDetails,
 	SuccessErrorEnvelope,
 	UNAUTHORIZED_RESPONSE,
@@ -20,6 +36,7 @@ import { createReport } from '../reports-db'
 import { createWarning } from '../warnings-db'
 
 import type { Context } from 'hono'
+import type { ModerationKickPayload } from '../../../notify/src/notification-payloads'
 import type { App } from '../context'
 
 /**
@@ -81,6 +98,64 @@ const VOTE_TO_KICK_REASONS = [
 	{ Reason: 'Prefab swapping', ReportCategory: 6 },
 	{ Reason: 'Not following game rules', ReportCategory: 6 },
 ] as const
+
+/** The notifications hub is a single global DO instance (see the `notify` worker). */
+const HUB_INSTANCE = 'global'
+
+/**
+ * Eject players from the instance they're standing in — the `ModerationKick` frame (id 22)
+ * the client acts on to leave a room, the same one a room ban sends (`rooms`:
+ * `pushRoomBan`). This one only kicks: `IsBan` is false, so nothing keeps them from walking
+ * straight back in, and no ban row exists to lift.
+ *
+ * Sent EPHEMERALLY, unlike the ban's frame, and to the whole batch in one round-trip. A
+ * kick is only true of the moment it happened: queued and delivered on the player's next
+ * connect it would throw them out of some unrelated session hours later. A recipient who
+ * has already gone offline needs no kick anyway.
+ *
+ * `GameSessionId` is the instance they're being removed from — every recipient is in it,
+ * which is what the caller checked before this runs. `IsHostKick` is always true: this
+ * endpoint is the room's own staff acting, never the room majority vote-kicking (that path
+ * would carry `VoteKick` and false). Built against the client's recovered payload interface
+ * so a renamed key fails the build rather than vanishing on the wire.
+ *
+ * Best-effort — presence is already deleted by the time this runs, so a hub hiccup must
+ * not fail the request.
+ */
+async function pushInstantKick(
+	c: Context<App>,
+	playerIds: number[],
+	gameSessionId: number,
+	roomName: string,
+	moderatorId: number
+): Promise<void> {
+	const frame: ModerationKickPayload = {
+		ReportCategory: KickReportCategory.Moderator,
+		Duration: 0,
+		GameSessionId: gameSessionId,
+		IsHostKick: true,
+		Message: `You have been kicked from ${roomName}.`,
+		PlayerIdReporter: moderatorId,
+		IsBan: false,
+		IsVoiceModAutoban: false,
+		IsWarning: false,
+		VoteKickReason: '',
+		TimeoutStartedAt: null,
+	}
+	try {
+		await c.env.RECFLARE_NOTIFICATIONS_HUB.getByName(HUB_INSTANCE).notifyPlayersEphemeral(
+			playerIds,
+			NotificationType.ModerationKick,
+			{ ...frame }
+		)
+	} catch (err) {
+		logger.error('failed to push ModerationKick notification', {
+			playerIds,
+			gameSessionId,
+			error: err instanceof Error ? err.message : String(err),
+		})
+	}
+}
 
 // ---- Player reporting ------------------------------------------------------
 export const moderationRoutes = new Hono<App>({ strict: false })
@@ -252,6 +327,105 @@ export const moderationRoutes = new Hono<App>({ strict: false })
 				roomId: roomId !== null && roomId > 0 ? roomId : null,
 				roomInstanceType: formField(body, c, 'RoomInstanceType') ?? null,
 			})
+
+			return c.json({ success: true, error: '' })
+		}
+	)
+
+	// The kick a room's own staff hand out from the moderation menu: eject named players
+	// from ONE live instance. Two gates, and both matter — the caller must be able to
+	// moderate the room the instance belongs to, and each named player must actually be
+	// standing in that instance. Without the second, a creator could name any account id
+	// and kick a stranger out of somebody else's room.
+	.post(
+		'/api/PlayerReporting/v1/instantKick',
+		describeRoute({
+			tags: ['Moderation'],
+			summary: 'Kick players out of a room instance',
+			description:
+				'Ejects the named players from one live room instance. `GameSessionId` is that ' +
+				'instance (`roomInstanceId`); the body is JSON, unlike the form posts elsewhere in ' +
+				'this controller.\n\n' +
+				'Gated to the instance’s room: the caller must be its creator or hold a role of ' +
+				'Moderator (20) or above on it — anyone else with a valid token gets a 403. ' +
+				'Nobody who can moderate the room can be kicked out of it, and a caller cannot ' +
+				'kick themselves.\n\n' +
+				'A player is only kicked if their live `presence` row puts them in **that** ' +
+				'instance. Anyone else named — offline, or standing in another room — is skipped ' +
+				'in silence, so naming an account id cannot reach into a session the caller has ' +
+				'no authority over.\n\n' +
+				'Each kicked player loses their presence row (they read offline at once and the ' +
+				'instance frees a slot) and gets a `ModerationKick` frame (id 22) — the frame the ' +
+				'client acts on to leave. It is the same frame a room ban sends, but `IsBan` is ' +
+				'false: this only removes them from the session they are in, and nothing stops ' +
+				'them rejoining. The frame is EPHEMERAL — a kick is true of the moment it ' +
+				'happened, and queueing one would eject the player from an unrelated session on ' +
+				'their next connect.\n\n' +
+				'Answers the same lowercase `{ success, error }` envelope the report write uses, ' +
+				'and says nothing about who was actually kicked — the response shape is ' +
+				'unverified against the real service.',
+			security: AUTHED,
+			requestBody: jsonBody(InstantKickRequest, 'The instance and the players to eject'),
+			responses: {
+				200: json(SuccessErrorEnvelope, '`{ success: true, error: "" }`'),
+				400: json(SuccessErrorEnvelope, 'Unparseable body, no `GameSessionId` or no `PlayerIds`'),
+				401: UNAUTHORIZED_RESPONSE,
+				403: json(SuccessErrorEnvelope, 'The caller cannot moderate the instance’s room'),
+				404: json(SuccessErrorEnvelope, 'No such game session'),
+			},
+		}),
+		async (c) => {
+			const moderatorId = await authedId(c)
+			if (moderatorId === null) return unauthorized(c)
+
+			const body = (await c.req.json().catch(() => null)) as {
+				GameSessionId?: unknown
+				PlayerIds?: unknown
+			} | null
+			if (body === null) return c.json({ success: false, error: 'Invalid request body' }, 400)
+
+			const gameSessionId = typeof body.GameSessionId === 'number' ? body.GameSessionId : Number.NaN
+			if (!Number.isInteger(gameSessionId)) {
+				return c.json({ success: false, error: 'GameSessionId is required' }, 400)
+			}
+			const playerIds = Array.isArray(body.PlayerIds)
+				? body.PlayerIds.filter((id): id is number => Number.isInteger(id))
+				: []
+			if (playerIds.length === 0) {
+				return c.json({ success: false, error: 'PlayerIds is required' }, 400)
+			}
+
+			// The instance names the room, and the room carries the roles this is gated on —
+			// a game session with no room behind it can't authorise anything.
+			const instance = await getStoredRoomInstance(c.env.DB, gameSessionId)
+			const room = instance && (await getRoomById(c.env.DB, instance.roomId))
+			if (!room) return c.json({ success: false, error: 'This game session does not exist!' }, 404)
+			if (!canModerateRoom(room, moderatorId)) {
+				return c.json({ success: false, error: 'Forbidden' }, 403)
+			}
+
+			// One read for the batch. A player is kicked only when their LIVE presence puts
+			// them in this very instance: offline, expired or standing elsewhere are all the
+			// same "not here", and are skipped rather than refused — the client sends a list
+			// and one stale id in it must not sink the rest.
+			const presences = await getPresences<{ roomInstanceId?: number }>(c.env.DB, playerIds)
+			const kicked: number[] = []
+			for (const playerId of playerIds) {
+				// The room's own staff are not kickable out of their room — otherwise a
+				// moderator could throw the creator out of it. Nor is the caller themselves.
+				if (playerId === moderatorId || canModerateRoom(room, playerId)) continue
+				if (presences.get(playerId)?.roomInstance?.roomInstanceId !== gameSessionId) continue
+				await deletePresence(c.env.DB, playerId)
+				kicked.push(playerId)
+			}
+
+			if (kicked.length > 0) {
+				// The instance just lost players — recompute its fullness so a full room opens
+				// back up, exactly as the `match` worker does when someone logs out.
+				await refreshInstanceFullness(c.env.DB, gameSessionId)
+				const roomName = typeof room.Name === 'string' ? room.Name : 'this room'
+				await pushInstantKick(c, kicked, gameSessionId, roomName, moderatorId)
+			}
 
 			return c.json({ success: true, error: '' })
 		}

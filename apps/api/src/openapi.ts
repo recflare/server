@@ -1304,6 +1304,17 @@ export const CreateWarningRequest = z.object({
 	ModeratorNote: z.string().optional().describe('Internal note; never shown to the player'),
 })
 
+/**
+ * `POST /api/PlayerReporting/v1/instantKick` JSON body — the players a room's staff are
+ * ejecting from one live instance. JSON, not a form, unlike its neighbours in this
+ * controller. `GameSessionId` is the room INSTANCE id (`roomInstanceId`); the kick is
+ * scoped to it, so a player named here who is standing somewhere else is left alone.
+ */
+export const InstantKickRequest = z.object({
+	GameSessionId: z.int().describe('The room instance (game session) to eject them from'),
+	PlayerIds: z.array(z.int()).describe('Account ids to kick out of that instance'),
+})
+
 /** `POST /api/PlayerReporting/v1/deviceId` form body — the id rotation the client reports. */
 export const DeviceIdRequest = z.object({
 	oldDeviceId: z.string().optional().describe('The id the client thinks we hold'),

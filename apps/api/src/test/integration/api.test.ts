@@ -20,6 +20,7 @@ import {
 	PRESENCE_TTL_SECONDS,
 	PROGRESSION_SCHEMA_DDL,
 	RELATIONSHIP_SCHEMA_DDL,
+	ROOM_INSTANCE_SCHEMA_DDL,
 	ROOM_SCHEMA_DDL,
 	seedRoomWithSubRooms,
 	SUBROOM_SCHEMA_DDL,
@@ -94,6 +95,19 @@ const TEST_ROOMS = [
 		SubRooms: [{ SubRoomId: 3 }],
 		Roles: [{ AccountId: 42, Role: 30, LastChangedByAccountId: null, InvitedRole: 0 }],
 	},
+	{
+		// The instant kick's room. Owned by account 42 (the default test token); 43 holds
+		// Moderator (20) and 44 only Host (10) — the tier just below that gate.
+		RoomId: 4,
+		Name: 'KickRoom',
+		IsDorm: false,
+		CreatorAccountId: 42,
+		SubRooms: [{ SubRoomId: 4 }],
+		Roles: [
+			{ AccountId: 43, Role: 20, LastChangedByAccountId: null, InvitedRole: 0 },
+			{ AccountId: 44, Role: 10, LastChangedByAccountId: null, InvitedRole: 0 },
+		],
+	},
 ]
 
 beforeAll(async () => {
@@ -131,6 +145,10 @@ beforeAll(async () => {
 
 	// Presence (owned by the rooms worker) — the online-friend count joins onto it.
 	for (const stmt of PRESENCE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+
+	// Room instances (owned by the rooms worker) — the instant kick resolves the game
+	// session it is given to the room whose staff may kick from it.
+	for (const stmt of ROOM_INSTANCE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 
 	// Outfit table (owned by the econ worker) — /outfits/me reads and writes slot 0.
 	for (const stmt of OUTFIT_SCHEMA_DDL) await env.DB.prepare(stmt).run()
@@ -3987,6 +4005,217 @@ describe('custom avatar items', () => {
 	})
 })
 
+describe('instant kick', () => {
+	// The game session the kick names, and one belonging to the same room that must be
+	// left out of it.
+	const SESSION = 1013781
+	const OTHER_SESSION = 1013782
+
+	const hub = () => env.RECFLARE_NOTIFICATIONS_HUB.getByName('global')
+
+	// Room instances are written by the `match` worker; seeded straight into the table
+	// here, the way the presence rows below are.
+	const seedInstance = async (roomInstanceId: number, maxCapacity = 0, isFull = false) =>
+		env.DB.prepare('INSERT OR REPLACE INTO room_instance (data) VALUES (?1)')
+			.bind(
+				JSON.stringify({
+					roomInstanceId,
+					ownerAccountId: 42,
+					roomId: 4,
+					subRoomId: 4,
+					location: '',
+					dataBlob: '',
+					eventId: 0,
+					photonRegionId: 'us',
+					photonRoomId: `photon-${roomInstanceId}`,
+					name: '',
+					maxCapacity,
+					isFull,
+					isPrivate: false,
+					isInProgress: false,
+					roomCode: '',
+					roomInstanceType: 0,
+					clubId: 0,
+					EncryptVoiceChat: false,
+					matchmakingPolicy: 0,
+					allowNewUsers: true,
+					joinDisabled: false,
+					gameVersion: GAME_VERSION,
+					createdAt: new Date().toISOString(),
+				})
+			)
+			.run()
+
+	const standIn = async (accountId: number, roomInstanceId: number) =>
+		env.DB.prepare('INSERT OR REPLACE INTO presence (data) VALUES (?1)')
+			.bind(
+				JSON.stringify({
+					accountId,
+					roomInstance: { roomInstanceId, roomId: 4 },
+					statusVisibility: 0,
+					deviceClass: 0,
+					vrMovementMode: 0,
+					platform: 0,
+					appVersion: GAME_VERSION,
+					expiresAt: Math.floor(Date.now() / 1000) + PRESENCE_TTL_SECONDS,
+				})
+			)
+			.run()
+
+	const isPresent = async (accountId: number) =>
+		(await env.DB.prepare('SELECT COUNT(*) AS n FROM presence WHERE account_id = ?1')
+			.bind(accountId)
+			.first<{ n: number }>())!.n === 1
+
+	const isFull = async (roomInstanceId: number) =>
+		(await env.DB.prepare('SELECT is_full AS full FROM room_instance WHERE id = ?1')
+			.bind(roomInstanceId)
+			.first<{ full: number }>())!.full === 1
+
+	const kick = async (body: unknown, sub = '42') =>
+		exports.default.fetch(`${ORIGIN}/api/PlayerReporting/v1/instantKick`, {
+			method: 'POST',
+			headers: { ...(await bearer(sub)), 'Content-Type': 'application/json' },
+			body: JSON.stringify(body),
+		})
+
+	const frames = async () =>
+		(await (await hub().fetch('http://do/all')).json()) as Array<{
+			playerIds?: number[]
+			ephemeral?: boolean
+			notificationType: number
+			data: Record<string, unknown>
+		}>
+
+	test('the room’s creator kicks a player out of the session they name', async () => {
+		await hub().fetch('http://do/all', { method: 'DELETE' })
+		// A full two-player instance: 205 is kicked, 206 stays.
+		await seedInstance(SESSION, 2, true)
+		await standIn(205, SESSION)
+		await standIn(206, SESSION)
+
+		const res = await kick({ GameSessionId: SESSION, PlayerIds: [205] })
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ success: true, error: '' })
+
+		// Presence is deleted, so they read offline at once — and only theirs is.
+		expect(await isPresent(205)).toBe(false)
+		expect(await isPresent(206)).toBe(true)
+		// The instance lost a player, so it is no longer full.
+		expect(await isFull(SESSION)).toBe(false)
+
+		// One EPHEMERAL ModerationKick, addressed to the kicked player only. `IsBan` is
+		// false — this ejects them from the session and nothing more.
+		expect(await frames()).toEqual([
+			{
+				playerIds: [205],
+				ephemeral: true,
+				notificationType: 22, // NotificationType.ModerationKick
+				data: {
+					ReportCategory: -1, // KickReportCategory.Moderator
+					Duration: 0,
+					GameSessionId: SESSION,
+					IsHostKick: true,
+					Message: 'You have been kicked from KickRoom.',
+					PlayerIdReporter: 42,
+					IsBan: false,
+					IsVoiceModAutoban: false,
+					IsWarning: false,
+					VoteKickReason: '',
+					TimeoutStartedAt: null,
+				},
+			},
+		])
+	})
+
+	// The gate that stops a creator kicking a stranger out of somebody else's session by
+	// naming their account id.
+	test('a player who is not in that session is skipped in silence', async () => {
+		await hub().fetch('http://do/all', { method: 'DELETE' })
+		await seedInstance(SESSION)
+		await seedInstance(OTHER_SESSION)
+		await standIn(207, OTHER_SESSION)
+
+		// 207 stands in another instance; 208 is offline entirely.
+		const res = await kick({ GameSessionId: SESSION, PlayerIds: [207, 208] })
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ success: true, error: '' })
+		expect(await isPresent(207)).toBe(true)
+		expect(await frames()).toEqual([])
+	})
+
+	test('a room moderator may kick; a host, a stranger and no token may not', async () => {
+		await seedInstance(SESSION)
+		await standIn(209, SESSION)
+
+		// 43 holds Moderator (20) on the room.
+		expect((await kick({ GameSessionId: SESSION, PlayerIds: [209] }, '43')).status).toBe(200)
+		expect(await isPresent(209)).toBe(false)
+
+		await standIn(209, SESSION)
+		// 44 is only a Host (10), and 99 holds nothing at all.
+		for (const sub of ['44', '99']) {
+			const res = await kick({ GameSessionId: SESSION, PlayerIds: [209] }, sub)
+			expect(res.status, sub).toBe(403)
+			expect(await res.json()).toEqual({ success: false, error: 'Forbidden' })
+		}
+		expect(await isPresent(209)).toBe(true)
+
+		const anon = await exports.default.fetch(`${ORIGIN}/api/PlayerReporting/v1/instantKick`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ GameSessionId: SESSION, PlayerIds: [209] }),
+		})
+		expect(anon.status).toBe(401)
+	})
+
+	// Otherwise a moderator could throw the room's own creator out of it.
+	test('the room’s staff — and the caller — cannot be kicked', async () => {
+		await hub().fetch('http://do/all', { method: 'DELETE' })
+		await seedInstance(SESSION)
+		await standIn(42, SESSION)
+		await standIn(43, SESSION)
+
+		// 43 (a moderator) names the creator, a fellow moderator and themselves.
+		const res = await kick({ GameSessionId: SESSION, PlayerIds: [42, 43] }, '43')
+		expect(res.status).toBe(200)
+		expect(await isPresent(42)).toBe(true)
+		expect(await isPresent(43)).toBe(true)
+		expect(await frames()).toEqual([])
+	})
+
+	test('an unknown session 404s, and the body must name a session and players', async () => {
+		await seedInstance(SESSION)
+		const unknown = await kick({ GameSessionId: 999999, PlayerIds: [205] })
+		expect(unknown.status).toBe(404)
+		expect(await unknown.json()).toEqual({
+			success: false,
+			error: 'This game session does not exist!',
+		})
+
+		for (const [body, error] of [
+			[{ PlayerIds: [205] }, 'GameSessionId is required'],
+			[{ GameSessionId: 'nope', PlayerIds: [205] }, 'GameSessionId is required'],
+			[{ GameSessionId: SESSION }, 'PlayerIds is required'],
+			[{ GameSessionId: SESSION, PlayerIds: [] }, 'PlayerIds is required'],
+			[{ GameSessionId: SESSION, PlayerIds: ['205'] }, 'PlayerIds is required'],
+		] as Array<[unknown, string]>) {
+			const res = await kick(body)
+			expect(res.status, error).toBe(400)
+			expect(await res.json()).toEqual({ success: false, error })
+		}
+
+		// A body that isn't JSON at all is the same shape, not a crash.
+		const broken = await exports.default.fetch(`${ORIGIN}/api/PlayerReporting/v1/instantKick`, {
+			method: 'POST',
+			headers: { ...(await bearer()), 'Content-Type': 'application/json' },
+			body: 'not json',
+		})
+		expect(broken.status).toBe(400)
+		expect(await broken.json()).toEqual({ success: false, error: 'Invalid request body' })
+	})
+})
+
 describe('player reports', () => {
 	const submit = async (fields: Record<string, string>, headers?: Record<string, string>) =>
 		exports.default.fetch(`${ORIGIN}/api/PlayerReporting/v3/create`, {
@@ -7001,6 +7230,7 @@ describe('openapi', () => {
 			'POST /api/PlayerCheer/v1/create',
 			'POST /api/PlayerReporting/v1/deviceId',
 			'POST /api/PlayerReporting/v1/hile',
+			'POST /api/PlayerReporting/v1/instantKick',
 			'POST /api/PlayerReporting/v1/moderationBlockDetails',
 			'POST /api/PlayerReporting/v1/referee',
 			'POST /api/PlayerReporting/v3/create',

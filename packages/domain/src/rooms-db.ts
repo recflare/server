@@ -211,6 +211,22 @@ export function canManageRoom(room: Room, accountId: number): boolean {
 	return roles.some((r) => r.AccountId === accountId && MANAGE_ROLES.has(r.Role))
 }
 
+/**
+ * Whether an account may MODERATE a room — its creator, or the holder of a role at
+ * Moderator (20) or above. The wider gate that {@link canManageRoom} is the narrow one
+ * of: a moderator polices who is in the room right now (kicking someone out of an
+ * instance) without being trusted to change the room itself, while everyone who can
+ * manage a room can obviously also police it, so CoOwner and Creator pass here too.
+ *
+ * Host (10) is deliberately below the line: it is the "runs this session" tier, which the
+ * client hands out freely, and a kick is a moderation power rather than a hosting one.
+ */
+export function canModerateRoom(room: Room, accountId: number): boolean {
+	if (room.CreatorAccountId === accountId) return true
+	const roles = Array.isArray(room.Roles) ? (room.Roles as RoomRole[]) : []
+	return roles.some((r) => r.AccountId === accountId && r.Role >= Role.Moderator)
+}
+
 /** A player banned from a room (a `room_ban` row). */
 export interface RoomBan {
 	RoomId: number
