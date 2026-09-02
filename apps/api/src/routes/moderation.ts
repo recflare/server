@@ -4,9 +4,11 @@ import { describeRoute } from 'hono-openapi'
 import {
 	canModerateRoom,
 	deletePresence,
+	getPlayerIdsInInstance,
 	getPresences,
 	getRoomById,
 	getStoredRoomInstance,
+	MessageType,
 	refreshInstanceFullness,
 } from '@repo/domain'
 import { logger } from '@repo/hono-helpers'
@@ -31,6 +33,7 @@ import {
 	SuccessErrorEnvelope,
 	UNAUTHORIZED_RESPONSE,
 	VoteToKickReason,
+	VoteToKickRequest,
 } from '../openapi'
 import { createReport } from '../reports-db'
 import { createWarning } from '../warnings-db'
@@ -154,6 +157,69 @@ async function pushInstantKick(
 			gameSessionId,
 			error: err instanceof Error ? err.message : String(err),
 		})
+	}
+}
+
+/**
+ * What a vote-to-kick Message's `Data` says, BEFORE it is serialized. It reaches the
+ * client as an escaped JSON string, never as a nested object — a Message's `Data` is a
+ * string on the wire like every other Message's, and the client's decoder rejects an
+ * object outright: `expected:'String Begin Token', actual:'{'`, which aborts the whole
+ * notification rather than dropping the field. Serialize it with {@link voteToKickData}.
+ *
+ * `PlayerId` is the account id as a STRING — the reference passes the posted form field
+ * straight through, and this mirrors it verbatim.
+ *
+ * `Response` is the empty string even though the caller posted their own vote: the frame
+ * is the PROMPT put to everyone else, so it carries no answer yet. The caller's `Response`
+ * is theirs alone and is not relayed.
+ */
+interface VoteToKickData {
+	PlayerId: string
+	Response: string
+	GameSessionId: number
+}
+
+/** Serialize a {@link VoteToKickData} into the escaped JSON string `Data` carries. */
+const voteToKickData = (data: VoteToKickData): string => JSON.stringify(data)
+
+/**
+ * The Message a vote-to-kick frame carries — the same four fields as every other Message
+ * this server sends (see the `social` routes' `Message`), `Data` string included. A type
+ * alias rather than an interface: the hub's send takes an index-signature record, which
+ * only aliases satisfy implicitly.
+ */
+type VoteToKickMessage = {
+	FromPlayerId: number
+	ToPlayerId: number
+	Type: number
+	Data: string
+}
+
+/**
+ * Put a vote-to-kick to one player — a `MessageReceived` frame carrying a Message of type
+ * 5 (`VoteToKick`), the frame their client raises the vote prompt from. Resolves false when
+ * the hub could not be reached, which the caller reports honestly: nothing stores a vote,
+ * so the notification is the whole delivery.
+ *
+ * EPHEMERAL, unlike the messages the social routes send. A vote belongs to the moment it
+ * was called: queued for an offline player, it would raise a prompt on their next connect
+ * about a session that ended hours ago, and there would be nothing left to vote on.
+ */
+async function pushVoteToKick(c: Context<App>, message: VoteToKickMessage): Promise<boolean> {
+	try {
+		await c.env.RECFLARE_NOTIFICATIONS_HUB.getByName(HUB_INSTANCE).notifyPlayerEphemeral(
+			message.ToPlayerId,
+			NotificationType.MessageReceived,
+			message
+		)
+		return true
+	} catch (err) {
+		logger.error('failed to push VoteToKick MessageReceived notification', {
+			toPlayerId: message.ToPlayerId,
+			error: err instanceof Error ? err.message : String(err),
+		})
+		return false
 	}
 }
 
@@ -327,6 +393,113 @@ export const moderationRoutes = new Hono<App>({ strict: false })
 				roomId: roomId !== null && roomId > 0 ? roomId : null,
 				roomInstanceType: formField(body, c, 'RoomInstanceType') ?? null,
 			})
+
+			return c.json({ success: true, error: '' })
+		}
+	)
+
+	// A player calling a vote to kick another. Ungated by role — anyone may start one —
+	// but both players have to be standing in the session the vote is called in, which is
+	// what stops a client putting a vote to a room it isn't in, about someone who isn't
+	// there. Nothing tallies the votes yet: this relays the prompt and no more.
+	.post(
+		'/api/PlayerReporting/v3/voteToKick',
+		describeRoute({
+			tags: ['Moderation'],
+			summary: 'Call a vote to kick a player',
+			description:
+				'Puts a vote-to-kick to the room instance. Open to any player — no role is ' +
+				'required — but BOTH the caller and `PlayerId` must have a live `presence` row in ' +
+				'the instance `GameSessionId` names, or the call is refused with a 403. That is ' +
+				'the whole gate: without it a client could raise a vote in a session it is not ' +
+				'in, or against a player who is not there.\n\n' +
+				'Everyone else in that instance — the player being voted on included, since a ' +
+				'vote is called in front of them — gets a `MessageReceived` frame carrying a ' +
+				'Message of type 5 (`VoteToKick`). The caller is left out: they have voted ' +
+				'already, and their own `Response` is what they posted.\n\n' +
+				'`Data` is an ESCAPED JSON STRING — `"{\\"PlayerId\\":\\"205\\",…}"`, not a nested ' +
+				'object. A Message’s `Data` is a string on the wire, and an object there fails the ' +
+				"client’s decoder outright (`expected:'String Begin Token', actual:'{'`), " +
+				'aborting the notification rather than dropping the field. Inside it, `PlayerId` ' +
+				'is the account id as a STRING, as the reference relays it, and `Response` is ' +
+				'empty — the frame is the question, not an answer.\n\n' +
+				'The frames are EPHEMERAL: a vote belongs to the moment it was called, so an ' +
+				'offline player gets nothing rather than a prompt about a dead session on their ' +
+				'next connect.\n\n' +
+				'Nothing is stored — no tally, no report row, and `Reason` is accepted and ' +
+				'unused. Answers the same lowercase `{ success, error }` envelope as the report ' +
+				'write; a hub failure for any recipient is reported honestly as a 500, since ' +
+				'with nothing behind it the frame is the whole delivery.',
+			security: AUTHED,
+			requestBody: form(VoteToKickRequest, 'The vote'),
+			responses: {
+				200: json(SuccessErrorEnvelope, '`{ success: true, error: "" }`'),
+				400: json(SuccessErrorEnvelope, 'No `PlayerId` or no `GameSessionId`'),
+				401: UNAUTHORIZED_RESPONSE,
+				403: json(SuccessErrorEnvelope, 'Either player is not in that game session'),
+				500: json(SuccessErrorEnvelope, 'The notifications hub could not be reached'),
+			},
+		}),
+		async (c) => {
+			const voterId = await authedId(c)
+			if (voterId === null) return unauthorized(c)
+
+			const body = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>)
+			// Kept as posted for the frame — `Data.PlayerId` goes out as the string the
+			// reference relays — but parsed here to check it against presence.
+			const playerIdField = formField(body, c, 'PlayerId')
+			const playerId = asInt(playerIdField)
+			if (playerIdField === undefined || playerId === null) {
+				return c.json({ success: false, error: 'PlayerId is required' }, 400)
+			}
+			const gameSessionId = asInt(formField(body, c, 'GameSessionId'))
+			if (gameSessionId === null) {
+				return c.json({ success: false, error: 'GameSessionId is required' }, 400)
+			}
+
+			// One read for both players. A vote may only be called by someone standing in the
+			// session, about someone standing in the same one — the session is read from live
+			// presence, never from the body, so neither side can be asserted by the client.
+			const presences = await getPresences<{ roomInstanceId?: number }>(c.env.DB, [
+				voterId,
+				playerId,
+			])
+			const isHere = (id: number) =>
+				presences.get(id)?.roomInstance?.roomInstanceId === gameSessionId
+			if (!isHere(voterId)) {
+				return c.json({ success: false, error: 'You are not in that game session!' }, 403)
+			}
+			if (!isHere(playerId)) {
+				return c.json({ success: false, error: 'That player is not in that game session!' }, 403)
+			}
+
+			// The room votes, so the audience is everyone standing there — the player being
+			// voted on included; a vote is called in front of them. The caller is dropped:
+			// their vote is the one they just posted.
+			const audience = (await getPlayerIdsInInstance(c.env.DB, gameSessionId)).filter(
+				(id) => id !== voterId
+			)
+
+			// Every recipient is attempted even if an earlier one fails, so the reachable
+			// players still get the vote.
+			const results = await Promise.all(
+				audience.map((toPlayerId) =>
+					pushVoteToKick(c, {
+						FromPlayerId: voterId,
+						ToPlayerId: toPlayerId,
+						Type: MessageType.VoteToKick,
+						// An escaped JSON STRING, not a nested object — see VoteToKickData.
+						Data: voteToKickData({
+							PlayerId: playerIdField,
+							Response: '',
+							GameSessionId: gameSessionId,
+						}),
+					})
+				)
+			)
+			if (results.includes(false)) {
+				return c.json({ success: false, error: 'Failed to deliver vote' }, 500)
+			}
 
 			return c.json({ success: true, error: '' })
 		}

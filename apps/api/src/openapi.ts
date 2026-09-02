@@ -1305,6 +1305,22 @@ export const CreateWarningRequest = z.object({
 })
 
 /**
+ * `POST /api/PlayerReporting/v3/voteToKick` form body — a player calling a vote on
+ * another. Everything is a string on the wire (it's form-encoded). `Reason` is one of the
+ * labels `GET /api/PlayerReporting/v1/voteToKickReasons` serves; the voter is NOT in the
+ * body — it's the bearer token's subject.
+ */
+export const VoteToKickRequest = z.object({
+	PlayerId: z.string().describe('Account id of the player being voted on'),
+	Response: z.string().describe('The caller’s own vote, e.g. `True`'),
+	Reason: z
+		.string()
+		.optional()
+		.describe('A `voteToKickReasons` label, e.g. `Inactive in games (AFK)`'),
+	GameSessionId: z.string().describe('The room instance both players are standing in'),
+})
+
+/**
  * `POST /api/PlayerReporting/v1/instantKick` JSON body — the players a room's staff are
  * ejecting from one live instance. JSON, not a form, unlike its neighbours in this
  * controller. `GameSessionId` is the room INSTANCE id (`roomInstanceId`); the kick is

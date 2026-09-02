@@ -183,6 +183,13 @@ inconsistency here without checking the client first.
 - The cheer's reply is `{ Success, Message }` — PascalCase, with `Message` NULL on success.
   That is NOT the lowercase `{ success, error: "" }` envelope the reports and warnings use;
   the two live side by side in the same worker and must not be unified.
+- A Message's `Data` (every `MessageReceived` frame) is a STRING on the wire, so a payload
+  with structure to it goes in ESCAPED — `"Data": "{\"PlayerId\":\"205\"}"`, never a nested
+  object. An object there does not degrade: the client's decoder rejects it outright
+  (`expected:'String Begin Token', actual:'{'`) and loses the whole notification, not just
+  the field. Bites the vote-to-kick message (`api`: `POST /api/PlayerReporting/v3/voteToKick`,
+  whose `Data` carries `{ PlayerId, Response, GameSessionId }` — `PlayerId` a string inside
+  it, as the reference relays it) and, the same way, a chat message's `Contents`.
 - Leaderboard `Rank` (`leaderboard`: `GetRanks`, `GetNearbyScores`, `GetPlayerRank`) is
   0-BASED — the client adds one before it draws, so a `Rank` of 1 shows in game as second
   place and the top of a board must be 0. Its own slice says the same: it asks for the first

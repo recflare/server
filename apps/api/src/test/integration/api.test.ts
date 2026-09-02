@@ -4216,6 +4216,163 @@ describe('instant kick', () => {
 	})
 })
 
+describe('vote to kick', () => {
+	// Two live sessions, so a vote called in one can be checked against a player in the
+	// other. Nothing reads `room_instance` here — the gate is presence alone.
+	const SESSION = 1014079
+	const OTHER_SESSION = 1014080
+
+	const hub = () => env.RECFLARE_NOTIFICATIONS_HUB.getByName('global')
+
+	const standIn = async (accountId: number, roomInstanceId: number) =>
+		env.DB.prepare('INSERT OR REPLACE INTO presence (data) VALUES (?1)')
+			.bind(
+				JSON.stringify({
+					accountId,
+					roomInstance: { roomInstanceId, roomId: 4 },
+					statusVisibility: 0,
+					deviceClass: 0,
+					vrMovementMode: 0,
+					platform: 0,
+					appVersion: GAME_VERSION,
+					expiresAt: Math.floor(Date.now() / 1000) + PRESENCE_TTL_SECONDS,
+				})
+			)
+			.run()
+
+	// The body the client posts: `PlayerId=205&Response=True&Reason=…&GameSessionId=…`.
+	const vote = async (fields: Record<string, string>, sub = '42') =>
+		exports.default.fetch(`${ORIGIN}/api/PlayerReporting/v3/voteToKick`, {
+			method: 'POST',
+			headers: { ...(await bearer(sub)), 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams(fields),
+		})
+
+	const frames = async () =>
+		(await (await hub().fetch('http://do/all')).json()) as Array<{
+			playerId?: number
+			ephemeral?: boolean
+			notificationType: number
+			data: Record<string, unknown>
+		}>
+
+	const FIELDS = {
+		PlayerId: '205',
+		Response: 'True',
+		Reason: 'Inactive in games (AFK)',
+		GameSessionId: String(SESSION),
+	}
+
+	test('the vote goes to everyone in the session except the caller', async () => {
+		await hub().fetch('http://do/all', { method: 'DELETE' })
+		// 42 calls the vote, 205 is voted on, 206 is a bystander; 207 stands elsewhere.
+		await standIn(42, SESSION)
+		await standIn(205, SESSION)
+		await standIn(206, SESSION)
+		await standIn(207, OTHER_SESSION)
+
+		const res = await vote(FIELDS)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ success: true, error: '' })
+
+		// One frame each for 205 and 206 — the player voted on gets it too (the vote is
+		// called in front of them), the caller does not, and 207 is in another session.
+		// `Data` is an ESCAPED JSON STRING, not a nested object: an object there fails the
+		// client's decoder (`expected:'String Begin Token', actual:'{'`) and takes the whole
+		// notification with it. `PlayerId` inside it is a STRING, as the reference relays it,
+		// and `Response` is empty because the frame is the question, not an answer.
+		const message = {
+			ephemeral: true,
+			notificationType: 2, // NotificationType.MessageReceived
+			data: {
+				FromPlayerId: 42,
+				Type: MessageType.VoteToKick,
+				Data: `{"PlayerId":"205","Response":"","GameSessionId":${SESSION}}`,
+			},
+		}
+		const sent = await frames()
+		expect(sent).toHaveLength(2)
+		expect(sent).toContainEqual({
+			...message,
+			playerId: 205,
+			data: { ...message.data, ToPlayerId: 205 },
+		})
+		expect(sent).toContainEqual({
+			...message,
+			playerId: 206,
+			data: { ...message.data, ToPlayerId: 206 },
+		})
+	})
+
+	test('both players have to be standing in the session', async () => {
+		await hub().fetch('http://do/all', { method: 'DELETE' })
+		await standIn(42, OTHER_SESSION)
+		await standIn(205, SESSION)
+
+		// The caller is somewhere else — a vote can't be called into a session you're not in.
+		const away = await vote(FIELDS)
+		expect(away.status).toBe(403)
+		expect(await away.json()).toEqual({
+			success: false,
+			error: 'You are not in that game session!',
+		})
+
+		// And with the caller present, the player voted on has to be there too — offline,
+		// or standing elsewhere, both refuse.
+		await standIn(42, SESSION)
+		await standIn(205, OTHER_SESSION)
+		const elsewhere = await vote(FIELDS)
+		expect(elsewhere.status).toBe(403)
+		expect(await elsewhere.json()).toEqual({
+			success: false,
+			error: 'That player is not in that game session!',
+		})
+		expect((await vote({ ...FIELDS, PlayerId: '208' })).status).toBe(403)
+
+		// Nothing was put to the room on any of those.
+		expect(await frames()).toEqual([])
+	})
+
+	test('the body must name a player and a session, and the call needs a token', async () => {
+		await standIn(42, SESSION)
+		await standIn(205, SESSION)
+
+		for (const [fields, error] of [
+			[{ Response: 'True', GameSessionId: String(SESSION) }, 'PlayerId is required'],
+			[{ PlayerId: 'nope', GameSessionId: String(SESSION) }, 'PlayerId is required'],
+			[{ PlayerId: '205', Response: 'True' }, 'GameSessionId is required'],
+			[{ PlayerId: '205', GameSessionId: 'nope' }, 'GameSessionId is required'],
+		] as Array<[Record<string, string>, string]>) {
+			const res = await vote(fields)
+			expect(res.status, error).toBe(400)
+			expect(await res.json()).toEqual({ success: false, error })
+		}
+
+		const anon = await exports.default.fetch(`${ORIGIN}/api/PlayerReporting/v3/voteToKick`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams(FIELDS),
+		})
+		expect(anon.status).toBe(401)
+	})
+
+	// A vote called with nobody else there is a no-op rather than an error: the caller and
+	// the player voted on are both here, so the gate passes, and there is simply no room
+	// to put it to.
+	test('a session holding only the two of them sends nothing', async () => {
+		await hub().fetch('http://do/all', { method: 'DELETE' })
+		await standIn(42, SESSION)
+		await standIn(205, SESSION)
+		await env.DB.prepare('DELETE FROM presence WHERE account_id NOT IN (42, 205)').run()
+
+		const res = await vote(FIELDS)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ success: true, error: '' })
+		// 205 is still in the session, so they still hear it — only the caller is dropped.
+		expect((await frames()).map((f) => f.playerId)).toEqual([205])
+	})
+})
+
 describe('player reports', () => {
 	const submit = async (fields: Record<string, string>, headers?: Record<string, string>) =>
 		exports.default.fetch(`${ORIGIN}/api/PlayerReporting/v3/create`, {
@@ -7234,6 +7391,7 @@ describe('openapi', () => {
 			'POST /api/PlayerReporting/v1/moderationBlockDetails',
 			'POST /api/PlayerReporting/v1/referee',
 			'POST /api/PlayerReporting/v3/create',
+			'POST /api/PlayerReporting/v3/voteToKick',
 			'POST /api/avatar/v1/lockeditems/bulk',
 			'POST /api/avatar/v2/gifts/generate',
 			'POST /api/customAvatarItems/GetCustomAvatarItemCurrentSavesForLegacyAvatarItems',
