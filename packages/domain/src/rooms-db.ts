@@ -118,6 +118,25 @@ export const ROOM_SCHEMA_DDL: string[] = [
 		sort_ascending INTEGER NOT NULL DEFAULT 0,
 		PRIMARY KEY (room_id, leaderboard_id)
 	)`,
+	// Per-room role grants and invitations (migrations/0017_room_role.sql), one row per
+	// (room, account) — the client's `Roles` entry shape ({@link RoomRole}): `role` is the
+	// member's CURRENT role tier, `invited_role` the tier they've been offered but not yet
+	// accepted (so it's usually the higher of the two; 0 when no offer is pending), and
+	// `last_changed_by` who last touched the row (NULL for the seeded creator entries,
+	// matching the blob's `LastChangedByAccountId: null`).
+	//
+	// The table is AUTHORITATIVE, the same arrangement as `room_tag`: `serializeRoom`
+	// strips `Roles` from the blob and the reads re-attach it (see {@link attachRoles}),
+	// so there is exactly one place a role is stored — and `getContributedRooms` matches
+	// on an indexed table instead of a `json_each` over every blob.
+	`CREATE TABLE IF NOT EXISTS room_role (
+		room_id INTEGER NOT NULL,
+		account_id INTEGER NOT NULL,
+		role INTEGER NOT NULL DEFAULT 0,
+		last_changed_by INTEGER,
+		invited_role INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (room_id, account_id)
+	)`,
 ]
 
 /**
@@ -412,7 +431,8 @@ export async function cloneRoom(
 
 	// Ownership is reset to the cloner — the source room's Roles (its creator and
 	// any co-owners, e.g. the seeded base-room roles for accounts 1/2) must NOT
-	// carry over, or the clone would still list the template's owner as owner.
+	// carry over, or the clone would still list the template's owner as owner. The
+	// roles live in `room_role` (inserted below); this array is the response copy.
 	const roles: RoomRole[] = [
 		{ AccountId: accountId, Role: Role.Creator, LastChangedByAccountId: null, InvitedRole: 0 },
 	]
@@ -440,9 +460,11 @@ export async function cloneRoom(
 		CreatedAt: new Date().toISOString(),
 	}
 
-	// serializeRoom drops the hydrated SubRooms from the blob; the clone's subrooms are
-	// inserted into the subroom table below with fresh globally-unique ids.
+	// serializeRoom drops the hydrated SubRooms from the blob (and Roles — those go to
+	// their own table); the clone's subrooms are inserted into the subroom table below
+	// with fresh globally-unique ids.
 	await db.prepare('INSERT INTO room (data) VALUES (?1)').bind(serializeRoom(cloned)).run()
+	await insertCreatorRole(db, newRoomId, accountId)
 	const sourceSubRooms = Array.isArray(source.SubRooms) ? (source.SubRooms as SubRoom[]) : []
 	const clonedSubRooms: SubRoom[] = []
 	for (const sub of sourceSubRooms) {
@@ -509,10 +531,12 @@ export async function updateRoomFields(
 }
 
 /**
- * Set a target account's room `Role` — updating their existing `Roles` entry or
- * appending a new one — and stamp `LastChangedByAccountId` with the editor. The
- * caller supplies the already-loaded room (after its owner/co-owner check) to avoid
- * a re-read; the whole room JSON is rewritten. Returns the updated room.
+ * Set a target account's room `Role` — updating their existing `room_role` row or
+ * inserting one — and stamp `last_changed_by` with the editor. One row per
+ * (room, account), so the call is idempotent; a pending `invited_role` is left alone
+ * (setting someone's role is not answering their invitation). The caller supplies the
+ * already-loaded (hydrated) room, and gets it back with `Roles` updated to match the
+ * table — the blob is not touched, roles don't live there.
  */
 export async function setRoomRole(
 	db: D1Database,
@@ -522,7 +546,18 @@ export async function setRoomRole(
 	changedByAccountId: number,
 	room: Room
 ): Promise<Room> {
-	const roles = Array.isArray(room.Roles) ? (room.Roles as RoomRole[]) : []
+	await db
+		.prepare(
+			`INSERT INTO room_role (room_id, account_id, role, last_changed_by, invited_role)
+			 VALUES (?1, ?2, ?3, ?4, 0)
+			 ON CONFLICT(room_id, account_id) DO UPDATE SET role = ?3, last_changed_by = ?4`
+		)
+		.bind(roomId, targetAccountId, role, changedByAccountId)
+		.run()
+
+	// Mirror the write onto the hydrated room so the caller can serve it without a
+	// re-read — the same entry shape {@link attachRoles} would produce.
+	const roles = Array.isArray(room.Roles) ? [...(room.Roles as RoomRole[])] : []
 	const existing = roles.find((r) => r.AccountId === targetAccountId)
 	if (existing) {
 		existing.Role = role
@@ -535,12 +570,7 @@ export async function setRoomRole(
 			InvitedRole: 0,
 		})
 	}
-	const updated: Room = { ...room, Roles: roles }
-	await db
-		.prepare('UPDATE room SET data = ?2 WHERE room_id = ?1')
-		.bind(roomId, serializeRoom(updated))
-		.run()
-	return updated
+	return { ...room, Roles: roles }
 }
 
 /**
@@ -1274,16 +1304,17 @@ const serializeSubRoom = (sub: SubRoom, roomId: number): string => {
 /**
  * Serialize a room for a full-blob write, dropping the parts that belong to another table
  * so the blob can never hold a stale copy: hydrated `SubRooms` (the `subroom` table's job),
- * `Tags` (the `room_tag` table's job — see {@link setRoomTags}), and the derived engagement
- * counters, which are zeroed rather than dropped so the key stays present (the
- * `interaction` table's job — see {@link attachStats}).
+ * `Tags` (the `room_tag` table's job — see {@link setRoomTags}), `Roles` (the `room_role`
+ * table's job — see {@link setRoomRole}), and the derived engagement counters, which are
+ * zeroed rather than dropped so the key stays present (the `interaction` table's job —
+ * see {@link attachStats}).
  *
- * Because `Tags` is dropped here, a write that means to CHANGE a room's tags has to write
- * the table itself; passing a room with a new `Tags` array through this silently discards
+ * Because `Tags` and `Roles` are dropped here, a write that means to CHANGE them has to
+ * write the table itself; passing a room with a new array through this silently discards
  * it.
  */
 const serializeRoom = (room: Room): string => {
-	const { SubRooms: _subRooms, Tags: _tags, Stats: stats, ...rest } = room
+	const { SubRooms: _subRooms, Tags: _tags, Roles: _roles, Stats: stats, ...rest } = room
 	return JSON.stringify({ ...rest, Stats: storedStats(stats) })
 }
 
@@ -1489,6 +1520,70 @@ function roomsByTagsQuery(tagSets: string[][], where = ''): { sql: string; binds
 	return { sql: `SELECT ${ROOM_COLUMNS} FROM room r ${joins.join(' ')}${filter}`, binds }
 }
 
+// ---- Room roles -----------------------------------------------------------
+// A room's roles live in `room_role`, not in the room blob (see ROOM_SCHEMA_DDL). The
+// blob is stripped on write and the array is re-attached on read, the same arrangement
+// as `room_tag`, so there is exactly one place a role is stored.
+
+interface RoomRoleRow {
+	room_id: number
+	account_id: number
+	role: number
+	last_changed_by: number | null
+	invited_role: number
+}
+
+const toRoomRole = (row: RoomRoleRow): RoomRole => ({
+	AccountId: row.account_id,
+	Role: row.role,
+	LastChangedByAccountId: row.last_changed_by,
+	InvitedRole: row.invited_role,
+})
+
+/** The given rooms' role entries, grouped by room id (one query for the batch). */
+async function rolesByRoom(db: D1Database, ids: number[]): Promise<Map<number, RoomRole[]>> {
+	const byRoom = new Map<number, RoomRole[]>()
+	if (ids.length === 0) return byRoom
+	const results = await selectInChunks<RoomRoleRow>(
+		db,
+		ids,
+		(placeholders) =>
+			`SELECT room_id, account_id, role, last_changed_by, invited_role FROM room_role
+			 WHERE room_id IN (${placeholders}) ORDER BY account_id`
+	)
+	for (const row of results) {
+		const list = byRoom.get(row.room_id) ?? []
+		list.push(toRoomRole(row))
+		byRoom.set(row.room_id, list)
+	}
+	return byRoom
+}
+
+/**
+ * Fill in each room's `Roles` from `room_role`. Every room ends up with the key PRESENT —
+ * an empty array when it carries none — because {@link canManageRoom} and the client both
+ * read it directly and the blob no longer supplies one.
+ */
+async function attachRoles(db: D1Database, rooms: Room[]): Promise<void> {
+	const byRoom = await rolesByRoom(db, [...new Set(rooms.map(roomIdOf))])
+	for (const room of rooms) room.Roles = byRoom.get(roomIdOf(room)) ?? []
+}
+
+/**
+ * Seed a brand-new room's creator entry (Role 255, `last_changed_by` NULL like the
+ * imported creator rows) — the row every room minted by this module starts with.
+ */
+async function insertCreatorRole(db: D1Database, roomId: number, accountId: number): Promise<void> {
+	await db
+		.prepare(
+			`INSERT INTO room_role (room_id, account_id, role, last_changed_by, invited_role)
+			 VALUES (?1, ?2, ?3, NULL, 0)
+			 ON CONFLICT(room_id, account_id) DO UPDATE SET role = ?3`
+		)
+		.bind(roomId, accountId, Role.Creator)
+		.run()
+}
+
 /** Parse subroom rows and resolve their `CurrentSave` in one batched query. */
 async function parseSubRoomRows(db: D1Database, rows: SubRoomRow[]): Promise<SubRoom[]> {
 	const subs = rows.map(parseSubRoomRow)
@@ -1638,7 +1733,8 @@ async function hydrateRoom(db: D1Database, room: Room | null): Promise<Room | nu
 }
 
 /**
- * Hydrate many rooms' `SubRooms`, `Tags` and derived `Stats` (one batched query each).
+ * Hydrate many rooms' `SubRooms`, `Tags`, `Roles` and derived `Stats` (one batched query
+ * each).
  *
  * `Tags` is re-attached even for the feeds that already did so before ranking
  * ({@link parseAllWithTags}) — it is one query for the page slice and it guarantees the key
@@ -1652,6 +1748,7 @@ async function hydrateRooms(
 	await Promise.all([
 		attachSubRooms(db, rooms),
 		attachTags(db, rooms),
+		attachRoles(db, rooms),
 		attachStats(db, rooms, stats),
 	])
 	return rooms
@@ -1940,6 +2037,19 @@ export async function seedRoomWithSubRooms(db: D1Database, room: Room): Promise<
 	if (Array.isArray(room.Tags) && room.Tags.length > 0) {
 		await setRoomTags(db, roomId, room.Tags as RoomTag[])
 	}
+	// Same for `Roles` — mirrors 0017's backfill of `room_role` from the blobs.
+	if (Array.isArray(room.Roles) && room.Roles.length > 0) {
+		await db.batch(
+			(room.Roles as RoomRole[]).map((r) =>
+				db
+					.prepare(
+						`INSERT OR IGNORE INTO room_role (room_id, account_id, role, last_changed_by, invited_role)
+						 VALUES (?1, ?2, ?3, ?4, ?5)`
+					)
+					.bind(roomId, r.AccountId, r.Role ?? 0, r.LastChangedByAccountId, r.InvitedRole ?? 0)
+			)
+		)
+	}
 	for (const sub of subRooms) {
 		const subRoomId = Number(sub.SubRoomId)
 		await db
@@ -1981,6 +2091,8 @@ export async function deleteRoom(db: D1Database, roomId: number): Promise<void> 
 		// Tag rows outlive the blob otherwise, and would keep answering `#tag` searches and
 		// category rows for a room nobody can open.
 		db.prepare('DELETE FROM room_tag WHERE room_id = ?1').bind(roomId),
+		// Role rows likewise — they'd keep the room in everyone's contributed list.
+		db.prepare('DELETE FROM room_role WHERE room_id = ?1').bind(roomId),
 		// Saves and permission overrides first — both are keyed by subroom, so they'd be
 		// unreachable once the subrooms themselves are gone.
 		db
@@ -2071,9 +2183,9 @@ export async function countRoomsByCreator(db: D1Database, accountId: number): Pr
  * room the player made. A room matching BOTH halves appears once — the roles half is an
  * EXISTS, not a join.
  *
- * Roles live inside the room blob rather than in a table of their own, so the match is a
- * `json_each` over `$.Roles`. A room with no `Roles` key (or a null one) simply yields no
- * rows there rather than erroring, so it only reaches the list if the account created it.
+ * The roles half matches on `room_role` (the table is authoritative — see ROOM_SCHEMA_DDL),
+ * so it is an indexed probe per room rather than the `json_each` over every blob it was
+ * when roles lived serialized in the room.
  */
 export async function getContributedRooms(db: D1Database, accountId: number): Promise<Room[]> {
 	const { results } = await db
@@ -2081,8 +2193,8 @@ export async function getContributedRooms(db: D1Database, accountId: number): Pr
 			`SELECT ${ROOM_COLUMNS} FROM room
 			 WHERE creator_account_id = ?1
 			    OR EXISTS (
-			     SELECT 1 FROM json_each(room.data, '$.Roles') AS role
-			     WHERE json_extract(role.value, '$.AccountId') = ?1
+			     SELECT 1 FROM room_role WHERE room_role.room_id = room.room_id
+			      AND room_role.account_id = ?1
 			   )`
 		)
 		.bind(accountId)
@@ -2921,9 +3033,11 @@ export async function getOrCreateDormRoom(db: D1Database, accountId: number): Pr
 		Stats: storedStats(template?.Stats),
 		CreatedAt: new Date().toISOString(),
 	}
-	// serializeRoom drops any SubRooms carried over from the template; the dorm's own
-	// subroom is inserted into the subroom table below with a fresh globally-unique id.
+	// serializeRoom drops any SubRooms carried over from the template (and Roles — those
+	// go to their own table); the dorm's own subroom is inserted into the subroom table
+	// below with a fresh globally-unique id.
 	await db.prepare('INSERT INTO room (data) VALUES (?1)').bind(serializeRoom(room)).run()
+	await insertCreatorRole(db, roomId, accountId)
 	const subRoom = await insertSubRoom(db, roomId, { ...templateSub, CreatorAccountId: accountId })
 	room.SubRooms = [subRoom]
 	// The template carries these (it was parsed), but a dorm minted without one wouldn't.
