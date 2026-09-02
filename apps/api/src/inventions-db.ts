@@ -249,12 +249,19 @@ export interface InventionTagsV9Dto {
 	Tags: string[]
 }
 
-/** The four keys inside a v9 save envelope's `Value`. `Status` is 0 on success. */
+/**
+ * The four keys inside a v9 save envelope's `Value`. `Status` is 0 on success.
+ *
+ * `InventionVersion` and `TagsResponse` are nullable because the envelope is not the save
+ * route's alone: econ's `POST /api/storefronts/v3/buyInvention` answers in it too, and a
+ * BUY mints neither a version nor a tag result — it sends both as null, and the client
+ * (which reads only `Success` and `Value.Invention`) never looks. The keys stay present.
+ */
 export interface InventionSaveV9Value {
 	Status: number
 	Invention: InventionV9Dto
-	InventionVersion: InventionVersionV9Dto
-	TagsResponse: InventionTagsV9Dto
+	InventionVersion: InventionVersionV9Dto | null
+	TagsResponse: InventionTagsV9Dto | null
 }
 
 /**
@@ -282,14 +289,52 @@ export interface InventionSaveV9Result {
 }
 
 /**
- * Project a stored invention into the v9 save envelope. `tags` are the ones stored with
- * it, answered as the bare names `v1/settags` answers with; `tagResult` says whether they
- * were taken (see {@link INVENTION_TAG_RESULT}) — a tag the rules refuse costs the tags,
- * never the save, because the save is the thing the player would have to redo.
+ * Project a stored invention into the client's 28-key `RRInvention`. Shared by the v9 save
+ * envelope below and by econ's `v3/buyInvention`, which answers in that same envelope — so
+ * the two can never drift into serving one build two different inventions.
  *
  * Fields the stored record has no equivalent for are served as what they are here rather
  * than guessed: nothing forces an invention not to publish, and nothing in this server
  * approves one.
+ */
+export function toInventionV9(invention: SavedInvention): InventionV9Dto {
+	return {
+		InventionId: invention.InventionId,
+		ReplicationId: invention.ReplicationId,
+		CreatorPlayerId: invention.CreatorPlayerId,
+		Name: invention.Name,
+		Description: invention.Description,
+		ImageName: invention.ImageName,
+		UgcVersion: invention.UgcVersion ?? 0,
+		CurrentVersionNumber: invention.CurrentVersionNumber,
+		// One save, one version: the newest is the current one.
+		LatestVersionNumber: invention.CurrentVersionNumber,
+		Accessibility: invention.Accessibility,
+		ForceCannotPublish: false,
+		ModifiedAt: invention.ModifiedAt,
+		CreatedAt: invention.CreatedAt,
+		FirstPublishedAt: invention.FirstPublishedAt,
+		CreationRoomId: invention.CreationRoomId,
+		NumPlayersHaveUsedInRoom: invention.NumPlayersHaveUsedInRoom,
+		NumDownloads: invention.NumDownloads,
+		CheerCount: invention.CheerCount,
+		CreatorPermission: invention.CreatorPermission,
+		GeneralPermission: invention.GeneralPermission,
+		IsAGInvention: invention.IsAGInvention,
+		IsCertifiedInvention: invention.IsCertifiedInvention,
+		IsRecRoomApproved: false,
+		AllowTrial: invention.AllowTrial,
+		Price: invention.Price,
+		HideFromPlayer: invention.HideFromPlayer,
+		DisplayMetadataJson: invention.DisplayMetadataJson ?? null,
+	}
+}
+
+/**
+ * Project a stored invention into the v9 save envelope. `tags` are the ones stored with
+ * it, answered as the bare names `v1/settags` answers with; `tagResult` says whether they
+ * were taken (see {@link INVENTION_TAG_RESULT}) — a tag the rules refuse costs the tags,
+ * never the save, because the save is the thing the player would have to redo.
  */
 export function toSaveResultV9(
 	invention: SavedInvention,
@@ -300,36 +345,7 @@ export function toSaveResultV9(
 	return {
 		Value: {
 			Status: 0,
-			Invention: {
-				InventionId: invention.InventionId,
-				ReplicationId: invention.ReplicationId,
-				CreatorPlayerId: invention.CreatorPlayerId,
-				Name: invention.Name,
-				Description: invention.Description,
-				ImageName: invention.ImageName,
-				UgcVersion: invention.UgcVersion ?? 0,
-				CurrentVersionNumber: invention.CurrentVersionNumber,
-				// One save, one version: the newest is the current one.
-				LatestVersionNumber: invention.CurrentVersionNumber,
-				Accessibility: invention.Accessibility,
-				ForceCannotPublish: false,
-				ModifiedAt: invention.ModifiedAt,
-				CreatedAt: invention.CreatedAt,
-				FirstPublishedAt: invention.FirstPublishedAt,
-				CreationRoomId: invention.CreationRoomId,
-				NumPlayersHaveUsedInRoom: invention.NumPlayersHaveUsedInRoom,
-				NumDownloads: invention.NumDownloads,
-				CheerCount: invention.CheerCount,
-				CreatorPermission: invention.CreatorPermission,
-				GeneralPermission: invention.GeneralPermission,
-				IsAGInvention: invention.IsAGInvention,
-				IsCertifiedInvention: invention.IsCertifiedInvention,
-				IsRecRoomApproved: false,
-				AllowTrial: invention.AllowTrial,
-				Price: invention.Price,
-				HideFromPlayer: invention.HideFromPlayer,
-				DisplayMetadataJson: invention.DisplayMetadataJson ?? null,
-			},
+			Invention: toInventionV9(invention),
 			InventionVersion: {
 				InventionId: version.InventionId,
 				ReplicationId: version.ReplicationId,

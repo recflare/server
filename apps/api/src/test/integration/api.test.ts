@@ -1926,7 +1926,10 @@ describe('public endpoints', () => {
 		if (value === null) throw new Error('Value must not be null on a successful save')
 		expect(value.Invention.UgcVersion).toBe(0)
 		expect(value.Invention.DisplayMetadataJson).toBeNull()
-		expect(value.InventionVersion.HasBetaContent).toBe(false)
+		// A save always mints a version; the key is nullable only because econ's
+		// `v3/buyInvention` answers in this same envelope and a buy mints none.
+		expect(value.InventionVersion).not.toBeNull()
+		expect(value.InventionVersion?.HasBetaContent).toBe(false)
 		expect(value.TagsResponse).toEqual({ Result: 0, Tags: [] })
 
 		const one = await exports.default.fetch(

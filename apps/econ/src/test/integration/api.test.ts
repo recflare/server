@@ -2656,6 +2656,168 @@ describe('econ endpoints', () => {
 		expect(await getOwnedInventionIds(env.DB, 60)).toEqual([])
 	})
 
+	// The 2025 client posts the same purchase as a JSON body — and wants a DIFFERENT response
+	// back: the v9 save envelope, and a balance bucket keyed `Platform`. The settlement is
+	// shared with v2, so these pin the envelope and the money moving, not the rules v2 covers.
+	const buyInventionV3 = async (sub: string, body: unknown) =>
+		exports.default.fetch(`${ORIGIN}/api/storefronts/v3/buyInvention`, {
+			method: 'POST',
+			headers: { ...(await bearer(sub)), 'Content-Type': 'application/json' },
+			body: JSON.stringify(body),
+		})
+
+	test('POST /api/storefronts/v3/buyInvention 401s without a token', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/storefronts/v3/buyInvention`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ InventionId: 8, RequestedPrice: 0 }),
+		})
+		expect(res.status).toBe(401)
+	})
+
+	test('POST /api/storefronts/v3/buyInvention answers the v9 envelope, not v2’s', async () => {
+		const res = await buyInventionV3('55', { InventionId: 8, RequestedPrice: 0 })
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as {
+			InventionResponse: {
+				Value: {
+					Status: number
+					Invention: Record<string, unknown>
+					InventionVersion: unknown
+					TagsResponse: unknown
+				} | null
+				Success: boolean
+				Error: string | null
+				error_id: string | null
+			}
+			BalanceUpdateResponse: {
+				Balance: number
+				CurrencyType: number
+				Platform: number
+				BalanceType?: number
+				BalanceUpdates: Array<{ UpdateResponse: number; Data: { InventionId: number } }>
+			}
+		}
+
+		// The v9 SAVE envelope: `Value` under `{ Success, Error, error_id }`. `Value` is never
+		// null under `Success: true` — the client dereferences `Value.Invention` unguarded.
+		expect(body.InventionResponse).toMatchObject({ Success: true, Error: null, error_id: null })
+		expect(body.InventionResponse.Value?.Status).toBe(0)
+		expect(body.InventionResponse.Value?.Invention.InventionId).toBe(8)
+		expect(body.InventionResponse.Value?.Invention.Name).toBe('Invention 8')
+		// The 28-key `RRInvention`, not the stored record: the version rides nowhere here, and
+		// `IsPublished` is a stored field this projection drops.
+		expect(body.InventionResponse.Value?.Invention.CurrentVersion).toBeUndefined()
+		expect(body.InventionResponse.Value?.Invention.IsPublished).toBeUndefined()
+		expect(body.InventionResponse.Value?.Invention.LatestVersionNumber).toBe(1)
+		// A buy mints no version and takes no tags — present and null, not absent.
+		expect(body.InventionResponse.Value).toHaveProperty('InventionVersion', null)
+		expect(body.InventionResponse.Value).toHaveProperty('TagsResponse', null)
+
+		// `BalanceResponseDTO`: the bucket key is `Platform`. Spelling it `BalanceType` (which is
+		// what v2 sends) would be dropped by the client's decoder and default this balance into
+		// bucket 0, beside the -2 the socket frames set — a phantom second balance.
+		expect(body.BalanceUpdateResponse.Platform).toBe(-2)
+		expect(body.BalanceUpdateResponse.BalanceType).toBeUndefined()
+		// Nothing was debited, so `Balance` is the resulting total, not a change.
+		expect(body.BalanceUpdateResponse.Balance).toBe(DEFAULT_STARTING_TOKENS)
+		expect(body.BalanceUpdateResponse.CurrencyType).toBe(CurrencyType.RecCenterTokens)
+		expect(body.BalanceUpdateResponse.BalanceUpdates[0].Data.InventionId).toBe(8)
+
+		expect(await getOwnedInventionIds(env.DB, 55)).toEqual([8])
+		// Owning it is boolean here too — the route shares v2's settlement.
+		expect((await buyInventionV3('55', { InventionId: 8, RequestedPrice: 0 })).status).toBe(409)
+	})
+
+	test('GET v2 and POST v3 buyInvention answer the SAME buy in different envelopes', async () => {
+		// The one thing that must not drift: two builds buying the same invention get the same
+		// invention back, shaped for each. v2 serves the stored record under a bare status
+		// envelope; v3 serves the 28-key projection under the v9 one. Don't unify them.
+		const v2 = (await (await buyInvention('58', 8)).json()) as {
+			InventionResponse: { Status: number; Invention: Record<string, unknown> }
+			BalanceUpdateResponse: { BalanceType: number; Platform?: number }
+		}
+		const v3 = (await (
+			await buyInventionV3('59', { InventionId: 8, RequestedPrice: 0 })
+		).json()) as {
+			InventionResponse: { Value: { Invention: Record<string, unknown> } | null }
+			BalanceUpdateResponse: { Platform: number; BalanceType?: number }
+		}
+		expect(v2.InventionResponse.Invention.InventionId).toBe(8)
+		expect(v3.InventionResponse.Value?.Invention.InventionId).toBe(8)
+		// v2 keeps the nested version; v3's projection lifts it away entirely.
+		expect(v2.InventionResponse.Invention.CurrentVersion).toBeDefined()
+		expect(v3.InventionResponse.Value?.Invention.CurrentVersion).toBeUndefined()
+		// The bucket is spelled differently on each, and each spells exactly one.
+		expect(v2.BalanceUpdateResponse).toMatchObject({ BalanceType: -2 })
+		expect(v2.BalanceUpdateResponse.Platform).toBeUndefined()
+		expect(v3.BalanceUpdateResponse).toMatchObject({ Platform: -2 })
+		expect(v3.BalanceUpdateResponse.BalanceType).toBeUndefined()
+	})
+
+	test('POST /api/storefronts/v3/buyInvention pays the creator and pushes both sides', async () => {
+		await drainFrames()
+		// Creator 999 has already been paid by the v2 tests above, so their resulting total is
+		// read rather than assumed — it is the payout ADDED to whatever they had.
+		const creatorBefore = await getBalance(
+			env.DB,
+			999,
+			CurrencyType.RecCenterTokens,
+			DEFAULT_STARTING_TOKENS
+		)
+		const res = await buyInventionV3('56', { InventionId: 9, RequestedPrice: 250 })
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as { BalanceUpdateResponse: { Balance: number } }
+		expect(body.BalanceUpdateResponse.Balance).toBe(DEFAULT_STARTING_TOKENS - 250)
+		expect(
+			await getBalance(env.DB, 56, CurrencyType.RecCenterTokens, DEFAULT_STARTING_TOKENS)
+		).toBe(DEFAULT_STARTING_TOKENS - 250)
+		expect(
+			await getBalance(env.DB, 999, CurrencyType.RecCenterTokens, DEFAULT_STARTING_TOKENS)
+		).toBe(creatorBefore + 250)
+		expect(await getOwnedInventionIds(env.DB, 56)).toEqual([9])
+
+		// Same two frames as the v2 buy, each carrying its player's RESULTING total into the -2
+		// bucket: the creator sold (a plain update), the buyer bought (a purchase frame).
+		expect(await drainFrames()).toEqual([
+			{
+				accountId: 999,
+				notificationType: NotificationType.StorefrontBalanceUpdate,
+				payload: {
+					Balance: creatorBefore + 250,
+					CurrencyType: CurrencyType.RecCenterTokens,
+					Platform: -2,
+				},
+			},
+			{
+				accountId: 56,
+				notificationType: NotificationType.StorefrontBalancePurchase,
+				payload: {
+					BalanceAddType: 1400,
+					Delta: -250,
+					Balance: DEFAULT_STARTING_TOKENS - 250,
+					Platform: -2,
+					CurrencyType: CurrencyType.RecCenterTokens,
+				},
+			},
+		])
+	})
+
+	test('POST /api/storefronts/v3/buyInvention rejects a stale price and a bad body', async () => {
+		// A body is the only difference from v2, so the price check reads it the same way: an
+		// absent RequestedPrice is 0, which does not match the 250-token invention 9.
+		expect((await buyInventionV3('57', { InventionId: 9 })).status).toBe(409)
+		expect((await buyInventionV3('57', { InventionId: 9, RequestedPrice: 0 })).status).toBe(409)
+		// No InventionId, and no body at all.
+		expect((await buyInventionV3('57', { RequestedPrice: 0 })).status).toBe(400)
+		const res = await exports.default.fetch(`${ORIGIN}/api/storefronts/v3/buyInvention`, {
+			method: 'POST',
+			headers: { ...(await bearer('57')), 'Content-Type': 'application/json' },
+		})
+		expect(res.status).toBe(400)
+		expect(await getOwnedInventionIds(env.DB, 57)).toEqual([])
+	})
+
 	test('POST /api/avatar/v2/gifts/consume opens the box the way the client sends it', async () => {
 		// Buy an item for account 24, then consume the box the way the client does: on the
 		// econ host, with a form body (`Id=..&UnlockedLevel=..`).
@@ -3935,6 +4097,7 @@ describe('econ endpoints', () => {
 			'POST /api/objectives/v1/cleargroup',
 			'POST /api/objectives/v1/updateobjective',
 			'POST /api/storefronts/v2/buyItem',
+			'POST /api/storefronts/v3/buyInvention',
 			'POST /api/ugcPurchasables/v1/items/bulk',
 			'PUT /api/equipment/v1/update',
 		])

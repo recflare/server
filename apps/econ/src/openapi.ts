@@ -375,10 +375,24 @@ export const BulkPurchaseResponse = z.object({
 })
 
 /**
- * `GET /api/storefronts/v2/buyInvention` — the purchase result. Two envelopes side by
- * side: the balance update (shaped like buyItem's, except `Balance` is the RESULTING
- * total, not the change, and `Data` is a single invention rather than a gift-drop list)
- * and the invention envelope the invention endpoints already serve.
+ * The JSON body `POST /api/storefronts/v3/buyInvention` takes. The same two values the v2
+ * GET reads off the query string (`inventionId`/`requestedPrice`), PascalCase in a body —
+ * that is the only difference between the two routes.
+ */
+export const BuyInventionRequest = z.object({
+	InventionId: z.int().describe('The invention to buy; missing or non-integer is 400'),
+	RequestedPrice: z
+		.int()
+		.optional()
+		.describe('The price the client rendered; a mismatch is 409. Absent reads as 0'),
+})
+
+/**
+ * `GET /api/storefronts/v2/buyInvention` and `POST /api/storefronts/v3/buyInvention` — the
+ * purchase result, identical for both. Two envelopes side by side: the balance update
+ * (shaped like buyItem's, except `Balance` is the RESULTING total, not the change, and
+ * `Data` is a single invention rather than a gift-drop list) and the invention envelope the
+ * invention endpoints already serve.
  */
 export const BuyInventionResponse = z.object({
 	BalanceUpdateResponse: z.object({
@@ -399,6 +413,54 @@ export const BuyInventionResponse = z.object({
 			InventionVersion: JsonObject,
 		})
 		.describe('The same envelope `POST /api/inventions/v6/save` returns'),
+})
+
+/**
+ * `POST /api/storefronts/v3/buyInvention` — the purchase result the 2025 client wants,
+ * which is NOT v2's despite settling the identical purchase. Two differences, both
+ * recovered from a capture of the real response:
+ *
+ *  - `InventionResponse` is the v9 SAVE envelope (`{ Value, Success, Error, error_id }`)
+ *    rather than v6's bare `{ Status, Invention, InventionVersion }`, and its `Invention`
+ *    is the client's 28-key `RRInvention`. A buy mints no version and takes no tags, so
+ *    `InventionVersion` and `TagsResponse` are present and null.
+ *  - The balance half is `BalanceResponseDTO`, so the bucket key is `Platform` — the
+ *    client's `BalanceType` member under a [DataMember] rename, the same one the bulk
+ *    purchase answers in. v2 spells it `BalanceType`; do not unify them.
+ */
+export const BuyInventionV3Response = z.object({
+	InventionResponse: z
+		.object({
+			Value: z
+				.object({
+					Status: z.int().describe('0 on success'),
+					Invention: JsonObject.describe('The bought invention as the 28-key `RRInvention`'),
+					InventionVersion: z.null().describe('Always null — a buy mints no version'),
+					TagsResponse: z.null().describe('Always null — a buy takes no tags'),
+				})
+				.describe('Never null under `Success: true` — the client dereferences it unguarded'),
+			Success: z.boolean(),
+			Error: z.string().nullable().describe('Null on success — not `""`'),
+			error_id: z.string().nullable().describe('Always null — no error-id catalog here'),
+		})
+		.describe('The same envelope `POST /api/inventions/v9/save` returns'),
+	BalanceUpdateResponse: z.object({
+		BalanceUpdates: z.array(
+			z.object({
+				UpdateResponse: z.int(),
+				Data: JsonObject.describe('The bought invention, the same `RRInvention` as above'),
+			})
+		),
+		Balance: z.int().describe('The resulting balance — NOT the change, unlike buyItem'),
+		CurrencyType: z.int().describe('2 = RecCenterTokens'),
+		Platform: z
+			.int()
+			.describe(
+				'The balance bucket — the client’s `BalanceType` under a [DataMember] rename. -2, ' +
+					'account-wide: the capture said 0 (SteamPurchased) because the reference server ' +
+					'kept a wallet per platform; this one keeps a single bucket, and the client SUMS them'
+			),
+	}),
 })
 
 /** buyItem / buyInvention error body (`{ error }`), returned on 400/403/404/409. */

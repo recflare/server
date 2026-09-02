@@ -24,7 +24,7 @@ import {
 	toUgcPurchasable,
 	UGC_ITEM_TYPE_CUSTOM_AVATAR_ITEM,
 } from '../../api/src/custom-avatar-items-db'
-import { getInventionById, toSaveResult } from '../../api/src/inventions-db'
+import { getInventionById, toInventionV9, toSaveResult } from '../../api/src/inventions-db'
 // The profanity filter behind `api`'s `POST /api/sanitize/v1`, imported rather than copied
 // so a gift note is masked by the very same word list every other player-typed string is.
 import { censorSwears } from '../../api/src/sanitize'
@@ -81,7 +81,9 @@ import {
 	BalanceEntry,
 	BulkPurchaseRequest,
 	BulkPurchaseResponse,
+	BuyInventionRequest,
 	BuyInventionResponse,
+	BuyInventionV3Response,
 	BuyItemRequest,
 	BuyItemResponse,
 	ChallengeProgressRequest,
@@ -126,6 +128,7 @@ import { claimReward } from './reward-db'
 import type { Context } from 'hono'
 import type { GiftContent, Outfit, Progression, StoredGift, XpGrant } from '@repo/domain'
 import type { CustomAvatarItem } from '../../api/src/custom-avatar-items-db'
+import type { SavedInvention } from '../../api/src/inventions-db'
 import type {
 	BalanceResponsePayload,
 	PurchaseBalanceModificationPayload,
@@ -2097,6 +2100,120 @@ function listRoute(summary: string, description: string, auth = false) {
 	})
 }
 
+/**
+ * A completed invention purchase: the invention that changed hands and the buyer's
+ * RESULTING token balance (not the change — see the envelopes both routes build from it).
+ */
+interface SettledInventionPurchase {
+	invention: SavedInvention
+	balance: number
+}
+
+/**
+ * Settle an invention purchase — the whole of buyInvention except the envelope it is
+ * announced in, shared by the `v2` GET and the `v3` POST. Every refusal is a `Response`
+ * (the `{ error }` body both routes answer with); a sale is the bought invention and the
+ * buyer's resulting balance, which each route then wraps in ITS OWN shape — the two
+ * clients want different ones, so the money is shared and the projection is not.
+ *
+ * A priced invention is settled player-to-player: the buyer is debited its `Price` in
+ * RecCenterTokens and the CREATOR is credited the same amount — no house cut, so the
+ * tokens are moved rather than minted or burned. A free invention (`Price` 0) skips the
+ * money entirely: nothing is debited and nobody is paid. The stored price is confirmed
+ * against the price the client rendered first, so a stale or tampered client can’t buy
+ * at a price the creator no longer offers (409), and an unaffordable one is a 400 —
+ * the same "Insufficient balance" buyItem answers with.
+ *
+ * Ownership is recorded in `inventory_invention`; the creator is not sold their own
+ * invention (they own it already, via CreatorPlayerId) and a re-buy is a 409 rather
+ * than a second row. The invention’s `NumDownloads` counter is deliberately NOT
+ * bumped: that column lives on the `invention` table the `api` worker owns, and this
+ * worker only reads it.
+ */
+async function settleInventionPurchase(
+	c: Context<App>,
+	id: number,
+	inventionId: number,
+	requestedPrice: number
+): Promise<SettledInventionPurchase | Response> {
+	const invention = await getInventionById(c.env.DB, inventionId)
+	if (invention === null) return c.json({ error: 'Invention not found' }, 404)
+	// An unpublished invention is a draft: it isn't on sale, not even for free.
+	if (!invention.IsPublished) return c.json({ error: 'Invention is not for sale' }, 403)
+	if (invention.CreatorPlayerId === id) {
+		return c.json({ error: 'Cannot buy your own invention' }, 400)
+	}
+	if (await ownsInvention(c.env.DB, id, inventionId)) {
+		return c.json({ error: 'Already owned' }, 409)
+	}
+
+	// The price the client rendered must still be the stored one: a mismatch is a stale
+	// catalog or a tampered request, never a sale.
+	if (invention.Price !== requestedPrice) {
+		return c.json({ error: 'Price has changed' }, 409)
+	}
+
+	const startingTokens = intVar(c.env.STARTING_TOKENS, DEFAULT_STARTING_TOKENS)
+	// Inventions are priced in RecCenterTokens only — the store shows no other currency
+	// for them, and `Price` carries no currency of its own to pick a different one from.
+	const price = invention.Price
+	if (price > 0) {
+		// Debit the buyer atomically; false means they couldn't afford it and nothing
+		// changed, so no ownership is recorded and the creator is not paid.
+		const paid = await spendCurrency(
+			c.env.DB,
+			id,
+			CurrencyType.RecCenterTokens,
+			price,
+			startingTokens
+		)
+		if (!paid) return c.json({ error: 'Insufficient balance' }, 400)
+	}
+
+	// Grant before paying out: these are three separate D1 writes with no transaction
+	// around them, so order them by what a failure costs. A buyer who paid and got the
+	// invention but left the creator unpaid is recoverable; a buyer charged for nothing
+	// is not.
+	await grantInvention(c.env.DB, id, inventionId)
+
+	if (price > 0) {
+		// Seed the creator's signup grant BEFORE crediting them: `creditCurrency` upserts
+		// the balance row, and `ensureStartingBalances` is an INSERT OR IGNORE, so a
+		// creator who had never touched their balance would otherwise have the row created
+		// here and lose their starting tokens forever.
+		await ensureStartingBalances(c.env.DB, invention.CreatorPlayerId, startingTokens)
+		const creatorBalance = await creditCurrency(
+			c.env.DB,
+			invention.CreatorPlayerId,
+			CurrencyType.RecCenterTokens,
+			price,
+			startingTokens
+		)
+		// The creator is a different, probably-online player with no response to read:
+		// push the sale so it lands on their shown balance without a re-fetch. The frame
+		// carries their resulting TOTAL (what `creditCurrency` returns), not the payout —
+		// sending the payout would set their whole balance to it. A plain update rather
+		// than a purchase frame: they sold, they didn't buy. Best-effort, as everywhere.
+		await pushBalanceUpdate(
+			c,
+			invention.CreatorPlayerId,
+			CurrencyType.RecCenterTokens,
+			creatorBalance
+		)
+	}
+
+	// Unlike buyItem — whose `Balance` is the change applied — the reference server
+	// answers this one with the RESULTING total (a first read seeds the buyer's starting
+	// grant, as everywhere else). The buyer's frame carries that same total, so the body
+	// and the push land the client on one number.
+	const balance = await getBalance(c.env.DB, id, CurrencyType.RecCenterTokens, startingTokens)
+	// A free invention moved nothing, so there is no purchase to report.
+	if (price > 0) {
+		await pushBalancePurchase(c, id, CurrencyType.RecCenterTokens, -price, balance)
+	}
+	return { invention, balance }
+}
+
 // strict: false so trailing-slash routes (e.g. `/gifts/consume/`, which the client
 // posts with a trailing slash) match either form. Mirrors the `api` worker.
 const app = new Hono<App>({ strict: false })
@@ -3511,22 +3628,11 @@ const app = new Hono<App>({ strict: false })
 		}
 	)
 
-	// Buy an invention. [Authorize]. A GET, despite being a purchase — the client sends
-	// `?inventionId=…&requestedPrice=…` with no body, so that's what we answer.
-	//
-	// A priced invention is settled player-to-player: the buyer is debited its `Price` in
-	// RecCenterTokens and the CREATOR is credited the same amount — no house cut, so the
-	// tokens are moved rather than minted or burned. A free invention (`Price` 0) skips the
-	// money entirely: nothing is debited and nobody is paid. The stored price is confirmed
-	// against the price the client rendered first, so a stale or tampered client can't buy
-	// at a price the creator no longer offers (409), and an unaffordable one is a 400 —
-	// the same "Insufficient balance" buyItem answers with.
-	//
-	// Ownership is recorded in `inventory_invention`; the creator is not sold their own
-	// invention (they own it already, via CreatorPlayerId) and a re-buy is a 409 rather
-	// than a second row. The invention's `NumDownloads` counter is deliberately NOT
-	// bumped: that column lives on the `invention` table the `api` worker owns, and this
-	// worker only reads it.
+	// Buy an invention. [Authorize]. A GET, despite being a purchase — the 2023 client sends
+	// `?inventionId=…&requestedPrice=…` with no body, so that’s what we answer, in the v6 save
+	// envelope that build reads. The 2025 build posts to `v3/buyInvention` below and wants a
+	// different envelope back; the two share {@link settleInventionPurchase}, which is where
+	// the money and the rules live, and build their own bodies from what it returns.
 	.get(
 		'/api/storefronts/v2/buyInvention',
 		describeRoute({
@@ -3581,91 +3687,116 @@ const app = new Hono<App>({ strict: false })
 			// a priced one then fails the confirmation below rather than selling for nothing.
 			const requestedPrice = Number.parseInt(c.req.query('requestedPrice') ?? '0', 10) || 0
 
-			const invention = await getInventionById(c.env.DB, inventionId)
-			if (invention === null) return c.json({ error: 'Invention not found' }, 404)
-			// An unpublished invention is a draft: it isn't on sale, not even for free.
-			if (!invention.IsPublished) return c.json({ error: 'Invention is not for sale' }, 403)
-			if (invention.CreatorPlayerId === id) {
-				return c.json({ error: 'Cannot buy your own invention' }, 400)
-			}
-			if (await ownsInvention(c.env.DB, id, inventionId)) {
-				return c.json({ error: 'Already owned' }, 409)
-			}
+			const settled = await settleInventionPurchase(c, id, inventionId, requestedPrice)
+			if (settled instanceof Response) return settled
 
-			// The price the client rendered must still be the stored one: a mismatch is a stale
-			// catalog or a tampered request, never a sale.
-			if (invention.Price !== requestedPrice) {
-				return c.json({ error: 'Price has changed' }, 409)
-			}
-
-			const startingTokens = intVar(c.env.STARTING_TOKENS, DEFAULT_STARTING_TOKENS)
-			// Inventions are priced in RecCenterTokens only — the store shows no other currency
-			// for them, and `Price` carries no currency of its own to pick a different one from.
-			const price = invention.Price
-			if (price > 0) {
-				// Debit the buyer atomically; false means they couldn't afford it and nothing
-				// changed, so no ownership is recorded and the creator is not paid.
-				const paid = await spendCurrency(
-					c.env.DB,
-					id,
-					CurrencyType.RecCenterTokens,
-					price,
-					startingTokens
-				)
-				if (!paid) return c.json({ error: 'Insufficient balance' }, 400)
-			}
-
-			// Grant before paying out: these are three separate D1 writes with no transaction
-			// around them, so order them by what a failure costs. A buyer who paid and got the
-			// invention but left the creator unpaid is recoverable; a buyer charged for nothing
-			// is not.
-			await grantInvention(c.env.DB, id, inventionId)
-
-			if (price > 0) {
-				// Seed the creator's signup grant BEFORE crediting them: `creditCurrency` upserts
-				// the balance row, and `ensureStartingBalances` is an INSERT OR IGNORE, so a
-				// creator who had never touched their balance would otherwise have the row created
-				// here and lose their starting tokens forever.
-				await ensureStartingBalances(c.env.DB, invention.CreatorPlayerId, startingTokens)
-				const creatorBalance = await creditCurrency(
-					c.env.DB,
-					invention.CreatorPlayerId,
-					CurrencyType.RecCenterTokens,
-					price,
-					startingTokens
-				)
-				// The creator is a different, probably-online player with no response to read:
-				// push the sale so it lands on their shown balance without a re-fetch. The frame
-				// carries their resulting TOTAL (what `creditCurrency` returns), not the payout —
-				// sending the payout would set their whole balance to it. A plain update rather
-				// than a purchase frame: they sold, they didn't buy. Best-effort, as everywhere.
-				await pushBalanceUpdate(
-					c,
-					invention.CreatorPlayerId,
-					CurrencyType.RecCenterTokens,
-					creatorBalance
-				)
-			}
-
-			// Unlike buyItem — whose `Balance` is the change applied — the reference server
-			// answers this one with the RESULTING total (a first read seeds the buyer's starting
-			// grant, as everywhere else). The buyer's frame carries that same total, so the body
-			// and the push land the client on one number.
-			const balance = await getBalance(c.env.DB, id, CurrencyType.RecCenterTokens, startingTokens)
-			// A free invention moved nothing, so there is no purchase to report.
-			if (price > 0) {
-				await pushBalancePurchase(c, id, CurrencyType.RecCenterTokens, -price, balance)
-			}
 			return c.json({
 				BalanceUpdateResponse: {
-					Balance: balance,
+					Balance: settled.balance,
 					BalanceType: ALL_PLATFORMS,
 					CurrencyType: CurrencyType.RecCenterTokens,
-					BalanceUpdates: [{ UpdateResponse: 0, Data: invention }],
+					BalanceUpdates: [{ UpdateResponse: 0, Data: settled.invention }],
 				},
-				// The same `{ Status, Invention, InventionVersion }` envelope the invention
-				// save/read endpoints serve — the client re-renders the invention from it.
-				InventionResponse: toSaveResult(invention),
+				// The bare `{ Status, Invention, InventionVersion }` the v6 save serves — this
+				// build's invention endpoints answer in it, and the client re-renders from it.
+				InventionResponse: toSaveResult(settled.invention),
+			})
+		}
+	)
+
+	// Buy an invention, the way the 2025 client asks for it. [Authorize]. A POST carrying
+	// `{ InventionId, RequestedPrice }` as JSON, where the v2 GET takes query params.
+	//
+	// The PURCHASE is identical — both settle through `settleInventionPurchase` — but the
+	// RESPONSE is not, and that is the whole reason this route exists rather than an alias:
+	// this build wraps the invention in the v9 save envelope and names its balance bucket
+	// `Platform`. See `BuyInventionV3Response`. Both routes stay served: the 2023 build still
+	// sends the GET, and it would not parse this body.
+	.post(
+		'/api/storefronts/v3/buyInvention',
+		describeRoute({
+			tags: ['Storefront'],
+			summary: 'Buy an invention (JSON body)',
+			description: [
+				'The same purchase as `GET /api/storefronts/v2/buyInvention` — confirms the client’s',
+				'`RequestedPrice` still matches the invention’s stored `Price`, debits the buyer and',
+				'pays the creator that price in RecCenterTokens (a free invention moves nothing),',
+				'records ownership in `inventory_invention`, and pushes both players a socket frame',
+				'carrying their RESULTING total — but answered in a DIFFERENT envelope, which is why',
+				'the route exists at all: `InventionResponse` is the v9 save’s',
+				'`{ Value, Success, Error, error_id }` (its `InventionVersion` and `TagsResponse` null,',
+				'since a buy mints neither) and the balance half names its bucket `Platform`, not v2’s',
+				'`BalanceType`.',
+			].join(' '),
+			security: AUTHED,
+			requestBody: jsonBody(BuyInventionRequest, 'The invention id and the price rendered'),
+			responses: {
+				200: json(BuyInventionV3Response, 'The purchase result (invention + balance)'),
+				400: json(
+					ErrorResponse,
+					'Invalid body, missing InventionId, buying your own, or insufficient balance'
+				),
+				401: UNAUTHORIZED_RESPONSE,
+				403: json(ErrorResponse, 'The invention is not published, so it is not for sale'),
+				404: json(ErrorResponse, 'No such invention'),
+				409: json(ErrorResponse, 'Already owned, or the price has changed'),
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+			if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+				return c.json({ error: 'Invalid request body' }, 400)
+			}
+			const inventionId = body.InventionId
+			if (!Number.isInteger(inventionId)) {
+				return c.json({ error: 'InventionId is required' }, 400)
+			}
+			// Read the same way as v2’s query param: an absent or non-integer RequestedPrice is 0,
+			// which only matches a free invention — a priced one then fails the confirmation rather
+			// than selling for nothing.
+			const requestedPrice = Number.isInteger(body.RequestedPrice)
+				? (body.RequestedPrice as number)
+				: 0
+
+			const settled = await settleInventionPurchase(c, id, inventionId as number, requestedPrice)
+			if (settled instanceof Response) return settled
+
+			return c.json({
+				// The v9 SAVE envelope, not v6's bare `{ Status, Invention, InventionVersion }`:
+				// `Value` under `{ Success, Error, error_id }`, with `Invention` the client's 28-key
+				// `RRInvention`. A buy mints no version and takes no tags, so both of those keys are
+				// present and NULL — which is safe here for the same reason it is on the save: the
+				// client reads `Success` and `Value.Invention` and nothing else. `Value` itself must
+				// never be null under `Success: true` — that dereference is what crashes it.
+				InventionResponse: {
+					Value: {
+						Status: 0,
+						Invention: toInventionV9(settled.invention),
+						InventionVersion: null,
+						TagsResponse: null,
+					},
+					Success: true,
+					Error: null,
+					error_id: null,
+				},
+				// `BalanceResponseDTO`, the same one the bulk purchase answers in — so the bucket key
+				// is `Platform`, NOT the `BalanceType` the v2 body sends. The client's member IS named
+				// `BalanceType`, but it carries a [DataMember] rename to `Platform` and its decoder
+				// drops what it doesn't know, so spelling it `BalanceType` here would land this balance
+				// in bucket 0 beside the real one. `Balance` is the RESULTING total, as in v2.
+				BalanceUpdateResponse: {
+					BalanceUpdates: [{ UpdateResponse: 0, Data: toInventionV9(settled.invention) }],
+					Balance: settled.balance,
+					CurrencyType: CurrencyType.RecCenterTokens,
+					// The capture says 0 (SteamPurchased) because the reference server kept a wallet per
+					// platform. This one keeps ONE bucket and the client SUMS them, so naming 0 here
+					// while every socket frame names -2 is exactly the phantom second balance that
+					// doubled players' tokens twice before. -2, like every other surface.
+					Platform: ALL_PLATFORMS,
+				},
 			})
 		}
 	)
