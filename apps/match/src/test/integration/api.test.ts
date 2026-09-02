@@ -3187,7 +3187,28 @@ describe('auth-gated endpoints', () => {
 			].sort()
 		)
 
-		// Standing there already is 17, not a second join.
+		// The invite was spent by that join: the row is gone, so the same call now reads as
+		// "no invite" (40) rather than authorizing a second entry off the same invite.
+		expect(
+			await env.DB.prepare(
+				'SELECT COUNT(*) AS n FROM room_invite WHERE from_player_id = 8811 AND to_player_id = 8812'
+			).first<{ n: number }>()
+		).toMatchObject({ n: 0 })
+		expect(await (await join(8811, '8812')).json()).toMatchObject({
+			ErrorCode: 40,
+			RoomInstance: null,
+		})
+
+		// With a fresh invite, standing there already is 17, not a second join — and a
+		// refusal leaves that invite standing, which the PlayerNotOnline case below redeems.
+		await exports.default.fetch(`${ORIGIN}/invite`, {
+			method: 'POST',
+			headers: {
+				...(await bearer('8811')),
+				'Content-Type': 'application/x-www-form-urlencoded',
+			},
+			body: `playerId=8812&roomInstanceId=${instance.roomInstanceId}`,
+		})
 		expect(await (await join(8811, '8812')).json()).toMatchObject({
 			ErrorCode: 17,
 			RoomInstance: null,

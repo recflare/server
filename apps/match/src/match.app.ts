@@ -18,6 +18,7 @@ import {
 	getExpiredPresenceInstanceIds,
 	getFriendIds,
 	getJoinableInstance,
+	deleteRoomInvite,
 	getLatestRoomInviteBetween,
 	getMostActiveClubhouses,
 	getOrCreateDormRoom,
@@ -2192,6 +2193,10 @@ const app = new Hono<App>()
 	// of by row id, and this is that path). Everything the target sent stays checkable:
 	// the newest row is enough, since any live row is authorization.
 	//
+	// The row is consumed on a successful join: an invite authorizes one entry, and since
+	// this path follows the target's LIVE presence rather than the room the invite named,
+	// keeping it would leave a standing key into whatever instance they're in later.
+	//
 	// Like the follow and invite paths, this hands out real Photon coordinates without
 	// going through resolveRoomInstance, so it carries its own ban and build checks.
 	// `/matchmake/v2/` answers the PascalCase envelope via `matchmakeResult`, as the v2
@@ -2205,7 +2210,10 @@ const app = new Hono<App>()
 				'Places the caller into the room instance the target player is currently in, read from',
 				'the target’s stored presence. INVITEES ONLY: the caller must hold a `room_invite` row',
 				'FROM the target (as `POST /invite` writes them) — the newer client redeems an invite by',
-				'its sender when the frame carries no usable `RoomInviteId`. Answers 40',
+				'its sender when the frame carries no usable `RoomInviteId`. The invite is SINGLE-USE:',
+				'a successful join deletes the row, so the same invite can’t be redeemed again into',
+				'wherever that player goes next (a refusal leaves it standing, so a retry still works).',
+				'Answers 40',
 				'(RoomInviteExpired) when no invite stands (expiry deletes rows, so “never invited” and',
 				'“expired” are one answer), 2 (PlayerNotOnline) when the target isn’t in a room, 17',
 				'(AlreadyInTargetInstance) when the caller is already standing there, 3',
@@ -2303,6 +2311,13 @@ const app = new Hono<App>()
 			// Same instance, same Photon room, stored as the caller's presence so their
 			// heartbeat replays it and their own friend fan-out fires.
 			await enterRoom(c, id, instance)
+
+			// The invite is spent: it was authorization for THIS join, and leaving the row
+			// standing would make it a permanent key into whatever instance the target is in
+			// later — this path reads their live presence, not the room the invite named.
+			// Dropped only once the caller is actually in, so every refusal above (target not
+			// in a room, full, banned, wrong build) leaves the invite redeemable for a retry.
+			await deleteRoomInvite(c.env.DB, invite.RoomInviteId)
 			return matchmakeResult(c, MatchmakingErrorCode.Success, instance)
 		}
 	)

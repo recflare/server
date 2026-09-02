@@ -147,3 +147,21 @@ export async function createRoomInvite(
 		RoomId: row.room_id,
 	}
 }
+
+/**
+ * Delete one invite by its id, answering whether a row was there to delete.
+ *
+ * An invite is single-use: `POST /matchmake/v2/player/:playerId` redeems the newest row
+ * from the target and drops it here once the caller is actually in the instance, so a
+ * standing invite doesn't stay a permanent key into whatever room that player is in
+ * later. Deleting rather than flagging matches the expiry sweep, which is why every
+ * lookup reads a miss as "no longer good" without a status column.
+ */
+export async function deleteRoomInvite(db: D1Database, roomInviteId: number): Promise<boolean> {
+	const row = await db
+		.prepare(`DELETE FROM room_invite WHERE room_invite_id = ?1 RETURNING room_invite_id`)
+		.bind(roomInviteId)
+		.first<{ room_invite_id: number }>()
+
+	return row !== null
+}
