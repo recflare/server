@@ -134,6 +134,24 @@ it('POST /upload 400s for a binary with an unknown/missing FileType', async () =
 	}
 })
 
+it('POST /upload rejects a binary above the configured size limit without storing it', async () => {
+	const original = env.MAX_UPLOAD_BYTES
+	env.MAX_UPLOAD_BYTES = '3'
+	try {
+		const res = await SELF.fetch(`${ORIGIN}/upload`, {
+			method: 'POST',
+			headers: await bearer(),
+			body: uploadForm('3', new Uint8Array([1, 2, 3, 4])),
+		})
+		expect(res.status).toBe(413)
+		expect((await res.json()) as { error: string }).toEqual({
+			error: 'file exceeds the 3-byte upload limit',
+		})
+	} finally {
+		env.MAX_UPLOAD_BYTES = original
+	}
+})
+
 it('POST /upload echoes an explicit name when no binary is posted', async () => {
 	const form = new FormData()
 	form.set('FileType', '3')

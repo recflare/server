@@ -149,6 +149,15 @@ describe('auth-gated endpoints', () => {
 		expect(res.status).toBe(401)
 	})
 
+	test('GET /account/me rejects a signed token with a non-canonical account subject', async () => {
+		for (const sub of ['42junk', '42.5', '042', '-42', '9007199254740992']) {
+			const res = await exports.default.fetch(`${ORIGIN}/account/me`, {
+				headers: await bearer(sub),
+			})
+			expect(res.status, sub).toBe(401)
+		}
+	})
+
 	test('GET /account/me returns the self account with a valid token', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/account/me`, { headers: await bearer() })
 		expect(res.status).toBe(200)
@@ -160,7 +169,7 @@ describe('auth-gated endpoints', () => {
 			username: 'Player42',
 			personalPronouns: 0,
 			identityFlags: 0,
-			availableUsernameChanges: 1,
+			availableUsernameChanges: 3,
 			// An unset email is "", not null — the client reads it as a string, and the
 			// hub frame this DTO also rides drops null values outright.
 			email: '',
@@ -235,7 +244,7 @@ describe('auth-gated endpoints', () => {
 		expect(body.value).toBe('')
 	})
 
-	test('PUT /account/me/username changes the name, decrements the counter, then blocks', async () => {
+	test('PUT /account/me/username allows three changes, decrements the counter, then blocks', async () => {
 		const headers = {
 			...(await bearer('892')),
 			'Content-Type': 'application/x-www-form-urlencoded',
@@ -260,11 +269,27 @@ describe('auth-gated endpoints', () => {
 			await exports.default.fetch(`${ORIGIN}/account/me`, { headers: await bearer('892') })
 		).json()) as { username: string; availableUsernameChanges: number }
 		expect(me.username).toBe('coachx')
-		expect(me.availableUsernameChanges).toBe(0)
+		expect(me.availableUsernameChanges).toBe(2)
 
-		// A second change is blocked — no changes remaining (still HTTP 200).
+		// The second and third changes consume the rest of the account's allowance.
+		for (const username of ['coachy', 'coachz']) {
+			const changed = await exports.default.fetch(`${ORIGIN}/account/me/username`, {
+				...form({ username }),
+				headers,
+			})
+			expect(changed.status).toBe(200)
+			expect(((await changed.json()) as { success: boolean }).success).toBe(true)
+		}
+
+		const exhausted = (await (
+			await exports.default.fetch(`${ORIGIN}/account/me`, { headers: await bearer('892') })
+		).json()) as { username: string; availableUsernameChanges: number }
+		expect(exhausted.username).toBe('coachz')
+		expect(exhausted.availableUsernameChanges).toBe(0)
+
+		// A fourth change is blocked — no changes remaining (still HTTP 200).
 		const blocked = await exports.default.fetch(`${ORIGIN}/account/me/username`, {
-			...form({ username: 'coachy' }),
+			...form({ username: 'coachq' }),
 			headers,
 		})
 		expect(blocked.status).toBe(200)
@@ -565,12 +590,12 @@ describe('name, email and bio validation', () => {
 			expect(body.value).toBe('')
 		}
 
-		// The rationed change must NOT be spent by a refusal: an account starts with one,
+		// A rationed change must NOT be spent by a refusal: an account starts with three,
 		// and burning it on a typo would leave the player stuck with a name they never had.
 		const me = (await (
 			await exports.default.fetch(`${ORIGIN}/account/me`, { headers: await bearer('8801') })
 		).json()) as { availableUsernameChanges: number }
-		expect(me.availableUsernameChanges).toBe(1)
+		expect(me.availableUsernameChanges).toBe(3)
 
 		// 50 is the client's own cap, so a name that long has to be accepted.
 		const ok = await exports.default.fetch(`${ORIGIN}/account/me/username`, {

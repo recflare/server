@@ -16,7 +16,7 @@
 	},
 	"dependencies": {
 		"@repo/hono-helpers": "workspace:*",
-		"hono": "4.12.27",
+		"hono": "4.13.5",
 		"workers-tagged-logger": "1.0.1"
 	},
 	"devDependencies": {
@@ -25,6 +25,6 @@
 		"@repo/typescript-config": "workspace:*",
 		"@types/node": "26.0.1",
 		"vitest": "4.1.9",
-		"wrangler": "4.105.0"
+		"wrangler": "4.128.0"
 	}
 }
