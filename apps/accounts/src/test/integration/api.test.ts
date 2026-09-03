@@ -149,6 +149,15 @@ describe('auth-gated endpoints', () => {
 		expect(res.status).toBe(401)
 	})
 
+	test('GET /account/me rejects a signed token with a non-canonical account subject', async () => {
+		for (const sub of ['42junk', '42.5', '042', '-42', '9007199254740992']) {
+			const res = await exports.default.fetch(`${ORIGIN}/account/me`, {
+				headers: await bearer(sub),
+			})
+			expect(res.status, sub).toBe(401)
+		}
+	})
+
 	test('GET /account/me returns the self account with a valid token', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/account/me`, { headers: await bearer() })
 		expect(res.status).toBe(200)
