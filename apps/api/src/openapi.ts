@@ -1244,13 +1244,18 @@ export const VoteToKickReason = z.object({
 /**
  * `GET|POST /api/PlayerReporting/v1/moderationBlockDetails` — the caller's block. With an
  * account-wide ban in force (a `report` row with `banned` set) it describes that ban:
- * `IsBan` true, the report's `ReportCategory`, `Duration` in seconds left (0 for a
- * permanent ban, which has no end) and a fixed `Message` of "Rule violation". Otherwise it is the "not
- * blocked" answer, mirroring the reference server's stub `ReturnModerationBlockDetails()`:
+ * `IsBan` true, the report's `ReportCategory`, a fixed `Message` of "Rule violation", and
+ * its span as `TimeoutStartedAt` (the report's `created_at`) plus `Duration` (seconds to
+ * `ban_expires`; int32 max for a permanent ban). Otherwise it is the "not blocked" answer, mirroring the reference server's stub `ReturnModerationBlockDetails()`:
  * `ReportCategory` is `Unknown` (-1) rather than 0, which is a real category, and
  * `Message` is null — the client distinguishes "no message" from a blank one, so we send
  * null where the reference sends an empty string. `IsVoiceModAutoban`/`TimeoutStartedAt`
  * are on the DTO but unset by that stub, so they carry their C# defaults (false / null).
+ *
+ * Sixteen keys on the wire — every one the 2025 client's `ModerationBlockDetail` formatter
+ * reads. The seven past the stub's nine (`IsDeviceBan` … `BottomMessageOverride`) are
+ * block kinds and screen dressings this server never hands out, so they always carry their
+ * "none" value; they are sent so a decoder that wants the key present finds it.
  */
 export const ModerationBlockDetails = z.object({
 	ReportCategory: z
@@ -1261,18 +1266,38 @@ export const ModerationBlockDetails = z.object({
 	Duration: z
 		.int()
 		.describe(
-			'Seconds left on the block; 0 for a permanent ban (no end) and when not blocked — `IsBan` marks the block'
+			'Length of the block in seconds from `TimeoutStartedAt`; 2147483647 (int32 max) for a permanent ban; 0 when not blocked'
 		),
 	GameSessionId: z.int(),
-	IsBan: z.boolean().describe('True when an account-wide ban is in force'),
-	IsHostKick: z.boolean(),
-	IsVoiceModAutoban: z.boolean(),
+	IsHostKick: z.boolean().describe('Always false — no host kick is ever recorded here'),
 	Message: z.string().nullable().describe('“Rule violation” on a ban; null when not blocked'),
 	PlayerIdReporter: z
 		.int()
 		.nullable()
 		.describe('Always null — the reporter is not shown to the reported'),
-	TimeoutStartedAt: z.string().nullable(),
+	IsBan: z.boolean().describe('True when an account-wide ban is in force'),
+	IsVoiceModAutoban: z.boolean().describe('Always false'),
+	IsDeviceBan: z.boolean().describe('Always false — bans here are account-wide, not per device'),
+	IsWarning: z
+		.boolean()
+		.describe('Always false — warnings are delivered as notifications, not here'),
+	VoteKickReason: z.string().nullable().describe('Always null — no vote-kick is recorded here'),
+	TimeoutStartedAt: z
+		.string()
+		.nullable()
+		.describe(
+			'When the block began — the ban’s report `created_at` (ISO-8601 UTC); `Duration` runs from it. Null when not blocked'
+		),
+	AssociatedAccountUsername: z.string().nullable().describe('Always null'),
+	ShowCreatorCodeOfConduct: z.boolean().describe('Always false'),
+	TopMessageOverride: z
+		.string()
+		.nullable()
+		.describe('Always null — the client’s default block-screen text stands'),
+	BottomMessageOverride: z
+		.string()
+		.nullable()
+		.describe('Always null — the client’s default block-screen text stands'),
 })
 
 /**

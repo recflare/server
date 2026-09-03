@@ -225,55 +225,67 @@ async function pushVoteToKick(c: Context<App>, message: VoteToKickMessage): Prom
 }
 
 /**
- * `Duration` on a permanent ban: 0, "no end". `IsBan` is what says the player is blocked;
- * `Duration` only says for how long, and a ban with no expiry has no length to give. Not
- * the int32-max sentinel E12354 uses — that reads as a 68-year countdown.
+ * `Duration` on a permanent ban. The client's field is a 32-bit int of seconds that PAIRS
+ * with `TimeoutStartedAt` — start + duration is the end of the block — so a ban with no
+ * end gets the largest value the field holds, 68 years past its start.
  */
-const PERMANENT_BAN_DURATION = 0
+const PERMANENT_BAN_DURATION = 2_147_483_647
 
-/** The "not blocked" answer — the reference server's stub `ReturnModerationBlockDetails()`. */
+/**
+ * The "not blocked" answer — the reference server's stub `ReturnModerationBlockDetails()`,
+ * widened to every key the client's `ModerationBlockDetail` decoder names (16 on the wire;
+ * the 2025 build's formatter reads them all). The ones past the stub's nine are the block
+ * kinds and screen dressings this server never uses — a device ban, a warning, the
+ * vote-kick reason, an associated account, the creator code of conduct, the top/bottom
+ * message overrides — so they carry their "none" values on every answer.
+ */
 const NOT_BLOCKED = {
 	ReportCategory: -1,
 	Duration: 0,
 	GameSessionId: 0,
-	IsBan: false,
 	IsHostKick: false,
-	IsVoiceModAutoban: false,
 	Message: null,
 	PlayerIdReporter: null,
+	IsBan: false,
+	IsVoiceModAutoban: false,
+	IsDeviceBan: false,
+	IsWarning: false,
+	VoteKickReason: null,
 	TimeoutStartedAt: null,
+	AssociatedAccountUsername: null,
+	ShowCreatorCodeOfConduct: false,
+	TopMessageOverride: null,
+	BottomMessageOverride: null,
 }
 
 /**
  * The block details for a ban in force — the `report` row a moderator set `banned` on.
  *
- * `Duration` is the seconds left on the ban (rounded up, so a ban with a second to run
- * doesn't read as over), or `PERMANENT_BAN_DURATION` (0, no end) when `ban_expires` is
- * NULL — `IsBan` alone marks the block, so the "not blocked" answer and a permanent ban
- * share a `Duration` of 0 without being confused. The
- * category is the one the report was filed under, so the client's ban screen names the
- * reason. `Message` is a fixed "Rule violation" rather than the report's `details` —
- * those are the REPORTER's words, and the banned player isn't shown them, for the same
- * reason `PlayerIdReporter` stays null: the reporter is not a host who kicked them, and
- * naming them would tell the banned player who reported them. `IsHostKick`,
- * `IsVoiceModAutoban` and `TimeoutStartedAt` describe the OTHER kinds of block, none of
- * which this server hands out.
+ * `Duration` and `TimeoutStartedAt` are a PAIR in the client: the block runs from the
+ * start for the duration. The start is the report's `created_at` — nothing records when
+ * the ban itself was handed down, and the report is the record the ban rests on — and the
+ * duration is the seconds from there to `ban_expires`, so the two sum to the expiry; or
+ * `PERMANENT_BAN_DURATION` when there is none. The category is the one the report was
+ * filed under, so the client's ban screen names the reason. `Message` is a fixed "Rule
+ * violation" rather than the report's `details` — those are the REPORTER's words, and the
+ * banned player isn't shown them, for the same reason `PlayerIdReporter` stays null: the
+ * reporter is not a host who kicked them, and naming them would tell the banned player who
+ * reported them. Everything else keeps its `NOT_BLOCKED` value: the other block kinds and
+ * screen dressings, none of which this server hands out.
  */
-function banBlockDetails(ban: ReportRow, now: Date) {
+function banBlockDetails(ban: ReportRow) {
+	const startedAt = Date.parse(ban.created_at)
 	const duration =
 		ban.ban_expires === null
 			? PERMANENT_BAN_DURATION
-			: Math.max(1, Math.ceil((Date.parse(ban.ban_expires) - now.getTime()) / 1000))
+			: Math.max(1, Math.ceil((Date.parse(ban.ban_expires) - startedAt) / 1000))
 	return {
+		...NOT_BLOCKED,
 		ReportCategory: ban.report_category,
 		Duration: duration,
-		GameSessionId: 0,
 		IsBan: true,
-		IsHostKick: false,
-		IsVoiceModAutoban: false,
 		Message: 'Rule violation',
-		PlayerIdReporter: null,
-		TimeoutStartedAt: null,
+		TimeoutStartedAt: ban.created_at,
 	}
 }
 
@@ -307,17 +319,24 @@ export const moderationRoutes = new Hono<App>({ strict: false })
 				'out is the account-wide ban — a `report` row with `banned` set, the same row ' +
 				'matchmake refuses on (login still issues a token, so the client can reach this ' +
 				'screen) — so a caller with one in force gets ' +
-				'`IsBan: true`, the `ReportCategory` the report was filed under, `Duration` as the ' +
-				'seconds left (0 for a permanent ban, which has no end) and the fixed ' +
-				'`Message` “Rule violation”. `PlayerIdReporter` stays null: it names a kicking ' +
-				'host, and the reporter is not shown to the player they reported. Only the ' +
-				'caller’s own account is consulted, not the ban-evasion arms.\n\n' +
+				'`IsBan: true`, the `ReportCategory` the report was filed under, the fixed ' +
+				'`Message` “Rule violation”, and the block’s span as the pair the client reads ' +
+				'them as: `TimeoutStartedAt` is the report’s `created_at` and `Duration` the ' +
+				'seconds from there to `ban_expires` (2147483647, the int32 max, for a permanent ' +
+				'ban). ' +
+				'`PlayerIdReporter` stays null: it names a kicking host, and the reporter is not ' +
+				'shown to the player they reported. Only the caller’s own account is consulted, ' +
+				'not the ban-evasion arms.\n\n' +
 				'Everyone else gets the reference server’s stub “not blocked” answer: ' +
 				'`ReportCategory` is `Unknown` (-1) rather than 0, which is a real category, and ' +
 				'`Message` is null rather than the empty string that stub sends — the client ' +
 				'distinguishes “no message” from a blank one. `IsVoiceModAutoban` and ' +
 				'`TimeoutStartedAt` are on the DTO but unset by that stub, so they carry their ' +
-				'defaults. Answers GET or POST: the newer client POSTs it with no body.',
+				'defaults, as do the seven keys past the stub’s nine that the 2025 client’s decoder ' +
+				'names (`IsDeviceBan`, `IsWarning`, `VoteKickReason`, `AssociatedAccountUsername`, ' +
+				'`ShowCreatorCodeOfConduct`, `TopMessageOverride`, `BottomMessageOverride`) — ' +
+				'block kinds and screen dressings this server never uses. Answers GET or POST: ' +
+				'the newer client POSTs it with no body.',
 			security: AUTHED,
 			responses: {
 				200: json(ModerationBlockDetails, 'The caller’s block, or “not blocked”'),
@@ -327,9 +346,8 @@ export const moderationRoutes = new Hono<App>({ strict: false })
 		async (c) => {
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
-			const now = new Date()
-			const ban = await getActiveBan(c.env.DB, id, now)
-			return c.json(ban ? banBlockDetails(ban, now) : NOT_BLOCKED)
+			const ban = await getActiveBan(c.env.DB, id)
+			return c.json(ban ? banBlockDetails(ban) : NOT_BLOCKED)
 		}
 	)
 	// The reasons the client offers when a player starts a vote-to-kick. Order matters —

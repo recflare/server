@@ -4509,16 +4509,24 @@ describe('player reports', () => {
 	// What the banned player is TOLD. The block screen reads this; it's the same row
 	// matchmake and login refuse on, described rather than merely enforced.
 	describe('moderationBlockDetails', () => {
+		// All sixteen keys the 2025 client's decoder names, every one at its "none" value.
 		const NOT_BLOCKED = {
 			ReportCategory: -1,
 			Duration: 0,
 			GameSessionId: 0,
-			IsBan: false,
 			IsHostKick: false,
-			IsVoiceModAutoban: false,
 			Message: null,
 			PlayerIdReporter: null,
+			IsBan: false,
+			IsVoiceModAutoban: false,
+			IsDeviceBan: false,
+			IsWarning: false,
+			VoteKickReason: null,
 			TimeoutStartedAt: null,
+			AssociatedAccountUsername: null,
+			ShowCreatorCodeOfConduct: false,
+			TopMessageOverride: null,
+			BottomMessageOverride: null,
 		}
 		const details = async (method: string, sub: string) => {
 			const res = await exports.default.fetch(
@@ -4549,7 +4557,10 @@ describe('player reports', () => {
 			expect(res.status).toBe(401)
 		})
 
-		// A permanent ban has no end, so Duration is 0 — IsBan is what marks the block.
+		// Duration and TimeoutStartedAt are a pair in the client — the block runs from the
+		// start for the duration. The start is the report's created_at (nothing records when
+		// the ban itself landed), and a permanent ban runs for the largest span the int
+		// holds.
 		test('describes a permanent ban', async () => {
 			await submit(
 				{ PlayerIdReported: '221', ReportCategory: '102', Details: 'slurs' },
@@ -4559,32 +4570,34 @@ describe('player reports', () => {
 			await banFromReport(env.DB, row!.id)
 
 			expect(await details('POST', '221')).toEqual({
+				...NOT_BLOCKED,
 				ReportCategory: 102,
-				Duration: 0,
-				GameSessionId: 0,
+				Duration: 2_147_483_647,
 				IsBan: true,
-				IsHostKick: false,
-				IsVoiceModAutoban: false,
 				// A fixed message — the report's `details` are the reporter's words, and
-				// the reporter is not shown to the player they reported, hence null.
+				// the reporter is not shown to the player they reported (PlayerIdReporter
+				// stays null).
 				Message: 'Rule violation',
-				PlayerIdReporter: null,
-				TimeoutStartedAt: null,
+				TimeoutStartedAt: row!.created_at,
 			})
 		})
 
-		// A timed ban reports the seconds LEFT, not its original length.
-		test('describes a timed ban with the seconds remaining', async () => {
+		// A timed ban's Duration is the seconds from the start to the expiry, so the pair
+		// sums to `ban_expires` — not the seconds left as of the request.
+		test('describes a timed ban as its report’s created_at plus the span to expiry', async () => {
 			await submit({ PlayerIdReported: '222', ReportCategory: '103' }, await bearer())
 			const [row] = await getReportsAgainst(env.DB, 222)
-			await banFromReport(env.DB, row!.id, {
-				banExpires: new Date(Date.now() + 3600 * 1000).toISOString(),
-			})
+			const banExpires = new Date(Date.parse(row!.created_at) + 3600 * 1000)
+			await banFromReport(env.DB, row!.id, { banExpires: banExpires.toISOString() })
 
-			const body = await details('GET', '222')
-			expect(body).toMatchObject({ ReportCategory: 103, IsBan: true, Message: 'Rule violation' })
-			expect(body.Duration).toBeGreaterThan(3500)
-			expect(body.Duration).toBeLessThanOrEqual(3600)
+			expect(await details('GET', '222')).toEqual({
+				...NOT_BLOCKED,
+				ReportCategory: 103,
+				Duration: 3600,
+				IsBan: true,
+				Message: 'Rule violation',
+				TimeoutStartedAt: row!.created_at,
+			})
 		})
 
 		// A ban that has served its time is not a block, even though the row still says
