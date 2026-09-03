@@ -2,7 +2,13 @@ import { Hono } from 'hono'
 import { describeRoute, openAPIRouteHandler } from 'hono-openapi'
 import { useWorkersLogger } from 'workers-tagged-logger'
 
-import { withCleanSpec, withDefaultCors, withNotFound, withOnError } from '@repo/hono-helpers'
+import {
+	intVar,
+	withCleanSpec,
+	withDefaultCors,
+	withNotFound,
+	withOnError,
+} from '@repo/hono-helpers'
 import { validateAndGetAccountId } from '@repo/jwt'
 
 import {
@@ -55,6 +61,19 @@ function subfolderForFileType(fileType: string): string | undefined {
  */
 const UPLOAD_EXTENSION: Record<number, string> = {
 	5: '.inv',
+}
+
+/**
+ * A Worker must not accept an unbounded user-controlled blob into memory and R2.
+ * Operators can tune this for known room sizes, but an unset or invalid value keeps
+ * the safe 64 MiB default. Non-positive values are invalid rather than disabling the
+ * limit: a public upload endpoint must always have a finite ceiling.
+ */
+const DEFAULT_MAX_UPLOAD_BYTES = 64 * 1024 * 1024
+
+function maxUploadBytes(value: unknown): number {
+	const configured = intVar(value, DEFAULT_MAX_UPLOAD_BYTES)
+	return configured > 0 ? configured : DEFAULT_MAX_UPLOAD_BYTES
 }
 
 function extensionForFileType(fileType: string): string {
@@ -130,6 +149,7 @@ const app = new Hono<App>()
 				200: json(UploadResponse, 'The stored (or echoed) file name'),
 				400: json(ErrorResponse, 'Unknown/missing FileType, or neither a file nor a name'),
 				401: UNAUTHORIZED_RESPONSE,
+				413: json(ErrorResponse, 'The binary file exceeds the configured upload limit'),
 			},
 		}),
 		async (c) => {
@@ -143,6 +163,11 @@ const app = new Hono<App>()
 			const file = Object.values(body).find((v): v is File => v instanceof File)
 
 			if (file) {
+				const limit = maxUploadBytes(c.env.MAX_UPLOAD_BYTES)
+				if (file.size > limit) {
+					return c.json({ error: `file exceeds the ${limit}-byte upload limit` }, 413)
+				}
+
 				const fileType = textField(body, 'filetype') ?? '0'
 				const subfolder = subfolderForFileType(fileType)
 				if (subfolder === undefined) {

@@ -52,8 +52,12 @@ export async function validateAndGetAccountId(
 	const accountId = await getAccountIdFromToken(token, secret)
 	if (!accountId) return null
 
-	const id = Number.parseInt(accountId, 10)
-	return Number.isNaN(id) ? null : id
+	// `parseInt("42junk", 10)` is 42, which lets a malformed subject select a real
+	// account. Token subjects are canonical positive base-10 account ids: reject
+	// partial parses, signs, decimals, leading zeroes and values outside JS's safe range.
+	if (!/^[1-9]\d*$/.test(accountId)) return null
+	const id = Number(accountId)
+	return Number.isSafeInteger(id) ? id : null
 }
 
 /**
