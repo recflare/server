@@ -467,23 +467,10 @@ export async function setRoomDescription(
 		.run()
 }
 
-/**
- * Set a room's Name in place (the caller checks ownership + name uniqueness first).
- *
- * Writes `FriendlyName` to the same string. That is the DISPLAY name — what the client
- * labels the room with — and it is only defaulted to `Name` on read
- * ({@link attachRoomDtoDefaults}), with `??=`, so a room whose blob has ever carried one
- * keeps it. Renaming without this leaves that room displaying its old name forever while
- * every name-keyed lookup uses the new one.
- *
- * The reference lets a creator set a display name apart from the unique `Name`; nothing
- * here exposes that, so the two are kept in step rather than allowed to diverge silently.
- */
+/** Set a room's Name in place (the caller checks ownership + name uniqueness first). */
 export async function setRoomName(db: D1Database, roomId: number, name: string): Promise<void> {
 	await db
-		.prepare(
-			"UPDATE room SET data = json_set(data, '$.Name', ?2, '$.FriendlyName', ?2) WHERE room_id = ?1"
-		)
+		.prepare("UPDATE room SET data = json_set(data, '$.Name', ?2) WHERE room_id = ?1")
 		.bind(roomId, name)
 		.run()
 }
@@ -1162,10 +1149,6 @@ const PUBLIC_WHERE = 'is_dorm IS NOT 1 AND accessibility = 1'
  *   it is 0 for every room.
  * - `CurrentSnapshotId` — the room's published snapshot. Nothing takes snapshots, so it is
  *   null, which is also what the reference serves for a room that has none.
- * - `FriendlyName` — the display name, which the reference lets a creator set apart from
- *   the unique `Name`. Nothing sets one here, so it falls back to `Name`; it must never be
- *   null, because the client labels a room from it and renders nothing for a room without
- *   one.
  * - `CCU` — concurrent users. No live-population counter exists here, so it is null, which
  *   is what the reference serves when it has no number rather than 0 (a 0 reads as "nobody
  *   is in here" in the browse feeds).
@@ -1176,7 +1159,6 @@ const PUBLIC_WHERE = 'is_dorm IS NOT 1 AND accessibility = 1'
 function attachRoomDtoDefaults(room: Room): void {
 	room.BoostCount ??= 0
 	room.CurrentSnapshotId ??= null
-	room.FriendlyName ??= room.Name
 	room.CCU ??= null
 }
 

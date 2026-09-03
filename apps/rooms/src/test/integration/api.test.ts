@@ -156,16 +156,16 @@ describe('rooms endpoints', () => {
 
 	// None of these are stored — the seed blobs predate the keys — so they are defaulted on
 	// read. The client's room DTO always carries them, and an ABSENT key is not the same as a
-	// zero/null one to its parser. `FriendlyName` is the one that can't be null: the client
-	// labels the room from it.
-	it('GET /rooms/:id carries BoostCount, CurrentSnapshotId, FriendlyName and CCU', async () => {
+	// zero/null one to its parser. `FriendlyName` is deliberately NOT among them: this server
+	// does not serve a display name apart from `Name`, and migration 0017 strips any stored one.
+	it('GET /rooms/:id carries BoostCount, CurrentSnapshotId and CCU, and no FriendlyName', async () => {
 		const res = await SELF.fetch(`${ORIGIN}/rooms/1`)
 		expect(res.status).toBe(200)
 		const body = (await res.json()) as Record<string, unknown>
 		expect(body).toHaveProperty('BoostCount', 0)
 		expect(body).toHaveProperty('CurrentSnapshotId', null)
-		expect(body).toHaveProperty('FriendlyName', body.Name)
 		expect(body).toHaveProperty('CCU', null)
+		expect(body).not.toHaveProperty('FriendlyName')
 	})
 
 	// Pinned whole: these are the numbers the client's publish UI counts against, and
@@ -2999,13 +2999,12 @@ describe('rooms endpoints', () => {
 		expect(await bodyOf(ok)).toMatchObject({ Success: true })
 		const room = (await (await SELF.fetch(`${ORIGIN}/rooms?name=RenamedCenter`)).json()) as {
 			RoomId: number
-			FriendlyName: string
+			Name: string
 		}
 		expect(room.RoomId).toBe(2)
-		// The DISPLAY name follows the rename. It is otherwise only defaulted to `Name` on
-		// read, so a room that had ever stored one would keep labelling itself with the old
-		// name while every name-keyed lookup used the new one.
-		expect(room.FriendlyName).toBe('RenamedCenter')
+		expect(room.Name).toBe('RenamedCenter')
+		// A rename must not resurrect the retired display name.
+		expect(room).not.toHaveProperty('FriendlyName')
 	})
 
 	/** The hub stub records every notifyPlayer call — see vitest.config.ts. */
@@ -3025,14 +3024,11 @@ describe('rooms endpoints', () => {
 
 		const sent = await sentNotifications()
 		expect(sent).toHaveLength(1)
-		// RoomUpdate, to the OWNER, carrying the room as it now stands — both names.
+		// RoomUpdate, to the OWNER, carrying the room as it now stands.
 		expect(sent[0].playerId).toBe(1)
 		expect(sent[0].notificationType).toBe(NotificationType.SubscriptionUpdateRoom)
-		expect(sent[0].data).toMatchObject({
-			RoomId: 2,
-			Name: 'PushedRename',
-			FriendlyName: 'PushedRename',
-		})
+		expect(sent[0].data).toMatchObject({ RoomId: 2, Name: 'PushedRename' })
+		expect(sent[0].data).not.toHaveProperty('FriendlyName')
 
 		// Put it back for the tests that read room 2 by name.
 		await putForm('/rooms/2/name', { name: 'RenamedCenter' }, '1')

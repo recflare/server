@@ -1690,13 +1690,11 @@ const app = new Hono<App>()
 				})
 			}
 
-			// Writes `FriendlyName` too — see `setRoomName`. The two are the same string here,
-			// and the client labels the room from the display one.
 			await setRoomName(c.env.DB, roomId, name)
 			// The rename answers a bare `{ Success }` with no room in it, so the client has
 			// nothing to re-render from and kept showing the old name until the push arrived.
 			// Built from the room already in hand rather than re-read, like the image route's.
-			await pushRoomUpdate(c, accountId, { ...room, Name: name, FriendlyName: name })
+			await pushRoomUpdate(c, accountId, { ...room, Name: name })
 			return roomResult(c, { Success: true })
 		}
 	)
