@@ -1,0 +1,14 @@
+services:
+  recflare-server:
+    build: ..
+    restart: unless-stopped
+    volumes:
+      - ./data:/var/lib/recflare
+      - ./server.crt:/etc/recflare/server.crt
+      - ./server.key:/etc/recflare/server.key
+    environment:
+      - RECFALRE_DOMAIN="example.domain"
+      - RECFALRE_SSL_CRT="/etc/recflare/server.crt"
+      - RECFALRE_SSL_KEY="/etc/recflare/server.key"
+    ports:
+      - "443:443"
