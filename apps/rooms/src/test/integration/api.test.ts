@@ -425,6 +425,11 @@ describe('rooms endpoints', () => {
 	it('GET /rooms/contributedby/me lists rooms the caller owns or has a role in', async () => {
 		const seed = (data: Record<string, unknown>) =>
 			env.DB.prepare('INSERT INTO room (data) VALUES (?1)').bind(JSON.stringify(data)).run()
+		// Roles live in `room_role`, not the blob — the table the query's EXISTS matches on.
+		const grant = (roomId: number, accountId: number, role: number) =>
+			env.DB.prepare('INSERT INTO room_role (room_id, account_id, role) VALUES (?1, ?2, ?3)')
+				.bind(roomId, accountId, role)
+				.run()
 
 		// A room somebody else made, where 820 is a co-owner...
 		await seed({
@@ -433,11 +438,9 @@ describe('rooms endpoints', () => {
 			CreatorAccountId: 821,
 			Accessibility: 1,
 			SubRooms: [],
-			Roles: [
-				{ AccountId: 821, Role: 255 },
-				{ AccountId: 820, Role: 30 },
-			],
 		})
+		await grant(30401, 821, 255)
+		await grant(30401, 820, 30)
 		// ...one where they're only a host (every tier counts, not just owner-level)...
 		await seed({
 			RoomId: 30402,
@@ -447,20 +450,20 @@ describe('rooms endpoints', () => {
 			// accessibility is not filtered here.
 			Accessibility: 0,
 			SubRooms: [],
-			Roles: [{ AccountId: 820, Role: 10 }],
 		})
-		// ...one they created themselves, whose Roles name them as Creator (matched by BOTH
-		// halves of the query, so it must still appear exactly once)...
+		await grant(30402, 820, 10)
+		// ...one they created themselves, whose role rows name them as Creator (matched by
+		// BOTH halves of the query, so it must still appear exactly once)...
 		await seed({
 			RoomId: 30403,
 			Name: 'ContribOwn',
 			CreatorAccountId: 820,
 			Accessibility: 1,
 			SubRooms: [],
-			Roles: [{ AccountId: 820, Role: 255 }],
 		})
-		// ...one they created that names nobody in Roles at all — the older rooms have no
-		// Roles key, and those reach the list on the creator half alone...
+		await grant(30403, 820, 255)
+		// ...one they created that has no role rows at all — the older rooms never got
+		// any, and those reach the list on the creator half alone...
 		await seed({
 			RoomId: 30406,
 			Name: 'ContribOwnNoRoles',
@@ -476,18 +479,17 @@ describe('rooms endpoints', () => {
 			IsDorm: true,
 			Accessibility: 2,
 			SubRooms: [],
-			Roles: [{ AccountId: 820, Role: 255 }],
 		})
-		// ...one they have nothing to do with, and one with no Roles key at all (the older
-		// seeded rooms have none — json_each must drop them, not error).
+		await grant(30407, 820, 255)
+		// ...one they have nothing to do with, and one with no role rows at all.
 		await seed({
 			RoomId: 30404,
 			Name: 'ContribOther',
 			CreatorAccountId: 821,
 			Accessibility: 1,
 			SubRooms: [],
-			Roles: [{ AccountId: 822, Role: 30 }],
 		})
+		await grant(30404, 822, 30)
 		await seed({ RoomId: 30405, Name: 'ContribNoRoles', CreatorAccountId: 821, SubRooms: [] })
 
 		const res = await SELF.fetch(`${ORIGIN}/rooms/contributedby/me`, {
@@ -515,6 +517,7 @@ describe('rooms endpoints', () => {
 		// The DB is shared across this file, and these are the only player-made public rooms
 		// in it — leaving them behind changes what the `new`/`community` room feeds serve.
 		await env.DB.prepare('DELETE FROM room WHERE room_id BETWEEN 30401 AND 30407').run()
+		await env.DB.prepare('DELETE FROM room_role WHERE room_id BETWEEN 30401 AND 30407').run()
 	})
 
 	it('GET /rooms/:roomId/experience serves the fixed XP settings, no auth', async () => {
