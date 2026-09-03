@@ -35,12 +35,13 @@ import {
 	VoteToKickReason,
 	VoteToKickRequest,
 } from '../openapi'
-import { createReport } from '../reports-db'
+import { createReport, getActiveBan } from '../reports-db'
 import { createWarning } from '../warnings-db'
 
 import type { Context } from 'hono'
 import type { ModerationKickPayload } from '../../../notify/src/notification-payloads'
 import type { App } from '../context'
+import type { ReportRow } from '../reports-db'
 
 /**
  * Roles allowed to hand down a warning — the operator-granted elevated roles the auth
@@ -223,16 +224,76 @@ async function pushVoteToKick(c: Context<App>, message: VoteToKickMessage): Prom
 	}
 }
 
+/**
+ * `Duration` on a permanent ban: 0, "no end". `IsBan` is what says the player is blocked;
+ * `Duration` only says for how long, and a ban with no expiry has no length to give. Not
+ * the int32-max sentinel E12354 uses — that reads as a 68-year countdown.
+ */
+const PERMANENT_BAN_DURATION = 0
+
+/** The "not blocked" answer — the reference server's stub `ReturnModerationBlockDetails()`. */
+const NOT_BLOCKED = {
+	ReportCategory: -1,
+	Duration: 0,
+	GameSessionId: 0,
+	IsBan: false,
+	IsHostKick: false,
+	IsVoiceModAutoban: false,
+	Message: null,
+	PlayerIdReporter: null,
+	TimeoutStartedAt: null,
+}
+
+/**
+ * The block details for a ban in force — the `report` row a moderator set `banned` on.
+ *
+ * `Duration` is the seconds left on the ban (rounded up, so a ban with a second to run
+ * doesn't read as over), or `PERMANENT_BAN_DURATION` (0, no end) when `ban_expires` is
+ * NULL — `IsBan` alone marks the block, so the "not blocked" answer and a permanent ban
+ * share a `Duration` of 0 without being confused. The
+ * category is the one the report was filed under, so the client's ban screen names the
+ * reason. `Message` is a fixed "Rule violation" rather than the report's `details` —
+ * those are the REPORTER's words, and the banned player isn't shown them, for the same
+ * reason `PlayerIdReporter` stays null: the reporter is not a host who kicked them, and
+ * naming them would tell the banned player who reported them. `IsHostKick`,
+ * `IsVoiceModAutoban` and `TimeoutStartedAt` describe the OTHER kinds of block, none of
+ * which this server hands out.
+ */
+function banBlockDetails(ban: ReportRow, now: Date) {
+	const duration =
+		ban.ban_expires === null
+			? PERMANENT_BAN_DURATION
+			: Math.max(1, Math.ceil((Date.parse(ban.ban_expires) - now.getTime()) / 1000))
+	return {
+		ReportCategory: ban.report_category,
+		Duration: duration,
+		GameSessionId: 0,
+		IsBan: true,
+		IsHostKick: false,
+		IsVoiceModAutoban: false,
+		Message: 'Rule violation',
+		PlayerIdReporter: null,
+		TimeoutStartedAt: null,
+	}
+}
+
 // ---- Player reporting ------------------------------------------------------
 export const moderationRoutes = new Hono<App>({ strict: false })
-	// Whether the caller is currently blocked (banned / timed out / host-kicked). Bans
-	// are stored (a report row with `banned` set) and enforced at matchmake and at login,
-	// but this endpoint is not wired to them, so it's always the "not blocked" answer —
-	// the reference server's stub `ReturnModerationBlockDetails()`.
-	// `ReportCategory` is `Unknown` (-1) rather than 0, which is a real category;
-	// `Message` is null, not the empty string that stub sends — the client distinguishes
-	// "no message" from a blank one. `IsVoiceModAutoban`/`TimeoutStartedAt` are on the
-	// DTO but left unset there, so they go out with their C# defaults.
+	// Whether the caller is currently blocked (banned / timed out / host-kicked). The one
+	// kind of block this server has is the account-wide ban — a `report` row with `banned`
+	// set (see `getActiveBan`), the same row matchmake refuses on — so a caller with one in
+	// force gets it described here, and everyone else gets the "not blocked" answer of the
+	// reference server's stub `ReturnModerationBlockDetails()`. This is the screen a banned
+	// player is shown, which is why `auth` still issues them a token: without one the client
+	// never gets here, and the ban reads as a failed sign-in.
+	// Only the caller's OWN account is consulted, not the evasion arms `resolveBan` adds
+	// at matchmake and login: this screen explains a ban handed to this account, and a
+	// player blocked for sharing a network with a banned one has no report row to show.
+	// In the "not blocked" answer `ReportCategory` is `Unknown` (-1) rather than 0, which
+	// is a real category, and `Message` is null, not the empty string that stub sends —
+	// the client distinguishes "no message" from a blank one. `IsVoiceModAutoban` /
+	// `TimeoutStartedAt` are on the DTO but unset there, so they go out with their C#
+	// defaults.
 	// The newer client POSTs this with no body despite it being a pure read; it answers
 	// GET too, so the path is reachable from either build.
 	.on(
@@ -242,29 +303,34 @@ export const moderationRoutes = new Hono<App>({ strict: false })
 			tags: ['Moderation'],
 			summary: 'Whether the caller is blocked',
 			description:
-				'Ban / timeout / host-kick state for the caller. Bans are stored (a `report` row ' +
-				'with `banned` set) and enforced at matchmake and at login, but this endpoint is ' +
-				'not wired to them, so it is always the “not blocked” answer, following the ' +
-				'reference server’s stub: `ReportCategory` is `Unknown` (-1) rather than 0, which ' +
-				'is a real category, and `Message` is null rather than the empty string that stub ' +
-				'sends — the client distinguishes “no message” from a blank one. ' +
-				'`IsVoiceModAutoban` and `TimeoutStartedAt` are on the DTO but unset by that ' +
-				'stub, so they carry their defaults. Answers GET or POST: the newer client POSTs ' +
-				'it with no body.',
-			responses: { 200: json(ModerationBlockDetails, 'Always “not blocked”') },
+				'Ban / timeout / host-kick state for the caller. The one block this server hands ' +
+				'out is the account-wide ban — a `report` row with `banned` set, the same row ' +
+				'matchmake refuses on (login still issues a token, so the client can reach this ' +
+				'screen) — so a caller with one in force gets ' +
+				'`IsBan: true`, the `ReportCategory` the report was filed under, `Duration` as the ' +
+				'seconds left (0 for a permanent ban, which has no end) and the fixed ' +
+				'`Message` “Rule violation”. `PlayerIdReporter` stays null: it names a kicking ' +
+				'host, and the reporter is not shown to the player they reported. Only the ' +
+				'caller’s own account is consulted, not the ban-evasion arms.\n\n' +
+				'Everyone else gets the reference server’s stub “not blocked” answer: ' +
+				'`ReportCategory` is `Unknown` (-1) rather than 0, which is a real category, and ' +
+				'`Message` is null rather than the empty string that stub sends — the client ' +
+				'distinguishes “no message” from a blank one. `IsVoiceModAutoban` and ' +
+				'`TimeoutStartedAt` are on the DTO but unset by that stub, so they carry their ' +
+				'defaults. Answers GET or POST: the newer client POSTs it with no body.',
+			security: AUTHED,
+			responses: {
+				200: json(ModerationBlockDetails, 'The caller’s block, or “not blocked”'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
 		}),
-		(c) =>
-			c.json({
-				ReportCategory: -1,
-				Duration: 0,
-				GameSessionId: 0,
-				IsBan: false,
-				IsHostKick: false,
-				IsVoiceModAutoban: false,
-				Message: null,
-				PlayerIdReporter: null,
-				TimeoutStartedAt: null,
-			})
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+			const now = new Date()
+			const ban = await getActiveBan(c.env.DB, id, now)
+			return c.json(ban ? banBlockDetails(ban, now) : NOT_BLOCKED)
+		}
 	)
 	// The reasons the client offers when a player starts a vote-to-kick. Order matters —
 	// the client renders them in the order they arrive — and the list is grouped by the
@@ -350,10 +416,10 @@ export const moderationRoutes = new Hono<App>({ strict: false })
 			tags: ['Moderation'],
 			summary: 'Submit a player report',
 			description:
-				'Records a player report in the `report` table; nothing dedupes the rows, and ' +
-				'`moderationBlockDetails` still answers “not blocked” unconditionally. A report ' +
+				'Records a player report in the `report` table; nothing dedupes the rows. A report ' +
 				'is filed unbanned — a moderator converts one into an account-wide ban by setting ' +
-				'`banned` on the row, which is what matchmaking and `/connect/token` refuse on.\n\n' +
+				'`banned` on the row, which is what matchmaking refuses on and what ' +
+				'`moderationBlockDetails` describes to the banned player.\n\n' +
 				'The reporter is the caller (from the bearer token), NOT a body field. Only ' +
 				'`PlayerIdReported` is required; the client omits whatever it has no value for ' +
 				'(a report raised outside a room carries no `RoomId`), and those are stored as ' +

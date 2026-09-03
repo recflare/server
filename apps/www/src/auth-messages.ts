@@ -32,13 +32,11 @@ const AUTH_MESSAGES: Record<string, string> = {
 	'no linked account for this platform identity':
 		'No account is linked to this platform sign-in yet. Sign in with your password once to link it.',
 	'refresh_token is invalid or expired': 'Your session has expired. Please sign in again.',
-	// Deliberately says nothing about when it lifts: auth sends one fixed description for
-	// every ban (see its BANNED_DESCRIPTION), permanent or timed, so there is no expiry
-	// here to quote.
-	'this account is banned': 'This account is banned and cannot be signed in to.',
-	// Not this account, but one it shares a device or network with. Phrased for BOTH the
+	// An account that shares a device or network with a BANNED one. Phrased for BOTH the
 	// person evading a ban and the housemate of one — the IP arm cannot tell them apart —
-	// and for both forms, since signup and sign-in send the same description.
+	// and for both forms, since signup and sign-in send the same description. A directly
+	// banned account is not refused a sign-in at all (auth issues it a token so the game
+	// client can show the block screen), which is why there is no "banned" entry here.
 	'this device or network is blocked':
 		'This device or network is blocked. If you think that is a mistake, contact the server operator.',
 }

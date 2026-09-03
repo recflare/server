@@ -89,8 +89,8 @@ beforeAll(async () => {
 		IsDorm: false,
 		SubRooms: [{ SubRoomId: 23, UnitySceneId: ORIENTATION_SCENE, MaxPlayers: 1 }],
 	})
-	// Report table (owned by the api worker) — a banned account is refused a token, and
-	// a ban is a report row with `banned` set.
+	// Report table (owned by the api worker) — a ban is a report row with `banned` set;
+	// the token grant reads it for the evasion arms.
 	for (const stmt of REPORTS_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 })
 
@@ -1436,38 +1436,35 @@ describe('CORS', () => {
 	})
 })
 
-// A banned account is refused a token at all — the outer wall of a ban, since with no
-// token every other worker is shut to it. The ban is a `report` row with `banned` set
-// (the api worker owns that table); matchmaking enforces the same ban on tokens issued
-// before it was handed down.
+// A banned account is still issued a token: the game client needs one to reach the api
+// worker's moderationBlockDetails, which is where the player is shown WHY they are
+// blocked. The ban is a `report` row with `banned` set (the api worker owns that table)
+// and is enforced by matchmaking, which refuses every matchmake for a banned player — so
+// the token gets them to the block screen and no further.
 describe('banned accounts', () => {
-	test('POST /connect/token refuses a password grant from a banned account', async () => {
+	test('POST /connect/token issues a token to a banned account', async () => {
 		await seedAccount(6101, 'BannedPlayer')
 		await banAccount(6101)
 
 		const res = await postToken(`account_id=6101&password=${LOGIN_PASSWORD}`)
-		expect(res.status).toBe(400)
-		expect(res.json.error).toBe('invalid_grant')
-		// The exact sentence www's shared auth-messages table keys on to put a real
-		// message in front of the player — changing it silently downgrades that to the
-		// generic "you could not be signed in".
-		expect(res.json.error_description).toBe('this account is banned')
+		expect(res.status).toBe(200)
+		expect(decodePayload(res.json.access_token as string).sub).toBe('6101')
 	})
 
-	test('POST /connect/token refuses a username login from a banned account', async () => {
+	test('POST /connect/token issues a token to a banned account logging in by username', async () => {
 		await seedAccount(6102, 'BannedByName')
 		await banAccount(6102)
 
 		const res = await postToken(
 			`grant_type=password&username=BannedByName&password=${LOGIN_PASSWORD}`
 		)
-		expect(res.status).toBe(400)
-		expect(res.json.error_description).toBe('this account is banned')
+		expect(res.status).toBe(200)
+		expect(decodePayload(res.json.access_token as string).sub).toBe('6102')
 	})
 
-	// A client that was already signed in when the ban landed still holds a valid refresh
-	// token; redeeming it must not renew the session.
-	test('POST /connect/token refuses to refresh a banned account’s session', async () => {
+	// A client that was already signed in when the ban landed refreshes as normal — its
+	// next matchmake is what refuses it, and moderationBlockDetails says why.
+	test('POST /connect/token refreshes a banned account’s session', async () => {
 		await seedAccount(6103, 'BannedLater')
 		const login = await postToken(`account_id=6103&password=${LOGIN_PASSWORD}`)
 		expect(login.status).toBe(200)
@@ -1477,13 +1474,12 @@ describe('banned accounts', () => {
 		const refreshed = await postToken(
 			`grant_type=refresh_token&refresh_token=${encodeURIComponent(refreshToken)}`
 		)
-		expect(refreshed.status).toBe(400)
-		expect(refreshed.json.error_description).toBe('this account is banned')
+		expect(refreshed.status).toBe(200)
+		expect(decodePayload(refreshed.json.access_token as string).sub).toBe('6103')
 	})
 
-	// The ban check runs AFTER the credential check, so a wrong password on a banned
-	// account still answers the ordinary bad-credential refusal — it can't be used to
-	// find out whether an account exists or is banned without knowing its password.
+	// A ban does not loosen the credential check: a wrong password on a banned account is
+	// the ordinary bad-credential refusal.
 	test('a wrong password on a banned account is still a credential refusal', async () => {
 		await seedAccount(6104, 'BannedWrongPw')
 		await banAccount(6104)
@@ -1493,23 +1489,13 @@ describe('banned accounts', () => {
 		expect(res.json.error_description).toBe('invalid account_id or password')
 	})
 
-	// A timed ban lifts itself when its expiry passes; nothing clears the flag.
-	test('an expired ban lets the account sign in again', async () => {
-		await seedAccount(6105, 'ServedTime')
-		await banAccount(6105, '2020-01-01T00:00:00.000Z')
-
-		const res = await postToken(`account_id=6105&password=${LOGIN_PASSWORD}`)
-		expect(res.status).toBe(200)
-		expect(decodePayload(res.json.access_token as string).sub).toBe('6105')
-	})
-
-	test('a ban that has not expired yet still refuses the login', async () => {
+	test('a ban that has not expired yet still issues a token', async () => {
 		await seedAccount(6106, 'StillServing')
 		await banAccount(6106, new Date(Date.now() + 3_600_000).toISOString())
 
 		const res = await postToken(`account_id=6106&password=${LOGIN_PASSWORD}`)
-		expect(res.status).toBe(400)
-		expect(res.json.error_description).toBe('this account is banned')
+		expect(res.status).toBe(200)
+		expect(decodePayload(res.json.access_token as string).sub).toBe('6106')
 	})
 
 	// A report is not a ban until a moderator converts it.
@@ -1534,8 +1520,10 @@ describe('banned accounts', () => {
 
 // The ban follows the player past the account it was written on: a login from an account
 // that shares a proven platform identity or an IP with a banned one is refused, and a
-// signup carrying either is refused before it mints anything. See the api worker's
-// bans-db.ts for the arms and the BAN_EVASION_MATCH knob.
+// signup carrying either is refused before it mints anything. Unlike the banned account
+// itself, such an account has no ban of its own for the block screen to describe, so
+// there is nothing to let it in for. See the api worker's bans-db.ts for the arms and
+// the BAN_EVASION_MATCH knob.
 describe('ban evasion at the token endpoint', () => {
 	/** Seed a loginable account carrying the IPs it signed up / last logged in from. */
 	const account = async (id: number, name: string, ips: Record<string, string> = {}) => {
@@ -1615,7 +1603,7 @@ describe('ban evasion at the token endpoint', () => {
 	})
 
 	// The knob an operator reaches for when the IP arm locks out real players.
-	test('BAN_EVASION_MATCH=platform drops the IP arm but keeps the direct ban', async () => {
+	test('BAN_EVASION_MATCH=platform drops the IP arm but keeps the platform one', async () => {
 		const original = env.BAN_EVASION_MATCH
 		await account(6320, 'KnobBanned', { signupIp: '203.0.113.50' })
 		await linkPlatformIdentity(env.DB, 6320, 0, 'steam-knobevader')
@@ -1633,10 +1621,9 @@ describe('ban evasion at the token endpoint', () => {
 
 			env.BAN_EVASION_MATCH = 'off'
 			expect((await login(6322)).status).toBe(200)
-			// The banned account itself is refused whatever the knob says.
-			const banned = await login(6320)
-			expect(banned.status).toBe(400)
-			expect(banned.json.error_description).toBe('this account is banned')
+			// The banned account itself signs in whatever the knob says — its ban is
+			// enforced at matchmake, and the knob only governs the linked arms.
+			expect((await login(6320)).status).toBe(200)
 		} finally {
 			env.BAN_EVASION_MATCH = original
 		}

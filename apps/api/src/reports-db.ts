@@ -20,14 +20,14 @@
  * one polymorphic id because the keys differ in TYPE: two numbers and a guid.
  *
  * A report is also where an ACCOUNT-WIDE ban lives: acting on a report sets `banned`
- * on that same row (see `banFromReport`), so the ban carries the evidence for it. Two
- * workers read it — `match` refuses every matchmake for a banned player, and `auth`
- * refuses to issue them a token at all — both via `isPlayerBanned`. This is distinct
- * from the per-room `room_ban` table the rooms worker owns: that one keeps a player
- * out of ONE room, this one out of the game.
- *
- * `/api/PlayerReporting/v1/moderationBlockDetails` is NOT wired to it yet and still
- * answers "not blocked" unconditionally.
+ * on that same row (see `banFromReport`), so the ban carries the evidence for it. It is
+ * ENFORCED by `match`, which refuses every matchmake for a banned player, and DESCRIBED
+ * by `/api/PlayerReporting/v1/moderationBlockDetails`, which tells the banned player why
+ * (via `getActiveBan`). `auth` still issues a banned account a token — that is what lets
+ * the client reach the block screen — and reads this table only for ban EVASION (an
+ * account sharing a device or network with a banned one; see bans-db). This is distinct
+ * from the per-room `room_ban` table the rooms worker owns: that one keeps a player out
+ * of ONE room, this one out of the game.
  */
 
 /**
@@ -199,9 +199,9 @@ export async function getActiveBan(
 }
 
 /**
- * Whether a player is banned right now. The hot-path form of `getActiveBan` — `match`
- * calls it on every matchmake and `auth` on every token grant, and neither has anything
- * to say about WHICH report did it.
+ * Whether a player is banned right now. The hot-path form of `getActiveBan`, for a caller
+ * that has nothing to say about WHICH report did it. `moderationBlockDetails` is the
+ * caller that does, and reads `getActiveBan` itself.
  */
 export async function isPlayerBanned(
 	db: D1Database,

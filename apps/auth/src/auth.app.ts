@@ -71,19 +71,16 @@ const TOKEN_SCOPE =
 	'offline_access profile rn rn.accounts rn.accounts.gc rn.api rn.chat rn.clubs rn.commerce rn.match.read rn.match.write rn.notify rn.rooms rn.storage'
 
 /**
- * The `error_description` a banned account's grant is refused with. A fixed sentence,
- * never interpolated with the expiry, because `www`'s shared auth-messages table keys on
- * this exact string to put a real sentence in front of a player — anything varying would
- * fall through to the generic "you could not be signed in". Keep the two in sync.
- */
-const BANNED_DESCRIPTION = 'this account is banned'
-
-/**
- * The refusal when it is not THIS account that is banned but one it shares an identity
- * with (see bans-db's linked arms). Deliberately a different, vaguer sentence: the
- * account being refused may be an innocent housemate of a banned player, so telling them
- * "this account is banned" would be a lie, and naming the account we matched them to
- * would hand out somebody else's moderation record.
+ * The `error_description` a grant is refused with when the caller's account is not itself
+ * banned but shares an identity with one that is (see bans-db's linked arms). A fixed
+ * sentence, because `www`'s shared auth-messages table keys on this exact string to put a
+ * real sentence in front of a player — anything varying would fall through to the generic
+ * "you could not be signed in". Keep the two in sync. Deliberately vague: the account
+ * being refused may be an innocent housemate of a banned player, so telling them "this
+ * account is banned" would be a lie, and naming the account we matched them to would hand
+ * out somebody else's moderation record.
+ *
+ * A DIRECTLY banned account is not refused here at all — see the token grant.
  */
 const BLOCKED_DESCRIPTION = 'this device or network is blocked'
 
@@ -608,19 +605,22 @@ const app = new Hono<App>()
 				'the `rn.privilege` CLAIM (`BanVChat`, `BanRmChat`) — scope-shaped name, but the',
 				'client reads it as a claim beside `role`, and it is absent for everyone else.',
 				'',
-				'**Bans.** Once the grant has resolved an account, a BANNED account is refused a',
-				'token at all (`invalid_grant`) — every grant, including a refresh. A ban is a',
-				'`report` row with `banned` set (the `api` worker owns that table); it lifts on its',
-				'own when `ban_expires` passes, and never if that is null.',
+				'**Bans.** A BANNED account still gets a token — every grant, including a refresh.',
+				'A ban is a `report` row with `banned` set (the `api` worker owns that table); it',
+				'lifts on its own when `ban_expires` passes, and never if that is null. The token',
+				'is what lets the client reach `api`’s `/api/PlayerReporting/v1/moderationBlockDetails`',
+				'and show the player the block screen that explains the ban; the ban itself is',
+				'enforced by `match`, which refuses every matchmake for a banned player, so a token',
+				'gets them as far as that screen and no further.',
 				'',
-				'The refusal follows the player, not just the account: it also catches an account',
-				'that shares a PROVEN platform identity (a `platform_account` link) or an IP',
-				'(`signupIp`/`lastLoginIp`, or the address this request came from) with a banned',
-				'one, and a `create_account` carrying either is refused BEFORE it mints anything.',
-				'Those two arms are the operator’s `BAN_EVASION_MATCH` knob (`ip`, `platform`, or',
-				'`off`); the ban on the account itself is always enforced. A linked match answers a',
-				'deliberately vaguer description than a direct one — the account refused may belong',
-				'to a housemate of the banned player rather than to them.',
+				'What IS refused here (`invalid_grant`) is ban EVASION: an account that shares a',
+				'PROVEN platform identity (a `platform_account` link) or an IP (`signupIp`/',
+				'`lastLoginIp`, or the address this request came from) with a banned one, and a',
+				'`create_account` carrying either, which is refused BEFORE it mints anything. Such',
+				'an account has no ban of its own for the block screen to describe, so there is',
+				'nothing to let it in for. Those two arms are the operator’s `BAN_EVASION_MATCH`',
+				'knob (`ip`, `platform`, or `off`). The description is deliberately vague — the',
+				'account refused may belong to a housemate of the banned player rather than to them.',
 			].join('\n'),
 			requestBody: form(
 				TokenRequest,
@@ -633,7 +633,7 @@ const app = new Hono<App>()
 					[
 						'Unusable grant: bad credentials, an unverifiable platform or platform_auth, an',
 						'invalid/expired refresh token, a missing account identifier, a signup cap reached,',
-						'or a banned account',
+						'or an account sharing a banned one’s device or network',
 					].join(' ')
 				),
 				500: json(
@@ -789,9 +789,9 @@ const app = new Hono<App>()
 			//    via create_account or /account/me/changepassword.
 			let accountId: string
 			if (grantType === 'create_account') {
-				// A banned player's next move is a new account, so the ban is checked BEFORE
-				// one is minted — against the only identity a signup has, the IP it came from
-				// and the platform identity it just proved. Refusing after the fact (as the
+				// A banned player's next move is a new account, so the evasion arms are checked
+				// BEFORE one is minted — against the only identity a signup has, the IP it came
+				// from and the platform identity it just proved. Refusing after the fact (as the
 				// shared check below would) still refuses the token, but leaves the account
 				// row behind and burns a slot off both signup caps, so the evader gets to keep
 				// making them.
@@ -987,14 +987,19 @@ const app = new Hono<App>()
 				await setLoginContext(c.env.DB, resolvedId, { deviceId, deviceClass, ip: clientIp })
 			}
 
-			// A banned player gets no token — and with no token every other worker is shut to
-			// them, so this is the outer wall of a ban; matchmaking's refusal is the inner
-			// one, which still has to exist because a token issued before the ban stays valid
-			// until it expires.
+			// A DIRECTLY banned account still gets its token. The client needs one to reach
+			// `api`'s moderationBlockDetails, which is where the player is TOLD they are banned
+			// (category, time left, "Rule violation") — refused here, they would only ever see
+			// a failed sign-in. The ban is enforced by matchmaking instead, which refuses every
+			// matchmake for a banned player, so the token gets them as far as the block screen
+			// and no further. Logged, so the operator can see a banned player signing in.
 			//
-			// Checked once here, after the grant has resolved an account, so it covers every
-			// grant: password, cached_login and a refresh_token redeemed by a client that has
-			// been running since before the ban. Deliberately AFTER the credential checks —
+			// Ban EVASION is still refused here: an account that merely shares a device or
+			// network with a banned one has no ban of its own for that screen to describe, so
+			// there is nothing to let it in for — and letting it in is exactly what the evader
+			// wants. Checked once here, after the grant has resolved an account, so it covers
+			// every grant: password, cached_login and a refresh_token redeemed by a client that
+			// has been running since before the ban. Deliberately AFTER the credential checks —
 			// a wrong password is still "invalid account_id or password", so this can't be
 			// used to probe whether an account exists or is banned without knowing it.
 			//
@@ -1007,8 +1012,8 @@ const app = new Hono<App>()
 				identity: { ip: clientIp, platform: verifiedPlatform, platformId: verifiedPlatformId },
 				arms: banEvasionMatch(c.env.BAN_EVASION_MATCH),
 			})
-			if (ban) {
-				logger.info('token refused: player banned', {
+			if (ban && ban.via !== 'account') {
+				logger.info('token refused: ban evasion', {
 					accountId,
 					grantType,
 					via: ban.via,
@@ -1016,13 +1021,15 @@ const app = new Hono<App>()
 					reportId: ban.ban.id,
 					banExpires: ban.ban.ban_expires,
 				})
-				return c.json(
-					{
-						error: 'invalid_grant',
-						error_description: ban.via === 'account' ? BANNED_DESCRIPTION : BLOCKED_DESCRIPTION,
-					},
-					400
-				)
+				return c.json({ error: 'invalid_grant', error_description: BLOCKED_DESCRIPTION }, 400)
+			}
+			if (ban) {
+				logger.info('token issued to banned account', {
+					accountId,
+					grantType,
+					reportId: ban.ban.id,
+					banExpires: ban.ban.ban_expires,
+				})
 			}
 
 			// Never sign with an empty key. An empty JWT_SECRET (misconfigured/missing

@@ -1242,23 +1242,36 @@ export const VoteToKickReason = z.object({
 })
 
 /**
- * `GET|POST /api/PlayerReporting/v1/moderationBlockDetails` — always the "not blocked"
- * answer (no ban storage yet), mirroring the reference server's stub
- * `ReturnModerationBlockDetails()`. `ReportCategory` is `Unknown` (-1) rather than 0,
- * which is a real category, and `Message` is null — the client distinguishes "no
- * message" from a blank one, so we send null where the reference sends an empty string.
- * `IsVoiceModAutoban`/`TimeoutStartedAt` are on the DTO but unset by that stub, so
- * they carry their C# defaults (false / null).
+ * `GET|POST /api/PlayerReporting/v1/moderationBlockDetails` — the caller's block. With an
+ * account-wide ban in force (a `report` row with `banned` set) it describes that ban:
+ * `IsBan` true, the report's `ReportCategory`, `Duration` in seconds left (0 for a
+ * permanent ban, which has no end) and a fixed `Message` of "Rule violation". Otherwise it is the "not
+ * blocked" answer, mirroring the reference server's stub `ReturnModerationBlockDetails()`:
+ * `ReportCategory` is `Unknown` (-1) rather than 0, which is a real category, and
+ * `Message` is null — the client distinguishes "no message" from a blank one, so we send
+ * null where the reference sends an empty string. `IsVoiceModAutoban`/`TimeoutStartedAt`
+ * are on the DTO but unset by that stub, so they carry their C# defaults (false / null).
  */
 export const ModerationBlockDetails = z.object({
-	ReportCategory: z.int().describe('-1 = ReportCategory.Unknown (0 is a real category)'),
-	Duration: z.int(),
+	ReportCategory: z
+		.int()
+		.describe(
+			'The category the ban’s report was filed under; -1 = ReportCategory.Unknown when not blocked (0 is a real category)'
+		),
+	Duration: z
+		.int()
+		.describe(
+			'Seconds left on the block; 0 for a permanent ban (no end) and when not blocked — `IsBan` marks the block'
+		),
 	GameSessionId: z.int(),
-	IsBan: z.boolean(),
+	IsBan: z.boolean().describe('True when an account-wide ban is in force'),
 	IsHostKick: z.boolean(),
 	IsVoiceModAutoban: z.boolean(),
-	Message: z.string().nullable(),
-	PlayerIdReporter: z.int().nullable(),
+	Message: z.string().nullable().describe('“Rule violation” on a ban; null when not blocked'),
+	PlayerIdReporter: z
+		.int()
+		.nullable()
+		.describe('Always null — the reporter is not shown to the reported'),
 	TimeoutStartedAt: z.string().nullable(),
 })
 

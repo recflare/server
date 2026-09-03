@@ -750,32 +750,6 @@ describe('public endpoints', () => {
 		expect(charadesWordsFor(new Date('2026-04-01T23:59:59Z'))).toBe(april)
 	})
 
-	// The client POSTs this with no body, despite it being a pure read; the route answers
-	// GET as well, and both methods serve the same body.
-	test.each(['GET', 'POST'])(
-		'%s /api/PlayerReporting/v1/moderationBlockDetails reports "not blocked"',
-		async (method) => {
-			const res = await exports.default.fetch(
-				`${ORIGIN}/api/PlayerReporting/v1/moderationBlockDetails`,
-				{ method }
-			)
-			expect(res.status).toBe(200)
-			// ReportCategory -1 = Unknown (0 is a real category). Message is null, not the
-			// reference stub's empty string — the client tells "no message" from a blank one.
-			expect(await res.json()).toEqual({
-				ReportCategory: -1,
-				Duration: 0,
-				GameSessionId: 0,
-				IsBan: false,
-				IsHostKick: false,
-				IsVoiceModAutoban: false,
-				Message: null,
-				PlayerIdReporter: null,
-				TimeoutStartedAt: null,
-			})
-		}
-	)
-
 	// A fixed list, in render order — the client shows the buttons in the order they
 	// arrive, so the order is part of the contract, not just the contents.
 	test('GET /api/PlayerReporting/v1/voteToKickReasons serves the reasons in order', async () => {
@@ -4530,6 +4504,98 @@ describe('player reports', () => {
 	// No such report — the caller can tell that from having banned nobody.
 	test('banFromReport returns null for an unknown report', async () => {
 		expect(await banFromReport(env.DB, 999_999)).toBeNull()
+	})
+
+	// What the banned player is TOLD. The block screen reads this; it's the same row
+	// matchmake and login refuse on, described rather than merely enforced.
+	describe('moderationBlockDetails', () => {
+		const NOT_BLOCKED = {
+			ReportCategory: -1,
+			Duration: 0,
+			GameSessionId: 0,
+			IsBan: false,
+			IsHostKick: false,
+			IsVoiceModAutoban: false,
+			Message: null,
+			PlayerIdReporter: null,
+			TimeoutStartedAt: null,
+		}
+		const details = async (method: string, sub: string) => {
+			const res = await exports.default.fetch(
+				`${ORIGIN}/api/PlayerReporting/v1/moderationBlockDetails`,
+				{ method, headers: await bearer(sub) }
+			)
+			expect(res.status).toBe(200)
+			return res.json()
+		}
+
+		// The client POSTs this with no body, despite it being a pure read; the route
+		// answers GET as well, and both methods serve the same body.
+		test.each(['GET', 'POST'])(
+			'%s reports "not blocked" for an unbanned player',
+			async (method) => {
+				// A report against them that nobody acted on is not a block.
+				await submit({ PlayerIdReported: '220' }, await bearer())
+				// ReportCategory -1 = Unknown (0 is a real category). Message is null, not the
+				// reference stub's empty string — the client tells "no message" from a blank one.
+				expect(await details(method, '220')).toEqual(NOT_BLOCKED)
+			}
+		)
+
+		test('401s without a bearer token', async () => {
+			const res = await exports.default.fetch(
+				`${ORIGIN}/api/PlayerReporting/v1/moderationBlockDetails`
+			)
+			expect(res.status).toBe(401)
+		})
+
+		// A permanent ban has no end, so Duration is 0 — IsBan is what marks the block.
+		test('describes a permanent ban', async () => {
+			await submit(
+				{ PlayerIdReported: '221', ReportCategory: '102', Details: 'slurs' },
+				await bearer()
+			)
+			const [row] = await getReportsAgainst(env.DB, 221)
+			await banFromReport(env.DB, row!.id)
+
+			expect(await details('POST', '221')).toEqual({
+				ReportCategory: 102,
+				Duration: 0,
+				GameSessionId: 0,
+				IsBan: true,
+				IsHostKick: false,
+				IsVoiceModAutoban: false,
+				// A fixed message — the report's `details` are the reporter's words, and
+				// the reporter is not shown to the player they reported, hence null.
+				Message: 'Rule violation',
+				PlayerIdReporter: null,
+				TimeoutStartedAt: null,
+			})
+		})
+
+		// A timed ban reports the seconds LEFT, not its original length.
+		test('describes a timed ban with the seconds remaining', async () => {
+			await submit({ PlayerIdReported: '222', ReportCategory: '103' }, await bearer())
+			const [row] = await getReportsAgainst(env.DB, 222)
+			await banFromReport(env.DB, row!.id, {
+				banExpires: new Date(Date.now() + 3600 * 1000).toISOString(),
+			})
+
+			const body = await details('GET', '222')
+			expect(body).toMatchObject({ ReportCategory: 103, IsBan: true, Message: 'Rule violation' })
+			expect(body.Duration).toBeGreaterThan(3500)
+			expect(body.Duration).toBeLessThanOrEqual(3600)
+		})
+
+		// A ban that has served its time is not a block, even though the row still says
+		// `banned = 1` — the same rule `getActiveBan` applies for matchmake and login.
+		test('reports "not blocked" once a ban has expired', async () => {
+			await submit({ PlayerIdReported: '223' }, await bearer())
+			const [row] = await getReportsAgainst(env.DB, 223)
+			await banFromReport(env.DB, row!.id, { banExpires: '2020-01-01T00:00:00.000Z' })
+
+			expect(await details('GET', '223')).toEqual(NOT_BLOCKED)
+		})
 	})
 })
 
