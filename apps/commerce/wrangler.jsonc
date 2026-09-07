@@ -5,6 +5,9 @@
 	"compatibility_date": "2026-06-16",
 	"compatibility_flags": ["nodejs_compat"],
 	"upload_source_maps": true,
+        "cache": {
+                "enabled": true
+        },
 	"observability": {
 		"logs": {
 			"enabled": true,
