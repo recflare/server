@@ -250,6 +250,103 @@ export async function listHotCustomAvatarItems(
 }
 
 /**
+ * The "Coach" system account — this server's stock content is authored by it, the same id the
+ * `econ` worker attributes a self-buy or an anonymous gift to.
+ */
+export const COACH_ACCOUNT_ID = 1
+
+/** What `GET /api/customAvatarItems/v1/search` narrows the catalog by. */
+export interface CustomAvatarItemSearch {
+	/** Free text, matched against an item's NAME or its DESCRIPTION. Blank means no filter. */
+	searchQuery?: string
+	/**
+	 * `OutfitType`s to include. EMPTY means no filter rather than no results: the client sends
+	 * the full set of types it can render, so an absent parameter is "everything", not "nothing".
+	 */
+	outfitTypes?: number[]
+	/** Whether items authored by the Coach — this server's stock content — are included. */
+	includeCoachItems?: boolean
+	/** Lowest price to include, inclusive. */
+	minPrice?: number
+	/** Highest price to include, inclusive. */
+	maxPrice?: number
+	/** Rows to skip, for paging. */
+	skip?: number
+	/** Rows to return. Capped at {@link SEARCH_MAX_TAKE}. */
+	take?: number
+}
+
+/** The most rows one search returns, whatever `take` asks for. The client asks for 100. */
+export const SEARCH_MAX_TAKE = 200
+
+/**
+ * The store's item search (`GET /api/customAvatarItems/v1/search`), newest first.
+ *
+ * PUBLISHED items only — `Accessibility` 0 is the unpublished state, and this is the browse
+ * surface everyone shares, so an unpublished item must not appear here even to its creator (who
+ * has `fromCreator` for that).
+ *
+ * `searchQuery` matches an item's NAME or its DESCRIPTION, case-insensitively, as a substring.
+ * Both sides are lowered rather than relying on `LIKE`, which folds case for ASCII only and
+ * would miss half of what players type. `%` and `_` in the needle are escaped, so searching for
+ * a literal one finds it instead of matching everything.
+ *
+ * `outfitTypes` is a WHITELIST when non-empty and no filter when empty, which is the opposite of
+ * how an empty IN () clause reads in SQL: the client sends every type it can render, so treating
+ * an absent parameter as "match nothing" would empty the store.
+ *
+ * Ordered by recency because there is nothing else to order by — no purchase counts, no wear
+ * counts, no ratings are recorded — which is the same stand-in the `hot` feed makes. The
+ * `custom_avatar_item_id` tiebreak is what makes paging stable: without it, two items sharing a
+ * `created_at` can swap places between pages and one is served twice while the other is missed.
+ */
+export async function searchCustomAvatarItems(
+	db: D1Database,
+	search: CustomAvatarItemSearch = {}
+): Promise<CustomAvatarItem[]> {
+	const take = Math.min(Math.max(search.take ?? 50, 0), SEARCH_MAX_TAKE)
+	const skip = Math.max(search.skip ?? 0, 0)
+	if (take === 0) return []
+
+	const where = ['accessibility != 0']
+	const binds: Array<number | string> = []
+	/** Bind a value and get its placeholder, so the numbering can't drift as clauses are added. */
+	const bind = (value: number | string): string => `?${binds.push(value)}`
+
+	const needle = search.searchQuery?.trim() ?? ''
+	if (needle !== '') {
+		// Escaped so a needle of LIKE metacharacters matches them literally rather than everything.
+		const escaped = needle.toLowerCase().replace(/[\\%_]/g, (ch) => `\\${ch}`)
+		const pattern = bind(`%${escaped}%`)
+		where.push(
+			`(lower(name) LIKE ${pattern} ESCAPE '\\' OR lower(description) LIKE ${pattern} ESCAPE '\\')`
+		)
+	}
+
+	const outfitTypes = search.outfitTypes ?? []
+	if (outfitTypes.length > 0) {
+		where.push(`outfit_type IN (${outfitTypes.map((t) => bind(t)).join(', ')})`)
+	}
+	if (search.includeCoachItems === false) {
+		where.push(`creator_account_id != ${bind(COACH_ACCOUNT_ID)}`)
+	}
+	if (search.minPrice !== undefined) where.push(`price >= ${bind(search.minPrice)}`)
+	if (search.maxPrice !== undefined) where.push(`price <= ${bind(search.maxPrice)}`)
+
+	const limit = bind(take)
+	const offset = bind(skip)
+	const { results } = await db
+		.prepare(
+			`SELECT * FROM custom_avatar_item WHERE ${where.join(' AND ')}
+			 ORDER BY created_at DESC, custom_avatar_item_id
+			 LIMIT ${limit} OFFSET ${offset}`
+		)
+		.bind(...binds)
+		.all<Row>()
+	return results.map(toDto)
+}
+
+/**
  * What an account has authored (`GET /api/customAvatarItems/v2/fromCreator/:id`), newest
  * first, with the total for the client's paginated envelope. `includeUnpublished` is for
  * the creator looking at their own shelf: it adds the `Accessibility` 0 items everyone

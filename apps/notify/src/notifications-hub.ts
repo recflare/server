@@ -448,6 +448,28 @@ export class NotificationsHub extends DurableObject<Env> {
 		return { sent: this.broadcastToConnected(payload) }
 	}
 
+	/**
+	 * The targeted form of {@link coachMessageAll}: the same `MessageReceived` frame from
+	 * the Coach account (player 1), addressed to one player with a `ToPlayerId` — the shape
+	 * `api`'s player-to-player send uses.
+	 *
+	 * Unlike the broadcast this one QUEUES when the recipient is offline (see
+	 * {@link notifyPlayer}). The broadcast is online-only because it has no recipient to
+	 * hold anything for; a message written to a named player is worth keeping until they
+	 * next connect.
+	 */
+	async coachMessage(
+		playerId: number,
+		content: string
+	): Promise<{ delivered: number; queued: boolean }> {
+		return this.notifyPlayer(playerId, NotificationType.MessageReceived, {
+			FromPlayerId: COACH_PLAYER_ID,
+			ToPlayerId: playerId,
+			Type: COACH_MESSAGE_TYPE,
+			Data: content,
+		})
+	}
+
 	/** Broadcast a notification to every connected (handshaken) client. */
 	async broadcast(
 		notificationType: string | number,

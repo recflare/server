@@ -176,7 +176,8 @@ export const ALGORITHMIC_TYPE_PARAM: OpenAPIV3_1.ParameterObject = {
 		'The `ListEntityType` the caller wants the row’s ids read as, ECHOED back on the',
 		'response — it tells the client which service to resolve the ids against. A BYTE on',
 		'the client, so a value outside 0–255 (or none at all) is answered with 1, Rooms,',
-		'which is what the client always asks for.',
+		'which is what the client always asks for. 4 (PurchasableItems) and 5 (Generic) are',
+		'answered by the type rather than by the row — see the endpoint’s description.',
 	].join(' '),
 	schema: { type: 'integer', minimum: 0, maximum: 255, example: 1 },
 }
@@ -241,7 +242,11 @@ export const CuratedListsBulk = CuratedListRead.array()
  * entity rather than a made-up context the client would carry into telemetry.
  */
 export const ListEntityDto = z.object({
-	Id: z.string().describe('The room/item id the client resolves itself'),
+	Id: z
+		.string()
+		.describe(
+			'The room/item id the client resolves itself. On a GENERIC row (`type=5`) it is instead a `<prefix>.<id>` composite with EXACTLY ONE dot — `0.<int>` a purchasable item, `1.<guid>` a custom avatar item — since such a row can name things of more than one sort. The integer after `0.` is a `catalog_id`, which is exactly what the generated storefront lists the item under as its `PurchasableItemId` — catalog ids start at 10000 so they cannot collide with a captured storefront’s own numbering.'
+		),
 	Context: z.string().nullable().describe('Ranking attribution; always null here'),
 })
 

@@ -176,6 +176,25 @@ const app = new Hono<App>()
 		return c.json({ success: true, ...result })
 	})
 
+	// The targeted form of the broadcast above: one coach message to ONE player. Queued
+	// by the hub when they're offline (unlike coach-message-all, which reaches only
+	// whoever is connected), so this arrives either way.
+	.post('/internal/coach-message', async (c) => {
+		const body = await c.req
+			.json<{ playerId?: number; messageContent?: string }>()
+			.catch(() => null)
+		const content = typeof body?.messageContent === 'string' ? body.messageContent.trim() : ''
+		if (typeof body?.playerId !== 'number' || !Number.isInteger(body.playerId)) {
+			return c.json({ error: 'playerId is required' }, 400)
+		}
+		if (content === '') return c.json({ error: 'messageContent is required' }, 400)
+		const result = await c.env.RECFLARE_NOTIFICATIONS_HUB.getByName(HUB_INSTANCE).coachMessage(
+			body.playerId,
+			content
+		)
+		return c.json({ success: true, ...result })
+	})
+
 	// Read-only view of the hub's routing state, for working out why a notification
 	// didn't arrive: which connections are live, which players each one receives for,
 	// and what's queued for a player who wasn't reachable.

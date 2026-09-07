@@ -5,11 +5,13 @@ import { catchProcessError } from '@jahands/cli-tools/proc'
 
 import { adminCmd } from '../cmd/admin.cmd'
 import { buildCmd } from '../cmd/build.cmd'
+import { catalogCmd } from '../cmd/catalog.cmd'
 import { checkCmd } from '../cmd/check.cmd'
 import { ciCmd } from '../cmd/ci.cmd'
 import { devCmd } from '../cmd/dev.cmd'
 import { fixCmd } from '../cmd/fix.cmd'
 import { shfmtCmd } from '../cmd/shfmt.cmd'
+import { storefrontCmd } from '../cmd/storefront.cmd'
 import { updateCmd } from '../cmd/update.cmd'
 
 program
@@ -20,6 +22,8 @@ program
 	// a typescript CLI is nicer for more complex things.
 
 	.addCommand(adminCmd)
+	.addCommand(catalogCmd)
+	.addCommand(storefrontCmd)
 	.addCommand(fixCmd)
 	.addCommand(buildCmd)
 	.addCommand(checkCmd)

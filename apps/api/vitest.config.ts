@@ -26,10 +26,12 @@ export default defineConfig({
 						// GET /all for the whole list (friend-graph changes notify both players),
 						// DELETE to reset it between assertions.
 						//
-						// notifyPlayersEphemeral lands in the same list, tagged `ephemeral` and
-						// carrying `playerIds` rather than `playerId` — the two sends differ in
-						// whether an offline recipient gets the frame later, which is a thing worth
-						// asserting (a cheer's effect is broadcast to a room this way).
+						// The ephemeral sends land in the same list, tagged `ephemeral`:
+						// notifyPlayerEphemeral carries `playerId` like the durable send,
+						// notifyPlayersEphemeral carries `playerIds` for the whole batch. Durable
+						// and ephemeral differ in whether an offline recipient gets the frame
+						// later, which is a thing worth asserting (a cheer's effect is broadcast to
+						// a room this way, a vote-to-kick is put to each player in it).
 						script: `
 							import { DurableObject } from 'cloudflare:workers'
 							export class NotificationsHub extends DurableObject {
@@ -37,6 +39,10 @@ export default defineConfig({
 								async notifyPlayer(playerId, notificationType, data) {
 									this.sent.push({ playerId, notificationType, data })
 									return { delivered: 0, queued: true }
+								}
+								async notifyPlayerEphemeral(playerId, notificationType, data) {
+									this.sent.push({ playerId, ephemeral: true, notificationType, data })
+									return { delivered: 0 }
 								}
 								async notifyPlayersEphemeral(playerIds, notificationType, data) {
 									this.sent.push({ playerIds, ephemeral: true, notificationType, data })

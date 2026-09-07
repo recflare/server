@@ -17,19 +17,14 @@ import {
 	setOutfit,
 } from '@repo/domain'
 import { intVar, logger, withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
-import { validateAndGetAccountId, validateAndGetRoles } from '@repo/jwt'
+import { validateAndGetAccountId, validateAndGetPlus, validateAndGetVersion } from '@repo/jwt'
 
-// Invention storage (owned by the `api` worker, on this same `recflare` database).
-// Imported directly rather than copied: these are plain D1 helpers with no bindings of
-// their own, and buyInvention has to read the very rows `api` writes.
-// Custom avatar items likewise live in an `api`-owned table; the UGC-purchasable bulk
-// lookup is the store's view of those rows.
 import {
 	getCustomAvatarItems,
 	toUgcPurchasable,
 	UGC_ITEM_TYPE_CUSTOM_AVATAR_ITEM,
 } from '../../api/src/custom-avatar-items-db'
-import { getInventionById, toSaveResult } from '../../api/src/inventions-db'
+import { getInventionById, toInventionV9, toSaveResult } from '../../api/src/inventions-db'
 // The profanity filter behind `api`'s `POST /api/sanitize/v1`, imported rather than copied
 // so a gift note is masked by the very same word list every other player-typed string is.
 import { censorSwears } from '../../api/src/sanitize'
@@ -40,10 +35,12 @@ import { censorSwears } from '../../api/src/sanitize'
 import { BalanceAddType } from '../../notify/src/notification-payloads'
 import { NotificationType } from '../../notify/src/notification-types'
 import adCarouselItems from '../static/ad-carousel-items.json'
+import avatarItemCatalog from '../static/db/avatar-items.json'
 import defaultAvatarItems from '../static/default-avatar-items.json'
 import defaultAvatar from '../static/default-avatar.json'
 import defaultBaseAvatarItems from '../static/default-base-avatar-items.json'
 import myProgress from '../static/my-progress.json'
+import questRewards from '../static/quest-rewards.json'
 import { getAvatar, setAvatar } from './avatar-db'
 import {
 	ALL_PLATFORMS,
@@ -55,6 +52,18 @@ import {
 	isSpendable,
 	spendCurrency,
 } from './balance-db'
+import { getCatalogItem } from './catalog-db'
+// `LEGACY_CLIENT_BUILD` is shared with the storefront generator rather than restated: it picks
+// which store FILE a caller is served here, and which ITEMS go in that file there. The two must
+// name the same moment or a build gets a store built to a different cutoff.
+import {
+	CATALOG_ID_BASE,
+	CatalogKind,
+	isSellableRarity,
+	LEGACY_CLIENT_BUILD,
+	priceForRarity,
+	subscriberPriceFor,
+} from './catalog-load'
 import { claimChallengeGift, getChallengeStatuses, recordChallengeProgress } from './challenge-db'
 import { buildRotation, rotationMapId, withWeeklyGift } from './challenge-rotation'
 import {
@@ -72,7 +81,9 @@ import {
 	BalanceEntry,
 	BulkPurchaseRequest,
 	BulkPurchaseResponse,
+	BuyInventionRequest,
 	BuyInventionResponse,
+	BuyInventionV3Response,
 	BuyItemRequest,
 	BuyItemResponse,
 	ChallengeProgressRequest,
@@ -90,10 +101,13 @@ import {
 	GameRewardRequest,
 	InfluencerIdsResponse,
 	InfluencerTierResponse,
+	ItemPurchaseInfoList,
+	ItemPurchaseInfosRequest,
 	json,
 	JsonArray,
 	jsonBody,
 	JsonObject,
+	LockedItemsBulkRequest,
 	MakerAiFreeTrialEligibilityResponse,
 	OpaqueJsonBody,
 	OPTIONAL_AUTHED,
@@ -113,11 +127,14 @@ import { claimReward } from './reward-db'
 
 import type { Context } from 'hono'
 import type { GiftContent, Outfit, Progression, StoredGift, XpGrant } from '@repo/domain'
+import type { CustomAvatarItem } from '../../api/src/custom-avatar-items-db'
+import type { SavedInvention } from '../../api/src/inventions-db'
 import type {
 	BalanceResponsePayload,
 	PurchaseBalanceModificationPayload,
 } from '../../notify/src/notification-payloads'
 import type { Avatar } from './avatar-db'
+import type { CatalogRow } from './catalog-db'
 import type {
 	ChallengeGiftBlock,
 	EquipmentGift,
@@ -127,6 +144,12 @@ import type { ConsumeResult } from './consumables-db'
 import type { App } from './context'
 import type { Equipment } from './equipment-db'
 import type { AvatarItem } from './inventory-db'
+
+// Invention storage (owned by the `api` worker, on this same `recflare` database).
+// Imported directly rather than copied: these are plain D1 helpers with no bindings of
+// their own, and buyInvention has to read the very rows `api` writes.
+// Custom avatar items likewise live in an `api`-owned table; the UGC-purchasable bulk
+// lookup is the store's view of those rows.
 
 /**
  * Economy Worker. Hosts the avatar/economy endpoints the game client calls on
@@ -148,13 +171,19 @@ async function authedId(c: Context<App>): Promise<number | null> {
 }
 
 /**
- * The `role` claim from a Bearer token — the operator-granted roles the auth worker stamps
- * from the account's flags, so a plain player's token is just `['gameClient']`. `null` when
- * the request carries no valid token; an empty array means a valid token with no roles.
- * Shaped to mirror {@link authedId}.
+ * The client build this request's token was minted for (`rn.ver`), as a comparable NUMBER —
+ * the leading `YYYYMMDD` of e.g. `20250718.01`, whose `.01` is a same-day rebuild and not a
+ * version to order by. `null` when there is no valid token, when it carries no `rn.ver` (an
+ * older token, issued before the claim did), or when the claim isn't a build at all.
+ *
+ * Unverified — a client can claim any build — which is fine for what it gates here: a build
+ * lying about itself only changes which storefront its own player is shown.
  */
-async function authedRoles(c: Context<App>): Promise<string[] | null> {
-	return validateAndGetRoles(c.req.raw, await c.env.JWT_SECRET.get())
+async function authedBuild(c: Context<App>): Promise<number | null> {
+	const version = await validateAndGetVersion(c.req.raw, await c.env.JWT_SECRET.get())
+	if (version === null) return null
+	const build = Number.parseInt(version.split('.')[0] ?? '', 10)
+	return Number.isInteger(build) ? build : null
 }
 
 /** Results.Unauthorized() equivalent — 401 with empty body. */
@@ -379,20 +408,32 @@ async function pushBalancePurchase(
  */
 const NOT_AN_INFLUENCER = 0
 
-/** The operator-granted role that comes with a complimentary subscription. */
-const DEVELOPER_ROLE = 'developer'
-
 /**
- * Whether the caller currently holds a Rec Room Plus subscription — the ONE definition,
- * shared by `UpdateAndGetSubscription` (which reports it) and the storefront buys (which
- * price off it via `SubscriberPrices`). Nothing sells subscriptions here, so holding the
- * `developer` role IS the subscription; if a real subscription store ever lands, this is
- * the only place that has to learn about it. Read from the token's `role` claim, never the
- * body; no or an invalid token is "not subscribed".
+ * Whether the caller holds a Rec Room Plus subscription — the ONE definition, shared by
+ * `UpdateAndGetSubscription` (which reports it) and the storefront buys (which price off
+ * it via `SubscriberPrices`). Those two must never disagree: a subscriber whose client
+ * applied the discount itself and then had the buy refused as a price mismatch is exactly
+ * what one definition prevents.
+ *
+ * Nothing SELLS subscriptions here. Plus is `account.hasPlus`, claimed on the website by
+ * proving a qualifying role in the community Discord (`www` `POST /api/benefits/claim`),
+ * and it reaches this worker as the token's `rn.plus` claim — stamped by `auth` at login
+ * from that flag. So this is a pure token read: no database, no binding, nothing to load.
+ *
+ * The cost is FRESHNESS, deliberately accepted. The claim is only as current as the token,
+ * which lasts a day and is never refreshed (see TOKEN_TTL_SECONDS), so a player who claims
+ * on the website has to sign in again — and restart the game — before Plus applies. The
+ * website's claim page says so.
+ *
+ * The `developer` role does NOT grant Plus. It used to, as a stand-in while nothing else
+ * could confer it; now that the Discord claim exists, Plus is one thing with one source.
+ * An operator who wants a developer to have it sets `hasPlus` on their account like
+ * anyone else's.
+ *
+ * Never read from the body. No token, or an invalid one, is "not subscribed".
  */
 async function isSubscriber(c: Context<App>): Promise<boolean> {
-	const roles = await authedRoles(c)
-	return roles?.includes(DEVELOPER_ROLE) ?? false
+	return validateAndGetPlus(c.req.raw, await c.env.JWT_SECRET.get())
 }
 
 /** `SubscriptionLevel.Gold`. 1 is Platinum. */
@@ -412,20 +453,21 @@ const SUBSCRIPTION_PLATFORM_ALL = -1
 const STUB_SUBSCRIPTION_ID = 1
 
 /**
- * The complimentary subscription a `developer` account reports — Rec Room Plus, which the
- * client's API calls a `CampusCard`.
+ * The complimentary subscription a subscriber reports — Rec Room Plus, which the client's
+ * API calls a `CampusCard`. See `isSubscriber` for who counts as one: a `developer`, or a
+ * player who claimed `hasPlus` with a Discord role on the website.
  *
- * Nothing here sells subscriptions, so holding the role IS the subscription: it's how the
- * paid-tier surfaces get exercised without a store. Every field is computed per call and
- * none of it is persisted, so this is not a record of anything — revoking the role revokes
- * the subscription, and no expiry sweep or renewal exists.
+ * Nothing here sells subscriptions, so holding one of those IS the subscription. Every
+ * field is computed per call and none of it is persisted, so this is not a record of
+ * anything — dropping the role or the flag drops the subscription, and no expiry sweep or
+ * renewal exists.
  *
  * `ExpirationDate` is a year out from THIS call rather than a fixed date: a hard-coded one
  * lapses on a day nobody is expecting, and the client would start showing an expired
  * subscription with no way to renew it. `IsAutoRenewing` tells the client the same thing.
  * The dates are milliseconds-precision ISO like the rest of this worker's timestamps.
  */
-function developerSubscription(accountId: number) {
+function plusSubscription(accountId: number) {
 	const now = new Date()
 	// Calendar arithmetic, not now + 365 days: setUTCFullYear lands on the same date next
 	// year whether or not a leap day falls in between.
@@ -593,15 +635,74 @@ interface GiftRequest {
 }
 
 /**
- * Read a storefront catalog (`sf{type}.json`) from the ASSETS binding. Null when there is
- * no such storefront.
+ * Storefront ids that are served ANOTHER storefront's catalog, because no capture of their
+ * own exists yet. Placeholder: an alias here is a storefront this server hasn't got, not one
+ * it has decided is a duplicate, so a line should come OUT again the moment `static/storefronts`
+ * grows the real `sf{id}.json` — the alias silently wins over a file of that name.
+ *
+ * Resolved in {@link storefrontAssetPath} rather than at the route, so an aliased storefront
+ * is aliased for BUYING too. Browsing and purchasing read the same catalog by id, and an
+ * alias applied to only the browse side would show a page of items whose every purchase
+ * 404s as "no such storefront".
+ */
+const STOREFRONT_ALIASES: Record<string, string> = {
+	// Empty. 1704 was here for a while, standing in for a 2025 gift-drop storefront nobody had
+	// captured; the items it was meant to sell turned out to belong in the general store, so
+	// they are in `sf3-2025.json` and served as storefront 3 — see {@link STOREFRONT_BY_BUILD}.
+	// That is a per-BUILD variant of one storefront rather than an alias between two ids, which
+	// is why nothing is listed here.
+}
+
+/**
+ * Storefronts that have a SECOND file for newer clients, keyed by the id the client asks for
+ * and naming the file a build past {@link LEGACY_CLIENT_BUILD} is served instead.
+ *
+ * `3` is the general store, and BOTH files are generated from the item catalog by
+ * `runx storefront build` — the same store at two points in time. `sf3.json` holds what existed
+ * by {@link LEGACY_CLIENT_BUILD}; `sf3-2025.json` holds everything. One storefront id either
+ * way: the client asks for 3 in both cases and neither knows there are two files, so nothing
+ * about the request changes and no item is renumbered between them.
+ *
+ * Resolved in {@link storefrontAssetPath}, which BOTH the listing route and
+ * {@link loadStorefront} go through, so browsing and buying always read the same file. That is
+ * the whole reason it is not done at the route: a newer client shown the merged store and then
+ * charged against the captured one would have every catalog item 404 as "no such storefront".
+ */
+const STOREFRONT_BY_BUILD: Record<string, string> = {
+	'3': 'sf3-2025',
+}
+
+/**
+ * The ASSETS path a storefront id reads from, following any {@link STOREFRONT_ALIASES} entry
+ * and any {@link STOREFRONT_BY_BUILD} variant. The id arrives as a path param, so it is a
+ * string here rather than a number: both tables are matched on what the client asked for.
+ *
+ * `build` is the caller's `rn.ver` (see {@link authedBuild}), or null when there is no readable
+ * one. Null gets the captured file: an unversioned token is the OLD client, so treating "can't
+ * prove its version" as "newer" would swap the store out from under the build that needs it.
+ */
+function storefrontAssetPath(id: string, build: number | null): string {
+	const aliased = STOREFRONT_ALIASES[id] ?? id
+	const variant = STOREFRONT_BY_BUILD[aliased]
+	if (variant !== undefined && build !== null && build > LEGACY_CLIENT_BUILD) {
+		return `/${variant}.json`
+	}
+	return `/sf${aliased}.json`
+}
+
+/**
+ * Read a storefront catalog from the ASSETS binding — WHICH file depending on the caller's
+ * build, see {@link storefrontAssetPath}. Null when there is no such storefront.
  *
  * Separate from {@link findStoreItem} so a caller resolving SEVERAL items from one
- * storefront reads (and parses) it once: sf3 alone is over a thousand items, and a bulk
- * purchase carries up to `BULK_PURCHASE_CAP` lines.
+ * storefront reads (and parses) it once: sf3 alone is over a thousand items and the merged
+ * sf3-2025 is four, and a bulk purchase carries up to `BULK_PURCHASE_CAP` lines.
  */
 async function loadStorefront(c: Context<App>, storefrontType: number): Promise<Storefront | null> {
-	const res = await c.env.ASSETS.fetch(new URL(`/sf${storefrontType}.json`, c.req.url))
+	const build = await authedBuild(c)
+	const res = await c.env.ASSETS.fetch(
+		new URL(storefrontAssetPath(String(storefrontType), build), c.req.url)
+	)
 	if (!res.ok) return null
 	return (await res.json()) as Storefront
 }
@@ -619,6 +720,92 @@ async function findStoreItem(
 	const storefront = await loadStorefront(c, storefrontType)
 	if (storefront === null) return null
 	return storefront.StoreItems.find((it) => it.PurchasableItemId === purchasableItemId) ?? null
+}
+
+/**
+ * How one item may be bought, as `POST /api/items/purchaseInfos` answers it. The store row
+ * holds ids only, so everything a price tag needs comes from here.
+ *
+ * `ItemId` re-uses the request's reference verbatim — camelCase members under a PascalCase
+ * key. It reads like a mistake and is not one: the client's decoder names the members that
+ * way on both legs, and PascalCasing them here loses the id.
+ *
+ * `PurchaseMethodId` names WHICH listing sells the item, and is a tagged union of the two
+ * kinds of id a listing can have: `Type` 1 carries a `Guid` (a UGC item, keyed by its own
+ * guid) and leaves `NumberId` null; a storefront's numbered `PurchasableItemId` would be the
+ * other side. Nothing here sells anything under a second listing, so the guid is the item's own.
+ */
+interface ItemPurchaseInfo {
+	ItemId: { itemType: number; itemId: string }
+	PurchaseMethodId: { Type: number; NumberId: number | null; Guid: string | null }
+	Prices: Array<{
+		CurrencyType: number
+		Price: number
+		StorefrontSaleData: {
+			SalePercent: number
+			SaleStartDate: string | null
+			SaleEndDate: string | null
+		} | null
+	}>
+	NewUntil: string | null
+	AvailableAt: string | null
+	AvailableUntil: string | null
+	CanBeGifted: boolean
+	CanApplySubscriberDiscount: boolean
+	SubscribersOnly: boolean
+	IsFeatured: boolean
+}
+
+/** The `PurchaseMethodId.Type` that carries a `Guid` rather than a `NumberId`. */
+const PURCHASE_METHOD_TYPE_GUID = 1
+
+/**
+ * The purchase-info projection of a custom avatar item.
+ *
+ * The price is in `RecCenterTokens` because that is what a UGC item costs: the creation UI's
+ * floor (`api`'s `/api/customAvatarItems/v1/minPriceForPublicItem`) is a token price, and the
+ * `price` column it writes is the same number. It must NOT be a room currency — those are
+ * scoped to a room this endpoint knows nothing about, and the client holds no balance to pay
+ * one with, so the item would draw a price it can never meet.
+ *
+ * The rest is what the row can honestly say:
+ *  - `AvailableAt` is the item's creation — the moment it began being sellable. There is no
+ *    scheduled listing here, so `AvailableUntil` is null: on sale until the creator pulls it.
+ *  - `NewUntil` is null rather than derived from `CreatedAt`: nothing has ever defined how long
+ *    “new” lasts here, and guessing draws the pip on items that are not.
+ *  - `StorefrontSaleData` is a zero-percent sale rather than null, since nothing discounts UGC
+ *    items yet and a present-but-empty sale is the shape the client always gets to read.
+ *  - `SubscribersOnly`/`CanApplySubscriberDiscount` are false: subscriber pricing is a
+ *    storefront-catalog feature (`sf{N}.json`'s `SubscriberPrices`) and no UGC item has one.
+ *  - `IsFeatured` is the row's own flag, the same one the featured feed reads.
+ *
+ * `CanBeGifted` is true because the reference let players gift UGC items — but nothing here
+ * buys a custom avatar item yet, gift or otherwise, so the button it draws leads nowhere until
+ * that exists. It is the flag to flip if a dead gift button is worse than a missing one.
+ */
+function toItemPurchaseInfo(item: CustomAvatarItem): ItemPurchaseInfo {
+	return {
+		ItemId: { itemType: UGC_ITEM_TYPE_CUSTOM_AVATAR_ITEM, itemId: item.CustomAvatarItemId },
+		PurchaseMethodId: {
+			Type: PURCHASE_METHOD_TYPE_GUID,
+			NumberId: null,
+			Guid: item.CustomAvatarItemId,
+		},
+		Prices: [
+			{
+				CurrencyType: CurrencyType.RecCenterTokens,
+				Price: item.Price,
+				StorefrontSaleData: { SalePercent: 0, SaleStartDate: null, SaleEndDate: null },
+			},
+		],
+		NewUntil: null,
+		AvailableAt: item.CreatedAt,
+		AvailableUntil: null,
+		CanBeGifted: true,
+		CanApplySubscriberDiscount: false,
+		SubscribersOnly: false,
+		IsFeatured: item.IsFeatured,
+	}
 }
 
 /** Build the owned avatar-item DTO granted into the buyer's inventory from a gift-drop. */
@@ -834,23 +1021,87 @@ async function pushProgressionUpdate(
  */
 const ROLL_STOREFRONT_TYPE = 3
 
-/** Every item in the roll catalog, or `[]` if it can't be read (a roll then yields nothing). */
+/**
+ * Every item a roll or a weekly gift may draw, or `[]` if it can't be read (a roll then yields
+ * nothing).
+ *
+ * The storefront PLUS every equipment skin, which no storefront sells: skins are awarded from
+ * weekly challenges rather than bought, so they were taken out of sf3 — and the weekly gift pool
+ * is exactly the equipment in this list, which would otherwise be empty. They come from the
+ * `catalog` table, whose skins are the same rows `static/db/skins.json` holds.
+ *
+ * Being in this list does NOT make an item purchasable. `findStoreItem` and the bulk bag resolve
+ * a purchase against the storefront file, never against this.
+ */
 async function loadRollCatalog(c: Context<App>): Promise<StoreItem[]> {
 	const storefront = await loadStorefront(c, ROLL_STOREFRONT_TYPE)
-	return storefront?.StoreItems ?? []
+	const { results } = await c.env.DB.prepare(
+		`SELECT * FROM catalog WHERE kind = ?1 AND catalog_id IS NOT NULL`
+	)
+		.bind(CatalogKind.Skin)
+		.all<CatalogRow>()
+	return [...(storefront?.StoreItems ?? []), ...results.map(toSkinStoreItem)]
 }
 
 /**
- * The equipment a weekly challenge gift can be drawn from: every roll-catalog item carrying
- * an `EquipmentModificationGuid`. Weekly rewards are equipment — the captured rotation's is a
- * camera skin — and in sf3 that guid is exactly what marks an item as equipment (187 of its
- * 1161, all with a prefab, none with an avatar item or consumable attached).
+ * One catalog skin as a STORE ITEM, so the roll catalog and the weekly gift pool can read it the
+ * same way they read a storefront entry.
  *
- * `GiftDropId` comes off `PurchasableItemId`, which every sf3 equipment entry agrees with.
+ * Keyed the way a gift-drop keys equipment (`EquipmentPrefabName` + `EquipmentModificationGuid`)
+ * rather than as an avatar item — that guid is what marks an entry as equipment, and what the
+ * gift pool filters on. Priced at zero: nothing sells these, and a price here would be a number
+ * no surface ever shows.
+ */
+function toSkinStoreItem(row: CatalogRow): StoreItem {
+	return {
+		GiftDrop: {
+			FriendlyName: row.friendly_name,
+			Tooltip: row.tooltip ?? '',
+			ConsumableItemDesc: '',
+			AvatarItemDesc: '',
+			AvatarItemType: 0,
+			EquipmentPrefabName: row.prefab_name ?? '',
+			EquipmentModificationGuid: row.item_key,
+			Rarity: row.rarity,
+			Context: 0,
+			Currency: 0,
+			CurrencyType: 0,
+		},
+		Prices: [],
+		PurchasableItemId: row.catalog_id as number,
+	}
+}
+
+/**
+ * Equipment prefabs a weekly gift is never drawn from, matched on the prefix of
+ * `EquipmentPrefabName`.
+ *
+ * `[Sandbox_D4]` … `[Sandbox_D20]` are the sandbox dice — 24 skins across six prefabs, a sixth
+ * of the whole pool. Theming a week on "Sandbox D8 (Pewter)" spends the week's headline reward
+ * on a die recolour, so they are excluded and the pool is the 248 that remain.
+ */
+const WEEKLY_GIFT_EXCLUDED_PREFABS = ['[Sandbox_']
+
+/**
+ * The equipment a weekly challenge gift can be drawn from: every roll-catalog item carrying an
+ * `EquipmentModificationGuid`, less {@link WEEKLY_GIFT_EXCLUDED_PREFABS}. Weekly rewards are
+ * equipment — the captured rotation's is a camera skin — and that guid is exactly what marks an
+ * entry as equipment.
+ *
+ * The pool comes from the catalog's SKINS now rather than from sf3, which no longer sells
+ * equipment at all: skins are awarded here, not bought. See {@link loadRollCatalog}.
+ *
+ * `GiftDropId` comes off `PurchasableItemId`, which for a skin is its `catalog_id`.
  */
 function toEquipmentGiftPool(catalog: StoreItem[]): EquipmentGift[] {
 	return catalog
-		.filter((item) => item.GiftDrop.EquipmentModificationGuid !== '')
+		.filter(
+			(item) =>
+				item.GiftDrop.EquipmentModificationGuid !== '' &&
+				!WEEKLY_GIFT_EXCLUDED_PREFABS.some((prefix) =>
+					item.GiftDrop.EquipmentPrefabName.startsWith(prefix)
+				)
+		)
 		.map((item) => ({
 			GiftDropId: item.PurchasableItemId,
 			EquipmentPrefabName: item.GiftDrop.EquipmentPrefabName,
@@ -1284,6 +1535,69 @@ function toPurchaseMethodId(raw: Partial<PurchaseMethodId> | null | undefined): 
 }
 
 /**
+ * Catalog rows as STORE ITEMS, so a bag can be resolved against the `catalog` table the same
+ * way it is resolved against an `sf{N}.json` file.
+ *
+ * The generated storefront (`sf3-2025.json`) is built from these very rows with this very
+ * pricing, so an item bought here costs exactly what that file lists it at. That is not a
+ * nicety: `priceCheck` refuses a line whose posted `RequestedPrice` doesn't match, so two
+ * pricings would 409 every purchase the client made from the page it was shown.
+ *
+ * Mostly redundant now that the merged store carries every sellable AVATAR ITEM — a newer
+ * build's bag resolves those straight out of the file. What it still reaches that the file does
+ * not is SKINS, which the generator leaves out, keyed the way a gift-drop keys equipment
+ * (`EquipmentPrefabName` +
+ * `EquipmentModificationGuid`) rather than as an avatar item — which is what lets a skin be
+ * bought at all, since no generated storefront file lists one.
+ *
+ * {@link isSellableRarity} is applied here as well as in the generator: the developer tier is
+ * absent from the file, and resolving a bag straight off the table would otherwise sell items
+ * the store never offered.
+ */
+async function catalogStoreItems(db: D1Database, catalogIds: number[]): Promise<StoreItem[]> {
+	if (catalogIds.length === 0) return []
+	const placeholders = catalogIds.map((_, i) => `?${i + 1}`).join(', ')
+	const { results } = await db
+		.prepare(`SELECT * FROM catalog WHERE catalog_id IN (${placeholders})`)
+		.bind(...catalogIds)
+		.all<CatalogRow>()
+
+	return results
+		.filter(
+			(row) =>
+				row.catalog_id !== null &&
+				row.kind === CatalogKind.AvatarItem &&
+				isSellableRarity(row.rarity)
+		)
+		.map((row) => {
+			const price = priceForRarity(row.rarity)
+			return {
+				GiftDrop: {
+					FriendlyName: row.friendly_name,
+					// The client's field is a string; the catalog keeps NULL and "" apart.
+					Tooltip: row.tooltip ?? '',
+					ConsumableItemDesc: '',
+					// `item_key` IS the `AvatarItemDesc` for an avatar item — that is what makes it the
+					// key. The equipment fields stay empty: only avatar items reach here.
+					AvatarItemDesc: row.item_key,
+					AvatarItemType: row.avatar_item_type ?? 0,
+					EquipmentPrefabName: '',
+					EquipmentModificationGuid: '',
+					Rarity: row.rarity,
+					Context: 0,
+					Currency: 0,
+					CurrencyType: 0,
+				},
+				Prices: [{ CurrencyType: CurrencyType.RecCenterTokens, Price: price }],
+				SubscriberPrices: [
+					{ CurrencyType: CurrencyType.RecCenterTokens, Price: subscriberPriceFor(price) },
+				],
+				PurchasableItemId: row.catalog_id as number,
+			}
+		})
+}
+
+/**
  * Resolve one line against the bag's catalog: what it wants, how many, and at what price.
  * Returns the failure — with the `UpdateResponse` its entry will carry — instead when the
  * line can't be bought.
@@ -1413,6 +1727,87 @@ function toGameRewardDrop(): StoreGiftDrop {
 		Context: GIFT_CONTEXT_GAME_REWARDS,
 		Currency: 0,
 		CurrencyType: 0,
+		Xp: GAME_REWARD_XP,
+	}
+}
+
+/**
+ * One row of `static/quest-rewards.json`: the reward table of the live game's activities,
+ * keyed by the `giftContext` the client posts with a game-reward ask (`Dodgeball`,
+ * `Quest_Goblin_S`, `Paintball_Dam`, …). Each row is the gift-drop as the game's own reward
+ * server shaped it — a comma-laden `AvatarItemDesc` (the catalog's `item_key`), or for the
+ * Laser Tag entry a currency payout — with `GiftRarity` and the activity's own `Context`
+ * (8000 for dodgeball, 4003 for the goblin quest's S rank) spelled the way the client's box
+ * reads them. Untyped fields (`Id`, `Level`, `Message`) are carried but unused.
+ */
+interface QuestReward {
+	AvatarItemDesc: string
+	ConsumableItemDesc: string
+	EquipmentPrefabName: string
+	EquipmentModificationGuid: string
+	CurrencyType: number
+	Currency: number
+	Xp: number
+	GiftRarity: number
+	Context: number
+}
+
+const QUEST_REWARDS: Record<string, QuestReward[]> = questRewards
+
+/**
+ * The reward an activity pays, when `giftContext` names an entry in `quest-rewards.json`:
+ * one row drawn at random from that key's list, among the rows the player DOESN'T ALREADY
+ * OWN — the table is "what this activity can give you", and handing over a duplicate gives
+ * nothing (the inventory is a set). A currency row is never "owned", so it always stays in
+ * the pool.
+ *
+ * Null for a context the table doesn't know (or one whose every reward the player already
+ * has), which the caller pays as the plain XP box — the cooldown key is the same string
+ * either way, so an unknown or exhausted context is still rate-limited.
+ */
+async function pickQuestReward(
+	db: D1Database,
+	accountId: number,
+	giftContext: string
+): Promise<QuestReward | null> {
+	if (!Object.hasOwn(QUEST_REWARDS, giftContext)) return null
+	const rows = QUEST_REWARDS[giftContext] ?? []
+	if (rows.length === 0) return null
+	const ownedItems = new Set((await getInventory(db, accountId)).map((i) => i.AvatarItemDesc))
+	const ownedGuids = new Set((await getEquipment(db, accountId)).map((e) => e.ModificationGuid))
+	const pool = rows.filter(
+		(r) =>
+			!(r.AvatarItemDesc !== '' && ownedItems.has(r.AvatarItemDesc)) &&
+			!(r.EquipmentModificationGuid !== '' && ownedGuids.has(r.EquipmentModificationGuid))
+	)
+	if (pool.length === 0) {
+		logger.info('quest rewards exhausted for player', { accountId, giftContext })
+		return null
+	}
+	return pool[Math.floor(Math.random() * pool.length)] ?? null
+}
+
+/**
+ * A quest reward as the gift-drop `grantGiftDrop` hands over. The item fields come off the
+ * row, so the item IS granted — unlike {@link toGameRewardDrop}'s empty box. The catalog
+ * row for the item, when it resolves, supplies what the table doesn't carry (name, tooltip,
+ * `AvatarItemType`), so the inventory entry reads like a bought one rather than blank.
+ * The XP is the flat game-reward amount, not the row's (always 0): the reward is the item,
+ * and the XP is the same pat on the back every claim gets.
+ */
+function toQuestRewardDrop(reward: QuestReward, catalog: CatalogRow | null): StoreGiftDrop {
+	return {
+		FriendlyName: catalog?.friendly_name ?? '',
+		Tooltip: catalog?.tooltip ?? '',
+		ConsumableItemDesc: reward.ConsumableItemDesc,
+		AvatarItemDesc: reward.AvatarItemDesc,
+		AvatarItemType: catalog?.avatar_item_type ?? null,
+		EquipmentPrefabName: reward.EquipmentPrefabName,
+		EquipmentModificationGuid: reward.EquipmentModificationGuid,
+		Rarity: reward.GiftRarity,
+		Context: reward.Context,
+		Currency: reward.Currency,
+		CurrencyType: reward.CurrencyType,
 		Xp: GAME_REWARD_XP,
 	}
 }
@@ -1705,6 +2100,120 @@ function listRoute(summary: string, description: string, auth = false) {
 	})
 }
 
+/**
+ * A completed invention purchase: the invention that changed hands and the buyer's
+ * RESULTING token balance (not the change — see the envelopes both routes build from it).
+ */
+interface SettledInventionPurchase {
+	invention: SavedInvention
+	balance: number
+}
+
+/**
+ * Settle an invention purchase — the whole of buyInvention except the envelope it is
+ * announced in, shared by the `v2` GET and the `v3` POST. Every refusal is a `Response`
+ * (the `{ error }` body both routes answer with); a sale is the bought invention and the
+ * buyer's resulting balance, which each route then wraps in ITS OWN shape — the two
+ * clients want different ones, so the money is shared and the projection is not.
+ *
+ * A priced invention is settled player-to-player: the buyer is debited its `Price` in
+ * RecCenterTokens and the CREATOR is credited the same amount — no house cut, so the
+ * tokens are moved rather than minted or burned. A free invention (`Price` 0) skips the
+ * money entirely: nothing is debited and nobody is paid. The stored price is confirmed
+ * against the price the client rendered first, so a stale or tampered client can’t buy
+ * at a price the creator no longer offers (409), and an unaffordable one is a 400 —
+ * the same "Insufficient balance" buyItem answers with.
+ *
+ * Ownership is recorded in `inventory_invention`; the creator is not sold their own
+ * invention (they own it already, via CreatorPlayerId) and a re-buy is a 409 rather
+ * than a second row. The invention’s `NumDownloads` counter is deliberately NOT
+ * bumped: that column lives on the `invention` table the `api` worker owns, and this
+ * worker only reads it.
+ */
+async function settleInventionPurchase(
+	c: Context<App>,
+	id: number,
+	inventionId: number,
+	requestedPrice: number
+): Promise<SettledInventionPurchase | Response> {
+	const invention = await getInventionById(c.env.DB, inventionId)
+	if (invention === null) return c.json({ error: 'Invention not found' }, 404)
+	// An unpublished invention is a draft: it isn't on sale, not even for free.
+	if (!invention.IsPublished) return c.json({ error: 'Invention is not for sale' }, 403)
+	if (invention.CreatorPlayerId === id) {
+		return c.json({ error: 'Cannot buy your own invention' }, 400)
+	}
+	if (await ownsInvention(c.env.DB, id, inventionId)) {
+		return c.json({ error: 'Already owned' }, 409)
+	}
+
+	// The price the client rendered must still be the stored one: a mismatch is a stale
+	// catalog or a tampered request, never a sale.
+	if (invention.Price !== requestedPrice) {
+		return c.json({ error: 'Price has changed' }, 409)
+	}
+
+	const startingTokens = intVar(c.env.STARTING_TOKENS, DEFAULT_STARTING_TOKENS)
+	// Inventions are priced in RecCenterTokens only — the store shows no other currency
+	// for them, and `Price` carries no currency of its own to pick a different one from.
+	const price = invention.Price
+	if (price > 0) {
+		// Debit the buyer atomically; false means they couldn't afford it and nothing
+		// changed, so no ownership is recorded and the creator is not paid.
+		const paid = await spendCurrency(
+			c.env.DB,
+			id,
+			CurrencyType.RecCenterTokens,
+			price,
+			startingTokens
+		)
+		if (!paid) return c.json({ error: 'Insufficient balance' }, 400)
+	}
+
+	// Grant before paying out: these are three separate D1 writes with no transaction
+	// around them, so order them by what a failure costs. A buyer who paid and got the
+	// invention but left the creator unpaid is recoverable; a buyer charged for nothing
+	// is not.
+	await grantInvention(c.env.DB, id, inventionId)
+
+	if (price > 0) {
+		// Seed the creator's signup grant BEFORE crediting them: `creditCurrency` upserts
+		// the balance row, and `ensureStartingBalances` is an INSERT OR IGNORE, so a
+		// creator who had never touched their balance would otherwise have the row created
+		// here and lose their starting tokens forever.
+		await ensureStartingBalances(c.env.DB, invention.CreatorPlayerId, startingTokens)
+		const creatorBalance = await creditCurrency(
+			c.env.DB,
+			invention.CreatorPlayerId,
+			CurrencyType.RecCenterTokens,
+			price,
+			startingTokens
+		)
+		// The creator is a different, probably-online player with no response to read:
+		// push the sale so it lands on their shown balance without a re-fetch. The frame
+		// carries their resulting TOTAL (what `creditCurrency` returns), not the payout —
+		// sending the payout would set their whole balance to it. A plain update rather
+		// than a purchase frame: they sold, they didn't buy. Best-effort, as everywhere.
+		await pushBalanceUpdate(
+			c,
+			invention.CreatorPlayerId,
+			CurrencyType.RecCenterTokens,
+			creatorBalance
+		)
+	}
+
+	// Unlike buyItem — whose `Balance` is the change applied — the reference server
+	// answers this one with the RESULTING total (a first read seeds the buyer's starting
+	// grant, as everywhere else). The buyer's frame carries that same total, so the body
+	// and the push land the client on one number.
+	const balance = await getBalance(c.env.DB, id, CurrencyType.RecCenterTokens, startingTokens)
+	// A free invention moved nothing, so there is no purchase to report.
+	if (price > 0) {
+		await pushBalancePurchase(c, id, CurrencyType.RecCenterTokens, -price, balance)
+	}
+	return { invention, balance }
+}
+
 // strict: false so trailing-slash routes (e.g. `/gifts/consume/`, which the client
 // posts with a trailing slash) match either form. Mirrors the `api` worker.
 const app = new Hono<App>({ strict: false })
@@ -1720,6 +2229,66 @@ const app = new Hono<App>({ strict: false })
 
 	.onError(withOnError())
 	.notFound(withNotFound())
+
+	// A batch lookup of LOCKED avatar items — the client posts the descs it wants the locked
+	// state for and expects the matching item records back, as a BARE ARRAY.
+	//
+	// Filtered by exact `AvatarItemDesc`, matching the reference implementation: it walks its
+	// own item list and keeps the entries whose desc appears in the posted set. Two consequences
+	// of copying that shape rather than the obvious one:
+	//
+	//  - Order is the CATALOGUE's, not the request's, because the filter iterates the catalogue.
+	//    A caller must not read the response positionally against what it asked for.
+	//  - The match is the WHOLE desc, not the base asset. `<base>,,,` and `<base>,<colour>,` are
+	//    different items and only the one asked for comes back.
+	//
+	// An EMPTY or absent list means everything, again as the reference does — that is its "give
+	// me the catalogue" case rather than a degenerate "match nothing".
+	//
+	// Unknown descs are simply absent from the response; a miss is not an error. Nothing records
+	// a LOCK yet, so what comes back is the item records rather than a genuine locked answer.
+	//
+	// POST only, despite the reference declaring it `[HttpGet]` with a `[FromBody]` parameter —
+	// a combination the fetch standard forbids, so a GET could never carry the descs it needs.
+	//
+	// NOTE: the `api` worker has a route of this same path that answers `[]`. The client asks
+	// THIS host, so that one is unreached; they must be reconciled before either is taken for
+	// real behaviour.
+	.post(
+		'/api/avatar/v1/lockeditems/bulk',
+		describeRoute({
+			tags: ['Avatar'],
+			summary: 'Locked avatar items in bulk',
+			description: [
+				'Resolves `AvatarItemDescriptions` against the bundled item catalogue and answers the',
+				'matching records as a bare array. The match is on the WHOLE `AvatarItemDesc`, so a',
+				'colourway is not found by its base asset alone.',
+				'An empty or absent list answers the WHOLE catalogue, which is the reference’s own',
+				'behaviour rather than a degenerate empty match.',
+				'Results come back in CATALOGUE order, not request order — the filter walks the',
+				'catalogue — so the response must not be read positionally. Unknown descs are simply',
+				'absent; a miss is not an error.',
+				'Nothing records a LOCK yet, so what comes back is the item records rather than a',
+				'genuine locked/unlocked answer.',
+			].join(' '),
+			requestBody: jsonBody(LockedItemsBulkRequest, 'The descs to resolve'),
+			responses: { 200: json(JsonArray, 'The matching items, in catalogue order') },
+		}),
+		async (c) => {
+			const body = (await c.req.json().catch(() => null)) as {
+				AvatarItemDescriptions?: unknown
+			} | null
+			const requested = Array.isArray(body?.AvatarItemDescriptions)
+				? body.AvatarItemDescriptions.filter((d): d is string => typeof d === 'string')
+				: []
+			if (requested.length === 0) return c.json(avatarItemCatalog)
+
+			// A Set rather than `Array.includes` per item: the client posts hundreds of descs
+			// against a catalogue of thousands, and the reference's nested scan is quadratic.
+			const wanted = new Set(requested)
+			return c.json(avatarItemCatalog.filter((item) => wanted.has(item.AvatarItemDesc)))
+		}
+	)
 
 	// Default-unlocked avatar items, served from the bundled static JSON.
 	.get(
@@ -2423,6 +2992,53 @@ const app = new Hono<App>({ strict: false })
 		}
 	)
 
+	// How the items in a store row may be BOUGHT — the counterpart of the bulk lookup above.
+	// The row itself carries only ids; the client asks this for the price tag, the sale
+	// banner, the “new” pip and whether the gift button is drawn. It answers one entry per
+	// RESOLVED id, in request order, dropping ids it doesn't know exactly as the bulk lookup
+	// does — an item with no purchase info renders as not-for-sale rather than at price zero.
+	//
+	// Two shapes meet in one object here and neither may be tidied into the other: the
+	// request's `{ itemType, itemId }` reference is camelCase, and the response nests THAT
+	// object, members unchanged, under a PascalCase `ItemId` beside PascalCase siblings.
+	.post(
+		'/api/items/purchaseInfos',
+		describeRoute({
+			tags: ['Storefront'],
+			summary: 'Purchase info for a bag of items',
+			description: [
+				'Resolves `Ids[]` (`{ itemType, itemId }`) against the `custom_avatar_item` table and',
+				'answers how each may be bought: its price in RecCenterTokens, its availability window',
+				'and the flags the store row draws. Only `itemType` 3 (custom avatar item) is served;',
+				'other types and unknown ids are dropped, so the response is one entry per RESOLVED',
+				'id in request order — never a positional match for `Ids[]`.',
+			].join(' '),
+			security: AUTHED,
+			requestBody: jsonBody(ItemPurchaseInfosRequest, 'The ids to price'),
+			responses: {
+				200: json(ItemPurchaseInfoList, 'The resolved items’ purchase info (unknown ids omitted)'),
+				400: json(ErrorResponse, 'Malformed body'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+			if (!body || !Array.isArray(body.Ids)) return c.json({ error: 'Ids is required' }, 400)
+			const ids = (body.Ids as unknown[]).flatMap((ref) => {
+				if (!ref || typeof ref !== 'object') return []
+				const { itemType, itemId } = ref as Record<string, unknown>
+				return itemType === UGC_ITEM_TYPE_CUSTOM_AVATAR_ITEM && typeof itemId === 'string'
+					? [itemId]
+					: []
+			})
+			const items = await getCustomAvatarItems(c.env.DB, ids)
+			return c.json(items.map(toItemPurchaseInfo))
+		}
+	)
+
 	// Unlocked consumables. [Authorize]. The consumables the player has bought (from
 	// `buyItem`, stored in the `consumable` table), grouped by item into the client's
 	// unlocked-consumable DTO. A player who has bought none gets an empty list.
@@ -2538,13 +3154,25 @@ const app = new Hono<App>({ strict: false })
 	)
 
 	// Gift-drop storefront. Serves `static/storefronts/sf{id}.json` for the requested
-	// storefront id via the ASSETS binding; 404s when no such catalog exists.
+	// storefront id via the ASSETS binding; 404s when no such catalog exists. A few ids are
+	// stand-ins for another storefront's catalog (see `STOREFRONT_ALIASES`) — resolved through
+	// the same helper `buyItem` uses, so an aliased storefront can be bought from as well as
+	// browsed.
 	.get(
 		'/api/storefronts/v3/giftdropstore/:id',
 		describeRoute({
 			tags: ['Storefront'],
 			summary: 'Gift-drop storefront catalog',
-			description: 'Serves the `sf{id}.json` catalog via the ASSETS binding. 404 when none exists.',
+			description: [
+				'Serves the `sf{id}.json` catalog via the ASSETS binding. 404 when none exists. An id',
+				'with no capture of its own may stand in for another storefront’s catalog (see',
+				'`STOREFRONT_ALIASES`, currently empty), and such an alias applies to purchases from',
+				'that storefront too, not just to this listing. Which FILE a storefront reads from can',
+				'also depend on the caller’s build (`rn.ver`): storefront `3` serves the captured',
+				'`sf3.json` to builds up to 20230414 and the merged `sf3-2025.json` — that same store',
+				'plus every sellable row of the item catalog — to later ones. The id does not change,',
+				'and the same resolution applies to purchases, so what is browsed is what is charged.',
+			].join(' '),
 			parameters: [
 				{
 					name: 'id',
@@ -2561,7 +3189,10 @@ const app = new Hono<App>({ strict: false })
 		}),
 		async (c) => {
 			const id = c.req.param('id')
-			const res = await c.env.ASSETS.fetch(new URL(`/sf${id}.json`, c.req.url))
+			// The same resolution `loadStorefront` uses, so what is browsed is what a purchase is
+			// checked against — see `storefrontAssetPath`.
+			const path = storefrontAssetPath(id, await authedBuild(c))
+			const res = await c.env.ASSETS.fetch(new URL(path, c.req.url))
 			if (!res.ok) return c.notFound()
 			return c.json(await res.json())
 		}
@@ -2586,8 +3217,8 @@ const app = new Hono<App>({ strict: false })
 			summary: 'Buy a storefront item',
 			description: [
 				'Looks the item up in its storefront catalog, confirms the client’s `RequestedPrice`',
-				'still matches the `Prices` entry — a Rec Room Plus subscriber (the same check as',
-				'`UpdateAndGetSubscription`) may pay anywhere from that down to 10% off, since their',
+				'still matches the `Prices` entry — a Rec Room Plus subscriber (the same `rn.plus`',
+				'check as `UpdateAndGetSubscription`) may pay anywhere from that down to 10% off, since their',
 				'client applies the discount itself and not to every item — debits the buyer atomically,',
 				'grants the item (into the inventory or',
 				'consumable table), and returns a gift box. A `Gift` block routes the item — and its',
@@ -2806,9 +3437,33 @@ const app = new Hono<App>({ strict: false })
 
 			// One catalog read for the bag; every line resolves against it in memory.
 			const storefront = await loadStorefront(c, storefrontType as number)
+
+			// Past LEGACY_CLIENT_BUILD the bag may also name CATALOG rows — the ids the generated
+			// storefront and the discovery rows hand out (10000 and up) — so those are looked up in
+			// the `catalog` table and appended. One extra query for the whole bag.
+			//
+			// Appended rather than replacing the file: the two id spaces do not overlap
+			// (`CATALOG_ID_BASE` is above every captured id), so a bag may mix them and a newer
+			// client buying from a captured storefront still works. An older build is not offered
+			// catalog ids anywhere, so it is left resolving exactly what it always did.
+			const build = await authedBuild(c)
+			const catalogItems =
+				build !== null && build > LEGACY_CLIENT_BUILD
+					? await catalogStoreItems(
+							c.env.DB,
+							lines.flatMap((line) => {
+								const numberId = toPurchaseMethodId(line.ItemPurchaseMethodId).NumberId
+								return numberId !== null && numberId >= CATALOG_ID_BASE ? [numberId] : []
+							})
+						)
+					: []
+			const bagCatalog: Storefront | null =
+				catalogItems.length === 0
+					? storefront
+					: { StoreItems: [...(storefront?.StoreItems ?? []), ...catalogItems] }
 			const subscriber = await isSubscriber(c)
 			const resolved = lines.map((line) =>
-				resolveBulkLine(line, storefront, currencyType as number, subscriber)
+				resolveBulkLine(line, bagCatalog, currencyType as number, subscriber)
 			)
 			const buyable = resolved.filter(isBulkLine)
 
@@ -2973,22 +3628,11 @@ const app = new Hono<App>({ strict: false })
 		}
 	)
 
-	// Buy an invention. [Authorize]. A GET, despite being a purchase — the client sends
-	// `?inventionId=…&requestedPrice=…` with no body, so that's what we answer.
-	//
-	// A priced invention is settled player-to-player: the buyer is debited its `Price` in
-	// RecCenterTokens and the CREATOR is credited the same amount — no house cut, so the
-	// tokens are moved rather than minted or burned. A free invention (`Price` 0) skips the
-	// money entirely: nothing is debited and nobody is paid. The stored price is confirmed
-	// against the price the client rendered first, so a stale or tampered client can't buy
-	// at a price the creator no longer offers (409), and an unaffordable one is a 400 —
-	// the same "Insufficient balance" buyItem answers with.
-	//
-	// Ownership is recorded in `inventory_invention`; the creator is not sold their own
-	// invention (they own it already, via CreatorPlayerId) and a re-buy is a 409 rather
-	// than a second row. The invention's `NumDownloads` counter is deliberately NOT
-	// bumped: that column lives on the `invention` table the `api` worker owns, and this
-	// worker only reads it.
+	// Buy an invention. [Authorize]. A GET, despite being a purchase — the 2023 client sends
+	// `?inventionId=…&requestedPrice=…` with no body, so that’s what we answer, in the v6 save
+	// envelope that build reads. The 2025 build posts to `v3/buyInvention` below and wants a
+	// different envelope back; the two share {@link settleInventionPurchase}, which is where
+	// the money and the rules live, and build their own bodies from what it returns.
 	.get(
 		'/api/storefronts/v2/buyInvention',
 		describeRoute({
@@ -3043,91 +3687,116 @@ const app = new Hono<App>({ strict: false })
 			// a priced one then fails the confirmation below rather than selling for nothing.
 			const requestedPrice = Number.parseInt(c.req.query('requestedPrice') ?? '0', 10) || 0
 
-			const invention = await getInventionById(c.env.DB, inventionId)
-			if (invention === null) return c.json({ error: 'Invention not found' }, 404)
-			// An unpublished invention is a draft: it isn't on sale, not even for free.
-			if (!invention.IsPublished) return c.json({ error: 'Invention is not for sale' }, 403)
-			if (invention.CreatorPlayerId === id) {
-				return c.json({ error: 'Cannot buy your own invention' }, 400)
-			}
-			if (await ownsInvention(c.env.DB, id, inventionId)) {
-				return c.json({ error: 'Already owned' }, 409)
-			}
+			const settled = await settleInventionPurchase(c, id, inventionId, requestedPrice)
+			if (settled instanceof Response) return settled
 
-			// The price the client rendered must still be the stored one: a mismatch is a stale
-			// catalog or a tampered request, never a sale.
-			if (invention.Price !== requestedPrice) {
-				return c.json({ error: 'Price has changed' }, 409)
-			}
-
-			const startingTokens = intVar(c.env.STARTING_TOKENS, DEFAULT_STARTING_TOKENS)
-			// Inventions are priced in RecCenterTokens only — the store shows no other currency
-			// for them, and `Price` carries no currency of its own to pick a different one from.
-			const price = invention.Price
-			if (price > 0) {
-				// Debit the buyer atomically; false means they couldn't afford it and nothing
-				// changed, so no ownership is recorded and the creator is not paid.
-				const paid = await spendCurrency(
-					c.env.DB,
-					id,
-					CurrencyType.RecCenterTokens,
-					price,
-					startingTokens
-				)
-				if (!paid) return c.json({ error: 'Insufficient balance' }, 400)
-			}
-
-			// Grant before paying out: these are three separate D1 writes with no transaction
-			// around them, so order them by what a failure costs. A buyer who paid and got the
-			// invention but left the creator unpaid is recoverable; a buyer charged for nothing
-			// is not.
-			await grantInvention(c.env.DB, id, inventionId)
-
-			if (price > 0) {
-				// Seed the creator's signup grant BEFORE crediting them: `creditCurrency` upserts
-				// the balance row, and `ensureStartingBalances` is an INSERT OR IGNORE, so a
-				// creator who had never touched their balance would otherwise have the row created
-				// here and lose their starting tokens forever.
-				await ensureStartingBalances(c.env.DB, invention.CreatorPlayerId, startingTokens)
-				const creatorBalance = await creditCurrency(
-					c.env.DB,
-					invention.CreatorPlayerId,
-					CurrencyType.RecCenterTokens,
-					price,
-					startingTokens
-				)
-				// The creator is a different, probably-online player with no response to read:
-				// push the sale so it lands on their shown balance without a re-fetch. The frame
-				// carries their resulting TOTAL (what `creditCurrency` returns), not the payout —
-				// sending the payout would set their whole balance to it. A plain update rather
-				// than a purchase frame: they sold, they didn't buy. Best-effort, as everywhere.
-				await pushBalanceUpdate(
-					c,
-					invention.CreatorPlayerId,
-					CurrencyType.RecCenterTokens,
-					creatorBalance
-				)
-			}
-
-			// Unlike buyItem — whose `Balance` is the change applied — the reference server
-			// answers this one with the RESULTING total (a first read seeds the buyer's starting
-			// grant, as everywhere else). The buyer's frame carries that same total, so the body
-			// and the push land the client on one number.
-			const balance = await getBalance(c.env.DB, id, CurrencyType.RecCenterTokens, startingTokens)
-			// A free invention moved nothing, so there is no purchase to report.
-			if (price > 0) {
-				await pushBalancePurchase(c, id, CurrencyType.RecCenterTokens, -price, balance)
-			}
 			return c.json({
 				BalanceUpdateResponse: {
-					Balance: balance,
+					Balance: settled.balance,
 					BalanceType: ALL_PLATFORMS,
 					CurrencyType: CurrencyType.RecCenterTokens,
-					BalanceUpdates: [{ UpdateResponse: 0, Data: invention }],
+					BalanceUpdates: [{ UpdateResponse: 0, Data: settled.invention }],
 				},
-				// The same `{ Status, Invention, InventionVersion }` envelope the invention
-				// save/read endpoints serve — the client re-renders the invention from it.
-				InventionResponse: toSaveResult(invention),
+				// The bare `{ Status, Invention, InventionVersion }` the v6 save serves — this
+				// build's invention endpoints answer in it, and the client re-renders from it.
+				InventionResponse: toSaveResult(settled.invention),
+			})
+		}
+	)
+
+	// Buy an invention, the way the 2025 client asks for it. [Authorize]. A POST carrying
+	// `{ InventionId, RequestedPrice }` as JSON, where the v2 GET takes query params.
+	//
+	// The PURCHASE is identical — both settle through `settleInventionPurchase` — but the
+	// RESPONSE is not, and that is the whole reason this route exists rather than an alias:
+	// this build wraps the invention in the v9 save envelope and names its balance bucket
+	// `Platform`. See `BuyInventionV3Response`. Both routes stay served: the 2023 build still
+	// sends the GET, and it would not parse this body.
+	.post(
+		'/api/storefronts/v3/buyInvention',
+		describeRoute({
+			tags: ['Storefront'],
+			summary: 'Buy an invention (JSON body)',
+			description: [
+				'The same purchase as `GET /api/storefronts/v2/buyInvention` — confirms the client’s',
+				'`RequestedPrice` still matches the invention’s stored `Price`, debits the buyer and',
+				'pays the creator that price in RecCenterTokens (a free invention moves nothing),',
+				'records ownership in `inventory_invention`, and pushes both players a socket frame',
+				'carrying their RESULTING total — but answered in a DIFFERENT envelope, which is why',
+				'the route exists at all: `InventionResponse` is the v9 save’s',
+				'`{ Value, Success, Error, error_id }` (its `InventionVersion` and `TagsResponse` null,',
+				'since a buy mints neither) and the balance half names its bucket `Platform`, not v2’s',
+				'`BalanceType`.',
+			].join(' '),
+			security: AUTHED,
+			requestBody: jsonBody(BuyInventionRequest, 'The invention id and the price rendered'),
+			responses: {
+				200: json(BuyInventionV3Response, 'The purchase result (invention + balance)'),
+				400: json(
+					ErrorResponse,
+					'Invalid body, missing InventionId, buying your own, or insufficient balance'
+				),
+				401: UNAUTHORIZED_RESPONSE,
+				403: json(ErrorResponse, 'The invention is not published, so it is not for sale'),
+				404: json(ErrorResponse, 'No such invention'),
+				409: json(ErrorResponse, 'Already owned, or the price has changed'),
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+			if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+				return c.json({ error: 'Invalid request body' }, 400)
+			}
+			const inventionId = body.InventionId
+			if (!Number.isInteger(inventionId)) {
+				return c.json({ error: 'InventionId is required' }, 400)
+			}
+			// Read the same way as v2’s query param: an absent or non-integer RequestedPrice is 0,
+			// which only matches a free invention — a priced one then fails the confirmation rather
+			// than selling for nothing.
+			const requestedPrice = Number.isInteger(body.RequestedPrice)
+				? (body.RequestedPrice as number)
+				: 0
+
+			const settled = await settleInventionPurchase(c, id, inventionId as number, requestedPrice)
+			if (settled instanceof Response) return settled
+
+			return c.json({
+				// The v9 SAVE envelope, not v6's bare `{ Status, Invention, InventionVersion }`:
+				// `Value` under `{ Success, Error, error_id }`, with `Invention` the client's 28-key
+				// `RRInvention`. A buy mints no version and takes no tags, so both of those keys are
+				// present and NULL — which is safe here for the same reason it is on the save: the
+				// client reads `Success` and `Value.Invention` and nothing else. `Value` itself must
+				// never be null under `Success: true` — that dereference is what crashes it.
+				InventionResponse: {
+					Value: {
+						Status: 0,
+						Invention: toInventionV9(settled.invention),
+						InventionVersion: null,
+						TagsResponse: null,
+					},
+					Success: true,
+					Error: null,
+					error_id: null,
+				},
+				// `BalanceResponseDTO`, the same one the bulk purchase answers in — so the bucket key
+				// is `Platform`, NOT the `BalanceType` the v2 body sends. The client's member IS named
+				// `BalanceType`, but it carries a [DataMember] rename to `Platform` and its decoder
+				// drops what it doesn't know, so spelling it `BalanceType` here would land this balance
+				// in bucket 0 beside the real one. `Balance` is the RESULTING total, as in v2.
+				BalanceUpdateResponse: {
+					BalanceUpdates: [{ UpdateResponse: 0, Data: toInventionV9(settled.invention) }],
+					Balance: settled.balance,
+					CurrencyType: CurrencyType.RecCenterTokens,
+					// The capture says 0 (SteamPurchased) because the reference server kept a wallet per
+					// platform. This one keeps ONE bucket and the client SUMS them, so naming 0 here
+					// while every socket frame names -2 is exactly the phantom second balance that
+					// doubled players' tokens twice before. -2, like every other surface.
+					Platform: ALL_PLATFORMS,
+				},
 			})
 		}
 	)
@@ -3285,6 +3954,11 @@ const app = new Hono<App>({ strict: false })
 	// activity of the day is per ACTIVITY, so a player who moves from Soccer to Paintball is
 	// owed another reward while a second Soccer match inside the hour is not. An ask that
 	// sends no context keys on `''`.
+	//
+	// It also picks the PRIZE: a context that is a key of `static/quest-rewards.json`
+	// (`Dodgeball`, `Quest_Goblin_S`, …) draws one of that activity's rewards — an avatar item
+	// granted into the inventory, or Laser Tag's ticket payout — and the box carries it, with
+	// the activity's own `GiftContext`. A context the table doesn't know gets the XP-only box.
 	.post(
 		'/api/gamerewards/v1/request',
 		describeRoute({
@@ -3294,8 +3968,10 @@ const app = new Hono<App>({ strict: false })
 				'Claims one reward of `rewardType` in `giftContext` per hour per player, recorded in',
 				'`reward_status`. The cooldown is per (type, activity), so a different activity is',
 				'owed another reward while the same one is not; an ask with no `giftContext` keys on',
-				'the empty context. The reward rides in a gift box, so a claim and a rejected',
-				'(on-cooldown) ask both answer `[]`.',
+				'the empty context. A `giftContext` that names an activity in `quest-rewards.json`',
+				'(`Dodgeball`, `Quest_Goblin_S`, …) draws one of that activity’s rewards and grants it;',
+				'any other claim pays XP only. The reward rides in a gift box, so a claim and a',
+				'rejected (on-cooldown) ask both answer `[]`.',
 			].join(' '),
 			security: AUTHED,
 			requestBody: form(GameRewardRequest, 'The reward type and its display message'),
@@ -3322,7 +3998,30 @@ const app = new Hono<App>({ strict: false })
 			// Bank the XP first: it is the reward, and the box is the wrapper the client shows.
 			// A failure here must not leave a box promising XP that was never credited.
 			const { progression, levelsGained } = await addXp(c.env.DB, id, GAME_REWARD_XP)
-			const granted = await grantGiftDrop(c, id, toGameRewardDrop(), message)
+			// An activity the reward table knows pays one of ITS rewards the player lacks — the
+			// item rides in the box and is granted with it. Anything else gets the plain XP box.
+			const questReward = await pickQuestReward(c.env.DB, id, giftContext)
+			const itemKey = questReward?.AvatarItemDesc || questReward?.EquipmentModificationGuid
+			const drop =
+				questReward === null
+					? toGameRewardDrop()
+					: toQuestRewardDrop(questReward, itemKey ? await getCatalogItem(c.env.DB, itemKey) : null)
+			// A currency reward (Laser Tag's tickets) is credited here: `grantGiftDrop` grants
+			// items, not balances. Seed the signup grant first — `creditCurrency` upserts the
+			// row, and a never-touched RecCenterTokens balance would otherwise lose it.
+			if (drop.Currency > 0 && drop.CurrencyType !== CurrencyType.Invalid) {
+				const startingTokens = intVar(c.env.STARTING_TOKENS, DEFAULT_STARTING_TOKENS)
+				await ensureStartingBalances(c.env.DB, id, startingTokens)
+				const balance = await creditCurrency(
+					c.env.DB,
+					id,
+					drop.CurrencyType,
+					drop.Currency,
+					startingTokens
+				)
+				await pushBalanceUpdate(c, id, drop.CurrencyType, balance)
+			}
+			const granted = await grantGiftDrop(c, id, drop, message)
 			await pushGiftReceived(c, id, granted, message, COACH_ACCOUNT_ID)
 			// Every grant moves the bar, whether or not it crossed a level.
 			await pushProgressionUpdate(c, id, progression)
@@ -3382,26 +4081,29 @@ const app = new Hono<App>({ strict: false })
 	)
 
 	// Subscription lookup (Rec Room Plus, the client's `CampusCard`). There is no store to
-	// buy one from, so the `developer` role stands in for a paid subscription: a developer
-	// reports an active Gold year, everyone else reports none. Nothing is stored — see
-	// `developerSubscription`.
+	// buy one from: Plus is claimed on the website by proving a Discord role, and reaches
+	// this worker as the token's `rn.plus` claim. A caller carrying it reports an active
+	// Gold year; everyone else reports none. Nothing about the subscription itself is
+	// stored, and nothing here reads the database — see `isSubscriber` and `plusSubscription`.
 	//
 	// Auth is OPTIONAL, and a missing or invalid token answers "no subscription" rather than
 	// 401: the client posts this while loading, so an error here can stall its load
 	// orchestration, and "you aren't subscribed" is the truthful answer for an anonymous
-	// caller anyway. The role is read from the token's `role` claim, never from the body.
+	// caller anyway. Never read from the body.
 	.post(
 		'/api/CampusCard/v1/UpdateAndGetSubscription',
 		describeRoute({
 			tags: ['Econ'],
 			summary: 'Subscription lookup',
 			description: [
-				'The caller’s Rec Room Plus subscription. Nothing sells subscriptions here, so the',
-				'operator-granted `developer` role stands in for one: a developer’s token reports an',
-				'active Gold (`Level` 0) yearly (`Period` 1) subscription on `PlatformType` -1 (All),',
-				'expiring a year from the call, and every other caller gets `{}`. Auth is optional —',
-				'a missing or invalid token reads as “not subscribed”, not 401. Nothing is persisted:',
-				'the role IS the subscription, so revoking it revokes this.',
+				'The caller’s Rec Room Plus subscription. Nothing sells subscriptions here: Plus is',
+				'claimed on the website by proving a qualifying role in the community Discord, and',
+				'arrives as the token’s `rn.plus` claim. A token carrying it reports an active Gold',
+				'(`Level` 0) yearly (`Period` 1) subscription on `PlatformType` -1 (All), expiring a',
+				'year from the call; every other caller gets `{}`. The `developer` role does NOT',
+				'confer it. Auth is optional — a missing or invalid token reads as “not subscribed”,',
+				'not 401. The subscription itself is not persisted, and because the claim is stamped',
+				'at login, a player who has just claimed must sign in again before it appears.',
 			].join(' '),
 			responses: {
 				200: json(SubscriptionResponse, 'The subscription, or `{}` for no subscription'),
@@ -3412,7 +4114,7 @@ const app = new Hono<App>({ strict: false })
 			const id = await authedId(c)
 			if (id === null) return c.json({})
 			return c.json({
-				Subscription: developerSubscription(id),
+				Subscription: plusSubscription(id),
 				PlatformAccountSubscribedPlayerId: null,
 			})
 		}

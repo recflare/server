@@ -119,12 +119,14 @@ export const SuccessErrorEnvelope = z.object({
 
 // ---- Config ----------------------------------------------------------------
 
-/** `GET /api/config/v1/amplitude` — analytics keys (all disabled on this server). */
+/** `GET /api/config/v1/amplitude` — the client's analytics keys (blank; RudderStack and StatSig off). */
 export const AmplitudeConfig = z.object({
 	AmplitudeKey: z.string(),
-	StatSigKey: z.string(),
-	RudderStackKey: z.string(),
 	UseRudderStack: z.boolean(),
+	RudderStackKey: z.string(),
+	UseStatSig: z.boolean(),
+	StatSigKey: z.string(),
+	StatSigEnvironment: z.number().int(),
 })
 
 /** `GET /api/config/v1/azurespeech` — speech-to-text config; `Enabled` is false here. */
@@ -420,6 +422,10 @@ export const InventionVersionDto = z.object({
 	ChipsCost: z.int(),
 	CloudVariablesCost: z.int(),
 	AICost: z.int(),
+	HasBetaContent: z
+		.boolean()
+		.optional()
+		.describe('Set from `v9/save` on — absent on a version saved through `v6/save`'),
 })
 
 /** A tag on an invention. `Type` 0 = custom (creator-submitted), 2 = auto-derived. */
@@ -456,10 +462,30 @@ export const InventionDto = z.object({
 	AllowTrial: z.boolean(),
 	HideFromPlayer: z.boolean(),
 	ReferencedInventions: z.array(z.int()),
+	ReferencedUnityAssetIds: z
+		.array(z.string())
+		.optional()
+		.describe('Set from `v9/save` on — absent on an invention saved through `v6/save`'),
+	UgcVersion: z
+		.int()
+		.optional()
+		.describe('An invention field, not a version one — set from `v9/save` on'),
+	LongDescription: z.string().optional().describe('Set from `v9/save` on, when non-empty'),
+	DisplayMetadataJson: z
+		.string()
+		.optional()
+		.describe('The client’s own display state, stored as the opaque string it sent'),
+	ConvertedFromInventionId: z
+		.int()
+		.optional()
+		.describe('The invention this one was converted from, when `v9/save` named one'),
 	Tags: z
 		.array(InventionTagDto)
 		.optional()
-		.describe('Unset on save — the real RRInvention carries no Tags field'),
+		.describe(
+			'The real RRInvention carries no Tags field. Unset by `v6/save`; set by `v9/save` ' +
+				'when its `tagsRequest` names at least one tag'
+		),
 })
 
 /** The `{ Status, Invention, InventionVersion }` envelope every invention write answers. */
@@ -467,6 +493,88 @@ export const InventionSaveResult = z.object({
 	Status: z.int().describe('0 = success'),
 	Invention: InventionDto,
 	InventionVersion: InventionVersionDto,
+})
+
+/**
+ * The `Invention` a v9 save answers with — the newer client's own `RRInvention`, which is
+ * not the record this server stores or the read endpoints serve: no nested
+ * `CurrentVersion` (the version rides beside it), no `Referenced*` (those moved onto the
+ * version), no `IsPublished`.
+ */
+export const InventionV9Dto = z.object({
+	InventionId: z.int(),
+	ReplicationId: z.string(),
+	CreatorPlayerId: z.int(),
+	Name: z.string(),
+	Description: z.string(),
+	ImageName: z.string(),
+	UgcVersion: z.int().describe('The UGC format the blob was written in; 0 when unsent'),
+	CurrentVersionNumber: z.int(),
+	LatestVersionNumber: z.int().describe('The same as CurrentVersionNumber on a fresh save'),
+	Accessibility: z.int(),
+	ForceCannotPublish: z.boolean().describe('Always false — nothing here forbids publishing'),
+	ModifiedAt: z.string(),
+	CreatedAt: z.string(),
+	FirstPublishedAt: z.string().nullable(),
+	CreationRoomId: z.int().nullable(),
+	NumPlayersHaveUsedInRoom: z.int(),
+	NumDownloads: z.int(),
+	CheerCount: z.int(),
+	CreatorPermission: z.int(),
+	GeneralPermission: z.int(),
+	IsAGInvention: z.boolean(),
+	IsCertifiedInvention: z.boolean(),
+	IsRecRoomApproved: z.boolean().describe('Always false — nothing here approves an invention'),
+	AllowTrial: z.boolean(),
+	Price: z.int().nullable(),
+	HideFromPlayer: z.boolean(),
+	DisplayMetadataJson: z.string().nullable(),
+})
+
+/**
+ * The `InventionVersion` a v9 save answers with. It carries `HasBetaContent`, a `CreatedAt`
+ * of its own and a nullable `UgcAccessibility`, and notably no `AICost` — which the request
+ * still sends and this server still stores.
+ */
+export const InventionVersionV9Dto = z.object({
+	InventionId: z.int(),
+	ReplicationId: z.string(),
+	VersionNumber: z.int(),
+	HasBetaContent: z.boolean(),
+	InstantiationCost: z.int(),
+	LightsCost: z.int(),
+	ChipsCost: z.int(),
+	CloudVariablesCost: z.int(),
+	BlobName: z.string(),
+	BlobHash: z.string().nullable(),
+	CreatedAt: z.string(),
+	UgcAccessibility: z.int().nullable().describe('Always null — versions carry no accessibility'),
+	ReferencedInventions: z.array(z.int()),
+	ReferencedUnityAssetIds: z.array(z.string()),
+})
+
+/**
+ * What `v9/save` answers — the enveloped result. The client checks `Success` and then reads
+ * `Value.Invention.InventionId`; `Error` is the only text it shows a human, and `Status`,
+ * `InventionVersion` and `TagsResponse` are deserialized and never read. `Success: true`
+ * with a null `Value` crashes it, so a refusal is `Success: false` with `Value: null`.
+ */
+export const InventionSaveV9Result = z.object({
+	Value: z
+		.object({
+			Status: z.int().describe('0 = success; the client never reads it on this route'),
+			Invention: InventionV9Dto,
+			InventionVersion: InventionVersionV9Dto,
+			TagsResponse: z.object({
+				Result: z.int().describe('0 = success; non-zero when a tag broke the tag rule'),
+				Tags: z.array(z.string()).describe('The stored tag NAMES, auto first, then custom'),
+			}),
+		})
+		.nullable()
+		.describe('Null when Success is false — and only then'),
+	Success: z.boolean(),
+	Error: z.string().nullable().describe('The refusal message; the only text the client shows'),
+	error_id: z.string().nullable().describe('Always null'),
 })
 
 /** The tag filter chips on a browse screen, derived from the tags actually in use. */
@@ -506,6 +614,76 @@ export const SetTagsResponse = z.object({
 	Tags: z.array(z.string()).describe('Auto tags first, then custom'),
 })
 
+/**
+ * `PUT /api/inventions/v2/metadata` JSON body — PascalCase, and every field but the id is
+ * NULLABLE: the newer client sends the whole shape on every edit and marks the fields it
+ * isn't touching as null. An empty string is not a null — it clears the field.
+ */
+export const UpdateInventionMetadataRequest = z.object({
+	InventionId: z.int(),
+	Name: z
+		.string()
+		.nullable()
+		.optional()
+		.describe('3–24 chars, letters/digits/spaces/dashes/colons; null leaves it alone'),
+	Description: z.string().nullable().optional().describe('Max 512 chars; empty clears it'),
+	LongDescription: z.string().nullable().optional().describe('Empty clears it'),
+	ImageName: z.string().nullable().optional().describe('New thumbnail; empty clears it'),
+	TagsRequest: z
+		.object({
+			AutoTags: z.array(z.string()).nullable().optional(),
+			CustomTags: z.array(z.string()).nullable().optional(),
+		})
+		.nullable()
+		.optional()
+		.describe('Replaces both lists wholesale, as `v1/settags` does; null leaves them alone'),
+})
+
+/**
+ * `POST /api/inventions/v4/publish` JSON body — PascalCase, and nullable the way
+ * `v2/metadata`'s is: a null field keeps what the invention already has.
+ */
+export const PublishInventionRequest = z.object({
+	InventionId: z.int(),
+	Permission: z
+		.int()
+		.nullable()
+		.optional()
+		.describe(
+			'The `GeneralPermission` other players get, as a raw ladder number: Unassigned 0, ' +
+				'LimitedOneUseOnly 10, DisallowKeyLock 15, UseOnly 20, EditAndSave 40, Publish 60, ' +
+				'Charge 80, Unlimited 100. Null publishes as UseOnly'
+		),
+	Accessibility: z
+		.int()
+		.nullable()
+		.optional()
+		.describe('Private 0, Public 1, Unlisted 2. Unlisted stays out of browse and search'),
+	Price: z
+		.int()
+		.nullable()
+		.optional()
+		.describe('Price in tokens; null leaves it as it is, and a negative one is ignored'),
+})
+
+/** `POST /api/inventions/v2/delete` JSON body — the id and nothing else. */
+export const DeleteInventionRequest = z.object({
+	InventionId: z.int().describe('The invention to delete; the caller must have created it'),
+})
+
+/**
+ * What `v2/delete` answers — the same `{ Value, Success, Error, error_id }` envelope the
+ * other newer-client invention routes use, with `Value` always null. The invention is
+ * gone, so there is nothing for the client to redraw from: it reads `Success`, and
+ * `Error` when that is false.
+ */
+export const InventionDeleteResult = z.object({
+	Value: z.null().describe('Always null — the invention no longer exists'),
+	Success: z.boolean(),
+	Error: z.string().nullable().describe('The refusal message; null on success'),
+	error_id: z.string().nullable().describe('Always null'),
+})
+
 /** `POST /api/inventions/v1/updateprice` JSON body. */
 export const UpdatePriceRequest = z.object({
 	InventionId: z.int(),
@@ -533,6 +711,34 @@ export const SaveInventionRequest = z.object({
 	aiCost: z.int().optional(),
 	creationRoomId: z.int().optional(),
 	referencedInventions: z.array(z.int()).optional(),
+	creatorAccountRole: z
+		.int()
+		.optional()
+		.describe('Accepted and ignored — a room role, not a permission over the invention'),
+})
+
+/**
+ * `POST /api/inventions/v9/save` JSON body — `v6`’s fields plus what the invention
+ * points at, what it says about itself, and the tags that used to need a second
+ * `v1/settags` call.
+ */
+export const SaveInventionV9Request = SaveInventionRequest.extend({
+	ugcVersion: z.int().optional().describe('The UGC format the blob was written in'),
+	hasBetaContent: z.boolean().optional(),
+	referencedUnityAssetIds: z.array(z.string()).optional(),
+	longDescription: z.string().optional().describe('Stored when non-empty'),
+	displayMetadataJson: z
+		.string()
+		.optional()
+		.describe('Opaque client display state, e.g. `{"0":0,"99":0}`; stored verbatim'),
+	convertedFromInventionId: z.int().nullable().optional(),
+	tagsRequest: z
+		.object({
+			AutoTags: z.array(z.string()).nullable().optional(),
+			CustomTags: z.array(z.string()).nullable().optional(),
+		})
+		.optional()
+		.describe('The same two lists `v1/settags` takes, folded into the save'),
 })
 
 // ---- Avatar / custom avatar items ------------------------------------------
@@ -577,7 +783,7 @@ export const BulkCustomAvatarItemsRequest = z.object({
 		.describe('The ids to resolve; repeat the field once per id'),
 })
 
-/** A paginated custom-avatar-item page (no storage yet, so always empty). */
+/** A paginated custom-avatar-item page, out of the `custom_avatar_item` table. */
 export const CustomAvatarItemsPage = z.object({
 	Results: CustomAvatarItemList,
 	TotalResults: z.int(),
@@ -972,6 +1178,24 @@ export const PlayerEventReportRequest = z.object({
  * body: it's the bearer token's player, and neither is the invention's creator, who is
  * read from the invention.
  */
+/**
+ * `POST /api/customAvatarItems/v1/{id}/report` JSON body. The item is named by the PATH, not
+ * the body, and `ReportedPlayerId` arrives NULL — the client does not know who made the item,
+ * so the creator is read off the item instead.
+ */
+export const CustomAvatarItemReportRequest = z.object({
+	ReportCategory: z
+		.int()
+		.optional()
+		.describe('The reason picked in the report UI. Stored verbatim; unmapped'),
+	Details: z.string().optional().describe('The free-text description the reporter typed'),
+	ReportedPlayerId: z
+		.int()
+		.nullable()
+		.optional()
+		.describe('Sent as null and IGNORED — the reported player is the item’s creator'),
+})
+
 export const InventionReportRequest = z.object({
 	InventionId: z.int().describe('The invention being reported'),
 	ReportCategory: z
@@ -1018,24 +1242,62 @@ export const VoteToKickReason = z.object({
 })
 
 /**
- * `GET|POST /api/PlayerReporting/v1/moderationBlockDetails` — always the "not blocked"
- * answer (no ban storage yet), mirroring the reference server's stub
- * `ReturnModerationBlockDetails()`. `ReportCategory` is `Unknown` (-1) rather than 0,
- * which is a real category, and `Message` is null — the client distinguishes "no
- * message" from a blank one, so we send null where the reference sends an empty string.
- * `IsVoiceModAutoban`/`TimeoutStartedAt` are on the DTO but unset by that stub, so
- * they carry their C# defaults (false / null).
+ * `GET|POST /api/PlayerReporting/v1/moderationBlockDetails` — the caller's block. With an
+ * account-wide ban in force (a `report` row with `banned` set) it describes that ban:
+ * `IsBan` true, the report's `ReportCategory`, a fixed `Message` of "Rule violation", and
+ * its span as `TimeoutStartedAt` (the report's `created_at`) plus `Duration` (seconds to
+ * `ban_expires`; int32 max for a permanent ban). Otherwise it is the "not blocked" answer, mirroring the reference server's stub `ReturnModerationBlockDetails()`:
+ * `ReportCategory` is `Unknown` (-1) rather than 0, which is a real category, and
+ * `Message` is null — the client distinguishes "no message" from a blank one, so we send
+ * null where the reference sends an empty string. `IsVoiceModAutoban`/`TimeoutStartedAt`
+ * are on the DTO but unset by that stub, so they carry their C# defaults (false / null).
+ *
+ * Sixteen keys on the wire — every one the 2025 client's `ModerationBlockDetail` formatter
+ * reads. The seven past the stub's nine (`IsDeviceBan` … `BottomMessageOverride`) are
+ * block kinds and screen dressings this server never hands out, so they always carry their
+ * "none" value; they are sent so a decoder that wants the key present finds it.
  */
 export const ModerationBlockDetails = z.object({
-	ReportCategory: z.int().describe('-1 = ReportCategory.Unknown (0 is a real category)'),
-	Duration: z.int(),
+	ReportCategory: z
+		.int()
+		.describe(
+			'The category the ban’s report was filed under; -1 = ReportCategory.Unknown when not blocked (0 is a real category)'
+		),
+	Duration: z
+		.int()
+		.describe(
+			'Length of the block in seconds from `TimeoutStartedAt`; 2147483647 (int32 max) for a permanent ban; 0 when not blocked'
+		),
 	GameSessionId: z.int(),
-	IsBan: z.boolean(),
-	IsHostKick: z.boolean(),
-	IsVoiceModAutoban: z.boolean(),
-	Message: z.string().nullable(),
-	PlayerIdReporter: z.int().nullable(),
-	TimeoutStartedAt: z.string().nullable(),
+	IsHostKick: z.boolean().describe('Always false — no host kick is ever recorded here'),
+	Message: z.string().nullable().describe('“Rule violation” on a ban; null when not blocked'),
+	PlayerIdReporter: z
+		.int()
+		.nullable()
+		.describe('Always null — the reporter is not shown to the reported'),
+	IsBan: z.boolean().describe('True when an account-wide ban is in force'),
+	IsVoiceModAutoban: z.boolean().describe('Always false'),
+	IsDeviceBan: z.boolean().describe('Always false — bans here are account-wide, not per device'),
+	IsWarning: z
+		.boolean()
+		.describe('Always false — warnings are delivered as notifications, not here'),
+	VoteKickReason: z.string().nullable().describe('Always null — no vote-kick is recorded here'),
+	TimeoutStartedAt: z
+		.string()
+		.nullable()
+		.describe(
+			'When the block began — the ban’s report `created_at` (ISO-8601 UTC); `Duration` runs from it. Null when not blocked'
+		),
+	AssociatedAccountUsername: z.string().nullable().describe('Always null'),
+	ShowCreatorCodeOfConduct: z.boolean().describe('Always false'),
+	TopMessageOverride: z
+		.string()
+		.nullable()
+		.describe('Always null — the client’s default block-screen text stands'),
+	BottomMessageOverride: z
+		.string()
+		.nullable()
+		.describe('Always null — the client’s default block-screen text stands'),
 })
 
 /**
@@ -1078,6 +1340,33 @@ export const CreateWarningRequest = z.object({
 		.optional()
 		.describe('What the warned player is shown, e.g. `Sexual gestures`'),
 	ModeratorNote: z.string().optional().describe('Internal note; never shown to the player'),
+})
+
+/**
+ * `POST /api/PlayerReporting/v3/voteToKick` form body — a player calling a vote on
+ * another. Everything is a string on the wire (it's form-encoded). `Reason` is one of the
+ * labels `GET /api/PlayerReporting/v1/voteToKickReasons` serves; the voter is NOT in the
+ * body — it's the bearer token's subject.
+ */
+export const VoteToKickRequest = z.object({
+	PlayerId: z.string().describe('Account id of the player being voted on'),
+	Response: z.string().describe('The caller’s own vote, e.g. `True`'),
+	Reason: z
+		.string()
+		.optional()
+		.describe('A `voteToKickReasons` label, e.g. `Inactive in games (AFK)`'),
+	GameSessionId: z.string().describe('The room instance both players are standing in'),
+})
+
+/**
+ * `POST /api/PlayerReporting/v1/instantKick` JSON body — the players a room's staff are
+ * ejecting from one live instance. JSON, not a form, unlike its neighbours in this
+ * controller. `GameSessionId` is the room INSTANCE id (`roomInstanceId`); the kick is
+ * scoped to it, so a player named here who is standing somewhere else is left alone.
+ */
+export const InstantKickRequest = z.object({
+	GameSessionId: z.int().describe('The room instance (game session) to eject them from'),
+	PlayerIds: z.array(z.int()).describe('Account ids to kick out of that instance'),
 })
 
 /** `POST /api/PlayerReporting/v1/deviceId` form body — the id rotation the client reports. */

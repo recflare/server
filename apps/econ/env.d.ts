@@ -10,3 +10,11 @@ declare namespace Cloudflare {
 		mainModule: MainModule
 	}
 }
+
+// Vite serves a `?raw` import as the file's text. Used by the tests to read the generated
+// catalog migration as a STRING and diff it against the captures it was generated from —
+// it is counted, never executed.
+declare module '*.sql?raw' {
+	const content: string
+	export default content
+}

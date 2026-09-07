@@ -67,6 +67,37 @@
 			"binding": "TURNSTILE_SECRET_KEY",
 			"store_id": "108d4951c92b427a92cf6ef643d14626",
 			"secret_name": "TURNSTILE_SECRET_KEY"
+		},
+		// The shared HS256 signing key, bound here for the ONE www route that acts on a
+		// specific account: the benefits claim writes `hasPlus` onto the caller's row, so it
+		// has to verify which account is calling rather than trust the SPA.
+		{
+			"binding": "JWT_SECRET",
+			"store_id": "local",
+			"secret_name": "JWT_SECRET"
+		},
+		// The Discord OAuth2 application behind the benefits claim. Same store, same
+		// public-key-beside-its-secret arrangement as the Turnstile pair: the client id
+		// ships to the browser to build the authorize URL, the secret never leaves the
+		// worker (see src/discord.ts).
+		//
+		//   wrangler secrets-store secret create <store-id> --name DISCORD_CLIENT_ID \
+		//     --scopes workers --remote
+		//   wrangler secrets-store secret create <store-id> --name DISCORD_CLIENT_SECRET \
+		//     --scopes workers --remote
+		//
+		// These two PLUS the DISCORD_GUILD_ID / DISCORD_BENEFITS_ROLE_IDS vars below are what
+		// OPENS the claim; with any of the four missing it stays closed, so an operator who
+		// skips this gets no claim rather than one that grants Plus without checking.
+		{
+			"binding": "DISCORD_CLIENT_ID",
+			"store_id": "local",
+			"secret_name": "DISCORD_CLIENT_ID"
+		},
+		{
+			"binding": "DISCORD_CLIENT_SECRET",
+			"store_id": "local",
+			"secret_name": "DISCORD_CLIENT_SECRET"
 		}
 	],
 	// The `auth` worker, reached directly instead of over its public hostname. This is
@@ -99,5 +130,9 @@
 		// is how one client build works for any operator. For local dev, point it at a
 		// deployed domain so the page has real workers to call.
 		"DOMAIN": "rugnetarchival.xyz"
+         // Discord benefits are disabled for this private deployment.
+         "DISCORD_GUILD_ID": "",
+         "DISCORD_BENEFITS_ROLE_IDS": ""
+ e0f802cee5db61f6e278c204f6ecf6d98cca9ce0
 	}
 }

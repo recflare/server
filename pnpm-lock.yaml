@@ -1243,6 +1243,9 @@ importers:
       '@repo/hono-helpers':
         specifier: workspace:*
         version: link:../../packages/hono-helpers
+      '@repo/jwt':
+        specifier: workspace:*
+        version: link:../../packages/jwt
       '@scalar/api-reference':
         specifier: 1.63.0
         version: 1.63.0(tailwindcss@4.3.3)(typescript@6.0.3)(zod@4.4.3)

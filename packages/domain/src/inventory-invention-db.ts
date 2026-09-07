@@ -1,7 +1,7 @@
 /**
  * Owned inventions on the shared `recflare` D1 database — the inventions a player has
  * bought. One row per (account, invention), written at purchase time by the `econ`
- * worker's `GET /api/storefronts/v2/buyInvention`.
+ * worker's buyInvention — the `v2` GET and the `v3` POST, which share one settlement.
  *
  * Only the invention id is stored: the invention record itself lives in the `invention`
  * table, whose schema the `api` worker owns (apps/api/migrations/0002_invention.sql) on

@@ -18,6 +18,7 @@
 	"dependencies": {
 		"@repo/domain": "workspace:*",
 		"@repo/hono-helpers": "workspace:*",
+		"@repo/jwt": "workspace:*",
 		"@scalar/api-reference": "1.63.0",
 		"hono": "4.12.27",
 		"react": "19.2.7",

@@ -1,0 +1,26 @@
+-- Reporting a CUSTOM AVATAR ITEM (`POST /api/customAvatarItems/v1/{id}/report`) reuses the
+-- report table, exactly as the event and invention reports beside it do: same fields, same
+-- moderation life — a moderator acting on one sets `banned` on the row as they would for a
+-- player report. Generated from src/reports-db.ts (SCHEMA_DDL) — keep in sync.
+--
+-- `custom_avatar_item_id` names the reported item. TEXT, not INTEGER, because a custom
+-- avatar item is keyed by a GUID (`aeef6bfa-09b1-4859-a77c-47a6e7523543`) where an event and
+-- an invention are keyed by a number — the three columns are the same idea in three key
+-- types, which is why they are three columns rather than one polymorphic id.
+--
+-- NULL on every other kind of report. It joins `event_id` and `invention_id`, and all three
+-- are mutually exclusive: a row names an event, an invention, an item, or none of them (an
+-- ordinary player report), which is what tells the kinds apart.
+--
+-- The row's `reported_player_id` is the item's CREATOR, read from the item rather than sent
+-- by the client. The client sends `ReportedPlayerId: null` on this route — it does not know
+-- who made the item — and the column is NOT NULL, so deriving it is the only way to fill it,
+-- and "who is answerable for this item" is the only honest answer anyway.
+--
+-- No `room_id`: an item is not tied to one room the way an event is.
+--
+-- NOT indexed, for the same reason 0016 gave and then dropped 0011's index over `event_id`:
+-- it is written on every report of this kind and read by nothing. Every moderation read goes
+-- by player (`idx_report_reported`) or by the ban flag. Add an index with the query needing it.
+
+ALTER TABLE report ADD COLUMN custom_avatar_item_id TEXT;

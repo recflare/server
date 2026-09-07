@@ -227,6 +227,32 @@ export const gameplayRoutes = new Hono<App>({ strict: false })
 		}),
 		(c) => c.json(communityBoard)
 	)
+	// Circuit chip lists — the palettes the Maker Pen's circuit board groups its chips into
+	// (`/api/CircuitChipLists/Favorites`, `/api/CircuitChipLists/Recent`, and so on). The path
+	// segment names the list; nothing here records which chips a player has used or favourited,
+	// so every one of them is empty.
+	//
+	// EMPTY rather than 404 for a name this server doesn't know: the client asks for whichever
+	// palettes its build has, and an unknown one is a palette this server has no opinion about
+	// rather than an error — a 404 shows as a palette that failed to load, where an empty list
+	// shows as one with nothing in it, which is the truth for all of them.
+	.get(
+		'/api/CircuitChipLists/:list',
+		describeRoute({
+			tags: ['Gameplay'],
+			summary: 'One circuit chip list',
+			description:
+				'A palette on the Maker Pen’s circuit board, named by the path (`Favorites`, ' +
+				'`Recent`, …). Always empty: nothing records which chips a player has used or ' +
+				'favourited yet. An unknown name is empty too rather than a 404 — the client asks ' +
+				'for whichever palettes its build has, and a 404 renders as a palette that failed ' +
+				'to load rather than one with nothing in it.',
+			parameters: [stringParam('list', 'The palette name, e.g. `Favorites`')],
+			responses: { 200: json(JsonArray, 'An empty list') },
+		}),
+		(c) => c.json([])
+	)
+
 	// Player events live in their own controller (routes/events.ts) — they're D1-backed
 	// now, unlike the stubs around them here.
 	.get(

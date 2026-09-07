@@ -7,35 +7,38 @@
  * what a player submitted: the table is a log of exactly what was reported.
  *
  * The `api` worker owns this schema/migration (migrations/0004_report.sql,
- * 0009_report_ban.sql, 0011_report_event.sql and 0016_report_invention.sql, applied under
- * its own `migrations_table` so it doesn't clash with the other workers' migrations that
- * share the database).
+ * 0009_report_ban.sql, 0011_report_event.sql, 0016_report_invention.sql and
+ * 0017_report_custom_avatar_item.sql, applied under its own `migrations_table` so it
+ * doesn't clash with the other workers' migrations that share the database).
  *
- * A reported player EVENT or INVENTION lands here too, rather than in a table of its own:
- * same fields, same moderation life. Such a row carries `event_id` or `invention_id`, and
- * its `reported_player_id` is that thing's CREATOR — see
- * `POST /api/playerevents/v1/report` and `POST /api/inventions/v1/report`. The two id
- * columns are mutually exclusive; a row with neither is an ordinary player report.
+ * A reported player EVENT, INVENTION or CUSTOM AVATAR ITEM lands here too, rather than in a
+ * table of its own: same fields, same moderation life. Such a row carries `event_id`,
+ * `invention_id` or `custom_avatar_item_id`, and its `reported_player_id` is that thing's
+ * CREATOR — see `POST /api/playerevents/v1/report`, `POST /api/inventions/v1/report` and
+ * `POST /api/customAvatarItems/v1/{id}/report`. The three id columns are mutually exclusive;
+ * a row with none of them is an ordinary player report. They are three columns rather than
+ * one polymorphic id because the keys differ in TYPE: two numbers and a guid.
  *
  * A report is also where an ACCOUNT-WIDE ban lives: acting on a report sets `banned`
- * on that same row (see `banFromReport`), so the ban carries the evidence for it. Two
- * workers read it — `match` refuses every matchmake for a banned player, and `auth`
- * refuses to issue them a token at all — both via `isPlayerBanned`. This is distinct
- * from the per-room `room_ban` table the rooms worker owns: that one keeps a player
- * out of ONE room, this one out of the game.
- *
- * `/api/PlayerReporting/v1/moderationBlockDetails` is NOT wired to it yet and still
- * answers "not blocked" unconditionally.
+ * on that same row (see `banFromReport`), so the ban carries the evidence for it. It is
+ * ENFORCED by `match`, which refuses every matchmake for a banned player, and DESCRIBED
+ * by `/api/PlayerReporting/v1/moderationBlockDetails`, which tells the banned player why
+ * (via `getActiveBan`). `auth` still issues a banned account a token — that is what lets
+ * the client reach the block screen — and reads this table only for ban EVASION (an
+ * account sharing a device or network with a banned one; see bans-db). This is distinct
+ * from the per-room `room_ban` table the rooms worker owns: that one keeps a player out
+ * of ONE room, this one out of the game.
  */
 
 /**
  * Schema DDL (mirror of migrations/0004_report.sql + 0009_report_ban.sql +
- * 0011_report_event.sql + 0016_report_invention.sql).
+ * 0011_report_event.sql + 0016_report_invention.sql + 0017_report_custom_avatar_item.sql).
  *
- * Neither `event_id` nor `invention_id` is indexed: both are written on every report of
- * their kind and read by nothing — no query here filters on either, and the reads that do
- * exist go by player or by the ban flag. 0011's partial index over `event_id` was dropped
- * in 0016 rather than mirrored. Add one back alongside the query that needs it.
+ * None of `event_id`, `invention_id` or `custom_avatar_item_id` is indexed: each is written
+ * on every report of its kind and read by nothing — no query here filters on any of them,
+ * and the reads that do exist go by player or by the ban flag. 0011's partial index over
+ * `event_id` was dropped in 0016 rather than mirrored. Add one back alongside the query that
+ * needs it.
  */
 export const SCHEMA_DDL: string[] = [
 	`CREATE TABLE IF NOT EXISTS report (
@@ -52,7 +55,8 @@ export const SCHEMA_DDL: string[] = [
 		banned INTEGER NOT NULL DEFAULT 0,
 		ban_expires TEXT,
 		event_id INTEGER,
-		invention_id INTEGER
+		invention_id INTEGER,
+		custom_avatar_item_id TEXT
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_report_reported ON report (reported_player_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_report_reporter ON report (reporter_player_id)`,
@@ -90,6 +94,15 @@ export interface ReportRow {
 	 * invention isn't tied to one room the way an event is.
 	 */
 	invention_id: number | null
+	/**
+	 * The custom avatar item this report is against, or NULL for any other kind — mutually
+	 * exclusive with the two above. TEXT because such an item is keyed by a GUID where an
+	 * event and an invention are keyed by numbers. See
+	 * `POST /api/customAvatarItems/v1/{id}/report`: `reported_player_id` is the item's
+	 * creator, read from the item, because the client sends `ReportedPlayerId: null` here —
+	 * it does not know who made it.
+	 */
+	custom_avatar_item_id: string | null
 }
 
 /**
@@ -111,6 +124,8 @@ export interface NewReport {
 	eventId?: number | null
 	/** Set only when reporting an INVENTION; never set alongside `eventId`. */
 	inventionId?: number | null
+	/** Set only when reporting a CUSTOM AVATAR ITEM; never set alongside the two above. */
+	customAvatarItemId?: string | null
 }
 
 /** Record a submitted report, returning the stored row (with its assigned id). */
@@ -120,8 +135,8 @@ export async function createReport(db: D1Database, input: NewReport): Promise<Re
 			`INSERT INTO report (
 				reporter_player_id, reported_player_id, report_category, details,
 				height_reporter, height_reported, room_id, room_instance_type, created_at,
-				event_id, invention_id
-			 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+				event_id, invention_id, custom_avatar_item_id
+			 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
 			 RETURNING *`
 		)
 		.bind(
@@ -135,7 +150,8 @@ export async function createReport(db: D1Database, input: NewReport): Promise<Re
 			input.roomInstanceType ?? null,
 			new Date().toISOString(),
 			input.eventId ?? null,
-			input.inventionId ?? null
+			input.inventionId ?? null,
+			input.customAvatarItemId ?? null
 		)
 		.first<ReportRow>()
 	// RETURNING always yields the inserted row; the non-null assert keeps the caller
@@ -183,9 +199,9 @@ export async function getActiveBan(
 }
 
 /**
- * Whether a player is banned right now. The hot-path form of `getActiveBan` — `match`
- * calls it on every matchmake and `auth` on every token grant, and neither has anything
- * to say about WHICH report did it.
+ * Whether a player is banned right now. The hot-path form of `getActiveBan`, for a caller
+ * that has nothing to say about WHICH report did it. `moderationBlockDetails` is the
+ * caller that does, and reads `getActiveBan` itself.
  */
 export async function isPlayerBanned(
 	db: D1Database,

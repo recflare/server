@@ -76,7 +76,7 @@ function unauthorized(c: Context<App>) {
 }
 
 /** Username changes a fresh account starts with (until one has been consumed). */
-const DEFAULT_USERNAME_CHANGES = 1
+const DEFAULT_USERNAME_CHANGES = 3
 
 /**
  * Username-change result envelope: `{ success, error, value }`, always HTTP 200.
@@ -403,7 +403,7 @@ const app = new Hono<App>()
 		async (c) => {
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
-			return c.json({ accountId: id, disallowInAppPurchases: false })
+			return c.json({ accountId: id, disallowInAppPurchases: true })
 		}
 	)
 

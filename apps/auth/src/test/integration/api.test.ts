@@ -21,7 +21,9 @@ import {
 	createReport,
 	SCHEMA_DDL as REPORTS_SCHEMA_DDL,
 } from '../../../../api/src/reports-db'
+import { PlatformType } from '../../openapi'
 import {
+	countAccountsForPlatformIdentity,
 	getLinksForAccount,
 	linkPlatformIdentity,
 	PLATFORM_BACKFILL_SQL,
@@ -87,8 +89,8 @@ beforeAll(async () => {
 		IsDorm: false,
 		SubRooms: [{ SubRoomId: 23, UnitySceneId: ORIENTATION_SCENE, MaxPlayers: 1 }],
 	})
-	// Report table (owned by the api worker) — a banned account is refused a token, and
-	// a ban is a report row with `banned` set.
+	// Report table (owned by the api worker) — a ban is a report row with `banned` set;
+	// the token grant reads it for the evasion arms.
 	for (const stmt of REPORTS_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 })
 
@@ -421,6 +423,52 @@ describe('auth worker routes', () => {
 		])
 	})
 
+	// A Discord link is an external identity, not a credential — `www`'s benefits claim
+	// writes one so a claimed Discord user can't claim again on a second account. It must
+	// stay invisible to BOTH picker routes, for two independent reasons:
+	//
+	//  - Every entry the picker lists is promised to be redeemable by a `cached_login`
+	//    grant, and that grant refuses platform 101 outright (verifyPlatformProof answers
+	//    `unsupported`). Listing one offers the client an account it can never log into.
+	//  - These routes are PUBLIC and unauthenticated, and a Discord snowflake is readable by
+	//    anyone sharing a server with its owner. Answering here would turn the login picker
+	//    into a lookup from "Discord user" to "their RecFlare account", for every player who
+	//    ever claimed benefits.
+	//
+	// The bare-id route is checked too, and it is the easier one to miss: it matches on ANY
+	// platform, so it would resolve the snowflake even though naming 101 explicitly did not.
+	test('never lists a Discord link in either cached-login picker', async () => {
+		const discordId = '308994132968210433'
+		await env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
+			.bind(JSON.stringify({ accountId: 31399, username: 'DiscordClaimer', hasPlus: true }))
+			.run()
+		await linkPlatformIdentity(env.DB, 31399, PlatformType.Discord, discordId)
+
+		// Named explicitly…
+		const named = await exports.default.fetch(
+			`${ORIGIN}/cachedlogin/forplatformid/${PlatformType.Discord}/${discordId}`
+		)
+		expect(named.status).toBe(200)
+		expect(await named.json()).toEqual([])
+
+		// …and via the bare id, which matches across platforms.
+		const bare = await exports.default.fetch(`${ORIGIN}/cachedlogin/forplatformid/any/${discordId}`)
+		expect(await bare.json()).toEqual([])
+
+		// …and through the bulk friends-resolution route, which takes bare ids only.
+		const bulk = await exports.default.fetch(`${ORIGIN}/cachedlogin/forplatformids`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({ id: discordId }).toString(),
+		})
+		expect(await bulk.json()).toEqual([])
+
+		// The link is still really there — this is a filtered READ, not a failed write.
+		await expect(
+			countAccountsForPlatformIdentity(env.DB, PlatformType.Discord, discordId)
+		).resolves.toBe(1)
+	})
+
 	// The 20250424.01 build POSTs the picker lookup with a platform-attestation form body
 	// instead of GETting it. Nothing reads that body yet, so both methods must answer the
 	// same list — otherwise the newer client's login screen comes up empty.
@@ -577,6 +625,9 @@ describe('auth worker routes', () => {
 		expect(payload.role).not.toContain('junior')
 		// No privileges to carry, so the claim is absent rather than an empty array.
 		expect(payload['rn.privilege']).toBeUndefined()
+		// Same for Plus: omitted rather than `false`, so a non-subscriber's token is
+		// byte-for-byte what it was before `rn.plus` existed.
+		expect(payload['rn.plus']).toBeUndefined()
 		expect(payload.scope).toContain('rn.api')
 	})
 
@@ -613,6 +664,64 @@ describe('auth worker routes', () => {
 			.run()
 		const payload = await tokenFor(`account_id=91&password=${LOGIN_PASSWORD}`)
 		expect(payload.role).toEqual(expect.arrayContaining(['gameClient', 'developer', 'moderator']))
+	})
+
+	// Rec Room Plus rides on the token as `rn.plus`, stamped from `account.hasPlus` — which
+	// the website's Discord benefits claim sets. `econ` decides the CampusCard and the
+	// subscriber discount from this claim ALONE and never reads the account, so if this
+	// stops being stamped, Plus silently stops existing for everyone.
+	//
+	// It is a CLAIM, not a scope: `scope` is a fixed list the client parses, and this is
+	// ours. And it is not a role — the `developer` role does not confer Plus.
+	test('POST /connect/token stamps rn.plus for a hasPlus account', async () => {
+		await env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
+			.bind(
+				JSON.stringify({
+					accountId: 93,
+					username: 'PlusPlayer',
+					passwordHash: await hashPassword(LOGIN_PASSWORD),
+					hasPlus: true,
+				})
+			)
+			.run()
+		const payload = await tokenFor(`account_id=93&password=${LOGIN_PASSWORD}`)
+		expect(payload['rn.plus']).toBe(true)
+		expect(payload.scope).not.toContain('rn.plus')
+		// Plus is not an elevated role, and does not come with one.
+		expect(payload.role).not.toContain('developer')
+	})
+
+	// The flag is read at LOGIN, so signing in again is what activates it — the website's
+	// claim page and `runx admin grant-plus` both say so, and this is the mechanism behind it.
+	//
+	// This also pins that `hasPlus` stands ALONE: the flag is set here by raw SQL, exactly as
+	// `runx admin grant-plus` sets it, with no Discord app configured, no OAuth exchange and
+	// no `platform_account` link anywhere. An operator must be able to grant Plus outright.
+	test('rn.plus refreshes on the next login after hasPlus is set, with no Discord link', async () => {
+		await env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
+			.bind(
+				JSON.stringify({
+					accountId: 94,
+					username: 'LateClaimer',
+					passwordHash: await hashPassword(LOGIN_PASSWORD),
+				})
+			)
+			.run()
+		// Before claiming: no Plus.
+		expect((await tokenFor(`account_id=94&password=${LOGIN_PASSWORD}`))['rn.plus']).toBeUndefined()
+
+		// The website's claim writes the flag…
+		await env.DB.prepare(
+			"UPDATE account SET data = json_set(data, '$.hasPlus', json('true')) WHERE account_id = 94"
+		).run()
+
+		// …and the NEXT token carries it. The one already in the player's hands does not,
+		// which is exactly why they have to sign in again.
+		expect((await tokenFor(`account_id=94&password=${LOGIN_PASSWORD}`))['rn.plus']).toBe(true)
+
+		// Nothing linked a Discord identity to this account, and Plus does not care.
+		const links = await getLinksForAccount(env.DB, 94)
+		expect(links.filter((l) => l.platform === PlatformType.Discord)).toEqual([])
 	})
 
 	test('POST /connect/token stamps the junior role for an isJunior account', async () => {
@@ -1327,38 +1436,35 @@ describe('CORS', () => {
 	})
 })
 
-// A banned account is refused a token at all — the outer wall of a ban, since with no
-// token every other worker is shut to it. The ban is a `report` row with `banned` set
-// (the api worker owns that table); matchmaking enforces the same ban on tokens issued
-// before it was handed down.
+// A banned account is still issued a token: the game client needs one to reach the api
+// worker's moderationBlockDetails, which is where the player is shown WHY they are
+// blocked. The ban is a `report` row with `banned` set (the api worker owns that table)
+// and is enforced by matchmaking, which refuses every matchmake for a banned player — so
+// the token gets them to the block screen and no further.
 describe('banned accounts', () => {
-	test('POST /connect/token refuses a password grant from a banned account', async () => {
+	test('POST /connect/token issues a token to a banned account', async () => {
 		await seedAccount(6101, 'BannedPlayer')
 		await banAccount(6101)
 
 		const res = await postToken(`account_id=6101&password=${LOGIN_PASSWORD}`)
-		expect(res.status).toBe(400)
-		expect(res.json.error).toBe('invalid_grant')
-		// The exact sentence www's shared auth-messages table keys on to put a real
-		// message in front of the player — changing it silently downgrades that to the
-		// generic "you could not be signed in".
-		expect(res.json.error_description).toBe('this account is banned')
+		expect(res.status).toBe(200)
+		expect(decodePayload(res.json.access_token as string).sub).toBe('6101')
 	})
 
-	test('POST /connect/token refuses a username login from a banned account', async () => {
+	test('POST /connect/token issues a token to a banned account logging in by username', async () => {
 		await seedAccount(6102, 'BannedByName')
 		await banAccount(6102)
 
 		const res = await postToken(
 			`grant_type=password&username=BannedByName&password=${LOGIN_PASSWORD}`
 		)
-		expect(res.status).toBe(400)
-		expect(res.json.error_description).toBe('this account is banned')
+		expect(res.status).toBe(200)
+		expect(decodePayload(res.json.access_token as string).sub).toBe('6102')
 	})
 
-	// A client that was already signed in when the ban landed still holds a valid refresh
-	// token; redeeming it must not renew the session.
-	test('POST /connect/token refuses to refresh a banned account’s session', async () => {
+	// A client that was already signed in when the ban landed refreshes as normal — its
+	// next matchmake is what refuses it, and moderationBlockDetails says why.
+	test('POST /connect/token refreshes a banned account’s session', async () => {
 		await seedAccount(6103, 'BannedLater')
 		const login = await postToken(`account_id=6103&password=${LOGIN_PASSWORD}`)
 		expect(login.status).toBe(200)
@@ -1368,13 +1474,12 @@ describe('banned accounts', () => {
 		const refreshed = await postToken(
 			`grant_type=refresh_token&refresh_token=${encodeURIComponent(refreshToken)}`
 		)
-		expect(refreshed.status).toBe(400)
-		expect(refreshed.json.error_description).toBe('this account is banned')
+		expect(refreshed.status).toBe(200)
+		expect(decodePayload(refreshed.json.access_token as string).sub).toBe('6103')
 	})
 
-	// The ban check runs AFTER the credential check, so a wrong password on a banned
-	// account still answers the ordinary bad-credential refusal — it can't be used to
-	// find out whether an account exists or is banned without knowing its password.
+	// A ban does not loosen the credential check: a wrong password on a banned account is
+	// the ordinary bad-credential refusal.
 	test('a wrong password on a banned account is still a credential refusal', async () => {
 		await seedAccount(6104, 'BannedWrongPw')
 		await banAccount(6104)
@@ -1384,23 +1489,13 @@ describe('banned accounts', () => {
 		expect(res.json.error_description).toBe('invalid account_id or password')
 	})
 
-	// A timed ban lifts itself when its expiry passes; nothing clears the flag.
-	test('an expired ban lets the account sign in again', async () => {
-		await seedAccount(6105, 'ServedTime')
-		await banAccount(6105, '2020-01-01T00:00:00.000Z')
-
-		const res = await postToken(`account_id=6105&password=${LOGIN_PASSWORD}`)
-		expect(res.status).toBe(200)
-		expect(decodePayload(res.json.access_token as string).sub).toBe('6105')
-	})
-
-	test('a ban that has not expired yet still refuses the login', async () => {
+	test('a ban that has not expired yet still issues a token', async () => {
 		await seedAccount(6106, 'StillServing')
 		await banAccount(6106, new Date(Date.now() + 3_600_000).toISOString())
 
 		const res = await postToken(`account_id=6106&password=${LOGIN_PASSWORD}`)
-		expect(res.status).toBe(400)
-		expect(res.json.error_description).toBe('this account is banned')
+		expect(res.status).toBe(200)
+		expect(decodePayload(res.json.access_token as string).sub).toBe('6106')
 	})
 
 	// A report is not a ban until a moderator converts it.
@@ -1425,8 +1520,10 @@ describe('banned accounts', () => {
 
 // The ban follows the player past the account it was written on: a login from an account
 // that shares a proven platform identity or an IP with a banned one is refused, and a
-// signup carrying either is refused before it mints anything. See the api worker's
-// bans-db.ts for the arms and the BAN_EVASION_MATCH knob.
+// signup carrying either is refused before it mints anything. Unlike the banned account
+// itself, such an account has no ban of its own for the block screen to describe, so
+// there is nothing to let it in for. See the api worker's bans-db.ts for the arms and
+// the BAN_EVASION_MATCH knob.
 describe('ban evasion at the token endpoint', () => {
 	/** Seed a loginable account carrying the IPs it signed up / last logged in from. */
 	const account = async (id: number, name: string, ips: Record<string, string> = {}) => {
@@ -1506,7 +1603,7 @@ describe('ban evasion at the token endpoint', () => {
 	})
 
 	// The knob an operator reaches for when the IP arm locks out real players.
-	test('BAN_EVASION_MATCH=platform drops the IP arm but keeps the direct ban', async () => {
+	test('BAN_EVASION_MATCH=platform drops the IP arm but keeps the platform one', async () => {
 		const original = env.BAN_EVASION_MATCH
 		await account(6320, 'KnobBanned', { signupIp: '203.0.113.50' })
 		await linkPlatformIdentity(env.DB, 6320, 0, 'steam-knobevader')
@@ -1524,10 +1621,9 @@ describe('ban evasion at the token endpoint', () => {
 
 			env.BAN_EVASION_MATCH = 'off'
 			expect((await login(6322)).status).toBe(200)
-			// The banned account itself is refused whatever the knob says.
-			const banned = await login(6320)
-			expect(banned.status).toBe(400)
-			expect(banned.json.error_description).toBe('this account is banned')
+			// The banned account itself signs in whatever the knob says — its ban is
+			// enforced at matchmake, and the knob only governs the linked arms.
+			expect((await login(6320)).status).toBe(200)
 		} finally {
 			env.BAN_EVASION_MATCH = original
 		}

@@ -1,10 +1,74 @@
 [
 	{
-		"id": "store-featured",
+		"id": "StoreItemCarousel_UnifiedAlgorithmicList_Headwear",
 		"sectionType": 4,
-		"sectionSubType": "StoreCategory_Featured",
-		"source": "CuratedList",
-		"sourceMetadata": "17859340",
-		"displayMetadata": "{\"DisplayTitle\":\"Featured\",\"itemCount\":20,\"cardStyle\":\"wide\",\"categoryUriNames\":\"featured,new\"}"
+		"sectionSubType": "Items_Headwear",
+		"source": "AlgorithmicList",
+		"sourceMetadata": "headwearitems",
+		"displayMetadata": "{\r\n    \"DisplayTitle\":\"Headwear\",\r\n    \"categoryDepth\":1,\r\n    \"categoryCarouselType\": 7,\r\n    \"categoryUriNames\": \"HatsItems\",\r\n    \"itemCount\": 5\r\n}"
+	},
+	{
+		"id": "StoreItemCarousel_UnifiedAlgorithmicList_Tops",
+		"sectionType": 4,
+		"sectionSubType": "Items_Tops",
+		"source": "AlgorithmicList",
+		"sourceMetadata": "topsitems",
+		"displayMetadata": "{\r\n    \"DisplayTitle\":\"Tops\",\r\n    \"categoryDepth\":1,\r\n    \"categoryCarouselType\": 8,\r\n    \"categoryUriNames\": \"TorsoItems\",\r\n    \"itemCount\": 5\r\n}"
+	},
+	{
+		"id": "StoreItemCarousel_UnifiedAlgorithmicList_Bottoms",
+		"sectionType": 4,
+		"sectionSubType": "Items_Bottoms",
+		"source": "AlgorithmicList",
+		"sourceMetadata": "bottomsitems",
+		"displayMetadata": "{\r\n    \"DisplayTitle\":\"Bottoms\",\r\n    \"categoryDepth\":1,\r\n    \"categoryCarouselType\": 17,\r\n    \"categoryUriNames\": \"BottomsItems\",\r\n    \"itemCount\": 5\r\n}"
+	},
+	{
+		"id": "StoreItemCarousel_UnifiedAlgorithmicList_Footwear",
+		"sectionType": 4,
+		"sectionSubType": "Items_Footwear",
+		"source": "AlgorithmicList",
+		"sourceMetadata": "footwearitems",
+		"displayMetadata": "{\r\n    \"DisplayTitle\":\"Footwear\",\r\n    \"categoryDepth\":1,\r\n    \"categoryCarouselType\": 18,\r\n    \"categoryUriNames\": \"ShoesItems\",\r\n    \"itemCount\": 5\r\n}"
+	},
+	{
+		"id": "StoreItemCarousel_UnifiedAlgorithmicList_Waist",
+		"sectionType": 4,
+		"sectionSubType": "Items_Waist",
+		"source": "AlgorithmicList",
+		"sourceMetadata": "waistitems",
+		"displayMetadata": "{\r\n    \"DisplayTitle\":\"Waist\",\r\n    \"categoryDepth\":1,\r\n    \"categoryCarouselType\": 23,\r\n    \"categoryUriNames\": \"WaistItems\",\r\n    \"itemCount\": 5\r\n}"
+	},
+	{
+		"id": "StoreItemCarousel_UnifiedAlgorithmicList_Hands",
+		"sectionType": 4,
+		"sectionSubType": "Items_Hands",
+		"source": "AlgorithmicList",
+		"sourceMetadata": "handsitems",
+		"displayMetadata": "{\r\n    \"DisplayTitle\":\"Hands\",\r\n    \"categoryDepth\":1,\r\n    \"categoryCarouselType\": 10,\r\n    \"categoryUriNames\": \"GlovesItems\",\r\n    \"itemCount\": 5\r\n}"
+	},
+	{
+		"id": "StoreItemCarousel_UnifiedAlgorithmicList_Shoulder",
+		"sectionType": 4,
+		"sectionSubType": "Items_Shoulder",
+		"source": "AlgorithmicList",
+		"sourceMetadata": "shoulderitems",
+		"displayMetadata": "{\r\n    \"DisplayTitle\":\"Shoulders & Back\",\r\n    \"categoryDepth\":1,\r\n    \"categoryCarouselType\": 22,\r\n    \"categoryUriNames\": \"ShoulderItems\",\r\n    \"itemCount\": 5\r\n}"
+	},
+	{
+		"id": "StoreItemCarousel_UnifiedAlgorithmicList_Hairstyles",
+		"sectionType": 4,
+		"sectionSubType": "Items_Hairstyles",
+		"source": "AlgorithmicList",
+		"sourceMetadata": "hairitems",
+		"displayMetadata": "{\r\n    \"DisplayTitle\":\"Hairstyles\",\r\n    \"categoryDepth\":1,\r\n    \"categoryCarouselType\": 24,\r\n    \"categoryUriNames\": \"HeadHairItems\",\r\n    \"itemCount\": 5\r\n}"
+	},
+	{
+		"id": "StoreItemCarousel_UnifiedAlgorithmicList_FacialHair",
+		"sectionType": 4,
+		"sectionSubType": "Items_FacialHair",
+		"source": "AlgorithmicList",
+		"sourceMetadata": "facialhairitems",
+		"displayMetadata": "{\r\n    \"DisplayTitle\":\"Facial Hair\",\r\n    \"categoryDepth\":1,\r\n    \"categoryCarouselType\": 25,\r\n    \"categoryUriNames\": \"FacialHairItems\",\r\n    \"itemCount\": 5\r\n}"
 	}
 ]

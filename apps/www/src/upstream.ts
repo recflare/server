@@ -53,7 +53,7 @@ export async function postAuthForm(
 		'content-type': 'application/x-www-form-urlencoded',
 	}
 	if (opts.bearer) headers.authorization = `Bearer ${opts.bearer}`
-	if (opts.clientIp) headers['cf-connecting-ip'] = opts.clientIp
+	if (opts.clientIp) { headers['x-forwarded-client-ip'] = opts.clientIp; headers['x-internal-secret'] = env.INTERNAL_SECRET }
 
 	const request = new Request(`${authBase(env)}${path}`, {
 		method: 'POST',

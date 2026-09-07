@@ -29,17 +29,19 @@ export const configRoutes = new Hono<App>({ strict: false })
 			tags: ['Config'],
 			summary: 'Analytics keys',
 			description:
-				'The Amplitude / StatSig / RudderStack keys the client initialises its analytics ' +
-				'with. This server collects nothing, so the keys are placeholders and RudderStack ' +
-				'is off — but the client needs the object to finish loading.',
+				'The Amplitude / RudderStack / StatSig keys the client initialises its analytics ' +
+				'with. This server collects nothing, so the keys are blank and RudderStack and ' +
+				'StatSig are off — but the client needs the object to finish loading.',
 			responses: { 200: json(AmplitudeConfig, 'Placeholder analytics keys') },
 		}),
 		(c) =>
 			c.json({
-				AmplitudeKey: 'a',
-				StatSigKey: 'a',
-				RudderStackKey: 'a',
+				AmplitudeKey: '',
 				UseRudderStack: false,
+				RudderStackKey: '',
+				UseStatSig: false,
+				StatSigKey: '',
+				StatSigEnvironment: 0,
 			})
 	)
 	.get(

@@ -14,6 +14,7 @@ import {
 	countRoomsByCreator,
 	createSubRoom,
 	deleteRoom,
+	deleteRoomLeaderboard,
 	deleteSubRoom,
 	findSubRoom,
 	getBaseRooms,
@@ -47,6 +48,7 @@ import {
 	searchRooms,
 	setRoomDescription,
 	setRoomImage,
+	setRoomLeaderboard,
 	setRoomName,
 	setRoomRole,
 	setSubRoomPermissions,
@@ -90,6 +92,9 @@ import {
 	IsBannedPascalEnvelope,
 	json,
 	jsonBody,
+	leaderboardIdParam,
+	LeaderboardRequest,
+	LeaderboardResultEnvelope,
 	LoadScreenRequest,
 	MissingLookupParam,
 	ModifySubRoomRequest,
@@ -642,6 +647,15 @@ function roomEnvelope(c: Context<App>, value: unknown, error = '') {
  * a ban isn't part of the room the client renders, so there is no updated room to send.
  */
 const banEnvelope = roomEnvelope
+
+/**
+ * The envelope both leaderboard routes answer: `{ Success, Error, error_id }`, carrying
+ * no entity. PascalCase with a lowercase `error_id` — the same mixed casing the
+ * unprefixed isBanned route serves — NOT the room mutations' lowercase envelope.
+ */
+function leaderboardEnvelope(c: Context<App>, error: string | null = null) {
+	return c.json({ Success: error === null, Error: error, error_id: null })
+}
 
 /** Rooms created/owned by the authed caller (shared by the createdby routes). */
 async function ownedRooms(c: Context<App>) {
@@ -1676,13 +1690,11 @@ const app = new Hono<App>()
 				})
 			}
 
-			// Writes `FriendlyName` too — see `setRoomName`. The two are the same string here,
-			// and the client labels the room from the display one.
 			await setRoomName(c.env.DB, roomId, name)
 			// The rename answers a bare `{ Success }` with no room in it, so the client has
 			// nothing to re-render from and kept showing the old name until the push arrived.
 			// Built from the room already in hand rather than re-read, like the image route's.
-			await pushRoomUpdate(c, accountId, { ...room, Name: name, FriendlyName: name })
+			await pushRoomUpdate(c, accountId, { ...room, Name: name })
 			return roomResult(c, { Success: true })
 		}
 	)
@@ -2233,6 +2245,111 @@ const app = new Hono<App>()
 			const removed = await unbanPlayerFromRoom(c.env.DB, roomId, playerId)
 			if (!removed) return banEnvelope(c, null, 'This player is not banned from this room!')
 			return banEnvelope(c, removed)
+		}
+	)
+
+	// Configure one of a room's leaderboard slots (form body `leaderboardTitle` +
+	// `statFormat` + `sortAscending`). Auth-gated (401) and owner/co-owner-only (403).
+	// One row per (room, slot) — re-posting a slot reconfigures it, so the call is
+	// idempotent.
+	.post(
+		'/rooms/:roomId{[0-9]+}/leaderboards/:leaderboardId{[0-9]+}',
+		describeRoute({
+			tags: ['Room settings'],
+			summary: 'Configure a room leaderboard',
+			description: [
+				'Creates or reconfigures one leaderboard slot in the `room_leaderboard` table — one',
+				'row per (room, slot), so re-posting a slot rewrites its title, format and direction',
+				'rather than adding a second. The slot number in the path is the client’s small',
+				'ordinal (1, 2, 3…), unique only within the room. Owner or co-owner only (403',
+				'otherwise).',
+				'',
+				'`statFormat` is stored verbatim (default 0); `sortAscending` is the client’s',
+				'`True`/`False` string (default `False`).',
+				'',
+				'Answers a bare `{ Success, Error, error_id }` — PascalCase with a lowercase',
+				'`error_id`, like the unprefixed isBanned route, carrying no entity. NOT the room',
+				'mutations’ lowercase `{ success, error, value }`.',
+			].join('\n'),
+			security: AUTHED,
+			parameters: [roomIdParam, leaderboardIdParam],
+			requestBody: form(LeaderboardRequest, 'The leaderboard configuration'),
+			responses: {
+				200: json(LeaderboardResultEnvelope, 'Stored, or a rejection with `Success: false`'),
+				401: UNAUTHORIZED_RESPONSE,
+				403: FORBIDDEN_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const accountId = await authedAccountId(c)
+			if (accountId === null) return unauthorized(c)
+
+			const roomId = Number.parseInt(c.req.param('roomId'), 10)
+			const room = await getRoomById(c.env.DB, roomId)
+			if (!room) return leaderboardEnvelope(c, 'This room does not exist!')
+			// A valid token but not the room's owner/co-owner → 403 (the auth gate above
+			// already returned 401 for a missing/invalid token).
+			if (!canManageRoom(room, accountId)) return c.body(null, 403)
+
+			const leaderboardId = Number.parseInt(c.req.param('leaderboardId'), 10)
+			const body = (await c.req.parseBody().catch(() => ({}))) as Record<string, unknown>
+			const title = typeof body.leaderboardTitle === 'string' ? body.leaderboardTitle : ''
+			const statFormat =
+				typeof body.statFormat === 'string' ? Number.parseInt(body.statFormat, 10) : Number.NaN
+			// The client sends .NET-style `True`/`False`; anything but a `true` reads false.
+			const sortAscending =
+				typeof body.sortAscending === 'string' && body.sortAscending.toLowerCase() === 'true'
+
+			await setRoomLeaderboard(
+				c.env.DB,
+				roomId,
+				leaderboardId,
+				title,
+				Number.isNaN(statFormat) ? 0 : statFormat,
+				sortAscending
+			)
+			return leaderboardEnvelope(c)
+		}
+	)
+
+	// Remove one of a room's leaderboard slots. Auth-gated (401) and owner/co-owner-only
+	// (403). The client fires these blindly for every slot when tearing boards down, so a
+	// slot that isn't configured is a rejection envelope, not an HTTP error.
+	.delete(
+		'/rooms/:roomId{[0-9]+}/leaderboards/:leaderboardId{[0-9]+}',
+		describeRoute({
+			tags: ['Room settings'],
+			summary: 'Remove a room leaderboard',
+			description: [
+				'Removes the slot’s `room_leaderboard` row. Owner or co-owner only (403 otherwise).',
+				'',
+				'Removing a slot that isn’t configured is a rejection (`Success: false`), not a',
+				'silent success — the caller asked to undo something that was not there. The client',
+				'deletes slots blindly when tearing boards down and tolerates the refusal.',
+				'',
+				'Answers the same bare `{ Success, Error, error_id }` as the leaderboard write.',
+			].join('\n'),
+			security: AUTHED,
+			parameters: [roomIdParam, leaderboardIdParam],
+			responses: {
+				200: json(LeaderboardResultEnvelope, 'Removed, or a rejection with `Success: false`'),
+				401: UNAUTHORIZED_RESPONSE,
+				403: FORBIDDEN_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const accountId = await authedAccountId(c)
+			if (accountId === null) return unauthorized(c)
+
+			const roomId = Number.parseInt(c.req.param('roomId'), 10)
+			const room = await getRoomById(c.env.DB, roomId)
+			if (!room) return leaderboardEnvelope(c, 'This room does not exist!')
+			if (!canManageRoom(room, accountId)) return c.body(null, 403)
+
+			const leaderboardId = Number.parseInt(c.req.param('leaderboardId'), 10)
+			const removed = await deleteRoomLeaderboard(c.env.DB, roomId, leaderboardId)
+			if (!removed) return leaderboardEnvelope(c, 'This room has no such leaderboard!')
+			return leaderboardEnvelope(c)
 		}
 	)
 

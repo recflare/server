@@ -81,8 +81,8 @@ const BY_NAME = new Map<string, CuratedList>()
 /**
  * By type alone: the page's DEFAULT list, which answers a request that names NO list — only
  * a request that names none. A request that DOES name one and matches nothing is a miss and
- * 404s; handing it the page default answers a question nobody asked, under a heading that
- * belongs to another list.
+ * answers an empty placeholder; handing it the page default answers a question nobody asked,
+ * under a heading that belongs to another list.
  */
 const BY_TYPE = new Map<number, CuratedList>()
 
@@ -130,11 +130,65 @@ function emptyReservedList(creatorAccountId: string | undefined, type: number, n
 }
 
 /**
+ * The image a placeholder list carries.
+ *
+ * NOT `DEFAULT_LIST_IMAGE` (`DefaultRoomImage.jpg`), which is what a stored list and the
+ * reserved-playlist answer use. This name came off the client-facing shape for the
+ * placeholder, and the two are deliberately left as they were found rather than unified on a
+ * guess: the reserved path is known to work with the room image, and this one is what the
+ * placeholder was specified with. If a capture ever settles which the reference sends, they
+ * should converge on that.
+ */
+const PLACEHOLDER_LIST_IMAGE = 'DefaultListImage.jpg'
+
+/**
+ * The `CreatedAt` a placeholder carries. Fixed rather than `new Date()` so the same missing
+ * list reads the same on every request — a placeholder that appears to have been created
+ * moments ago, differently each time, is worse than one that plainly never was.
+ */
+const PLACEHOLDER_CREATED_AT = '2026-08-24T18:44:52.438Z'
+
+/**
+ * The list served for a name this server has nothing under.
+ *
+ * A well-formed but EMPTY list, echoing the name and type asked for. It must be a whole list
+ * object: the client BREAKS on a bare `{}`, and it broke differently on the 404 this used to
+ * send, so "there is no such list" has to be expressed as a list with nothing in it. `ItemIds`
+ * empty is what stops it rendering as content — a page whose rows this server has no capture
+ * of shows as an empty row rather than as another page's rows under its heading.
+ *
+ * Distinct from {@link emptyReservedList} despite the near-identical shape, and the two must
+ * not be merged: that one is a REAL list a player simply has not saved into yet (`ListId` 0,
+ * `Accessibility` 1, the shared default image), while this is a stand-in for a list that does
+ * not exist. Every field they differ in was arrived at against the live client.
+ */
+export function placeholderCuratedList(
+	creatorAccountId: string | undefined,
+	type: string | undefined,
+	name: string | undefined
+) {
+	const parsedType = Number.parseInt(type ?? '', 10)
+	return {
+		// A string here and a NUMBER on the wire — see `serializeCuratedList`, which is why every
+		// id in this file is carried as one.
+		ListId: '1',
+		CreatorAccountId: Number.parseInt(creatorAccountId ?? '', 10) || 0,
+		Name: name ?? '',
+		Description: null,
+		ImageName: PLACEHOLDER_LIST_IMAGE,
+		Type: Number.isInteger(parsedType) ? parsedType : 0,
+		ItemIds: [],
+		Accessibility: 0,
+		CreatedAt: PLACEHOLDER_CREATED_AT,
+	} satisfies CuratedList
+}
+
+/**
  * The list behind `GET /curatedlists?creatorAccountId=&type=&name=` once D1 has been asked
  * and had nothing — the static captures, resolved most-specific first. UNDEFINED when
- * nothing matches, which the route turns into a 404: a name this server has nothing under
- * is a list that does not exist, and answering it with an unrelated capture puts one page's
- * rows under another page's heading.
+ * nothing matches, which the route turns into a {@link placeholderCuratedList}: a name this
+ * server has nothing under is a list that does not exist, and answering it with an unrelated
+ * capture puts one page's rows under another page's heading.
  *
  * `type` is the `ListEntityType`: what the `ItemIds` ARE. (The client asks for
  * `__SavedForLater_Rooms` with `type=1`, Rooms, and every capture here is `type=7`,

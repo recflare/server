@@ -156,16 +156,16 @@ describe('rooms endpoints', () => {
 
 	// None of these are stored — the seed blobs predate the keys — so they are defaulted on
 	// read. The client's room DTO always carries them, and an ABSENT key is not the same as a
-	// zero/null one to its parser. `FriendlyName` is the one that can't be null: the client
-	// labels the room from it.
-	it('GET /rooms/:id carries BoostCount, CurrentSnapshotId, FriendlyName and CCU', async () => {
+	// zero/null one to its parser. `FriendlyName` is deliberately NOT among them: this server
+	// does not serve a display name apart from `Name`, and migration 0017 strips any stored one.
+	it('GET /rooms/:id carries BoostCount, CurrentSnapshotId and CCU, and no FriendlyName', async () => {
 		const res = await SELF.fetch(`${ORIGIN}/rooms/1`)
 		expect(res.status).toBe(200)
 		const body = (await res.json()) as Record<string, unknown>
 		expect(body).toHaveProperty('BoostCount', 0)
 		expect(body).toHaveProperty('CurrentSnapshotId', null)
-		expect(body).toHaveProperty('FriendlyName', body.Name)
 		expect(body).toHaveProperty('CCU', null)
+		expect(body).not.toHaveProperty('FriendlyName')
 	})
 
 	// Pinned whole: these are the numbers the client's publish UI counts against, and
@@ -1818,6 +1818,90 @@ describe('rooms endpoints', () => {
 			.run()
 	})
 
+	it('POST/DELETE /rooms/:id/leaderboards/:lid configures and removes a room’s leaderboard slots', async () => {
+		// RecCenter (room 2) is owned by account 1, with account 2 as co-owner.
+		const del = async (path: string, sub?: string) =>
+			SELF.fetch(`${ORIGIN}${path}`, {
+				method: 'DELETE',
+				headers: sub ? await bearer(sub) : {},
+			})
+		const slotsOf = async (roomId: number) =>
+			(
+				await env.DB.prepare(
+					'SELECT leaderboard_id, leaderboard_title, stat_format, sort_ascending FROM room_leaderboard WHERE room_id = ?1 ORDER BY leaderboard_id'
+				)
+					.bind(roomId)
+					.all()
+			).results
+
+		// The real client body, verbatim.
+		const body = { leaderboardTitle: 'full name', statFormat: '1', sortAscending: 'False' }
+
+		// No token → 401 (auth gate).
+		expect((await postForm('/rooms/2/leaderboards/1', body)).status).toBe(401)
+		expect((await del('/rooms/2/leaderboards/1')).status).toBe(401)
+		// A valid token but no role on the room → 403.
+		expect((await postForm('/rooms/2/leaderboards/1', body, '999')).status).toBe(403)
+		expect((await del('/rooms/2/leaderboards/1', '999')).status).toBe(403)
+		// The envelope both routes answer — PascalCase `Success`/`Error`, lowercase
+		// `error_id`, no entity. NOT the room mutations' lowercase `{ success, error, value }`.
+		const OK = { Success: true, Error: null, error_id: null }
+
+		// Unknown room → failure envelope.
+		expect(await (await postForm('/rooms/99999/leaderboards/1', body, '1')).json()).toEqual({
+			Success: false,
+			Error: 'This room does not exist!',
+			error_id: null,
+		})
+
+		// The owner configures slot 1 — a bare success, with the row persisted.
+		const ok = await postForm('/rooms/2/leaderboards/1', body, '1')
+		expect(ok.status).toBe(200)
+		expect(await ok.json()).toEqual(OK)
+		expect(await slotsOf(2)).toEqual([
+			{ leaderboard_id: 1, leaderboard_title: 'full name', stat_format: 1, sort_ascending: 0 },
+		])
+
+		// Re-posting the slot reconfigures the one row rather than appending — and the
+		// co-owner may do it. `sortAscending=True` parses case-insensitively.
+		const rewrite = await postForm(
+			'/rooms/2/leaderboards/1',
+			{ leaderboardTitle: 'lap time', statFormat: '2', sortAscending: 'True' },
+			'2'
+		)
+		expect(rewrite.status).toBe(200)
+		expect(await rewrite.json()).toEqual(OK)
+		expect(await slotsOf(2)).toEqual([
+			{ leaderboard_id: 1, leaderboard_title: 'lap time', stat_format: 2, sort_ascending: 1 },
+		])
+
+		// Slots are per room: slot 2 here and slot 1 of another room are their own rows.
+		expect((await postForm('/rooms/2/leaderboards/2', body, '1')).status).toBe(200)
+		expect((await postForm('/rooms/3/leaderboards/1', body, '1')).status).toBe(200)
+		expect(await slotsOf(2)).toHaveLength(2)
+		expect(await slotsOf(3)).toHaveLength(1)
+
+		// DELETE removes exactly the named slot.
+		const removed = await del('/rooms/2/leaderboards/1', '1')
+		expect(removed.status).toBe(200)
+		expect(await removed.json()).toEqual(OK)
+		expect(await slotsOf(2)).toEqual([
+			{ leaderboard_id: 2, leaderboard_title: 'full name', stat_format: 1, sort_ascending: 0 },
+		])
+		expect(await slotsOf(3)).toHaveLength(1)
+
+		// Deleting a slot that isn't configured is a rejection, not an HTTP error — the
+		// client tears boards down by deleting every slot blindly.
+		expect(await (await del('/rooms/2/leaderboards/1', '1')).json()).toEqual({
+			Success: false,
+			Error: 'This room has no such leaderboard!',
+			error_id: null,
+		})
+
+		// Clean up the surviving rows so this test leaves no trace.
+		await env.DB.prepare('DELETE FROM room_leaderboard WHERE room_id IN (2, 3)').run()
+	})
+
 	it('POST /rooms/:id/bans kicks the banned player', async () => {
 		type Sent = { playerId: number; notificationType: string | number; data: unknown }
 		const hub = () => env.RECFLARE_NOTIFICATIONS_HUB.getByName('global')
@@ -2915,13 +2999,12 @@ describe('rooms endpoints', () => {
 		expect(await bodyOf(ok)).toMatchObject({ Success: true })
 		const room = (await (await SELF.fetch(`${ORIGIN}/rooms?name=RenamedCenter`)).json()) as {
 			RoomId: number
-			FriendlyName: string
+			Name: string
 		}
 		expect(room.RoomId).toBe(2)
-		// The DISPLAY name follows the rename. It is otherwise only defaulted to `Name` on
-		// read, so a room that had ever stored one would keep labelling itself with the old
-		// name while every name-keyed lookup used the new one.
-		expect(room.FriendlyName).toBe('RenamedCenter')
+		expect(room.Name).toBe('RenamedCenter')
+		// A rename must not resurrect the retired display name.
+		expect(room).not.toHaveProperty('FriendlyName')
 	})
 
 	/** The hub stub records every notifyPlayer call — see vitest.config.ts. */
@@ -2941,14 +3024,11 @@ describe('rooms endpoints', () => {
 
 		const sent = await sentNotifications()
 		expect(sent).toHaveLength(1)
-		// RoomUpdate, to the OWNER, carrying the room as it now stands — both names.
+		// RoomUpdate, to the OWNER, carrying the room as it now stands.
 		expect(sent[0].playerId).toBe(1)
 		expect(sent[0].notificationType).toBe(NotificationType.SubscriptionUpdateRoom)
-		expect(sent[0].data).toMatchObject({
-			RoomId: 2,
-			Name: 'PushedRename',
-			FriendlyName: 'PushedRename',
-		})
+		expect(sent[0].data).toMatchObject({ RoomId: 2, Name: 'PushedRename' })
+		expect(sent[0].data).not.toHaveProperty('FriendlyName')
 
 		// Put it back for the tests that read room 2 by name.
 		await putForm('/rooms/2/name', { name: 'RenamedCenter' }, '1')
@@ -3972,6 +4052,7 @@ describe('rooms endpoints', () => {
 			'DELETE /rooms/{roomId}/bans/{playerId}',
 			'DELETE /rooms/{roomId}/interactionby/me/cheer',
 			'DELETE /rooms/{roomId}/interactionby/me/favorite',
+			'DELETE /rooms/{roomId}/leaderboards/{leaderboardId}',
 			'DELETE /rooms/{roomId}/subrooms/{subRoomId}',
 			'GET /',
 			'GET /Room_server/rooms/{roomId}/bans/{playerId}/isBanned',
@@ -4010,6 +4091,7 @@ describe('rooms endpoints', () => {
 			'POST /rooms/bulk',
 			'POST /rooms/{roomId}/bans',
 			'POST /rooms/{roomId}/clone',
+			'POST /rooms/{roomId}/leaderboards/{leaderboardId}',
 			'POST /rooms/{roomId}/subrooms',
 			'POST /rooms/{roomId}/subrooms/{subRoomId}/clone',
 			'POST /rooms/{roomId}/subrooms/{subRoomId}/data',

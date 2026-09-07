@@ -1,4 +1,4 @@
-import { DISCORD_INVITE, ISSUES_URL, PRIVACY_EMAIL } from './links'
+import { DISCORD_INVITE, ISSUES_URL, PRIVACY_EMAIL, SOURCE_REPO } from './links'
 
 /**
  * The privacy policy, served on www at `/privacy`.
@@ -139,7 +139,7 @@ footer a { color: var(--muted); }
  */
 function contactList(): string {
 	return `<ul>
-	${email}
+	${PRIVACY_EMAIL ? `<li><strong>Email</strong> — ${PRIVACY_EMAIL}</li>` : ''}
 	<li><strong>Discord</strong> — ask a moderator in <a href="https://discord.gg/m569yWvGEG" target="_blank" rel="noreferrer">our Discord server</a>.</li>
 	 Don't post personal details in a public issue; your username is enough for us to find you.</li>
 </ul>`

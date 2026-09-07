@@ -62,6 +62,15 @@ export const MAX_INVENTION_NAME_LENGTH = 24
 export const MAX_INVENTION_DESCRIPTION_LENGTH = 512
 
 /**
+ * The long description — the blurb on an invention's detail page, as opposed to the one
+ * line that fits under a browse tile. The client sends it on `v9/save` and edits it
+ * through `v2/metadata`, and how long it lets one get has not been pinned down, so the cap
+ * here is this server's own: generous enough that no real blurb hits it, small enough that
+ * a record stays a record. It is checked only when a caller actually sends one.
+ */
+export const MAX_INVENTION_LONG_DESCRIPTION_LENGTH = 4096
+
+/**
  * One invention tag. Short and letters-only because tags are a controlled vocabulary the
  * browse chips are derived from (see `getInventionTagFilters`) — a tag with digits,
  * punctuation or spaces makes a chip nobody else will ever type again. Tags are stored
@@ -176,6 +185,14 @@ export function inventionNameRejection(value: string): string | null {
 export function inventionDescriptionRejection(value: string): string | null {
 	if (glyphLength(value) > MAX_INVENTION_DESCRIPTION_LENGTH) {
 		return `Invention descriptions can be at most ${MAX_INVENTION_DESCRIPTION_LENGTH} characters.`
+	}
+	return null
+}
+
+/** Why a long description can't be stored, or null when it can. */
+export function inventionLongDescriptionRejection(value: string): string | null {
+	if (glyphLength(value) > MAX_INVENTION_LONG_DESCRIPTION_LENGTH) {
+		return `Invention long descriptions can be at most ${MAX_INVENTION_LONG_DESCRIPTION_LENGTH} characters.`
 	}
 	return null
 }

@@ -103,6 +103,21 @@ export const ROOM_SCHEMA_DDL: string[] = [
 		PRIMARY KEY (room_id, banned_player_id)
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_room_ban_player ON room_ban (banned_player_id)`,
+	// Per-room leaderboard definitions (migrations/0016_room_leaderboard.sql). One row per
+	// (room, leaderboard): `leaderboard_id` is the client's slot number — small ordinals
+	// (1, 2, 3…), unique only within the room — so the pair is the key, and re-posting a
+	// slot reconfigures it in place rather than appending.
+	//
+	// Deliberately NOT in the room's `data` blob, same reasoning as `room_ban`: the blob is
+	// served verbatim as the room and the client doesn't read leaderboards off it.
+	`CREATE TABLE IF NOT EXISTS room_leaderboard (
+		room_id INTEGER NOT NULL,
+		leaderboard_id INTEGER NOT NULL,
+		leaderboard_title TEXT NOT NULL,
+		stat_format INTEGER NOT NULL DEFAULT 0,
+		sort_ascending INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (room_id, leaderboard_id)
+	)`,
 ]
 
 /**
@@ -196,6 +211,22 @@ export function canManageRoom(room: Room, accountId: number): boolean {
 	return roles.some((r) => r.AccountId === accountId && MANAGE_ROLES.has(r.Role))
 }
 
+/**
+ * Whether an account may MODERATE a room — its creator, or the holder of a role at
+ * Moderator (20) or above. The wider gate that {@link canManageRoom} is the narrow one
+ * of: a moderator polices who is in the room right now (kicking someone out of an
+ * instance) without being trusted to change the room itself, while everyone who can
+ * manage a room can obviously also police it, so CoOwner and Creator pass here too.
+ *
+ * Host (10) is deliberately below the line: it is the "runs this session" tier, which the
+ * client hands out freely, and a kick is a moderation power rather than a hosting one.
+ */
+export function canModerateRoom(room: Room, accountId: number): boolean {
+	if (room.CreatorAccountId === accountId) return true
+	const roles = Array.isArray(room.Roles) ? (room.Roles as RoomRole[]) : []
+	return roles.some((r) => r.AccountId === accountId && r.Role >= Role.Moderator)
+}
+
 /** A player banned from a room (a `room_ban` row). */
 export interface RoomBan {
 	RoomId: number
@@ -286,6 +317,75 @@ export async function isPlayerBannedFromRoom(
 	return row !== null
 }
 
+/** A room's leaderboard definition — one configured slot (`leaderboard_id` is per-room). */
+export interface RoomLeaderboard {
+	RoomId: number
+	LeaderboardId: number
+	LeaderboardTitle: string
+	StatFormat: number
+	SortAscending: boolean
+}
+
+interface RoomLeaderboardRow {
+	room_id: number
+	leaderboard_id: number
+	leaderboard_title: string
+	stat_format: number
+	sort_ascending: number
+}
+
+const toRoomLeaderboard = (row: RoomLeaderboardRow): RoomLeaderboard => ({
+	RoomId: row.room_id,
+	LeaderboardId: row.leaderboard_id,
+	LeaderboardTitle: row.leaderboard_title,
+	StatFormat: row.stat_format,
+	SortAscending: row.sort_ascending === 1,
+})
+
+/**
+ * Create or reconfigure one of a room's leaderboard slots, returning the stored
+ * definition. One row per (room, leaderboard): re-posting a slot rewrites its title,
+ * format and direction rather than appending a second row, so the call is idempotent.
+ */
+export async function setRoomLeaderboard(
+	db: D1Database,
+	roomId: number,
+	leaderboardId: number,
+	leaderboardTitle: string,
+	statFormat: number,
+	sortAscending: boolean
+): Promise<RoomLeaderboard> {
+	const row = await db
+		.prepare(
+			`INSERT INTO room_leaderboard (room_id, leaderboard_id, leaderboard_title, stat_format, sort_ascending)
+			 VALUES (?1, ?2, ?3, ?4, ?5)
+			 ON CONFLICT(room_id, leaderboard_id) DO UPDATE SET
+				 leaderboard_title = ?3, stat_format = ?4, sort_ascending = ?5
+			 RETURNING *`
+		)
+		.bind(roomId, leaderboardId, leaderboardTitle, statFormat, sortAscending ? 1 : 0)
+		.first<RoomLeaderboardRow>()
+	// RETURNING always yields the upserted row.
+	return toRoomLeaderboard(row!)
+}
+
+/**
+ * Remove one of a room's leaderboard slots, returning the definition that was removed —
+ * or null when the slot wasn't configured, which lets the caller tell a real delete
+ * from a no-op.
+ */
+export async function deleteRoomLeaderboard(
+	db: D1Database,
+	roomId: number,
+	leaderboardId: number
+): Promise<RoomLeaderboard | null> {
+	const row = await db
+		.prepare('DELETE FROM room_leaderboard WHERE room_id = ?1 AND leaderboard_id = ?2 RETURNING *')
+		.bind(roomId, leaderboardId)
+		.first<RoomLeaderboardRow>()
+	return row ? toRoomLeaderboard(row) : null
+}
+
 /**
  * Clone an existing room into a new one owned by `accountId`. Copies the source
  * room's content (scene/subrooms/settings), assigning a fresh RoomId, the given
@@ -367,23 +467,10 @@ export async function setRoomDescription(
 		.run()
 }
 
-/**
- * Set a room's Name in place (the caller checks ownership + name uniqueness first).
- *
- * Writes `FriendlyName` to the same string. That is the DISPLAY name — what the client
- * labels the room with — and it is only defaulted to `Name` on read
- * ({@link attachRoomDtoDefaults}), with `??=`, so a room whose blob has ever carried one
- * keeps it. Renaming without this leaves that room displaying its old name forever while
- * every name-keyed lookup uses the new one.
- *
- * The reference lets a creator set a display name apart from the unique `Name`; nothing
- * here exposes that, so the two are kept in step rather than allowed to diverge silently.
- */
+/** Set a room's Name in place (the caller checks ownership + name uniqueness first). */
 export async function setRoomName(db: D1Database, roomId: number, name: string): Promise<void> {
 	await db
-		.prepare(
-			"UPDATE room SET data = json_set(data, '$.Name', ?2, '$.FriendlyName', ?2) WHERE room_id = ?1"
-		)
+		.prepare("UPDATE room SET data = json_set(data, '$.Name', ?2) WHERE room_id = ?1")
 		.bind(roomId, name)
 		.run()
 }
@@ -1062,10 +1149,6 @@ const PUBLIC_WHERE = 'is_dorm IS NOT 1 AND accessibility = 1'
  *   it is 0 for every room.
  * - `CurrentSnapshotId` — the room's published snapshot. Nothing takes snapshots, so it is
  *   null, which is also what the reference serves for a room that has none.
- * - `FriendlyName` — the display name, which the reference lets a creator set apart from
- *   the unique `Name`. Nothing sets one here, so it falls back to `Name`; it must never be
- *   null, because the client labels a room from it and renders nothing for a room without
- *   one.
  * - `CCU` — concurrent users. No live-population counter exists here, so it is null, which
  *   is what the reference serves when it has no number rather than 0 (a 0 reads as "nobody
  *   is in here" in the browse feeds).
@@ -1076,7 +1159,6 @@ const PUBLIC_WHERE = 'is_dorm IS NOT 1 AND accessibility = 1'
 function attachRoomDtoDefaults(room: Room): void {
 	room.BoostCount ??= 0
 	room.CurrentSnapshotId ??= null
-	room.FriendlyName ??= room.Name
 	room.CCU ??= null
 }
 

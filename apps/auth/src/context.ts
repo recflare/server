@@ -38,6 +38,7 @@ export type Env = SharedHonoEnv & {
 	 * Read through `banEvasionMatch`; the `match` worker reads the same knob.
 	 */
 	BAN_EVASION_MATCH?: string
+        INTERNAL_SECRET: string
 }
 
 /** Variables can be extended */

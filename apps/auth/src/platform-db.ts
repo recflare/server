@@ -19,7 +19,17 @@
  * A link is only ever written from a VERIFIED identity (a Steam-signed ticket or a
  * Meta-validated nonce). It is what turns "this platform user" into "may enter this
  * account with no password", so an unproven `platform_id` must never reach it.
+ *
+ * Not every link is a LOGIN, though. The table is the account's set of external
+ * identities, and some are stored for what they entitle the player to rather than for
+ * entry: `PlatformType.Discord` (101) is written by the website's benefits claim, from an
+ * OAuth2 code exchange Discord itself vouched for. Nobody signs in with it —
+ * `verifyPlatformProof` answers `unsupported` for anything but Steam and Meta, so a
+ * `cached_login` naming platform 101 is refused — and the picker must not offer it
+ * either. See {@link CACHED_LOGIN_PLATFORMS}, which is what keeps those two in step.
  */
+
+import { PlatformType } from '@repo/domain/src/enums'
 
 /** Schema DDL (mirror of migrations/0007_platform_accounts.sql, sans the backfill). */
 export const PLATFORM_SCHEMA_DDL: string[] = [
@@ -63,6 +73,38 @@ export const PLATFORM_BACKFILL_SQL = `INSERT OR IGNORE INTO platform_account (ac
 	FROM account
 	WHERE json_extract(data, '$.platformId') IS NOT NULL
 		AND json_extract(data, '$.platformId') <> ''`
+
+/**
+ * The platforms a cached login can actually be redeemed for — the ones
+ * `verifyPlatformProof` can prove, which is Steam (a Steam-signed ticket) and Meta/Oculus
+ * (a Meta-validated nonce).
+ *
+ * This is the picker's filter, and it exists to keep a promise the picker's own API
+ * documentation makes: "an entry here is always redeemable by a `cached_login` grant
+ * (both read the same table)". Once the table began holding identities that are NOT
+ * credentials — Discord, from the website's benefits claim — listing every row would have
+ * broken that promise in two ways at once. The client would be offered an account it can
+ * never log into (the grant refuses platform 101 outright), and, worse, the picker is
+ * PUBLIC and unauthenticated: `GET /cachedlogin/forplatformid/101/<snowflake>` would have
+ * told anyone which RecFlare account a given Discord user owns, and the bulk route would
+ * have done it for a list of them at once. A Discord id is trivially readable by anyone in
+ * a shared server, so that is a deanonymisation of every player who claimed benefits.
+ *
+ * Adding a platform here means asserting `verifyPlatformProof` can prove it. Filtering
+ * happens in the two picker reads only — {@link isPlatformIdentityLinked},
+ * {@link countAccountsForPlatformIdentity} and {@link getLinksForAccount} deliberately see
+ * every link, because they answer "is this identity taken / whose is it", which is exactly
+ * the question the benefits claim's once-only guard asks about a Discord id.
+ */
+export const CACHED_LOGIN_PLATFORMS: readonly number[] = [PlatformType.Steam, PlatformType.Oculus]
+
+/**
+ * `IN (…)` fragment for the allowlist, so the filter is applied by the query rather than
+ * in JS. Placeholders are numbered from ?2 because the one caller binds the platform id
+ * as ?1 — explicit indices rather than bare `?`, which SQLite would number by position
+ * and quietly renumber the moment another parameter is added ahead of it.
+ */
+const CACHED_LOGIN_FILTER = `platform IN (${CACHED_LOGIN_PLATFORMS.map((_, i) => `?${i + 2}`).join(', ')})`
 
 /** One account ↔ platform identity link. */
 export interface PlatformLink {
@@ -119,6 +161,9 @@ export async function getLinksForPlatformIdentity(
 	platformId: string
 ): Promise<PlatformLink[]> {
 	if (platformId === '') return []
+	// Asking about a platform nobody can log in from yields nothing at all, rather than a
+	// list the grant would refuse — see CACHED_LOGIN_PLATFORMS.
+	if (!CACHED_LOGIN_PLATFORMS.includes(platform)) return []
 	const { results } = await db
 		.prepare(
 			`${SELECT_LINK} WHERE platform = ?1 AND platform_id = ?2 ORDER BY linked_at, account_id`
@@ -138,9 +183,15 @@ export async function getLinksForPlatformId(
 	platformId: string
 ): Promise<PlatformLink[]> {
 	if (platformId === '') return []
+	// Matches on any platform a cached login can be redeemed for — but only those. This is
+	// the route a bare id takes, so without the filter a Discord snowflake posted here
+	// would resolve its account even though naming platform 101 explicitly would not.
 	const { results } = await db
-		.prepare(`${SELECT_LINK} WHERE platform_id = ?1 ORDER BY linked_at, account_id`)
-		.bind(platformId)
+		.prepare(
+			`${SELECT_LINK} WHERE platform_id = ?1 AND ${CACHED_LOGIN_FILTER}
+			 ORDER BY linked_at, account_id`
+		)
+		.bind(platformId, ...CACHED_LOGIN_PLATFORMS)
 		.all<LinkRow>()
 	return results
 }

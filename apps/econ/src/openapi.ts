@@ -116,8 +116,9 @@ export const CustomAvatarItemsResponse = z.object({
 
 /**
  * A Rec Room Plus subscription (the client calls it a `CampusCard`). Nothing here sells one,
- * so this is the complimentary subscription a `developer` account reports — see
- * `developerSubscription` in econ.app.ts for why each field reads the way it does.
+ * so this is the complimentary subscription reported by a caller whose token carries
+ * `rn.plus` — stamped from `account.hasPlus`, which the website's Discord benefits claim
+ * sets. See `plusSubscription` in econ.app.ts for why each field reads the way it does.
  */
 export const SubscriptionDto = z.object({
 	SubscriptionId: z.int().describe('Placeholder — no subscription is stored'),
@@ -374,10 +375,24 @@ export const BulkPurchaseResponse = z.object({
 })
 
 /**
- * `GET /api/storefronts/v2/buyInvention` — the purchase result. Two envelopes side by
- * side: the balance update (shaped like buyItem's, except `Balance` is the RESULTING
- * total, not the change, and `Data` is a single invention rather than a gift-drop list)
- * and the invention envelope the invention endpoints already serve.
+ * The JSON body `POST /api/storefronts/v3/buyInvention` takes. The same two values the v2
+ * GET reads off the query string (`inventionId`/`requestedPrice`), PascalCase in a body —
+ * that is the only difference between the two routes.
+ */
+export const BuyInventionRequest = z.object({
+	InventionId: z.int().describe('The invention to buy; missing or non-integer is 400'),
+	RequestedPrice: z
+		.int()
+		.optional()
+		.describe('The price the client rendered; a mismatch is 409. Absent reads as 0'),
+})
+
+/**
+ * `GET /api/storefronts/v2/buyInvention` and `POST /api/storefronts/v3/buyInvention` — the
+ * purchase result, identical for both. Two envelopes side by side: the balance update
+ * (shaped like buyItem's, except `Balance` is the RESULTING total, not the change, and
+ * `Data` is a single invention rather than a gift-drop list) and the invention envelope the
+ * invention endpoints already serve.
  */
 export const BuyInventionResponse = z.object({
 	BalanceUpdateResponse: z.object({
@@ -398,6 +413,54 @@ export const BuyInventionResponse = z.object({
 			InventionVersion: JsonObject,
 		})
 		.describe('The same envelope `POST /api/inventions/v6/save` returns'),
+})
+
+/**
+ * `POST /api/storefronts/v3/buyInvention` — the purchase result the 2025 client wants,
+ * which is NOT v2's despite settling the identical purchase. Two differences, both
+ * recovered from a capture of the real response:
+ *
+ *  - `InventionResponse` is the v9 SAVE envelope (`{ Value, Success, Error, error_id }`)
+ *    rather than v6's bare `{ Status, Invention, InventionVersion }`, and its `Invention`
+ *    is the client's 28-key `RRInvention`. A buy mints no version and takes no tags, so
+ *    `InventionVersion` and `TagsResponse` are present and null.
+ *  - The balance half is `BalanceResponseDTO`, so the bucket key is `Platform` — the
+ *    client's `BalanceType` member under a [DataMember] rename, the same one the bulk
+ *    purchase answers in. v2 spells it `BalanceType`; do not unify them.
+ */
+export const BuyInventionV3Response = z.object({
+	InventionResponse: z
+		.object({
+			Value: z
+				.object({
+					Status: z.int().describe('0 on success'),
+					Invention: JsonObject.describe('The bought invention as the 28-key `RRInvention`'),
+					InventionVersion: z.null().describe('Always null — a buy mints no version'),
+					TagsResponse: z.null().describe('Always null — a buy takes no tags'),
+				})
+				.describe('Never null under `Success: true` — the client dereferences it unguarded'),
+			Success: z.boolean(),
+			Error: z.string().nullable().describe('Null on success — not `""`'),
+			error_id: z.string().nullable().describe('Always null — no error-id catalog here'),
+		})
+		.describe('The same envelope `POST /api/inventions/v9/save` returns'),
+	BalanceUpdateResponse: z.object({
+		BalanceUpdates: z.array(
+			z.object({
+				UpdateResponse: z.int(),
+				Data: JsonObject.describe('The bought invention, the same `RRInvention` as above'),
+			})
+		),
+		Balance: z.int().describe('The resulting balance — NOT the change, unlike buyItem'),
+		CurrencyType: z.int().describe('2 = RecCenterTokens'),
+		Platform: z
+			.int()
+			.describe(
+				'The balance bucket — the client’s `BalanceType` under a [DataMember] rename. -2, ' +
+					'account-wide: the capture said 0 (SteamPurchased) because the reference server ' +
+					'kept a wallet per platform; this one keeps a single bucket, and the client SUMS them'
+			),
+	}),
 })
 
 /** buyItem / buyInvention error body (`{ error }`), returned on 400/403/404/409. */
@@ -428,6 +491,66 @@ export const UgcPurchasableItemDto = z.object({
 
 /** What the bulk lookup answers: the resolved items, unknown ids omitted. */
 export const UgcPurchasableItemList = z.array(UgcPurchasableItemDto)
+
+/**
+ * `POST /api/items/purchaseInfos` JSON body — the same `{ itemType, itemId }` reference
+ * shape the UGC bulk lookup takes, minus the room. camelCase INSIDE the reference, which is
+ * the client's own inconsistency: the response wraps this very object under a PascalCase
+ * `ItemId` key without renaming its members.
+ */
+export const ItemPurchaseInfosRequest = z.object({
+	Ids: z.array(
+		z.object({
+			itemType: z.number().int().describe('3 = custom avatar item (the only type served)'),
+			itemId: z.string().describe('The `CustomAvatarItemId`'),
+		})
+	),
+})
+
+/** One `Prices[]` entry: what the item costs in one currency, and any sale on top. */
+export const ItemPriceDto = z.object({
+	CurrencyType: z.number().int().describe('2 = RecCenterTokens — what UGC items are priced in'),
+	Price: z.number().int(),
+	StorefrontSaleData: z
+		.object({
+			SalePercent: z.number().int(),
+			SaleStartDate: z.string().nullable(),
+			SaleEndDate: z.string().nullable(),
+		})
+		.nullable()
+		.describe('Always a zero-percent sale here; nothing discounts UGC items yet'),
+})
+
+/** The client's `ItemPurchaseInfo` — how one item may be bought. */
+export const ItemPurchaseInfoDto = z.object({
+	ItemId: z.object({ itemType: z.number().int(), itemId: z.string() }),
+	PurchaseMethodId: z.object({
+		Type: z.number().int(),
+		NumberId: z.number().int().nullable(),
+		Guid: z.string().nullable(),
+	}),
+	Prices: z.array(ItemPriceDto),
+	NewUntil: z.string().nullable(),
+	AvailableAt: z.string().nullable(),
+	AvailableUntil: z.string().nullable(),
+	CanBeGifted: z.boolean(),
+	CanApplySubscriberDiscount: z.boolean(),
+	SubscribersOnly: z.boolean(),
+	IsFeatured: z.boolean(),
+})
+
+/** What the purchase-info lookup answers: one entry per RESOLVED id, unknown ids omitted. */
+export const ItemPurchaseInfoList = z.array(ItemPurchaseInfoDto)
+
+/**
+ * `POST /api/avatar/v1/lockeditems/bulk` JSON body — the descs the client wants the locked
+ * state for. Currently accepted and not read; see the route.
+ */
+export const LockedItemsBulkRequest = z.object({
+	AvatarItemDescriptions: z
+		.array(z.string())
+		.describe('The `AvatarItemDesc` of each item the client is about to draw'),
+})
 
 export const ErrorResponse = z.object({ error: z.string() })
 
@@ -532,7 +655,9 @@ export const GameRewardRequest = z.object({
 	giftContext: z
 		.string()
 		.optional()
-		.describe('The activity it came from, e.g. `Soccer` — part of the cooldown key'),
+		.describe(
+			'The activity it came from, e.g. `Soccer` — part of the cooldown key. A key of `quest-rewards.json` (`Dodgeball`, `Quest_Goblin_S`, …) also picks the prize from that activity’s table'
+		),
 })
 
 /**

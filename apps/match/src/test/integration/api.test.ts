@@ -20,6 +20,7 @@ import {
 	ROOM_SCHEMA_DDL,
 	seedRoomWithSubRooms,
 	setPresence,
+	STAT_SCHEMA_DDL,
 	SUBROOM_SCHEMA_DDL,
 } from '@repo/domain'
 
@@ -124,6 +125,8 @@ beforeAll(async () => {
 	for (const stmt of PRESENCE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	// Room invites (owned by this worker) — POST /invite mints a row per invite.
 	for (const stmt of ROOM_INVITE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	// Stats (owned by this worker) — the presence cron samples the online count into it.
+	for (const stmt of STAT_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 
 	// Accounts table (owned by the auth worker) — dorm creation reads the username
 	// to name the room. Seed the players the dorm tests authenticate as.
@@ -1244,8 +1247,9 @@ describe('auth-gated endpoints', () => {
 				// The room the client is told to join has to be the one matchmaking placed
 				// them in, or they end up alone in a room of their own.
 				photonRoomId: matchmaked.roomInstance.photonRoomId,
-				// Empty strings, not nulls — unlike the presence payload's connection fields,
-				// which stay null (they never carry credentials).
+				// No TACHYON_HOST_PORT pool configured, so there is no server to name. Empty
+				// strings, not nulls — unlike the presence payload's connection fields, which
+				// stay null (they never carry credentials).
 				voiceConnectionInfo: '',
 				voiceServerId: '',
 				experiments: {
@@ -1372,6 +1376,84 @@ describe('auth-gated endpoints', () => {
 		})
 		const body = (await res.json()) as { value: { photonRoomId: string } }
 		expect(body.value.photonRoomId).toBe('')
+	})
+
+	test('the Tachyon server is assigned per room instance, not per request', async () => {
+		// tachyon-1/-2 and tachyon-4/-5 are slots on one host apiece: a server id names a
+		// slot, which is why it's generated from the entry's position and not from its
+		// address. The blank entry and the stray spaces below are dropped — a list edited
+		// by hand shouldn't hand anyone an empty address.
+		const pool = [
+			{ voiceConnectionInfo: '198.51.100.10:7777', voiceServerId: 'tachyon-1' },
+			{ voiceConnectionInfo: '198.51.100.10:7778', voiceServerId: 'tachyon-2' },
+			{ voiceConnectionInfo: '198.51.100.11:7777', voiceServerId: 'tachyon-3' },
+			{ voiceConnectionInfo: '203.0.113.20:7777', voiceServerId: 'tachyon-4' },
+			{ voiceConnectionInfo: '203.0.113.20:7778', voiceServerId: 'tachyon-5' },
+		]
+		const original = env.TACHYON_HOST_PORT
+		try {
+			env.TACHYON_HOST_PORT =
+				'198.51.100.10:7777, 198.51.100.10:7778 ,,198.51.100.11:7777,203.0.113.20:7777,203.0.113.20:7778'
+
+			const voiceFor = async (player: string, roomInstanceId?: number) => {
+				const res = await exports.default.fetch(
+					roomInstanceId === undefined
+						? `${ORIGIN}/player/connection-info`
+						: `${ORIGIN}/player/connection-info?roomInstanceId=${roomInstanceId}`,
+					{ headers: await bearer(player) }
+				)
+				const body = (await res.json()) as {
+					value: { voiceConnectionInfo: string; voiceServerId: string }
+				}
+				return {
+					voiceConnectionInfo: body.value.voiceConnectionInfo,
+					voiceServerId: body.value.voiceServerId,
+				}
+			}
+
+			// The player who opened the session reads their server off their presence...
+			const instance = await createRoomInstance(env.DB, {
+				ownerAccountId: 970,
+				roomId: 2,
+				photonRoomId: 'tachyon-instance-a',
+				maxCapacity: 12,
+			})
+			await setPresence(env.DB, {
+				accountId: 970,
+				roomInstance: instance,
+				statusVisibility: 0,
+				deviceClass: 0,
+				vrMovementMode: 1,
+				platform: 0,
+				appVersion: GAME_VERSION,
+			})
+			const assigned = pool[instance.roomInstanceId % pool.length]!
+			expect(await voiceFor('970')).toEqual(assigned)
+
+			// ...and a joiner asking by instance id, before their own presence has landed,
+			// is sent to the same one. Two players in a session on two servers is the whole
+			// failure this is arranged to avoid.
+			expect(await voiceFor('971', instance.roomInstanceId)).toEqual(assigned)
+
+			// The next session opened goes to the next server along — instance ids are
+			// sequential, so the pool is walked round-robin as instances are created.
+			const next = await createRoomInstance(env.DB, {
+				ownerAccountId: 972,
+				roomId: 2,
+				photonRoomId: 'tachyon-instance-b',
+				maxCapacity: 12,
+			})
+			expect(next.roomInstanceId).toBe(instance.roomInstanceId + 1)
+			const alongside = await voiceFor('972', next.roomInstanceId)
+			expect(alongside).toEqual(pool[next.roomInstanceId % pool.length])
+			expect(alongside.voiceServerId).not.toBe(assigned.voiceServerId)
+
+			// A player in no instance gets no server, pool or no pool — there is nothing for
+			// them to be on the same server as, and the fields stay empty strings.
+			expect(await voiceFor('973')).toEqual({ voiceConnectionInfo: '', voiceServerId: '' })
+		} finally {
+			env.TACHYON_HOST_PORT = original
+		}
 	})
 
 	test('re-matchmaking into your current room returns a different instance (id must change)', async () => {
@@ -1909,6 +1991,30 @@ describe('auth-gated endpoints', () => {
 		expect((await getRoomInstance(env.DB, solo))?.isFull).toBe(false)
 	})
 
+	test('records an `online` stat sample of the live presence count on each run', async () => {
+		await env.DB.prepare('DELETE FROM stat').run()
+		const before = (await env.DB.prepare('SELECT COUNT(*) AS n FROM presence WHERE expires_at > ?1')
+			.bind(nowSeconds())
+			.first<{ n: number }>())!.n
+
+		const ctx = createExecutionContext()
+		await scheduled(createScheduledController(), env, ctx)
+		await waitOnExecutionContext(ctx)
+
+		const rows = (
+			await env.DB.prepare('SELECT stat_type, value, datetime FROM stat').all<{
+				stat_type: string
+				value: number
+				datetime: string
+			}>()
+		).results
+		expect(rows).toHaveLength(1)
+		expect(rows[0]!.stat_type).toBe('online')
+		expect(rows[0]!.value).toBe(before)
+		// Stamped with the current time, as ISO-8601.
+		expect(Math.abs(Date.parse(rows[0]!.datetime) - Date.now())).toBeLessThan(10_000)
+	})
+
 	// Age an instance past EMPTY_INSTANCE_GRACE_SECONDS by backdating its `createdAt`
 	// (the generated `created_at` column follows the blob), so the empty-instance sweep
 	// can be exercised without waiting out the grace window.
@@ -2444,9 +2550,7 @@ describe('auth-gated endpoints', () => {
 
 		// The one frame an invite from a client on `version` pushes, with the RoomInviteId
 		// the call answered — a v2 invite names it in its Data.
-		const inviteFrom = async (
-			version?: string
-		): Promise<{ frame: Sent; roomInviteId: number }> => {
+		const inviteFrom = async (version?: string): Promise<{ frame: Sent; roomInviteId: number }> => {
 			await hub().fetch('http://do/all', { method: 'DELETE' })
 			const res = await exports.default.fetch(`${ORIGIN}/invite`, {
 				method: 'POST',
@@ -2810,6 +2914,14 @@ describe('auth-gated endpoints', () => {
 			RoomId: 2,
 		})
 
+		// The fan-out RECORDS each invite, like POST /invite: the row is what the invitee
+		// redeems the frame against, so a frame without one is expired on arrival.
+		const row = await env.DB.prepare(
+			'SELECT room_invite_id, room_id FROM room_invite WHERE from_player_id = 9850 AND to_player_id = 153'
+		).first<{ room_invite_id: number; room_id: number }>()
+		expect(row).not.toBeNull()
+		expect(row?.room_id).toBe(2)
+
 		// Multiple ids (repeated fields, not comma-separated), de-duplicated, and the leader
 		// themselves is skipped.
 		await reset()
@@ -2823,6 +2935,58 @@ describe('auth-gated endpoints', () => {
 		await reset()
 		await matchmake('JoinMode=0')
 		expect(await sent()).toEqual([])
+	})
+
+	test('a v2 party matchmake mints invites the members can actually redeem', async () => {
+		// The reported bug: /matchmake/v2/room/:id fanned the party out as frames with no
+		// `room_invite` row behind them, so the member's join answered 40 (RoomInviteExpired)
+		// while a manual POST /invite worked.
+		type Sent = { playerId: number; data: { Type: number; Data: string } }
+		const hub = () => env.RECFLARE_NOTIFICATIONS_HUB.getByName('global')
+		await hub().fetch('http://do/all', { method: 'DELETE' })
+
+		const res = await exports.default.fetch(`${ORIGIN}/matchmake/v2/room/2`, {
+			method: 'POST',
+			headers: {
+				...(await bearer('9860', '20250718.01')),
+				'Content-Type': 'application/json',
+			},
+			body: JSON.stringify({
+				AdditionalPlayerIds: [9861],
+				CorrelationId: '3c60e657-21c4-46be-815c-57ee51add506',
+				JoinMode: 2,
+				InviteMode: 20,
+			}),
+		})
+		expect(res.status).toBe(200)
+		const leader = (await res.json()) as { RoomInstance: { RoomInstanceId: number } }
+
+		// The party member's frame is a v2 invite naming a REAL row id.
+		const frames = (await (await hub().fetch('http://do/all')).json()) as Sent[]
+		const invite = frames.find((f) => f.playerId === 9861)
+		expect(invite?.data.Type).toBe(6) // MessageType.GameInviteV2
+		const { InviteId } = JSON.parse(invite?.data.Data ?? '{}') as { InviteId: number }
+		expect(InviteId).toBeGreaterThan(0)
+
+		// Redeeming it puts the member in the leader's instance rather than answering 40.
+		const joined = (await (
+			await exports.default.fetch(`${ORIGIN}/matchmake/invite/${InviteId}`, {
+				method: 'POST',
+				headers: { ...(await bearer('9861', '20250718.01')) },
+			})
+		).json()) as { ErrorCode: number; RoomInstance: { RoomInstanceId: number } | null }
+		expect(joined.ErrorCode).toBe(0)
+		expect(joined.RoomInstance?.RoomInstanceId).toBe(leader.RoomInstance.RoomInstanceId)
+
+		// The by-sender redemption the newer client falls back to works off the same row.
+		await env.DB.prepare('DELETE FROM presence WHERE account_id = 9861').run()
+		const bySender = (await (
+			await exports.default.fetch(`${ORIGIN}/matchmake/v2/player/9860`, {
+				method: 'POST',
+				headers: { ...(await bearer('9861', '20250718.01')) },
+			})
+		).json()) as { ErrorCode: number }
+		expect(bySender.ErrorCode).toBe(0)
 	})
 
 	test('POST /matchmake/invite/:id lands the invitee in the inviter’s instance', async () => {
@@ -2933,6 +3097,146 @@ describe('auth-gated endpoints', () => {
 		).toBe(401)
 	})
 
+	test('POST /matchmake/v2/player/:id joins the inviter, invite row required', async () => {
+		// 8811 stands in an instance and invites 8812 (writing the room_invite row).
+		const instance = await createRoomInstance(env.DB, {
+			ownerAccountId: 8811,
+			roomId: 2,
+			subRoomId: 2,
+			photonRoomId: crypto.randomUUID(),
+			name: '^RecCenter',
+			maxCapacity: 12,
+		})
+		await setPresence(env.DB, {
+			accountId: 8811,
+			roomInstance: instance,
+			statusVisibility: 0,
+			deviceClass: 0,
+			vrMovementMode: 1,
+			platform: 0,
+			appVersion: GAME_VERSION,
+		})
+
+		const join = async (targetId: number, sub: string) =>
+			exports.default.fetch(`${ORIGIN}/matchmake/v2/player/${targetId}`, {
+				method: 'POST',
+				headers: {
+					...(await bearer(sub)),
+					'Content-Type': 'application/x-www-form-urlencoded',
+				},
+				body: 'BypassMovementModeRestriction=False&LoginLock=40bacd8f-7c60-4d49-93f9-462b096602de&VoiceServerVersion=gameserver-2&CorrelationId=82c12c19-a3fc-4734-9abc-e912aeb1f351&MaxPersistenceVersion=227&PlayerIsPartyMember=False',
+			})
+
+		// No invite from the target yet → 40, and nothing about their state leaks.
+		expect(await (await join(8811, '8812')).json()).toMatchObject({
+			ErrorCode: 40,
+			RoomInstance: null,
+		})
+
+		await exports.default.fetch(`${ORIGIN}/invite`, {
+			method: 'POST',
+			headers: {
+				...(await bearer('8811')),
+				'Content-Type': 'application/x-www-form-urlencoded',
+			},
+			body: `playerId=8812&roomInstanceId=${instance.roomInstanceId}`,
+		})
+
+		// An invite from a DIFFERENT player doesn't authorize this target: 8813 holds no
+		// invite from 8811.
+		expect(await (await join(8811, '8813')).json()).toMatchObject({
+			ErrorCode: 40,
+			RoomInstance: null,
+		})
+
+		// The invitee lands in the inviter's instance, in the PascalCase v2 envelope with
+		// the CorrelationId echoed back.
+		const ok = await join(8811, '8812')
+		expect(ok.status).toBe(200)
+		const okBody = (await ok.json()) as Record<string, unknown>
+		expect(okBody).toMatchObject({
+			ErrorCode: 0,
+			CorrelationId: '82c12c19-a3fc-4734-9abc-e912aeb1f351',
+			RoomInstance: {
+				RoomInstanceId: instance.roomInstanceId,
+				RoomId: 2,
+				Name: '^RecCenter',
+				MatchmakingPolicy: 0,
+			},
+		})
+		// The exact wire shape, confirmed against the live client: the three-key envelope
+		// and the 15-key v2 instance, nothing extra (no Photon coordinates, no DataBlob).
+		expect(Object.keys(okBody).sort()).toEqual(['CorrelationId', 'ErrorCode', 'RoomInstance'])
+		expect(Object.keys(okBody.RoomInstance as object).sort()).toEqual(
+			[
+				'RoomInstanceId',
+				'RoomId',
+				'SubRoomId',
+				'Location',
+				'EventId',
+				'ClubId',
+				'RoomCode',
+				'Name',
+				'MaxCapacity',
+				'IsFull',
+				'IsPrivate',
+				'IsInProgress',
+				'EncryptVoiceChat',
+				'RoomInstanceType',
+				'MatchmakingPolicy',
+			].sort()
+		)
+
+		// The invite was spent by that join: the row is gone, so the same call now reads as
+		// "no invite" (40) rather than authorizing a second entry off the same invite.
+		expect(
+			await env.DB.prepare(
+				'SELECT COUNT(*) AS n FROM room_invite WHERE from_player_id = 8811 AND to_player_id = 8812'
+			).first<{ n: number }>()
+		).toMatchObject({ n: 0 })
+		expect(await (await join(8811, '8812')).json()).toMatchObject({
+			ErrorCode: 40,
+			RoomInstance: null,
+		})
+
+		// With a fresh invite, standing there already is 17, not a second join — and a
+		// refusal leaves that invite standing, which the PlayerNotOnline case below redeems.
+		await exports.default.fetch(`${ORIGIN}/invite`, {
+			method: 'POST',
+			headers: {
+				...(await bearer('8811')),
+				'Content-Type': 'application/x-www-form-urlencoded',
+			},
+			body: `playerId=8812&roomInstanceId=${instance.roomInstanceId}`,
+		})
+		expect(await (await join(8811, '8812')).json()).toMatchObject({
+			ErrorCode: 17,
+			RoomInstance: null,
+		})
+
+		// The inviter walking out leaves nothing to join: 2, PlayerNotOnline. (The invitee
+		// is moved out first so the AlreadyIn check doesn't answer ahead of it.)
+		await setPresence(env.DB, {
+			accountId: 8812,
+			roomInstance: null,
+			statusVisibility: 0,
+			deviceClass: 0,
+			vrMovementMode: 1,
+			platform: 0,
+			appVersion: GAME_VERSION,
+		})
+		await env.DB.prepare('DELETE FROM presence WHERE account_id = 8811').run()
+		expect(await (await join(8811, '8812')).json()).toMatchObject({
+			ErrorCode: 2,
+			RoomInstance: null,
+		})
+
+		// Unauthenticated is a 401, not a refusal code.
+		expect(
+			(await exports.default.fetch(`${ORIGIN}/matchmake/v2/player/8811`, { method: 'POST' })).status
+		).toBe(401)
+	})
+
 	test('GET /openapi.json documents every route', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/openapi.json`)
 		expect(res.status).toBe(200)
@@ -2973,6 +3277,7 @@ describe('auth-gated endpoints', () => {
 			'POST /matchmake/player/{playerId}',
 			'POST /matchmake/room/{roomId}',
 			'POST /matchmake/room/{roomId}/{subRoomId}',
+			'POST /matchmake/v2/player/{playerId}',
 			'POST /matchmake/v2/room/{roomId}',
 			'POST /matchmake/v2/room/{roomId}/{subRoomId}',
 			'POST /player/exclusivelogin',
@@ -3083,6 +3388,85 @@ describe('account bans', () => {
 			headers: await bearer('6007'),
 		})
 		expect(res.status).toBe(200)
+	})
+})
+
+// A 2023 client (`rn.ver` 20230414) can't load a scene saved at persistence version 227 or
+// later, so any room with such a subroom refuses it with UpdateRequired. Every other build
+// gets in as usual.
+describe('persistence version gate for the 2023 client', () => {
+	const matchmake = async (roomId: number, sub: string, version?: string) => {
+		const res = await exports.default.fetch(`${ORIGIN}/matchmake/room/${roomId}`, {
+			method: 'POST',
+			headers: {
+				...(await bearer(sub, version)),
+				'Content-Type': 'application/x-www-form-urlencoded',
+			},
+			body: new URLSearchParams({ JoinMode: '0' }).toString(),
+		})
+		expect(res.status).toBe(200)
+		return (await res.json()) as {
+			errorCode: number
+			result: number
+			roomInstance: { roomId: number } | null
+		}
+	}
+
+	beforeAll(async () => {
+		// Published scene at 227 — the first version the 2023 client can't load.
+		await seedRoomWithSubRooms(env.DB, {
+			RoomId: 7227,
+			Name: 'NewFormatRoom',
+			IsDorm: false,
+			Accessibility: 1,
+			CreatorAccountId: 7300,
+			SubRooms: [
+				{ SubRoomId: 7227, UnitySceneId: RECCENTER_SCENE, MaxPlayers: 10 },
+				{
+					SubRoomId: 7228,
+					UnitySceneId: SECOND_SUBROOM_SCENE,
+					MaxPlayers: 10,
+					CurrentSave: { DataBlob: 'new.room', PersistenceVersion: 227 },
+				},
+			],
+		} as unknown as Record<string, unknown>)
+		// Published at 226 — still loadable.
+		await seedRoomWithSubRooms(env.DB, {
+			RoomId: 7226,
+			Name: 'OldFormatRoom',
+			IsDorm: false,
+			Accessibility: 1,
+			CreatorAccountId: 7300,
+			SubRooms: [
+				{
+					SubRoomId: 7226,
+					UnitySceneId: RECCENTER_SCENE,
+					MaxPlayers: 10,
+					CurrentSave: { DataBlob: 'old.room', PersistenceVersion: 226 },
+				},
+			],
+		} as unknown as Record<string, unknown>)
+	})
+
+	test('the 2023 build is refused a room with a subroom at 227+', async () => {
+		const res = await matchmake(7227, '7301', '20230414')
+		expect(res.errorCode).toBe(16) // UpdateRequired
+		expect(res.result).toBe(16)
+		expect(res.roomInstance).toBeNull()
+
+		// A point release of the same build is the same client.
+		expect((await matchmake(7227, '7302', '20230414.02')).errorCode).toBe(16)
+	})
+
+	test('the 2023 build still enters a room saved below 227', async () => {
+		const res = await matchmake(7226, '7303', '20230414')
+		expect(res.errorCode).toBe(0)
+		expect(res.roomInstance?.roomId).toBe(7226)
+	})
+
+	test('newer builds and unversioned tokens are not gated', async () => {
+		expect((await matchmake(7227, '7304', '20250718.01')).errorCode).toBe(0)
+		expect((await matchmake(7227, '7305')).errorCode).toBe(0)
 	})
 })
 

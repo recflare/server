@@ -1,0 +1,1402 @@
+[
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "frOMH6WxDEG1fBqC4_83vg",
+			"Context": 110000,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "Film (Black & White)",
+			"GiftDropId": 2168,
+			"IsQuery": false,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 0,
+			"SubscribersOnly": false,
+			"Tooltip": "Take some black and white photos. Debug: 2168",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 20,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2168,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 20,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "m0bVLwWGj0GuIBSb6wCk6Q",
+			"Context": 110000,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "Film (Dawn)",
+			"GiftDropId": 2169,
+			"IsQuery": false,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 0,
+			"SubscribersOnly": false,
+			"Tooltip": "Take some sun-soaked photos. Debug: 2169",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 20,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2169,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 20,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "A5M-yf9tgUihq1uab3v58g",
+			"Context": 110000,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "Film (Sepia)",
+			"GiftDropId": 2174,
+			"IsQuery": false,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 0,
+			"SubscribersOnly": false,
+			"Tooltip": "Take some old-timey photos. Debug: 2174",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 20,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2174,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 20,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "-hy0qD-iUk-v4NHxNzanmg",
+			"Context": 4004,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "High Five Potion (Golden)",
+			"GiftDropId": 2176,
+			"IsQuery": false,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 0,
+			"SubscribersOnly": false,
+			"Tooltip": "Give golden high fives for a time. Debug: 2176",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 30,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2176,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 30,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "VQSgL2pTLkWx4B3kwYG7UA",
+			"Context": 4014,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "High Five Potion (Magic)",
+			"GiftDropId": 2179,
+			"IsQuery": false,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 0,
+			"SubscribersOnly": false,
+			"Tooltip": "Give magical high fives for a time. Debug: 2179",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 30,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2179,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 30,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "xwQWBB_fekmTqRc2LB92cg",
+			"Context": 110000,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "87 Flavor Cake",
+			"GiftDropId": 2181,
+			"IsQuery": false,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 30,
+			"SubscribersOnly": false,
+			"Tooltip": "Eight slices of tasty cake to share with friends. Debug: 2181",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 600,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2181,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 600,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "ZuvkidodzkuOfGLDnTOFyg",
+			"Context": 110000,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "Assorted Donuts",
+			"GiftDropId": 2182,
+			"IsQuery": false,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 20,
+			"SubscribersOnly": false,
+			"Tooltip": "A dozen assorted donuts to share with friends. Debug: 2182",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 100,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2182,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 100,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "iiGTvhOCHkOTNJhb16Zbyw",
+			"Context": 110000,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "Fancy Bubbly",
+			"GiftDropId": 2183,
+			"IsQuery": false,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 50,
+			"SubscribersOnly": false,
+			"Tooltip": " Debug: 2183",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 1000,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2183,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 1000,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "EmPvh3I6L0uK_1i8Wy_ylQ",
+			"Context": 110000,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "Candy Apples",
+			"GiftDropId": 2184,
+			"IsQuery": false,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 20,
+			"SubscribersOnly": false,
+			"Tooltip": " Debug: 2184",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 95,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2184,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 95,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "Sk_1sm88ZU2zpWn01Lv7hw",
+			"Context": 110000,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "Celebration Cake",
+			"GiftDropId": 2185,
+			"IsQuery": false,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 30,
+			"SubscribersOnly": false,
+			"Tooltip": "Eight slices of tasty cake to share with friends. Debug: 2185",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 600,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2185,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 600,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "5hIAZ9wg5EyG1cILf4FS2A",
+			"Context": 110000,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "Cheese Pizza",
+			"GiftDropId": 2186,
+			"IsQuery": false,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 0,
+			"SubscribersOnly": false,
+			"Tooltip": "A cheese pizza to share with friends. Debug: 2186",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 85,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2186,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 85,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "BbJb1_0g4EGJP_CeNrjpew",
+			"Context": 110000,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "Chocolate Cake",
+			"GiftDropId": 2187,
+			"IsQuery": false,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 30,
+			"SubscribersOnly": false,
+			"Tooltip": "Eight slices of tasty cake to share with friends. Debug: 2187",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 500,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2187,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 500,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "mMCGPgK3tki5S_15q2Z81A",
+			"Context": 110000,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "Chocolate Donuts",
+			"GiftDropId": 2188,
+			"IsQuery": false,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 10,
+			"SubscribersOnly": false,
+			"Tooltip": "A dozen chocolate donuts to share with friends. Debug: 2188",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 95,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2188,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 95,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "K9RbXo-4U0q6NbGu8VL1Sw",
+			"Context": 110000,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "Assorted Chocolates",
+			"GiftDropId": 2189,
+			"IsQuery": false,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 30,
+			"SubscribersOnly": false,
+			"Tooltip": "Assorted chocolates to share with friends! Debug: 2189",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 250,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2189,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 250,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "7OZ5AE3uuUyqa0P-2W1ptg",
+			"Context": 110000,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "Glazed Donuts",
+			"GiftDropId": 2190,
+			"IsQuery": false,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 0,
+			"SubscribersOnly": false,
+			"Tooltip": "A dozen glazed donuts to share with friends. Debug: 2190",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 90,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2190,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 90,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "_jnjYGBcyEWY5Ub4OezXcA",
+			"Context": 110000,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "Hawaiian Pizza",
+			"GiftDropId": 2191,
+			"IsQuery": false,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 10,
+			"SubscribersOnly": false,
+			"Tooltip": "A ham and pineapple pizza to share with friends. Debug: 2191",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 95,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2191,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 95,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "P15H1ONBhk-5DYYjid1ttg",
+			"Context": 110000,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "Tray of Lattes",
+			"GiftDropId": 2192,
+			"IsQuery": false,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 10,
+			"SubscribersOnly": false,
+			"Tooltip": "Four hot lattes to share with friends. Debug: 2192",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 95,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2192,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 95,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "mq23W-RSP0G8iGNLdrcpUw",
+			"Context": 110000,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "Pepperoni Pizza",
+			"GiftDropId": 2193,
+			"IsQuery": false,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 10,
+			"SubscribersOnly": false,
+			"Tooltip": "A pepperoni pizza to share with friends. Debug: 2193",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 90,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2193,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 90,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "QRx0aSTT9keMFdAJMQHdTg",
+			"Context": 110000,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "Popcorn",
+			"GiftDropId": 2194,
+			"IsQuery": false,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 30,
+			"SubscribersOnly": false,
+			"Tooltip": " Debug: 2194",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 100,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2194,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 100,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "LwaotjVEBUir0-w8126n_g",
+			"Context": 110000,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "Red Velvet Cake",
+			"GiftDropId": 2196,
+			"IsQuery": false,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 30,
+			"SubscribersOnly": false,
+			"Tooltip": "Eight slices of tasty cake to share with friends. Debug: 2196",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 500,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2196,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 500,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "JfnVXFmilU6ysv-VbTAe3A",
+			"Context": 110000,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "Root Beer",
+			"GiftDropId": 2197,
+			"IsQuery": false,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 0,
+			"SubscribersOnly": false,
+			"Tooltip": "A sixer of root beer to share with friends. Debug: 2197",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 50,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2197,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 50,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "InQ25wQMGkG_bvuD5rf2Ag",
+			"Context": 110000,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "Salted Pretzels",
+			"GiftDropId": 2198,
+			"IsQuery": false,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 0,
+			"SubscribersOnly": false,
+			"Tooltip": "A great snack to share with friends! Debug: 2198",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 75,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2198,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 75,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "wUCIKdJSvEmiQHYMyx4X4w",
+			"Context": 110000,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "Supreme Pizza",
+			"GiftDropId": 2199,
+			"IsQuery": false,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 20,
+			"SubscribersOnly": false,
+			"Tooltip": "A supreme pizza to share with friends. Debug: 2199",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 95,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2199,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 95,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "4My42w1D1Uu3-98pXB-x_Q",
+			"Context": 110000,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "Sushi",
+			"GiftDropId": 2200,
+			"IsQuery": false,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 30,
+			"SubscribersOnly": false,
+			"Tooltip": "15 piece premium sushi set to share with friends Debug: 2200",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 750,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2200,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 750,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "ZtZnYBpKkECJlhHmkj4MiA",
+			"Context": 110000,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "KO Icon - Bear Claw",
+			"GiftDropId": 2201,
+			"IsQuery": false,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 30,
+			"SubscribersOnly": false,
+			"Tooltip": "When you KO someone this will appear over their head. Debug: 2201",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 200,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2201,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 200,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "EAhk3ZZdXEmH5wRAXXT24Q",
+			"Context": 110000,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "KO Icon - Grenade",
+			"GiftDropId": 2206,
+			"IsQuery": false,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 20,
+			"SubscribersOnly": false,
+			"Tooltip": "When you KO someone this will appear over their head. Debug: 2206",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 150,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2206,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 150,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "5AJin8T2iEG7BzOPOgx2HA",
+			"Context": 110000,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "KO Icon - Sword & Shield",
+			"GiftDropId": 2208,
+			"IsQuery": false,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 20,
+			"SubscribersOnly": false,
+			"Tooltip": "When you KO someone this will appear over their head. Debug: 2208",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 150,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2208,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 150,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "U38Qe6rhEk6mFvArHfYjng",
+			"Context": 110000,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "KO Icon - Winged Skull",
+			"GiftDropId": 2209,
+			"IsQuery": false,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 20,
+			"SubscribersOnly": false,
+			"Tooltip": "When you KO someone this will appear over their head. Debug: 2209",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 100,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2209,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 100,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "yvqSbK2czkS2sUCRdrGaEw",
+			"Context": 110000,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "KO Icon - Star Power",
+			"GiftDropId": 2210,
+			"IsQuery": false,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 30,
+			"SubscribersOnly": false,
+			"Tooltip": "When you KO someone this will appear over their head. Debug: 2210",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 200,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2210,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 200,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "J1WqFNUWo0OBi4LGKPDHWw",
+			"Context": 110000,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "KO Icon - Tire Track",
+			"GiftDropId": 2211,
+			"IsQuery": false,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 20,
+			"SubscribersOnly": false,
+			"Tooltip": "When you KO someone this will appear over their head. Debug: 2211",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 200,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2211,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 200,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "",
+			"Context": 0,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "Common Random box",
+			"GiftDropId": 2454,
+			"IsQuery": true,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 0,
+			"SubscribersOnly": false,
+			"Tooltip": "a random box of Common quality Debug: 2454",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 50,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2454,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 50,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "",
+			"Context": 0,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "Uncommon Random box",
+			"GiftDropId": 2455,
+			"IsQuery": true,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 10,
+			"SubscribersOnly": false,
+			"Tooltip": "a random box of Uncommon quality Debug: 2455",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 200,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2455,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 200,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "",
+			"Context": 0,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "Rare Random box",
+			"GiftDropId": 2456,
+			"IsQuery": true,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 20,
+			"SubscribersOnly": false,
+			"Tooltip": "a random box of Rare quality Debug: 2456",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 500,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2456,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 500,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "",
+			"Context": 0,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "Epic Random box",
+			"GiftDropId": 2457,
+			"IsQuery": true,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 30,
+			"SubscribersOnly": false,
+			"Tooltip": "a random box of Epic quality Debug: 2457",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 800,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2457,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 800,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	},
+	{
+		"GiftDrop": {
+			"AvatarItemDesc": "",
+			"AvatarItemType": 0,
+			"ConsumableItemDesc": "",
+			"Context": 0,
+			"Currency": 0,
+			"CurrencyType": 0,
+			"EquipmentModificationGuid": "",
+			"EquipmentPrefabName": "",
+			"FriendlyName": "Legendary Random box",
+			"GiftDropId": 2458,
+			"IsQuery": true,
+			"ItemSetFriendlyName": "",
+			"ItemSetId": 0,
+			"Rarity": 50,
+			"SubscribersOnly": false,
+			"Tooltip": "a random box of Legendary quality Debug: 2458",
+			"Unique": false
+		},
+		"IsFeatured": false,
+		"Prices": [
+			{
+				"CurrencyType": 2,
+				"Price": 2000,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"PurchasableItemId": 2458,
+		"SubscriberPrices": [
+			{
+				"CurrencyType": 2,
+				"Price": 2000,
+				"StorefrontSaleData": null,
+				"Type": 0
+			}
+		],
+		"Type": 0
+	}
+]

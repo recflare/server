@@ -6,6 +6,7 @@ import {
 	Accessibility,
 	areFriends,
 	canManageRoom,
+	countOnlinePlayers,
 	createRoomInstance,
 	createRoomInvite,
 	deleteEmptyRoomInstances,
@@ -17,6 +18,8 @@ import {
 	getExpiredPresenceInstanceIds,
 	getFriendIds,
 	getJoinableInstance,
+	deleteRoomInvite,
+	getLatestRoomInviteBetween,
 	getMostActiveClubhouses,
 	getOrCreateDormRoom,
 	getPresence,
@@ -35,6 +38,7 @@ import {
 	MessageType,
 	MOST_ACTIVE_CLUBHOUSE_LIMIT,
 	recordRoomVisit,
+	recordStat,
 	refreshInstanceFullness,
 	RoomInstanceType,
 	setPresence,
@@ -161,6 +165,66 @@ function photonApps(env: Env) {
  */
 function instancePhotonRegion(env: Env): string {
 	return varOr(env.PHOTON_REGION, DEFAULT_PHOTON_REGION)
+}
+
+/**
+ * One Tachyon server this deployment can put a session on: where the client connects
+ * (`host:port`) and the cosmetic id it displays for it.
+ */
+interface TachyonServer {
+	hostPort: string
+	serverId: string
+}
+
+/**
+ * The Tachyon servers sessions are spread across, from `TACHYON_HOST_PORT` — a
+ * comma-separated list of `host:port` entries. EMPTY when the var is unset: recflare
+ * runs no Tachyon server of its own, and a client handed an address that answers
+ * nothing is worse off than one told there is no voice server at all.
+ *
+ * An entry's POSITION in the list is its identity: `voiceServerId` is generated from it
+ * (`tachyon-1`, `tachyon-2`, …) rather than configured, so the same host may appear
+ * twice and count as two servers — which is what one box running several server slots
+ * looks like from here. The id is cosmetic (the client connects to the address and
+ * never sends the id anywhere), but it is positional, so inserting an entry renames
+ * every server after it.
+ */
+function tachyonPool(env: Env): TachyonServer[] {
+	return varOr(env.TACHYON_HOST_PORT, '')
+		.split(',')
+		.map((entry) => entry.trim())
+		.filter((entry) => entry !== '')
+		.map((hostPort, i) => ({ hostPort, serverId: `tachyon-${i + 1}` }))
+}
+
+/** What the connection info carries when there is no Tachyon server to name. */
+const NO_TACHYON_SERVER: TachyonServer = { hostPort: '', serverId: '' }
+
+/**
+ * The Tachyon server a room instance runs on — the whole of the distributed selection,
+ * and deliberately a pure function of the instance id rather than a stored assignment.
+ *
+ * The point of a server assignment is that everyone in one instance is handed the SAME
+ * one: the player whose matchmake created the instance and everyone who joins it later
+ * each call `GET /player/connection-info` separately, so an assignment made per REQUEST
+ * (random, round-robin over a counter, least-loaded) would scatter one session across
+ * the pool. Deriving it from the instance id instead makes every caller compute the same
+ * answer without coordinating, needs no column to persist and no cleanup when the
+ * instance is swept, and answers for instances created before this existed.
+ *
+ * Instance ids are sequential ({@link createRoomInstance} allocates `MAX(id) + 1`), so
+ * the modulo hands successive instances to successive servers: a plain round-robin over
+ * instances, which is the spread a real allocator would aim for anyway. Changing the
+ * pool DOES move live instances — the list is the assignment — so add entries to the
+ * end and expect a session mid-flight to be told a different server when you don't.
+ *
+ * `roomInstanceId` 0 means the caller resolved to no instance at all (they're in no
+ * room, or named one that doesn't exist); they get no server rather than server one.
+ */
+function tachyonServerFor(env: Env, roomInstanceId: number): TachyonServer {
+	const pool = tachyonPool(env)
+	if (pool.length === 0 || roomInstanceId <= 0) return NO_TACHYON_SERVER
+	return pool[roomInstanceId % pool.length] ?? NO_TACHYON_SERVER
 }
 
 /**
@@ -596,6 +660,63 @@ function crossBuildRefusal(
 }
 
 /**
+ * The 2023 client build, as its token's `rn.ver` date stamps it (`20230414`, or a point
+ * release of it). See {@link persistenceVersionRefusal}.
+ */
+const BUILD_2023 = 20230414
+
+/**
+ * The first scene persistence version the 2023 client cannot load. A room whose published
+ * scene was saved at this version or later was built on a newer client; the old one fails
+ * to deserialize it.
+ */
+const MIN_UNLOADABLE_PERSISTENCE_VERSION_2023 = 227
+
+/**
+ * The persistence version of the scene a subroom LOADS — the published `CurrentSave`'s,
+ * the same save {@link subRoomDataBlob} serves, falling back to the flat legacy field.
+ * `null` when nothing recorded one (a fresh subroom, or one saved before the field
+ * existed): unknown is not "new".
+ */
+function subRoomPersistenceVersion(sub: Record<string, unknown> | undefined): number | null {
+	const save = sub?.CurrentSave
+	if (save && typeof save === 'object') {
+		const v = (save as Record<string, unknown>).PersistenceVersion
+		if (typeof v === 'number') return v
+	}
+	return typeof sub?.PersistenceVersion === 'number' ? sub.PersistenceVersion : null
+}
+
+/**
+ * Whether a player on `callerVersion` may enter `room` at all — `null` when they may,
+ * otherwise the code to refuse with.
+ *
+ * A caller on the 2023 build ({@link BUILD_2023}) is refused any room with a subroom whose
+ * published scene is at persistence version {@link MIN_UNLOADABLE_PERSISTENCE_VERSION_2023}
+ * or above: that scene was saved by a newer client and the 2023 one can't load it, so
+ * the honest answer is `UpdateRequired` — "your client can't go there" — rather than
+ * handing out an instance that never finishes loading. The WHOLE room is gated, not just
+ * the requested subroom, since the client walks between subrooms without re-matchmaking.
+ *
+ * Every other build, and a token that names none, passes: the gate is about one known
+ * client, not a general ordering.
+ */
+function persistenceVersionRefusal(
+	room: Room,
+	callerVersion: string | null
+): MatchmakingErrorCode | null {
+	if (buildNumber(callerVersion) !== BUILD_2023) return null
+	const subRooms = (Array.isArray(room.SubRooms) ? room.SubRooms : []) as Array<
+		Record<string, unknown>
+	>
+	const tooNew = subRooms.some((sub) => {
+		const v = subRoomPersistenceVersion(sub)
+		return v !== null && v >= MIN_UNLOADABLE_PERSISTENCE_VERSION_2023
+	})
+	return tooNew ? MatchmakingErrorCode.UpdateRequired : null
+}
+
+/**
  * "This event isn't open to you" — the refusal on a private event the caller wasn't
  * invited to. Told plainly rather than hidden behind the opaque NoSuchRoom: a player
  * reaching this already holds the event id from somewhere that showed it to them, so
@@ -668,14 +789,6 @@ async function gameInviteType(c: Context<App>): Promise<MessageType> {
  */
 const GAME_INVITE_V2_INVITE_MODE = InviteMode.PlayTogether
 
-/**
- * The placeholder `InviteId` on a v2 invite that has no `room_invite` row behind it — the
- * party fan-out, which invites without recording anything. What the client does with the
- * field isn't known yet; `POST /invite` passes the real row id (see {@link RoomInvite}),
- * which is the obvious candidate, and this stands in where there is no row to name.
- */
-const UNKNOWN_INVITE_ID = 0
-
 /** What an invite points at, in the shape both message versions need to describe it. */
 type GameInviteTarget = {
 	/** The raw roomInstanceId string — the WHOLE `Data` of a v1 invite. */
@@ -684,7 +797,7 @@ type GameInviteTarget = {
 	roomId: number | null
 	/** The instance's `^`-prefixed wire name, `''` when the instance didn't resolve. */
 	name: string
-	/** The `room_invite` row this came from, or {@link UNKNOWN_INVITE_ID}. */
+	/** The id of the `room_invite` row this came from — what the invitee redeems. */
 	inviteId: number
 }
 
@@ -1064,6 +1177,12 @@ async function readMatchmakeBody(
  * sends, pointing at this instance, so a party matchmake pulls the whole party along. The
  * leader is skipped (already in). Best-effort per member (sendGameInvite swallows its own
  * failures), and never blocks the matchmake beyond the sends themselves.
+ *
+ * Each member's invite is RECORDED, exactly as `POST /invite` records one, because the row
+ * is what the member redeems the frame against: the 2025 client joins off a party invite
+ * through `/matchmake/invite/{InviteId}` or `/matchmake/v2/player/{leaderId}`, and both
+ * resolve a `room_invite` row. A fan-out that only pushed the frame minted no row, so every
+ * party invite read as expired the moment it arrived while a manual `POST /invite` worked.
  */
 async function inviteParty(
 	c: Context<App>,
@@ -1071,21 +1190,33 @@ async function inviteParty(
 	playerIds: number[],
 	instance: RoomInstance
 ): Promise<void> {
-	// The leader's own instance, which every member is being pulled into. Nothing records
-	// a `room_invite` row on this path, so a v2 invite has no real id to name.
-	const target: GameInviteTarget = {
-		instanceId: String(instance.roomInstanceId),
-		roomId: instance.roomId,
-		name: instance.name,
-		inviteId: UNKNOWN_INVITE_ID,
-	}
 	// One read of the leader's token for the whole party — every member gets the same
 	// message, so the type can't differ between them.
 	const type = await gameInviteType(c)
 	await Promise.all(
 		playerIds
 			.filter((pid) => pid !== leaderId)
-			.map((pid) => sendGameInvite(c, leaderId, pid, target, type))
+			.map(async (pid) => {
+				// The row before the frame, as `POST /invite` does: the frame names the row's id,
+				// so an invite that couldn't be recorded has nothing to redeem and isn't sent.
+				const invite = await createRoomInvite(c.env.DB, leaderId, pid, instance.roomId)
+				if (invite === null) {
+					logger.error('failed to record party room invite', {
+						fromPlayerId: leaderId,
+						toPlayerId: pid,
+						roomId: instance.roomId,
+					})
+					return
+				}
+				// The leader's own instance, which every member is being pulled into.
+				const target: GameInviteTarget = {
+					instanceId: String(instance.roomInstanceId),
+					roomId: instance.roomId,
+					name: instance.name,
+					inviteId: invite.RoomInviteId,
+				}
+				await sendGameInvite(c, leaderId, pid, target, type)
+			})
 	)
 }
 
@@ -1203,6 +1334,20 @@ async function resolveRoomInstance(
 		return { instance: null, errorCode: BANNED_FROM_ROOM }
 	}
 
+	// The build this player is on, from their token. A 2023 client can't load a scene
+	// saved at a newer persistence version, so it is refused the room outright (see
+	// persistenceVersionRefusal) before any instance is created or reused.
+	const tokenVersion = await callerVersion(c)
+	const tooNew = persistenceVersionRefusal(room, tokenVersion)
+	if (tooNew !== null) {
+		logger.info('matchmake refused: room persistence version too new for client build', {
+			roomId: f.roomId,
+			ownerId,
+			gameVersion: tokenVersion,
+		})
+		return { instance: null, errorCode: tooNew }
+	}
+
 	// Never place the player back into the instance they're already in: the client
 	// keys the room transition off a changing `roomInstanceId`, so re-matchmaking into
 	// your current instance (e.g. the only public instance of a room you're already in)
@@ -1213,10 +1358,10 @@ async function resolveRoomInstance(
 	const currentInstanceId = isPrivate
 		? undefined
 		: (await getPresence<RoomInstance>(c.env.DB, ownerId))?.roomInstance?.roomInstanceId
-	// The build this player is on, from their token. It scopes the search below and is
-	// stamped on the instance when one is created, which is what keeps a session to a
-	// single client version.
-	const gameVersion = await callerGameVersion(c)
+	// The same build, with GAME_VERSION standing in for a token that names none. It scopes
+	// the search below and is stamped on the instance when one is created, which is what
+	// keeps a session to a single client version.
+	const gameVersion = tokenVersion ?? GAME_VERSION
 	// Reuse an existing joinable public instance *of the same subroom and the same
 	// build* — subrooms are separate places, so joining one must never land you in
 	// another, and neither must a session running a different version of the room.
@@ -2040,6 +2185,143 @@ const app = new Hono<App>()
 		}
 	)
 
+	// The newer client's join-by-player (`/matchmake/v2/player/{playerId}`). Same move as
+	// the v1 follow above — land in the instance the target is standing in — but gated on
+	// the `room_invite` table rather than friendship: the caller must hold a standing
+	// invite FROM the target (the newer client's invite frame doesn't always carry a
+	// redeemable `InviteId` — the party fan-out sends 0 — so it redeems by player instead
+	// of by row id, and this is that path). Everything the target sent stays checkable:
+	// the newest row is enough, since any live row is authorization.
+	//
+	// The row is consumed on a successful join: an invite authorizes one entry, and since
+	// this path follows the target's LIVE presence rather than the room the invite named,
+	// keeping it would leave a standing key into whatever instance they're in later.
+	//
+	// Like the follow and invite paths, this hands out real Photon coordinates without
+	// going through resolveRoomInstance, so it carries its own ban and build checks.
+	// `/matchmake/v2/` answers the PascalCase envelope via `matchmakeResult`, as the v2
+	// room routes do.
+	.post(
+		'/matchmake/v2/player/:playerId{[0-9]+}',
+		describeRoute({
+			tags: ['Navigation', '2025'],
+			summary: 'Join the player who invited you (v2)',
+			description: [
+				'Places the caller into the room instance the target player is currently in, read from',
+				'the target’s stored presence. INVITEES ONLY: the caller must hold a `room_invite` row',
+				'FROM the target (as `POST /invite` writes them) — the newer client redeems an invite by',
+				'its sender when the frame carries no usable `RoomInviteId`. The invite is SINGLE-USE:',
+				'a successful join deletes the row, so the same invite can’t be redeemed again into',
+				'wherever that player goes next (a refusal leaves it standing, so a retry still works).',
+				'Answers 40',
+				'(RoomInviteExpired) when no invite stands (expiry deletes rows, so “never invited” and',
+				'“expired” are one answer), 2 (PlayerNotOnline) when the target isn’t in a room, 17',
+				'(AlreadyInTargetInstance) when the caller is already standing there, 3',
+				'(InsufficientSpace) when it filled up, and 55 (BannedFromRoom) when the caller is',
+				'banned from that room.',
+				'',
+				'2025-client route: it answers the PascalCase `ErrorCode`/`RoomInstance` envelope, as',
+				'the other `/matchmake/v2/*` routes do.',
+			].join(' '),
+			security: AUTHED,
+			requestBody: form(CorrelationIdRequest, 'The attempt’s CorrelationId'),
+			parameters: [
+				{
+					name: 'playerId',
+					in: 'path',
+					required: true,
+					description: 'The player to join (digits only)',
+					schema: { type: 'string', pattern: '^[0-9]+$' },
+				},
+			],
+			responses: {
+				200: json(
+					MatchmakeV2Response,
+					'The target’s instance, or a null RoomInstance with the refusal code'
+				),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const targetId = Number.parseInt(c.req.param('playerId'), 10)
+			// The gate: a standing invite from the target to the caller. No row means never
+			// invited or already swept — the same answer either way, since expiry deletes
+			// rows. This also refuses joining yourself: nobody holds a self-invite.
+			const invite = await getLatestRoomInviteBetween(c.env.DB, targetId, id)
+			if (invite === null) {
+				logger.info('v2 player matchmake refused: no invite from target', { targetId, id })
+				return matchmakeResult(c, MatchmakingErrorCode.RoomInviteExpired, null)
+			}
+
+			// Where the inviter is NOW, straight off their presence row — not the invite's
+			// stored RoomId, which records where they were when they sent it.
+			const targetPresence = await getPresence<RoomInstance>(c.env.DB, targetId)
+			const instance = targetPresence?.roomInstance ?? null
+			if (!instance) {
+				logger.info('v2 player matchmake refused: target is not in a room', { targetId, id })
+				return matchmakeResult(c, MatchmakingErrorCode.PlayerNotOnline, null)
+			}
+
+			// Already standing there: nothing to do, and re-entering would churn presence and
+			// re-fire the friend fan-out for a move that didn't happen.
+			const own = await getPresence<RoomInstance>(c.env.DB, id)
+			if (own?.roomInstance?.roomInstanceId === instance.roomInstanceId) {
+				return matchmakeResult(c, MatchmakingErrorCode.AlreadyInTargetInstance, null)
+			}
+
+			// Real Photon coordinates without resolveRoomInstance, so the room's bans have to
+			// be checked here — otherwise an invite is a way around one.
+			if (await isPlayerBannedFromRoom(c.env.DB, instance.roomId, id)) {
+				logger.info('v2 player matchmake refused: player banned from room', {
+					roomId: instance.roomId,
+					id,
+				})
+				return matchmakeResult(c, BANNED_FROM_ROOM, null)
+			}
+
+			// Nor the build scoping a room matchmake has by construction. Compared against the
+			// TARGET's presence — they're the person actually standing in there.
+			const refusal = crossBuildRefusal(
+				await callerGameVersion(c),
+				targetPresence?.appVersion ?? GAME_VERSION
+			)
+			if (refusal !== null) {
+				logger.info('v2 player matchmake refused: target is on another client build', {
+					roomInstanceId: instance.roomInstanceId,
+					targetId,
+					id,
+				})
+				return matchmakeResult(c, refusal, null)
+			}
+
+			// Fullness read fresh, like the invite path: joins off an invite cluster exactly
+			// when a nearly-full instance is still filling. Null means a synthetic instance
+			// with no row (a dorm), which has no head-count to check.
+			if ((await refreshInstanceFullness(c.env.DB, instance.roomInstanceId)) === true) {
+				logger.info('v2 player matchmake refused: instance is full', {
+					roomInstanceId: instance.roomInstanceId,
+					id,
+				})
+				return matchmakeResult(c, MatchmakingErrorCode.InsufficientSpace, null)
+			}
+
+			// Same instance, same Photon room, stored as the caller's presence so their
+			// heartbeat replays it and their own friend fan-out fires.
+			await enterRoom(c, id, instance)
+
+			// The invite is spent: it was authorization for THIS join, and leaving the row
+			// standing would make it a permanent key into whatever instance the target is in
+			// later — this path reads their live presence, not the room the invite named.
+			// Dropped only once the caller is actually in, so every refusal above (target not
+			// in a room, full, banned, wrong build) leaves the invite redeemable for a retry.
+			await deleteRoomInvite(c.env.DB, invite.RoomInviteId)
+			return matchmakeResult(c, MatchmakingErrorCode.Success, instance)
+		}
+	)
+
 	// Accept a game invite and land in the inviter's instance
 	// (`/matchmake/invite/{roomInviteId}`). The 2025 client's join button on an invite: it
 	// carries the `RoomInviteId` minted by `POST /invite`, and this resolves that row to the
@@ -2496,6 +2778,10 @@ const app = new Hono<App>()
 	// reads presence and nothing else; we fall back to looking the `roomInstanceId` query
 	// param up when presence has no room (it expires on a TTL, and the client sometimes
 	// asks before matchmaking has landed), and to an empty string when neither resolves.
+	//
+	// The Tachyon server is resolved from the same instance ({@link tachyonServerFor}), so
+	// the player who created the session and everyone who joins it later are all sent to
+	// one server without this endpoint having to remember what it told the first caller.
 	.get(
 		'/player/connection-info',
 		describeRoute({
@@ -2506,9 +2792,11 @@ const app = new Hono<App>()
 				'`{ success, value, error }` envelope: a freshly minted `photonAuthToken`, the',
 				'Photon application ids, and the `photonRoomId` of the instance the caller is in',
 				'(from their presence, falling back to the `roomInstanceId` query param). The voice',
-				'fields carry the Tachyon voice server (`TACHYON_HOST_PORT`/`TACHYON_NAME`),',
-				'empty when none is configured. `experiments` carries the',
-				'client’s networking flags.',
+				'fields name the Tachyon server that instance was assigned — one entry out of the',
+				'`TACHYON_HOST_PORT` pool, chosen by instance id so every player in a session is',
+				'handed the same one, with a generated `voiceServerId` (`tachyon-1`, `tachyon-2`,',
+				'…). Both are empty when the pool is unset or the caller is in no instance.',
+				'`experiments` carries the client’s networking flags.',
 			].join(' '),
 			security: AUTHED,
 			parameters: [
@@ -2532,14 +2820,22 @@ const app = new Hono<App>()
 			const apps = photonApps(c.env)
 			const presence = await getPresence<RoomInstance>(c.env.DB, id)
 			// Presence first (it's the instance the player is actually in); the query param
-			// only stands in when there's no live presence to read.
+			// only stands in when there's no live presence to read. The instance id travels
+			// with the Photon room because the Tachyon server is derived from it — resolving
+			// one without the other would hand a joiner the right Photon room on a different
+			// game server than the rest of their session.
+			let roomInstanceId = presence?.roomInstance?.roomInstanceId ?? 0
 			let photonRoomId = presence?.roomInstance?.photonRoomId ?? ''
 			if (!photonRoomId) {
 				const requested = Number.parseInt(c.req.query('roomInstanceId') ?? '', 10)
 				if (!Number.isNaN(requested)) {
-					photonRoomId = (await getRoomInstance(c.env.DB, requested))?.photonRoomId ?? ''
+					const instance = await getRoomInstance(c.env.DB, requested)
+					roomInstanceId = instance?.roomInstanceId ?? 0
+					photonRoomId = instance?.photonRoomId ?? ''
 				}
 			}
+			// The instance's server, the same one every other player in it is handed.
+			const tachyon = tachyonServerFor(c.env, roomInstanceId)
 
 			// Identifies the player to Photon. Signed with the shared JWT secret; the token's
 			// `aud` is the realtime app it's for. Nothing verifies it while Photon is
@@ -2561,13 +2857,14 @@ const app = new Hono<App>()
 					photonAuthToken,
 					...apps,
 					photonRoomId,
-					// The Tachyon voice server, from the operator's vars — empty strings when
-					// unset (no separate voice server). Empty rather than null: the client's
+					// The Tachyon server this instance runs on, picked out of the operator's
+					// pool by {@link tachyonServerFor} — empty strings when the pool is empty
+					// or the caller is in no instance. Empty rather than null: the client's
 					// decoder is likelier to accept a missing-value string than a null on a
 					// string field. The presence payload's NULL_CONNECTION_INFO keeps its
 					// nulls — that one never carries credentials.
-					voiceConnectionInfo: varOr(c.env.TACHYON_HOST_PORT, ''),
-					voiceServerId: varOr(c.env.TACHYON_NAME, ''),
+					voiceConnectionInfo: tachyon.hostPort,
+					voiceServerId: tachyon.serverId,
 					experiments: PHOTON_EXPERIMENTS,
 				},
 				error: null,
@@ -2903,10 +3200,14 @@ async function sweepExpiredPresence(env: Env): Promise<void> {
 	for (const instanceId of staleInstanceIds) {
 		await refreshInstanceFullness(env.DB, instanceId)
 	}
+	// Sample the player count into `stat` — taken after the purge, so it's the live
+	// rows and not the ones that just lapsed. One row per cron run: the `online` series.
+	const online = await countOnlinePlayers(env.DB)
+	await recordStat(env.DB, 'online', online)
 	// The tagged logger is request-scoped (its middleware never runs for a cron), so
 	// log plainly here — Workers observability picks it up either way.
 	console.log(
-		`presence sweep: removed ${removed} expired rows, deleted ${emptyInstanceIds.length} empty instances, refreshed ${staleInstanceIds.length} instances`
+		`presence sweep: removed ${removed} expired rows, deleted ${emptyInstanceIds.length} empty instances, refreshed ${staleInstanceIds.length} instances, ${online} online`
 	)
 }
 

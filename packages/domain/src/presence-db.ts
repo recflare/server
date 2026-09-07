@@ -33,21 +33,25 @@ export const PRESENCE_TTL_SECONDS = 900
 export const GAME_VERSION = '20250718.01'
 
 /**
- * Client builds `/api/versioncheck/v4` answers "current" for. `GAME_VERSION` is the one
- * the rest of the stack targets and reports for itself; the others are later clients
- * that talk close enough to the same protocol to get past the update prompt.
+ * Client builds `/api/versioncheck/v4` answers "current" for, in the support tiers the
+ * README publishes. They talk close enough to the same protocol to get past the update
+ * prompt; how much beyond that is tested differs by tier:
  *
- * DEBUGGING ONLY beyond `GAME_VERSION`: this is not a supported-version list. Nothing
- * else in the stack targets those builds, so a client waved through here can still hit
- * protocol differences the version check would otherwise have caught. Trim it back to
- * `GAME_VERSION` alone before anyone but us is playing.
+ * - `GAME_VERSION` (`20230414`, manifest `7859140924515540835`) is the DEFAULT — the
+ *   build the rest of the stack targets and the one it reports for itself.
+ * - `20250718.01` (manifest `1151455856673601091`, reached through the `patch-2025`
+ *   patch) is BETA — supported, and the build the "newer than `20230414`" gates in
+ *   `econ`/`api`/`rooms` are written and tested against.
+ * - The rest are ALPHA: waved past the version check, but nothing else in the stack
+ *   targets them, so they can still hit protocol differences this check would otherwise
+ *   have caught. Expect breakage rather than treating a bug there as a regression.
  */
 export const SUPPORTED_GAME_VERSIONS: string[] = [
-	GAME_VERSION,
-	'20230616',
-	'20231207',
-	'20250424.01',
-	'20250718.01',
+	GAME_VERSION, // default
+	'20250718.01', // beta
+	'20230616', // alpha
+	'20231207', // alpha
+	'20250424.01', // alpha
 ]
 
 /** Whether a client-supplied build (the version check's `?v=`) is one we serve. */

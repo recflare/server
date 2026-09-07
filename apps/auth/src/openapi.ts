@@ -1,6 +1,8 @@
 import { resolver } from 'hono-openapi'
 import { z } from 'zod'
 
+import { PlatformType } from '@repo/domain/src/enums'
+
 import type { OpenAPIV3_1 } from 'openapi-types'
 
 /**
@@ -49,24 +51,13 @@ export function form(schema: z.ZodType, description: string): OpenAPIV3_1.Reques
 }
 
 /**
- * PlatformType, the client's platform enum. Declaration order is wire order, and is
- * the single source for the schema and description below. The `platform` form field
- * is posted as the integer; the token's `platform` claim carries the name.
+ * PlatformType, the client's platform enum — the single source for the schema and
+ * description below. It lives in `@repo/domain` rather than here because the link table
+ * (`platform-db`) and the website's benefits claim both need the values, and neither has
+ * any business importing this module's zod/hono-openapi dependencies. Re-exported so
+ * `import { PlatformType } from './openapi'` keeps working alongside the schemas.
  */
-export const PlatformType = {
-	All: -1,
-	Steam: 0,
-	Oculus: 1,
-	PlayStation: 2,
-	Xbox: 3,
-	RecNet: 4,
-	IOS: 5,
-	GooglePlay: 6,
-	Standalone: 7,
-	Pico: 8,
-} as const
-
-export type PlatformType = (typeof PlatformType)[keyof typeof PlatformType]
+export { PlatformType } from '@repo/domain/src/enums'
 
 /**
  * A PlatformType by value. Only Steam and Oculus (Meta) can actually be verified —

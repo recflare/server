@@ -181,7 +181,7 @@ describe('auth-gated endpoints', () => {
 		const res = await exports.default.fetch(`${ORIGIN}/parentalcontrol/me`, {
 			headers: await bearer(),
 		})
-		expect(await res.json()).toEqual({ accountId: 42, disallowInAppPurchases: false })
+		expect(await res.json()).toEqual({ accountId: 42, disallowInAppPurchases: true })
 	})
 
 	test('GET /accountprivacysettings/:id echoes the id with the privacy flags', async () => {

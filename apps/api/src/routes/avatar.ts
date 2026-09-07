@@ -6,6 +6,7 @@ import {
 	getOutfit,
 	getOutfitsByAccounts,
 	inventionDescriptionRejection,
+	inventionLongDescriptionRejection,
 	inventionNameRejection,
 	inventionTagRejection,
 	MAX_BULK_OUTFIT_ACCOUNTS,
@@ -16,14 +17,17 @@ import {
 	createCustomAvatarItem,
 	deleteCustomAvatarItem,
 	getCustomAvatarItem,
+	getCustomAvatarItems,
 	listCustomAvatarItemsByCreator,
 	listFeaturedCustomAvatarItems,
 	listHotCustomAvatarItems,
+	searchCustomAvatarItems,
 	updateCustomAvatarItem,
 } from '../custom-avatar-items-db'
 import { authedId, unauthorized } from '../http'
 import {
 	createInvention,
+	deleteInvention,
 	getFeaturedInventions,
 	getInventionById,
 	getInventionsByIds,
@@ -33,6 +37,10 @@ import {
 	getInventionVersion,
 	getMyInventions,
 	getTopInventions,
+	INVENTION_TAG_RESULT,
+	inventionDeleteResult,
+	inventionSaveV9Failure,
+	normalizeInventionTags,
 	ownsAllInventions,
 	parsePermissionLevel,
 	publishInvention,
@@ -40,6 +48,7 @@ import {
 	setInventionPrice,
 	setInventionTags,
 	toSaveResult,
+	toSaveResultV9,
 	updateInvention,
 } from '../inventions-db'
 import {
@@ -49,19 +58,23 @@ import {
 	BulkCustomAvatarItemsRequest,
 	CreateCustomAvatarItemRequest,
 	CustomAvatarItemList,
+	CustomAvatarItemReportRequest,
 	CustomAvatarItemResponse,
 	CustomAvatarItemsPage,
+	DeleteInventionRequest,
 	ErrorResponse,
 	form,
 	GeneratedGift,
 	GenerateGiftRequest,
 	idParam,
 	intQuery,
+	InventionDeleteResult,
 	InventionDetails,
 	InventionDto,
 	InventionPersonalDetails,
 	InventionReportRequest,
 	InventionSaveResult,
+	InventionSaveV9Result,
 	InventionVersionDto,
 	json,
 	JsonArray,
@@ -74,7 +87,9 @@ import {
 	OutfitsMeRequest,
 	OutfitsMeResponse,
 	pageParams,
+	PublishInventionRequest,
 	SaveInventionRequest,
+	SaveInventionV9Request,
 	SetTagsRequest,
 	SetTagsResponse,
 	stringParam,
@@ -84,34 +99,197 @@ import {
 	TagFilters,
 	UNAUTHORIZED_RESPONSE,
 	UpdateCustomAvatarItemRequest,
+	UpdateInventionMetadataRequest,
 	UpdatePriceRequest,
 } from '../openapi'
 import { createReport } from '../reports-db'
 
 import type { Context } from 'hono'
 import type { App } from '../context'
-import type { SavedInvention } from '../inventions-db'
+import type { InventionTag, SavedInvention } from '../inventions-db'
+
+/**
+ * The most ids `POST /api/customAvatarItems/v1/bulk` will resolve. A batch over this answers
+ * EMPTY rather than being truncated.
+ *
+ * Empty rather than the first 100, because a truncated answer is indistinguishable from the
+ * items simply not existing — the client reads the items it got back, not the ids it asked
+ * about, so it cannot tell a cut-off batch from a batch of misses and would cache the
+ * difference. Nothing renders this many custom items at once, so a batch this size is the
+ * client doing something other than filling a screen.
+ */
+const BULK_CUSTOM_AVATAR_ITEM_CAP = 100
+
+/**
+ * The ids `POST /api/customAvatarItems/v1/bulk` was asked to resolve. They ride as repeated
+ * `customAvatarItemIds` form fields, and the same spelling is read off the query string
+ * too — the client's exact encoding here has not been pinned down, so both are accepted
+ * rather than guessing one and answering nothing when it's the other.
+ *
+ * Each value may itself be a comma-separated list, and blanks are dropped rather than
+ * failing the request: a stray id must not cost the caller the rest of the batch. The order
+ * asked for is preserved, since `getCustomAvatarItems` answers in it.
+ */
+async function bulkCustomAvatarItemIds(c: Context<App>): Promise<string[]> {
+	const raw = [...(c.req.queries('customAvatarItemIds') ?? [])]
+	const body = await c.req.parseBody({ all: true }).catch(() => ({}) as Record<string, unknown>)
+	const key = Object.keys(body).find((k) => k.toLowerCase() === 'customavataritemids')
+	const posted = key === undefined ? [] : body[key]
+	for (const value of Array.isArray(posted) ? posted : [posted]) {
+		if (typeof value === 'string') raw.push(value)
+	}
+	return raw
+		.flatMap((value) => value.split(','))
+		.map((v) => v.trim())
+		.filter((v) => v !== '')
+}
 
 /**
  * The gate every invention write runs through: the caller must be signed in, the
- * invention must exist, and it must be theirs. Yields the loaded invention, or the
- * error response to return as-is (401 / 404 / 403).
+ * invention must exist, and it must be theirs. Yields the loaded invention, or why not —
+ * as a reason and the status it maps to, so that a caller answering an envelope can put
+ * the reason where its client will read it instead of in a body that client can't parse.
+ * {@link creatorsInvention} is the rendering the older routes want.
+ */
+async function creatorsInventionResult(
+	c: Context<App>,
+	inventionId: number
+): Promise<
+	{ invention: SavedInvention } | { rejection: string; status: 400 | 401 | 403 | 404 }
+> {
+	const playerId = await authedId(c)
+	if (playerId === null) return { rejection: 'Unauthorized', status: 401 }
+	if (Number.isNaN(inventionId)) return { rejection: 'inventionId is required', status: 400 }
+
+	const invention = await getInventionById(c.env.DB, inventionId)
+	if (invention === null) return { rejection: 'No such invention', status: 404 }
+	if (invention.CreatorPlayerId !== playerId) {
+		return { rejection: 'Not your invention', status: 403 }
+	}
+	return { invention }
+}
+
+/**
+ * {@link creatorsInventionResult} as the older invention writes answer it: the loaded
+ * invention, or the response to return as-is (400 / 401 / 403 / 404).
  */
 async function creatorsInvention(
 	c: Context<App>,
 	inventionId: number
 ): Promise<{ invention: SavedInvention } | { response: Response | Promise<Response> }> {
-	const playerId = await authedId(c)
-	if (playerId === null) return { response: unauthorized(c) }
-	if (Number.isNaN(inventionId)) {
-		return { response: c.json({ error: 'inventionId is required' }, 400) }
+	const gate = await creatorsInventionResult(c, inventionId)
+	if ('invention' in gate) return gate
+	if (gate.status === 401) return { response: unauthorized(c) }
+	if (gate.status === 404) return { response: c.notFound() }
+	return { response: c.json({ error: gate.rejection }, gate.status) }
+}
+
+/**
+ * The tags a `{ AutoTags, CustomTags }` request asks for, and whether they were taken —
+ * the block the v9 save sends as `tagsRequest` and `v2/metadata` sends as `TagsRequest`.
+ * Null when the client named no block at all, which each caller reads its own way: a save
+ * stores no tags, an edit leaves the stored ones alone.
+ *
+ * Tags are held to the same rule `v1/settags` applies, but a tag that breaks it costs the
+ * TAGS and not the write: both replies carry a tag result of their own precisely because
+ * the two outcomes are separate, and refusing a save would make the player redo a build
+ * over a hyphen. All the tags go rather than the offending one alone, so nothing is
+ * silently half-applied — the creator re-submits the list and sees what took. Blanks are
+ * skipped rather than counted against it; the client pads its lists with empties.
+ */
+function requestedTags(request: unknown): { tags: InventionTag[]; tagResult: number } | null {
+	if (typeof request !== 'object' || request === null) return null
+
+	const lists = request as Record<string, unknown>
+	const strings = (v: unknown): string[] =>
+		Array.isArray(v) ? v.filter((t): t is string => typeof t === 'string') : []
+	const autoTags = strings(lists.AutoTags)
+	const customTags = strings(lists.CustomTags)
+
+	const rejected = [...autoTags, ...customTags].some((raw) => {
+		const tag = raw.trim().toLowerCase()
+		return tag !== '' && inventionTagRejection(tag) !== null
+	})
+	return rejected
+		? { tags: [], tagResult: INVENTION_TAG_RESULT.rejected }
+		: { tags: normalizeInventionTags(autoTags, customTags), tagResult: INVENTION_TAG_RESULT.success }
+}
+
+/**
+ * What an invention save produced: the stored record and how its tags fared, or the one
+ * message that refuses it. Both save routes go through {@link createInventionFromBody} to
+ * get one of these and then render it their own way — v6 bare, v9 enveloped — because the
+ * two versions disagree about the shape of a reply, not about what a save is.
+ */
+type InventionSaveOutcome =
+	| { rejection: string }
+	| { invention: SavedInvention; tags: InventionTag[]; tagResult: number }
+
+/**
+ * The invention save both `v6/save` and `v9/save` run through. v9 sends everything v6 does
+ * plus what the invention points at (`referencedUnityAssetIds`), what it says about itself
+ * (`longDescription`, `displayMetadataJson`, `convertedFromInventionId`), `ugcVersion` and
+ * `hasBetaContent`, and the tags that until now needed a second `v1/settags` call. One
+ * reader takes them all: a v6 client sends none of them, and each is optional, so parsing
+ * them here changes nothing about the record a v6 save stores.
+ */
+async function createInventionFromBody(
+	c: Context<App>,
+	creatorPlayerId: number,
+	body: Record<string, unknown>
+): Promise<InventionSaveOutcome> {
+	const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined)
+	const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined)
+	const bool = (v: unknown): boolean | undefined => (typeof v === 'boolean' ? v : undefined)
+	const list = <T>(v: unknown, is: (x: unknown) => x is T): T[] | undefined =>
+		Array.isArray(v) ? v.filter(is) : undefined
+	const isString = (v: unknown): v is string => typeof v === 'string'
+	const isNumber = (v: unknown): v is number => typeof v === 'number'
+
+	const inventionDataFilename = str(body.inventionDataFilename)?.trim()
+	if (!inventionDataFilename) return { rejection: 'inventionDataFilename is required' }
+
+	// An omitted or blank name/description is defaulted by `createInvention` ("Untitled",
+	// "No description yet"), so only a supplied one is held to the rules — otherwise
+	// saving an unnamed invention would fail the 3-character minimum on a name the
+	// player never typed.
+	const name = str(body.name)?.trim()
+	const nameRejection = name === undefined || name === '' ? null : inventionNameRejection(name)
+	if (nameRejection !== null) return { rejection: nameRejection }
+
+	const description = str(body.description)
+	const descriptionRejection =
+		description === undefined ? null : inventionDescriptionRejection(description)
+	if (descriptionRejection !== null) return { rejection: descriptionRejection }
+
+	// v9 folds `v1/settags` into the save; a client that names no tags gets none.
+	const requested = requestedTags(body.tagsRequest) ?? {
+		tags: [],
+		tagResult: INVENTION_TAG_RESULT.success,
 	}
-	const invention = await getInventionById(c.env.DB, inventionId)
-	if (invention === null) return { response: c.notFound() }
-	if (invention.CreatorPlayerId !== playerId) {
-		return { response: c.json({ error: 'Not your invention' }, 403) }
-	}
-	return { invention }
+
+	const invention = await createInvention(c.env.DB, c.env.CDN_ASSETS, {
+		creatorPlayerId,
+		inventionDataFilename,
+		name,
+		description,
+		imageName: str(body.imageName),
+		instantiationCost: num(body.instantiationCost),
+		lightsCost: num(body.lightsCost),
+		chipsCost: num(body.chipsCost),
+		cloudVariablesCost: num(body.cloudVariablesCost),
+		aiCost: num(body.aiCost),
+		creationRoomId: num(body.creationRoomId),
+		referencedInventions: list(body.referencedInventions, isNumber),
+		ugcVersion: num(body.ugcVersion),
+		hasBetaContent: bool(body.hasBetaContent),
+		referencedUnityAssetIds: list(body.referencedUnityAssetIds, isString),
+		longDescription: str(body.longDescription),
+		displayMetadataJson: str(body.displayMetadataJson),
+		convertedFromInventionId: num(body.convertedFromInventionId),
+		tags: requested.tags,
+	})
+	return { invention, ...requested }
 }
 
 /**
@@ -450,6 +628,122 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 		async (c) => c.json(await listFeaturedCustomAvatarItems(c.env.DB))
 	)
 
+	// The store's item search. The client sends the full set of `outfitTypes` it can render
+	// plus paging, and expects a BARE ARRAY of items back — not the `{ Results, TotalResults }`
+	// envelope `fromCreator` uses.
+	//
+	// Several parameters are accepted and not yet acted on; they are listed in the description
+	// rather than dropped silently, because a caller cannot tell the difference between a filter
+	// that was applied and one that was ignored by looking at the results.
+	.get(
+		'/api/customAvatarItems/v1/search',
+		describeRoute({
+			tags: ['Avatar'],
+			summary: 'Search custom avatar items',
+			description: [
+				'The store’s item search: published items (`Accessibility` 0 is unpublished and is',
+				'left out, from its creator too — `fromCreator` is where they see their own),',
+				'newest first, as a BARE ARRAY.',
+				'`searchQuery` matches an item’s NAME or its DESCRIPTION, case-insensitively, as a',
+				'substring; `%` and `_` in it are literal.',
+				'`outfitTypes` may repeat and acts as a whitelist; sending none means no filter',
+				'rather than no results, since the client sends every type it can render.',
+				'`minPrice`/`maxPrice` bound the price, inclusive.',
+				'`skip`/`take` page the results, `take` capped at 200.',
+				'`includeCoachItems=false` leaves out this server’s stock content.',
+				'`itemTypes`, `ordering`, `unityAssetTarget` and `unityAssetVersion` are accepted and',
+				'NOT yet acted on — nothing records purchase or wear counts to rank by, no per-target',
+				'asset variants are stored, and custom avatar items are the only item type there is.',
+				'`includePurchaseInfos` likewise: `PurchaseInfo` is null on every item for now,',
+				'whatever it says.',
+			].join(' '),
+			parameters: [
+				{
+					name: 'searchQuery',
+					in: 'query',
+					required: false,
+					description: 'Free text matched against the item’s name or description',
+					schema: { type: 'string' },
+				},
+				{
+					name: 'outfitTypes',
+					in: 'query',
+					required: false,
+					description: 'OutfitType to include; repeat for several. None means all.',
+					schema: { type: 'array', items: { type: 'integer' } },
+				},
+				{
+					name: 'skip',
+					in: 'query',
+					required: false,
+					description: 'Rows to skip (default 0)',
+					schema: { type: 'integer', minimum: 0 },
+				},
+				{
+					name: 'take',
+					in: 'query',
+					required: false,
+					description: 'Rows to return (default 50, capped at 200)',
+					schema: { type: 'integer', minimum: 0 },
+				},
+				{
+					name: 'minPrice',
+					in: 'query',
+					required: false,
+					description: 'Lowest price to include, inclusive',
+					schema: { type: 'integer', minimum: 0 },
+				},
+				{
+					name: 'maxPrice',
+					in: 'query',
+					required: false,
+					description: 'Highest price to include, inclusive',
+					schema: { type: 'integer', minimum: 0 },
+				},
+				{
+					name: 'includeCoachItems',
+					in: 'query',
+					required: false,
+					description: 'Include the Coach’s stock items (default true)',
+					schema: { type: 'boolean' },
+				},
+			],
+			responses: { 200: json(CustomAvatarItemList, 'The matching items, newest first') },
+		}),
+		async (c) => {
+			// `?outfitTypes=0&outfitTypes=2&…` — repeated, so read every value. A non-numeric one is
+			// dropped rather than turned into NaN, which would match nothing and quietly empty a
+			// filter the caller believes they set.
+			const outfitTypes = c.req
+				.queries('outfitTypes')
+				?.map((v) => Number.parseInt(v, 10))
+				.filter((n) => Number.isInteger(n))
+
+			// The client capitalises its booleans (`includeCoachItems=True`), so this is folded
+			// before comparing; anything that isn't recognisably false leaves the default alone.
+			const includeCoachItems = c.req.query('includeCoachItems')?.toLowerCase() !== 'false'
+
+			const int = (name: string): number | undefined => {
+				const raw = c.req.query(name)
+				if (raw === undefined) return undefined
+				const n = Number.parseInt(raw, 10)
+				return Number.isInteger(n) ? n : undefined
+			}
+
+			return c.json(
+				await searchCustomAvatarItems(c.env.DB, {
+					searchQuery: c.req.query('searchQuery'),
+					outfitTypes,
+					includeCoachItems,
+					minPrice: int('minPrice'),
+					maxPrice: int('maxPrice'),
+					skip: int('skip'),
+					take: int('take'),
+				})
+			)
+		}
+	)
+
 	// The "hot" (trending) custom-avatar-item feed: every published (`Accessibility` != 0)
 	// item from the `custom_avatar_item` table. There is nothing to rank a trend from yet,
 	// so it is the accessible items, newest first.
@@ -467,13 +761,23 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 		async (c) => c.json(await listHotCustomAvatarItems(c.env.DB))
 	)
 
-	// A batch lookup of custom avatar items by id. The reference filters a static catalog
-	// down to the posted ids and returns the MATCHES AS A BARE ARRAY — not the
-	// `{ Results, TotalResults }` page its catalog file is written in, and not a 404 for
-	// ids it doesn't hold. Nothing stores custom items here (the reference's own catalog
-	// ships empty too), so every id misses and the array is empty.
+	// A batch lookup of custom avatar items by id, out of the `custom_avatar_item` table.
+	// The reference filters its catalog down to the posted ids and returns the MATCHES AS A
+	// BARE ARRAY — not the `{ Results, TotalResults }` page that catalog is written in, and
+	// not a 404 for ids it doesn't hold.
+	//
+	// This is how a `1.<guid>` entity in a GENERIC discovery row (`lists`
+	// `/algorithmiclists/:list?type=5`) gets resolved, so a row naming a custom item renders
+	// nothing at all when this doesn't answer. It stubbed out `[]` while nothing stored custom
+	// items; the table has existed since migration 0015 and the stub outlived it.
 	//
 	// Auth-gated, and the token is checked before anything else, as the reference does.
+	//
+	// A batch over {@link BULK_CUSTOM_AVATAR_ITEM_CAP} ids answers EMPTY. The client has been
+	// seen posting far more ids than a screen could draw, and serving those is both a large
+	// query and a large response for a request that is already not what it looks like. Empty is
+	// the safe answer because a miss here is not an error: unknown ids are simply absent, so the
+	// client already handles getting back fewer items than it asked about.
 	.post(
 		'/api/customAvatarItems/v1/bulk',
 		describeRoute({
@@ -481,25 +785,46 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 			summary: 'Custom avatar items in bulk',
 			description:
 				'Resolves a batch of custom-avatar-item ids to their items: the posted ' +
-				'`customAvatarItemIds` filtered against the catalog, returned as a BARE ARRAY of ' +
-				'the ones that matched. Not the `{ Results, TotalResults }` page the sibling ' +
-				'custom-item reads serve — the reference keeps its catalog in that shape but ' +
-				'answers this route with the filtered array alone.\n\n' +
+				'`customAvatarItemIds` filtered against the `custom_avatar_item` table, returned ' +
+				'as a BARE ARRAY of the ones that matched, in the order they were asked for. Not ' +
+				'the `{ Results, TotalResults }` page the sibling custom-item reads serve — the ' +
+				'reference keeps its catalog in that shape but answers this route with the ' +
+				'filtered array alone.\n\n' +
 				'A miss is not an error: unknown ids are simply absent from the response, and the ' +
-				'client reads the items it got back rather than the ids it asked for. Nothing ' +
-				'stores custom items here, so every id misses and this is always `[]` — which is ' +
-				'why the posted ids are not parsed.',
+				'client reads the items it got back rather than the ids it asked for. Unpublished ' +
+				'items (`Accessibility` 0) miss for everyone but their creator, the same rule the ' +
+				'feeds and the creator shelf apply.\n\n' +
+				'Ids ride as repeated `customAvatarItemIds` form fields; a comma-separated value ' +
+				'and the same spelling on the query string are both accepted, since the client’s ' +
+				'exact encoding here has not been pinned down.\n\n' +
+				'A batch of more than 100 ids answers an EMPTY array without reading the table: the ' +
+				'client has been seen posting more than a screen could draw, and a miss is already ' +
+				'not an error here.',
 			security: AUTHED,
 			requestBody: form(BulkCustomAvatarItemsRequest, 'The custom-avatar-item ids to resolve'),
 			responses: {
-				200: json(JsonArray, 'The matching items — always empty here'),
+				200: json(CustomAvatarItemList, 'The items that matched, in request order'),
 				401: UNAUTHORIZED_RESPONSE,
 			},
 		}),
 		async (c) => {
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
-			return c.json([])
+
+			const ids = await bulkCustomAvatarItemIds(c)
+
+			// Over the cap: empty, and the table is not touched. Answering the batch would be a
+			// large query and a large response for a request that is already not what it looks
+			// like — a screen does not draw this many items.
+			if (ids.length > BULK_CUSTOM_AVATAR_ITEM_CAP) return c.json([])
+
+			const items = await getCustomAvatarItems(c.env.DB, ids)
+			// Unpublished items are held back from everyone but their creator — the same rule
+			// the featured/hot feeds and the creator shelf apply, so an item can't be surfaced
+			// through this route that the feeds hide.
+			return c.json(
+				items.filter((item) => item.Accessibility !== 0 || item.CreatorAccountId === id)
+			)
 		}
 	)
 
@@ -872,7 +1197,10 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 	// RRInventionVersion, which carries the blob name the client downloads and the
 	// SHA-256 of that blob. Public. Only the current version exists (nothing writes
 	// version history yet), so any other version number 404s rather than naming a
-	// blob that isn't there.
+	// blob that isn't there — except `version=0`, which means "whichever is current"
+	// rather than a number to match. Nothing has a version 0, so a caller sending it
+	// doesn't know which version it wants, and matching it literally 404s an invention
+	// that exists.
 	.get(
 		'/api/inventions/v1/version',
 		describeRoute({
@@ -883,15 +1211,19 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 				'and `BlobHash`, the base64 SHA-256 of that blob (null when the named blob was ' +
 				'never uploaded). Only the current version exists — nothing writes version ' +
 				'history yet — so any other version number 404s rather than naming a blob that ' +
-				'is not there.',
+				'is not there.\n\n' +
+				'`version=0` is the exception: it means “whichever is current” rather than a ' +
+				'number to match, and gets the current version. No invention has a version 0 — a ' +
+				'fresh save is version 1 — so a caller sending it does not know which version it ' +
+				'wants, and matching it literally 404s an invention that exists.',
 			parameters: [
 				intQuery('inventionId', 'Invention id; required'),
-				intQuery('version', 'Version number; required'),
+				intQuery('version', 'Version number; required. `0` means the current version'),
 			],
 			responses: {
 				200: json(InventionVersionDto, 'The version'),
 				400: json(ErrorResponse, 'Missing inventionId or version'),
-				404: { description: 'No such invention, or not the current version' },
+				404: { description: 'No such invention, or a version number that is not the current one' },
 			},
 		}),
 		async (c) => {
@@ -1023,12 +1355,11 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 			const permissionLevel = c.req.query('permissionLevel')
 			const price = Number.parseInt(c.req.query('price') ?? '', 10)
 
-			const published = await publishInvention(
-				c.env.DB,
-				gate.invention.InventionId,
-				permissionLevel === undefined ? undefined : parsePermissionLevel(permissionLevel),
-				Number.isNaN(price) || price < 0 ? undefined : price
-			)
+			const published = await publishInvention(c.env.DB, gate.invention.InventionId, {
+				permissionLevel:
+					permissionLevel === undefined ? undefined : parsePermissionLevel(permissionLevel),
+				price: Number.isNaN(price) || price < 0 ? undefined : price,
+			})
 			return published === null ? c.notFound() : c.json(toSaveResult(published))
 		}
 	)
@@ -1251,15 +1582,20 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 	// Invention search/browse: published inventions matching `value` (matched against
 	// name + description; absent → browse everything published), newest first.
 	// Paginated via skip/take (take defaults to 100). Returns a bare array.
+	//
+	// Filtered, ordered and paged in SQL — it must not read the catalogue into memory to
+	// answer one page.
 	.get(
 		'/api/inventions/v2/search',
 		describeRoute({
 			tags: ['Inventions'],
 			summary: 'Search / browse inventions',
 			description:
-				'Published inventions matching `value` (matched against name and description), ' +
-				'newest first. An absent `value` browses everything published — that is the ' +
-				'browse screen’s initial request.',
+				'Published inventions matching `value`, newest first. `value` is split into terms ' +
+				'and every term must match, each against the name and the description. An absent ' +
+				'`value` browses everything published — that is the browse screen’s initial ' +
+				'request. Tags are NOT searched: a `#tag` term from the browse screen’s filter ' +
+				'chips is treated as text and matches nothing.',
 			parameters: [
 				stringQuery('value', 'Search text; absent browses everything'),
 				...pageParams(100),
@@ -1298,6 +1634,75 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
 			return c.json(await getMyInventions(c.env.DB, id))
+		}
+	)
+
+	// Report a custom avatar item. Stored in the `report` table the player, event and invention
+	// reports use — same fields, same moderation life — with `custom_avatar_item_id` set. See
+	// migrations/0017_report_custom_avatar_item.sql.
+	//
+	// The item is named by the PATH, not the body, which is what distinguishes this from its
+	// siblings; the body's `ReportedPlayerId` arrives NULL and is ignored, since the client does
+	// not know who made the item.
+	.post(
+		'/api/customAvatarItems/v1/:id{[0-9a-fA-F-]{36}}/report',
+		describeRoute({
+			tags: ['Avatar', 'Moderation'],
+			summary: 'Report a custom avatar item',
+			description:
+				'Files a report against a custom avatar item, named by the PATH. Stored as a row in ' +
+				'the same `report` table a player report goes to (`POST /api/PlayerReporting/v3/create`), ' +
+				'an event report and an invention report — the same submission with the same ' +
+				'moderation life, which a moderator converts into a ban the same way. What marks it ' +
+				'as an item report is `custom_avatar_item_id`; the row’s `reported_player_id` is the ' +
+				'item’s CREATOR, read from the item. The body’s `ReportedPlayerId` is sent as null ' +
+				'and IGNORED even when set — the client does not know who made the item, and letting ' +
+				'a client name who a report is against would let it point one at anybody. Nothing ' +
+				'fills `room_id`: an item isn’t tied to one room the way an event is.\n\n' +
+				'The reporter is the caller (from the bearer token), never a body field. ' +
+				'`ReportCategory` is stored verbatim — the enum is not mapped here. Nothing dedupes ' +
+				'the rows: reporting the same item twice files two reports, and reporting your own ' +
+				'is allowed rather than being a special case.\n\n' +
+				'Answers the `{ success, error }` envelope the event and invention reports use, ' +
+				'`error` being an empty string rather than null, on the rejected branches too so ' +
+				'there is only one shape to parse.',
+			security: AUTHED,
+			parameters: [idParam('id', 'The custom avatar item’s guid')],
+			requestBody: jsonBody(CustomAvatarItemReportRequest, 'The report'),
+			responses: {
+				200: json(SuccessErrorEnvelope, '`{ success: true, error: "" }`'),
+				401: UNAUTHORIZED_RESPONSE,
+				404: json(SuccessErrorEnvelope, 'No such custom avatar item'),
+			},
+		}),
+		async (c) => {
+			const reporterId = await authedId(c)
+			if (reporterId === null) return unauthorized(c)
+
+			const customAvatarItemId = c.req.param('id')
+
+			// The item supplies the reported player. An unknown item is refused rather than filed
+			// against nobody: the row's reported player has to be someone, and a report naming an
+			// item that never existed isn't actionable.
+			const item = await getCustomAvatarItem(c.env.DB, customAvatarItemId)
+			if (item === null) return c.json({ success: false, error: 'No such item' }, 404)
+
+			// A body that won't parse is not a reason to lose the report: the path already names
+			// what is being reported and the token names who reported it, so an unreadable body
+			// costs the category and the description, not the row.
+			const body = await c.req
+				.json<{ ReportCategory?: unknown; Details?: unknown }>()
+				.catch(() => ({}) as Record<string, unknown>)
+			const category = Number(body.ReportCategory)
+			await createReport(c.env.DB, {
+				reporterPlayerId: reporterId,
+				reportedPlayerId: item.CreatorAccountId,
+				reportCategory: Number.isInteger(category) ? category : 0,
+				details: typeof body.Details === 'string' ? body.Details : null,
+				customAvatarItemId,
+			})
+
+			return c.json({ success: true, error: '' })
 		}
 	)
 
@@ -1403,43 +1808,289 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 			const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
 			if (body === null) return c.json({ error: 'Invalid request body' }, 400)
 
-			const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined)
-			const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined)
+			const outcome = await createInventionFromBody(c, id, body)
+			if ('rejection' in outcome) return c.json({ error: outcome.rejection }, 400)
+			return c.json(toSaveResult(outcome.invention))
+		}
+	)
 
-			const inventionDataFilename = str(body.inventionDataFilename)?.trim()
-			if (!inventionDataFilename) {
-				return c.json({ error: 'inventionDataFilename is required' }, 400)
+	// The same save as the newer client sends it: v6's body plus the invention's
+	// references, its long description and display metadata, what the saved blob is, and
+	// the tags — which v6 clients set afterwards through `v1/settags`. It stores the same
+	// record; what differs is the REPLY, which is enveloped. See `InventionSaveV9Result`:
+	// the client reads `Success` and then `Value.Invention.InventionId`, and a body that
+	// isn't this envelope — a bare `{ error }`, or the empty 401 the other routes answer —
+	// takes it down rather than failing it, which is why every branch below answers one.
+	.post(
+		'/api/inventions/v9/save',
+		describeRoute({
+			tags: ['Inventions'],
+			summary: 'Save a new invention (v9)',
+			description:
+				'`v6/save` plus the fields the newer client sends: `referencedUnityAssetIds`, ' +
+				'`longDescription`, `displayMetadataJson`, `convertedFromInventionId`, ' +
+				'`ugcVersion`, `hasBetaContent`, and a `tagsRequest` carrying the same ' +
+				'`AutoTags`/`CustomTags` lists `v1/settags` takes. Every one is optional and is ' +
+				'stored only when sent, so a body v6 would accept produces the same record here.' +
+				'\n\n' +
+				'The reply is where the two versions part: v9 is ENVELOPED as ' +
+				'`{ Value, Success, Error, error_id }`, with v6’s ' +
+				'`{ Status, Invention, InventionVersion }` inside `Value` alongside a ' +
+				'`TagsResponse`. The client reads `Success` and then ' +
+				'`Value.Invention.InventionId`; `Error` is the only text it ever shows a human.' +
+				'\n\n' +
+				'So a refusal is *also* a 200 carrying `{ Success: false, Error, Value: null }` — ' +
+				'the client dereferences `Value` unguarded when `Success` is true, and treats ' +
+				'anything that isn’t this envelope as a null one. Tags are held to the ' +
+				'`v1/settags` rule (at most 15 letters each), but one that breaks it costs the ' +
+				'tags and not the save: `TagsResponse.Result` comes back non-zero and the creator ' +
+				're-submits them through `v1/settags`.\n\n' +
+				'A freshly saved invention is private: it shows up only in the creator’s own list ' +
+				'until they call `v3/publish`.',
+			security: AUTHED,
+			requestBody: jsonBody(SaveInventionV9Request, 'The invention metadata (camelCase)'),
+			responses: {
+				200: json(
+					InventionSaveV9Result,
+					'The envelope — the stored invention under `Value`, or `Success: false` with ' +
+						'`Error` when the save was refused'
+				),
+				401: json(InventionSaveV9Result, 'The same envelope, refused — not an empty body'),
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return c.json(inventionSaveV9Failure('Unauthorized'), 401)
+
+			const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+			if (body === null) return c.json(inventionSaveV9Failure('Invalid request body'))
+
+			const outcome = await createInventionFromBody(c, id, body)
+			return c.json(
+				'rejection' in outcome
+					? inventionSaveV9Failure(outcome.rejection)
+					: toSaveResultV9(outcome.invention, outcome.tags, outcome.tagResult)
+			)
+		}
+	)
+
+	// Edit an invention's metadata, as the newer client sends it: one PUT with a PascalCase
+	// body where every field but the id is nullable, and NULL means "leave this alone" —
+	// the client sends the whole shape every time and marks the fields it isn't touching.
+	// The tags ride along the way they do on `v9/save`, and the reply is that same
+	// envelope: `v1/update` is the older client's version of this endpoint, query params
+	// and a bare body and all.
+	.put(
+		'/api/inventions/v2/metadata',
+		describeRoute({
+			tags: ['Inventions'],
+			summary: 'Edit an invention’s metadata (v2)',
+			description:
+				'Creator only. Every field but `InventionId` is nullable and a null one is left ' +
+				'as it is — the client sends the whole shape on every edit — so this is a patch, ' +
+				'not a replace. An empty string is not a null: it is how a creator CLEARS a ' +
+				'description, long description or image. `Name` is the exception, since a nameless ' +
+				'invention isn’t a thing the client can draw: it is held to the same 3–24 ' +
+				'character rule `v6/save` enforces, which an empty name fails.\n\n' +
+				'`TagsRequest` replaces both tag lists wholesale, exactly as `v1/settags` does; a ' +
+				'null one leaves the stored tags alone. A tag that breaks the tag rule costs the ' +
+				'tags and not the edit — `TagsResponse.Result` comes back non-zero.\n\n' +
+				'Answers the enveloped result `v9/save` answers, carrying the UPDATED invention: ' +
+				'the client re-renders the detail page from `Value.Invention`. Refusals — an ' +
+				'unknown invention and someone else’s alike — are `Success: false` with a null ' +
+				'`Value` rather than a bare error body, which that client cannot parse.',
+			security: AUTHED,
+			requestBody: jsonBody(UpdateInventionMetadataRequest, 'The fields to change'),
+			responses: {
+				200: json(
+					InventionSaveV9Result,
+					'The envelope — the updated invention under `Value`, or `Success: false` with ' +
+						'`Error` when the edit was refused'
+				),
+				401: json(InventionSaveV9Result, 'The same envelope, refused — not an empty body'),
+			},
+		}),
+		async (c) => {
+			const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+			if (body === null) return c.json(inventionSaveV9Failure('Invalid request body'))
+
+			// The id rides in the body here, not the query string.
+			const gate = await creatorsInventionResult(
+				c,
+				typeof body.InventionId === 'number' ? body.InventionId : Number.NaN
+			)
+			// Only a missing token is answered as a transport failure. An unknown invention
+			// or someone else's is a domain answer the client is meant to read — its own
+			// status enum has DoesNotExist and NotCreator members — so it goes in the
+			// envelope, where the message reaches a human.
+			if ('rejection' in gate) {
+				return gate.status === 401
+					? c.json(inventionSaveV9Failure(gate.rejection), 401)
+					: c.json(inventionSaveV9Failure(gate.rejection))
 			}
 
-			// An omitted or blank name/description is defaulted by `createInvention` ("Untitled",
-			// "No description yet"), so only a supplied one is held to the rules — otherwise
-			// saving an unnamed invention would fail the 3-character minimum on a name the
-			// player never typed.
-			const name = str(body.name)?.trim()
-			const nameRejection = name === undefined || name === '' ? null : inventionNameRejection(name)
-			if (nameRejection !== null) return c.json({ error: nameRejection }, 400)
+			// Null is "leave it"; a string, empty or not, is an edit.
+			const edited = (key: string): string | undefined =>
+				typeof body[key] === 'string' ? body[key] : undefined
+			const name = edited('Name')?.trim()
+			const description = edited('Description')
+			const longDescription = edited('LongDescription')
 
-			const description = str(body.description)
-			const descriptionRejection =
-				description === undefined ? null : inventionDescriptionRejection(description)
-			if (descriptionRejection !== null) return c.json({ error: descriptionRejection }, 400)
+			for (const rejection of [
+				name === undefined ? null : inventionNameRejection(name),
+				description === undefined ? null : inventionDescriptionRejection(description),
+				longDescription === undefined
+					? null
+					: inventionLongDescriptionRejection(longDescription),
+			]) {
+				if (rejection !== null) return c.json(inventionSaveV9Failure(rejection))
+			}
 
-			const invention = await createInvention(c.env.DB, c.env.CDN_ASSETS, {
-				creatorPlayerId: id,
-				inventionDataFilename,
+			// A null TagsRequest leaves the stored tags alone, and the reply still reports
+			// them: the client reads the list back as the tags the invention now has, not as
+			// the ones this call changed.
+			const requested = requestedTags(body.TagsRequest)
+			const updated = await updateInvention(c.env.DB, gate.invention.InventionId, {
 				name,
 				description,
-				imageName: str(body.imageName),
-				instantiationCost: num(body.instantiationCost),
-				lightsCost: num(body.lightsCost),
-				chipsCost: num(body.chipsCost),
-				cloudVariablesCost: num(body.cloudVariablesCost),
-				aiCost: num(body.aiCost),
-				creationRoomId: num(body.creationRoomId),
-				referencedInventions: Array.isArray(body.referencedInventions)
-					? body.referencedInventions.filter((v): v is number => typeof v === 'number')
-					: undefined,
+				longDescription,
+				imageName: edited('ImageName'),
+				tags: requested?.tags,
 			})
-			return c.json(toSaveResult(invention))
+			if (updated === null) return c.json(inventionSaveV9Failure('No such invention'))
+			return c.json(
+				toSaveResultV9(
+					updated,
+					updated.Tags ?? [],
+					requested?.tagResult ?? INVENTION_TAG_RESULT.success
+				)
+			)
+		}
+	)
+
+	// Publish an invention, as the newer client sends it: a PascalCase body instead of a
+	// query string, and an Accessibility of its own — where `v3/publish` only ever flipped
+	// the published flag, this decides whether the result can be FOUND. Same enveloped
+	// reply as `v9/save`, carrying the published invention.
+	.post(
+		'/api/inventions/v4/publish',
+		describeRoute({
+			tags: ['Inventions'],
+			summary: 'Publish an invention (v4)',
+			description:
+				'What puts an invention into search and the feeds. Creator only.\n\n' +
+				'`Permission` is the `GeneralPermission` other players get, as a raw ladder ' +
+				'number (the publish sheet sends 20, UseOnly). `Accessibility` says where it can ' +
+				'be found — 1 (Public) lists it, 2 (Unlisted) publishes it reachable by id but ' +
+				'keeps it out of browse and search. A null `Price` leaves the price alone rather ' +
+				'than zeroing it, so re-publishing something that was for sale doesn’t give it ' +
+				'away; every field but `InventionId` is nullable and an omitted one keeps what ' +
+				'the invention has.\n\n' +
+				'Publishing is not undone here, and re-publishing doesn’t re-date the first ' +
+				'publish. Refusals answer `Success: false` with a null `Value`, the way ' +
+				'`v9/save` does.',
+			security: AUTHED,
+			requestBody: jsonBody(PublishInventionRequest, 'What the publish decides'),
+			responses: {
+				200: json(
+					InventionSaveV9Result,
+					'The envelope — the published invention under `Value`, or `Success: false` ' +
+						'with `Error` when the publish was refused'
+				),
+				401: json(InventionSaveV9Result, 'The same envelope, refused — not an empty body'),
+			},
+		}),
+		async (c) => {
+			const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+			if (body === null) return c.json(inventionSaveV9Failure('Invalid request body'))
+
+			const gate = await creatorsInventionResult(
+				c,
+				typeof body.InventionId === 'number' ? body.InventionId : Number.NaN
+			)
+			// As on `v2/metadata`: only a missing token is a transport failure. The rest are
+			// answers the client is meant to read out of the envelope.
+			if ('rejection' in gate) {
+				return gate.status === 401
+					? c.json(inventionSaveV9Failure(gate.rejection), 401)
+					: c.json(inventionSaveV9Failure(gate.rejection))
+			}
+
+			// Null is "leave it". The permission and accessibility are taken as sent rather
+			// than checked against the ladder, the way `parsePermissionLevel` already accepts
+			// a raw number: the ladders are the client's, and a level this server hasn't heard
+			// of is better stored than swapped for one the creator didn't pick.
+			const int = (key: string): number | undefined =>
+				typeof body[key] === 'number' && Number.isInteger(body[key]) ? body[key] : undefined
+			const price = int('Price')
+
+			const published = await publishInvention(c.env.DB, gate.invention.InventionId, {
+				permissionLevel: int('Permission'),
+				accessibility: int('Accessibility'),
+				// A negative price is dropped rather than stored, as it is on `v3/publish`.
+				price: price !== undefined && price < 0 ? undefined : price,
+			})
+			if (published === null) return c.json(inventionSaveV9Failure('No such invention'))
+			return c.json(toSaveResultV9(published, published.Tags ?? []))
+		}
+	)
+
+	// Delete an invention. The newer client's shape: a POST with a PascalCase body
+	// carrying nothing but the id. Auth-gated, creator only — the only thing that may
+	// remove an invention is the account that made it, not a co-owner and not a buyer.
+	//
+	// The record and everything inside it (versions, tags, referenced-invention lists)
+	// go in one DELETE; the data blob in R2 and the `inventory_invention` rows of
+	// players who bought it are left alone. See `deleteInvention` for why.
+	.post(
+		'/api/inventions/v2/delete',
+		describeRoute({
+			tags: ['Inventions'],
+			summary: 'Delete an invention',
+			description:
+				'Creator only — a buyer or a co-owner cannot delete someone else’s invention. ' +
+				'The record goes entirely: its versions, tags and referenced-invention lists live ' +
+				'in the same row.\n\n' +
+				'What survives is deliberate. The data blob stays in storage, because nothing ' +
+				'here knows whether another record still points at that filename. The ownership ' +
+				'rows of players who bought it stay too — a delete must not rewrite what someone ' +
+				'else paid for — and they fall out of every list on their own, since an owned id ' +
+				'with no invention row behind it is skipped.\n\n' +
+				'Answers the `{ Value, Success, Error, error_id }` envelope the other v2+ ' +
+				'invention routes use, with `Value` NULL: the invention is gone, so there is ' +
+				'nothing to redraw from and the client reads only `Success`. Refusals — an ' +
+				'unknown invention and someone else’s alike — are `Success: false` with a ' +
+				'message, not a bare error body that client cannot parse.',
+			security: AUTHED,
+			requestBody: jsonBody(DeleteInventionRequest, 'The invention to delete'),
+			responses: {
+				200: json(InventionDeleteResult, 'The delete envelope, `Value` null either way'),
+				401: json(InventionDeleteResult, 'The same envelope, refused — not an empty body'),
+			},
+		}),
+		async (c) => {
+			const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+			if (body === null) return c.json(inventionDeleteResult('Invalid request body'))
+
+			// The id rides in the body, as it does on `v2/metadata` and `v4/publish`.
+			const gate = await creatorsInventionResult(
+				c,
+				typeof body.InventionId === 'number' ? body.InventionId : Number.NaN
+			)
+			// As on those two: only a missing token is a transport failure. An unknown
+			// invention or someone else's is a domain answer the client reads out of the
+			// envelope, where the message reaches a human.
+			if ('rejection' in gate) {
+				return gate.status === 401
+					? c.json(inventionDeleteResult(gate.rejection), 401)
+					: c.json(inventionDeleteResult(gate.rejection))
+			}
+
+			// The gate already loaded the row, so a null here is a race — someone deleted it
+			// between the two reads — and lands where the client would put it anyway: gone.
+			const deleted = await deleteInvention(c.env.DB, gate.invention.InventionId)
+			return c.json(
+				deleted === null ? inventionDeleteResult('No such invention') : inventionDeleteResult()
+			)
 		}
 	)

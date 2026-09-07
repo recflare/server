@@ -925,7 +925,7 @@
 	},
 	{
 		"Key": "Statsig.Enabled",
-		"Value": "true",
+		"Value": "false",
 		"ActiveExperiments": null,
 		"StartTime": null,
 		"EndTime": null
@@ -3992,7 +3992,7 @@
 	{
 		"Key": "Econ.Store.Categories",
 		"Value": "{\"Categories\":[{\"Name\":\"Featured\",\"Depth\":0,\"Icon\":1,\"DiscoveryPageSource\":\"StoreFeatured\",\"ClickAction\":1},{\"Name\":\"Appearance\",\"Depth\":0,\"Icon\":2,\"DiscoveryPageSource\":\"StoreClothing\",\"ClickAction\":1},{\"Name\":\"Clothing\",\"Depth\":1,\"DiscoveryPageSource\":\"StoreAppearance\",\"ClickAction\":1},{\"Name\":\"Tops\",\"Depth\":2,\"ClickAction\":3,\"Filters\":512,\"StoreCarouselType\":8,\"SortCriteria\":1},{\"Name\":\"Bottoms\",\"Depth\":2,\"ClickAction\":3,\"Filters\":8388608,\"StoreCarouselType\":17,\"SortCriteria\":1},{\"Name\":\"Footwear\",\"Depth\":2,\"ClickAction\":3,\"Filters\":16777216,\"StoreCarouselType\":18,\"SortCriteria\":1},{\"Name\":\"Accessories\",\"Depth\":1,\"DiscoveryPageSource\":\"StoreAccessories\",\"ClickAction\":1},{\"Name\":\"Headwear\",\"Depth\":2,\"ClickAction\":3,\"Filters\":64,\"StoreCarouselType\":7,\"SortCriteria\":1},{\"Name\":\"Eyewear\",\"Depth\":2,\"ClickAction\":3,\"Filters\":256,\"StoreCarouselType\":19,\"SortCriteria\":1},{\"Name\":\"Earwear\",\"Depth\":2,\"ClickAction\":3,\"Filters\":33554432,\"StoreCarouselType\":20,\"SortCriteria\":1},{\"Name\":\"Neckwear\",\"Depth\":2,\"ClickAction\":3,\"Filters\":67108864,\"StoreCarouselType\":21,\"SortCriteria\":1},{\"Name\":\"Shoulders & Back\",\"Depth\":2,\"ClickAction\":3,\"Filters\":134217728,\"StoreCarouselType\":22,\"SortCriteria\":1},{\"Name\":\"Waist\",\"Depth\":2,\"ClickAction\":3,\"Filters\":268435456,\"StoreCarouselType\":23,\"SortCriteria\":1},{\"Name\":\"Hands\",\"Depth\":2,\"ClickAction\":3,\"Filters\":1024,\"StoreCarouselType\":10,\"SortCriteria\":1},{\"Name\":\"Styling\",\"Depth\":1,\"DiscoveryPageSource\":\"StoreStyling\",\"ClickAction\":1},{\"Name\":\"Hairstyles\",\"Depth\":2,\"ClickAction\":3,\"Filters\":128,\"StoreCarouselType\":24,\"SortCriteria\":1},{\"Name\":\"Facial Hair\",\"Depth\":2,\"ClickAction\":3,\"Filters\":536870912,\"StoreCarouselType\":25,\"SortCriteria\":1},{\"Name\":\"Hair Dye\",\"Depth\":2,\"ClickAction\":3,\"Filters\":131072,\"StoreCarouselType\":6,\"SortCriteria\":1},{\"Name\":\"Equipment Skins\",\"Depth\":2,\"ClickAction\":3,\"Filters\":262144,\"StoreCarouselType\":5,\"SortCriteria\":1},{\"Name\":\"Inventions\",\"Depth\":0,\"Icon\":3,\"DiscoveryPageSource\":\"StoreInventions\",\"ClickAction\":1,\"Filters\":0,\"StoreCarouselType\":0},{\"Name\":\"Consumables\",\"Depth\":0,\"Icon\":4,\"DiscoveryPageSource\":\"StoreConsumables\",\"ClickAction\":1,\"Filters\":0,\"StoreCarouselType\":0}]}",
-		"ActiveExperiments": "revenue_2025q1_appearance_improve_conversion\r\nrevenue_2025q3_trending_by_payersegment",
+		"ActiveExperiments": "null",
 		"StartTime": null,
 		"EndTime": null
 	},
@@ -4614,7 +4614,7 @@
 	},
 	{
 		"Key": "RoomieAI.System.Enabled",
-		"Value": "True",
+		"Value": "False",
 		"ActiveExperiments": null,
 		"StartTime": null,
 		"EndTime": null
@@ -6060,5 +6060,19 @@
 		 "ActiveExperiments": null,
 		 "StartTime": null,
 		 "EndTime": null
+	},
+	{
+		"Key": "DataCollection.Enabled",
+		"Value": "false",
+		"ActiveExperiments": null,
+		"StartTime": null,
+		"EndTime": null
+	},
+	{
+		"Key": "Backtrace.SampleRate",
+		"Value": "0",
+		"ActiveExperiments": null,
+		"StartTime": null,
+		"EndTime": null
 	}
 ]

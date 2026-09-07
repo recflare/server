@@ -1,0 +1,10 @@
+[
+{
+	"id": "StoreItemCarousel_UnifiedAlgorithmicList_Skins",
+	"sectionType": 4,
+	"sectionSubType": "Items_Skins",
+	"source": "AlgorithmicList",
+	"sourceMetadata": "skinsitems",
+	"displayMetadata": "{\r\n    \"DisplayTitle\":\"Skins\",\r\n    \"categoryDepth\":2,\r\n    \"categoryCarouselType\": 5,\r\n    \"categoryUriNames\": \"SkinsItems\",\r\n    \"itemCount\": 5\r\n}"
+}
+]

@@ -14,7 +14,8 @@ import {
 import { withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
 import { validateAndGetAccountId } from '@repo/jwt'
 
-import { resolveCuratedList, serializeCuratedList } from './curated-lists'
+import { CatalogKind, UNSELLABLE_RARITIES } from '../../econ/src/catalog-load'
+import { placeholderCuratedList, resolveCuratedList, serializeCuratedList } from './curated-lists'
 import {
 	ALGORITHMIC_LIST_PARAM,
 	ALGORITHMIC_TYPE_PARAM,
@@ -38,7 +39,11 @@ import {
 
 import type { Context } from 'hono'
 import type { CuratedList, Room } from '@repo/domain'
+import type { CatalogKindValue } from '../../econ/src/catalog-load'
 import type { App } from './context'
+
+// The item catalog's sellable-rarity rule, from the worker that owns the table. Imported
+// rather than restated so a row can never offer an id the storefront omits.
 
 /**
  * Resolve the account id from a Bearer token. Returns `null` when the header is missing,
@@ -219,13 +224,179 @@ const PERSONAL_ROW_FEEDS: Record<string, (db: D1Database, accountId: number) => 
 }
 
 /**
- * The placeholder contents of a STORE carousel: four purchasable items out of storefront 3,
- * held here because nothing on this server ranks store items yet and what the reference
- * actually served these rows is not known. Every store row shares the one list rather than
- * each carrying its own copy — they are all the same placeholder, and a row that gets a real
- * answer should stop pointing at it rather than have its ids edited in place.
+ * What a GENERIC row's ids look like. A `Generic` row is the one kind that can name things
+ * of MORE THAN ONE sort in a single list, so the sort travels in the id itself: the client
+ * splits each `Id` on `.` and reads the half in front as which service resolves the half
+ * behind it.
+ *
+ * `<prefix>.<id>`, with EXACTLY ONE dot — the split is checked for two halves, so a bare
+ * `257` and a `0.1.2` are both dropped rather than resolved:
+ *
+ * - `0.<int>`  → a PurchasableItem, the store item of that id
+ * - `1.<guid>` → a CustomAvatarItem, the UGC item of that guid
+ *
+ * Which is why these ids are written out as the strings they go on the wire as: the prefix
+ * is part of the id here, not decoration this server adds, and `Type` (5) says only that
+ * the ids are self-describing — never what any one of them is.
  */
-const STORE_PLACEHOLDER_ITEMS = entities(['257', '192', '641', '657'])
+const GENERIC_ID_PREFIX = {
+	PurchasableItem: '0',
+	CustomAvatarItem: '1',
+} as const
+
+/**
+ * How many entities a GENERIC row serves. The reference's store carousels are a screenful, and
+ * the client draws what fits and scrolls the rest, so this is a "plenty to look at" number
+ * rather than one it must match.
+ */
+const GENERIC_ROW_SIZE = 50
+
+/** What a store row draws from the catalog. */
+interface StoreRowRule {
+	/** Avatar items (worn) or skins (held). */
+	kind: CatalogKindValue
+	/**
+	 * Substrings, ANY of which the item's name may contain, matched case-insensitively. Absent
+	 * means the whole kind.
+	 *
+	 * A crude stand-in for a category: the catalog records no slot or category for an item, so a
+	 * row that wants "headwear" has nothing to filter on but the name. Several are ORed because
+	 * one category is several words — a "top" is a shirt or a jacket — while the rule as a whole
+	 * is ANDed with the kind and rarity clauses.
+	 *
+	 * It matches ANYWHERE in the name, so `hat` takes "Top Hat" and "Hatchet" alike. That is the
+	 * known cost of having nothing better to ask; narrow these when the catalog grows a real
+	 * category to filter on.
+	 */
+	nameContains?: string[]
+}
+
+/**
+ * What each store row draws. A slug not named here draws the whole avatar-item catalog, which
+ * is what every store row did before any of them had a rule of its own.
+ *
+ * The slug is the only thing that distinguishes these: they are all asked for as `type=4`
+ * (PurchasableItems) and all answer bare `catalog_id`s, so nothing in the request but the row
+ * key says which items the row is about.
+ */
+const STORE_ROW_RULES: Record<string, StoreRowRule> = {
+	// Equipment skins — the Maker Pen, the sword, the disc golf disc and so on.
+	skinsitems: { kind: CatalogKind.Skin },
+	// Wearable categories, by name for want of anything better to filter on.
+	headwearitems: { kind: CatalogKind.AvatarItem, nameContains: ['hat'] },
+	topsitems: { kind: CatalogKind.AvatarItem, nameContains: ['shirt', 'jacket', 'dress'] },
+	handsitems: { kind: CatalogKind.AvatarItem, nameContains: ['glove', 'hand', 'wrist'] },
+	hairitems: { kind: CatalogKind.AvatarItem, nameContains: ['hair'] },
+	facialhairitems: {
+		kind: CatalogKind.AvatarItem,
+		nameContains: ['beard', 'mustache'],
+	},
+	waistitems: { kind: CatalogKind.AvatarItem, nameContains: ['belt'] },
+	accessoriesitems: {
+		kind: CatalogKind.AvatarItem,
+		nameContains: ['earrings', 'hearing aids'],
+	},
+	footwearitems: {
+		kind: CatalogKind.AvatarItem,
+		nameContains: ['shoes', 'sneakers', 'sandals', 'boots'],
+	},
+	bottomsitems: { kind: CatalogKind.AvatarItem, nameContains: ['pants', 'shorts'] },
+	shoulderitems: {
+		kind: CatalogKind.AvatarItem,
+		nameContains: ['quiver', 'backpack', 'sword'],
+	},
+}
+
+/** What a slug with no rule of its own draws: the whole avatar-item catalog. */
+const DEFAULT_STORE_ROW_RULE: StoreRowRule = { kind: CatalogKind.AvatarItem }
+
+/**
+ * A random handful of catalog ids matching one {@link StoreRowRule}, read live from the
+ * `catalog` table (owned by the `econ` worker, on this same `recflare` database). Backs the
+ * GENERIC row and every flavour of the PURCHASABLE ITEMS row, which differ only in what they
+ * ask for and how they spell what they get.
+ *
+ * Random because nothing here RANKS store items yet — there is no popularity, no recency, no
+ * personalisation to sort by — and a random draw is at least honestly arbitrary where a fixed
+ * hand-picked list pretended to be a ranking. It also exercises the whole catalog instead of
+ * the same ten ids forever, which is the point of pointing it at the table.
+ *
+ * {@link isSellableRarity} is applied whatever the kind: the generated storefront omits the
+ * developer/unreleased tier — `catalog_id` 10002 is in the table and NOT in sf1704 — and an id
+ * no storefront sells renders as nothing, indistinguishable from an id the client failed to
+ * parse. No skin carries that rarity today, so the clause costs them nothing and stops a future
+ * capture that does from leaking one into a row.
+ *
+ * The number in each id is the `catalog_id`, which is exactly what the generated storefront
+ * lists an avatar item under as its `PurchasableItemId` — one number resolves a row entity and a
+ * store item, with no second numbering between them. It is clear of every captured storefront's
+ * own ids by construction (see `CATALOG_ID_BASE`). It is a LOAD-ORDER surrogate, reassigned by
+ * every catalog load, which is fine for a row built and consumed within one request but is why
+ * nothing may store one.
+ *
+ * WORTH KNOWING for skins: no generated storefront lists them — sf1704 is avatar items only —
+ * so a client handed a skin's id has nothing to resolve it against yet, and the row will draw
+ * as nothing until a storefront carries them.
+ *
+ * An empty result is served as an empty row rather than falling back to canned ids: the table
+ * being empty means the catalog was never loaded (`runx catalog load`), and a fallback would
+ * hide that behind a row that looks fine.
+ */
+async function randomCatalogIds(c: Context<App>, rule: StoreRowRule): Promise<number[]> {
+	const binds: Array<string | number> = []
+	/** Bind a value and get its placeholder, so the numbering can't drift as clauses are added. */
+	const bind = (v: string | number): string => `?${binds.push(v)}`
+
+	const where = [`kind = ${bind(rule.kind)}`, 'catalog_id IS NOT NULL']
+	where.push(`rarity NOT IN (${UNSELLABLE_RARITIES.map((r) => bind(r)).join(', ')})`)
+
+	if (rule.nameContains !== undefined && rule.nameContains.length > 0) {
+		// Lowered on both sides rather than leaning on LIKE, which folds case for ASCII only —
+		// and item names are not all ASCII. `%` and `_` are escaped so a rule containing one
+		// matches it literally instead of everything. The needles are ORed with each other and
+		// the group ANDed with the rest, so a multi-word category widens what it takes without
+		// escaping the kind and rarity filters.
+		const any = rule.nameContains
+			.map((needle) => {
+				const escaped = needle.toLowerCase().replace(/[\\%_]/g, (ch) => `\\${ch}`)
+				return `lower(friendly_name) LIKE ${bind(`%${escaped}%`)} ESCAPE '\\'`
+			})
+			.join(' OR ')
+		where.push(`(${any})`)
+	}
+
+	const { results } = await c.env.DB.prepare(
+		`SELECT catalog_id FROM catalog WHERE ${where.join(' AND ')}
+		 ORDER BY RANDOM() LIMIT ${bind(GENERIC_ROW_SIZE)}`
+	)
+		.bind(...binds)
+		.all<{ catalog_id: number }>()
+	return results.map((r) => r.catalog_id)
+}
+
+/**
+ * A GENERIC row's entities: the same store items, under the `0.` PurchasableItem prefix that
+ * a Generic row's composite ids require.
+ */
+async function genericRowEntities(c: Context<App>): Promise<ListEntity[]> {
+	const ids = await randomCatalogIds(c, DEFAULT_STORE_ROW_RULE)
+	return entities(ids.map((id) => `${GENERIC_ID_PREFIX.PurchasableItem}.${id}`))
+}
+
+/**
+ * A PURCHASABLE ITEMS row's entities: the same store items as the Generic row, but with BARE
+ * ids and no prefix.
+ *
+ * That difference is the whole distinction between the two types and must not be tidied away.
+ * A typed row's `Type` is what tells the client which service to resolve its ids against, so
+ * the ids themselves are plain; only a Generic row, which can name things of more than one
+ * sort, carries the sort inside each id. Serving `0.10000` here would have the client look up
+ * a purchasable item literally called "0.10000".
+ */
+async function purchasableItemRowEntities(c: Context<App>, key: string): Promise<ListEntity[]> {
+	const ids = await randomCatalogIds(c, STORE_ROW_RULES[key] ?? DEFAULT_STORE_ROW_RULE)
+	return entities(ids.map((id) => String(id)))
+}
 
 /**
  * Rows served from a FIXED id list — a carousel somebody picked by hand, with no ranking
@@ -243,16 +414,14 @@ const STORE_PLACEHOLDER_ITEMS = entities(['257', '192', '641', '657'])
  * would leave that section pointing at nothing.
  */
 const STATIC_ROW_ENTITIES: Record<string, ListEntity[]> = {
-	// The store Featured page's "Medieval Masterpieces from the Community" carousel —
-	// `StoreItemCarousel_UnifiedAlgorithmicList_UGCMedievalCarousel` in the `discovery`
-	// worker's `StoreFeatured` page. Asked for with `?type=5`, Generic.
-	summerpartycarousel: STORE_PLACEHOLDER_ITEMS,
-
-	// The store Clothing page's "New" carousel —
-	// `StoreItemCarousel_UnifiedAlgorithmicList_New` in `StoreClothing`, and the `newitems`
-	// category the client's own store-category game config lists. Same placeholder items as
-	// the row above until something here actually knows which items are new.
-	newitems: STORE_PLACEHOLDER_ITEMS,
+	// Empty. The store carousels that lived here —
+	// `summerpartycarousel` (the Featured page's "Medieval Masterpieces from the Community")
+	// and `newitems` (the Clothing page's "New") — are asked for with `?type=5`, and Generic is
+	// answered by the TYPE from the catalog table now, so a static entry for either was already
+	// unreachable. See {@link genericRowEntities}.
+	//
+	// The table stays because it is the right home for a row somebody picks by hand, and the
+	// handler still consults it; nothing is hand-picked at the moment.
 }
 
 /**
@@ -399,11 +568,14 @@ const app = new Hono<App>()
 	// name — the captures are this server's fixtures and a player's list is their data.
 	// Nothing else distinguishes the two requests: both are the same three parameters.
 	//
-	// A name that matches NEITHER 404s. There is no list to serve, and the fallbacks this
-	// once had answered with an unrelated capture instead — a page's rows under another
-	// page's heading, which reads as real content rather than as a missing list. The
-	// exceptions are the client's own reserved playlists and a request naming no list at all;
-	// both are real answers, not misses (see `resolveCuratedList`).
+	// A name that matches NEITHER answers an EMPTY PLACEHOLDER list, 200 — a whole list object
+	// echoing the name and type asked for, with no `ItemIds`. The client breaks on anything that
+	// is not a list: a bare `{}` breaks it, and so did the 404 this sent before that. The
+	// fallbacks it had originally were worse still — an unrelated capture, putting one page's
+	// rows under another page's heading, which reads as real content. Empty `ItemIds` is what
+	// keeps the placeholder from reading as content of its own. The exceptions are the client's
+	// own reserved playlists and a request naming no list at all; both are real answers, not
+	// misses (see `resolveCuratedList`).
 	.get(
 		'/curatedlists',
 		describeRoute({
@@ -427,16 +599,17 @@ const app = new Hono<App>()
 				'property of the list rather than of the reader, and the answer is only ever ids the',
 				'client then resolves itself.',
 				'',
-				'A name matching NEITHER 404s: answering it with an unrelated capture puts one page’s',
-				'rows under another page’s heading, which reads as real content rather than as a missing',
-				'list. The two exceptions are real answers rather than misses — a reserved `__` playlist',
-				'nobody owns yet comes back EMPTY, and a request naming no list at all gets the page',
-				'default for its `type`.',
+				'A name matching NEITHER answers an EMPTY PLACEHOLDER: a whole list object echoing the',
+				'name and `type` asked for, with no `ItemIds`. The client breaks on anything that is',
+				'not a list, so a miss cannot be `{}` or a 404; and answering it with an unrelated',
+				'capture would put one page’s rows under another page’s heading, which reads as real',
+				'content. The two exceptions resolve to real lists rather than placeholders — a',
+				'reserved `__` playlist nobody owns yet, and a request naming no list at all, which',
+				'gets the page default for its `type`.',
 			].join('\n'),
 			parameters: [CREATOR_ACCOUNT_ID_PARAM, LIST_TYPE_PARAM, LIST_NAME_PARAM],
 			responses: {
-				200: json(CuratedListRead, 'The list'),
-				404: { description: 'No list of that name, and it is not a reserved playlist' },
+				200: json(CuratedListRead, 'The list, or an empty placeholder when there is no such list'),
 			},
 		}),
 		async (c) => {
@@ -444,10 +617,14 @@ const app = new Hono<App>()
 			const type = c.req.query('type')
 			const name = c.req.query('name')
 
+			// No such list: a well-formed but EMPTY list echoing what was asked for. The client
+			// BREAKS on a bare `{}`, and broke differently on the 404 this sent before it, so the
+			// answer has to be a list — "there is no such list" expressed as a list with nothing in
+			// it. Empty `ItemIds` is what keeps it from reading as content.
 			const list =
 				(await ownedList(c, creatorAccountId, type, name)) ??
-				resolveCuratedList(creatorAccountId, type, name)
-			if (list === undefined) return c.notFound()
+				resolveCuratedList(creatorAccountId, type, name) ??
+				placeholderCuratedList(creatorAccountId, type, name)
 
 			// Serialized by hand rather than through `c.json`: the reference's `ListId`s are
 			// 64-bit and are carried as strings so their digits survive being parsed — see
@@ -544,6 +721,10 @@ const app = new Hono<App>()
 	// instead of one it hides. `Type` is echoed back from the query: it
 	// tells the client what the `Id`s ARE (rooms, players, …), so answering with a type the
 	// caller didn't ask for would have it resolve the ids against the wrong service.
+	//
+	// `?type=5` (Generic) is the exception that is answered by the TYPE and not by the slug:
+	// its ids are `<prefix>.<id>` composites the client resolves per entity (see
+	// `genericRowEntities`), so no ranking of bare room ids can fill such a row.
 	.get(
 		'/algorithmiclists/:list',
 		describeRoute({
@@ -564,6 +745,26 @@ const app = new Hono<App>()
 				'',
 				'Every other row — an unknown key included — answers an EMPTY 200 rather than a 404,',
 				'which the client renders as a row that failed to load instead of one it hides.',
+				'',
+				'`?type=5` (Generic) is answered by the TYPE rather than by the slug, because a Generic',
+				'row’s ids are `<prefix>.<id>` composites — exactly one dot, `0.<int>` a purchasable',
+				'item and `1.<guid>` a custom avatar item — that the client resolves one at a time.',
+				'It serves a random draw of sellable purchasable items from the `catalog` table, since',
+				'nothing here ranks store items yet; the number in each id is the `catalog_id`, which',
+				'is the same `PurchasableItemId` the generated storefront carries.',
+				'`?type=4` (PurchasableItems) is answered by the type too, from the same draw, but',
+				'with BARE ids: a typed row’s `Type` already says what its ids are, so only a Generic',
+				'row needs the prefix. There the SLUG picks what is drawn: `skinsitems` returns',
+				'equipment skins, and `headwearitems` / `topsitems` / `handsitems` / `hairitems` /',
+				'`facialhairitems` / `waistitems` / `accessoriesitems` / `footwearitems` /',
+				'`bottomsitems` / `shoulderitems` return avatar items whose names contain one of that row’s words —',
+				'“hat”, “shirt”/“jacket”/“dress”, “glove”/“hand”/“wrist”, “hair”,',
+				'“beard”/“mustache”, “belt”,',
+				'“earrings”/“hearing aids”, “shoes”/“sneakers”/“sandals”/“boots”, “pants”/“shorts”,',
+				'“quiver”/“backpack”/“sword”. Every other row returns the whole avatar-item catalog.',
+				'The name match is a stand-in — the catalog records no',
+				'category — so it takes anything the word appears in. No generated storefront lists',
+				'skins yet, so a client has nothing to resolve those ids against.',
 			].join('\n'),
 			parameters: [ALGORITHMIC_LIST_PARAM, ALGORITHMIC_TYPE_PARAM],
 			responses: { 200: json(AlgorithmicList, 'The row’s entities, possibly none') },
@@ -577,6 +778,28 @@ const app = new Hono<App>()
 				type >= 0 && type <= MAX_LIST_ENTITY_TYPE ? type : DEFAULT_ALGORITHMIC_LIST_TYPE
 
 			const key = c.req.param('list').toLowerCase()
+
+			// GENERIC is answered by the TYPE rather than by the row. Every other kind of row
+			// serves bare ids of one sort — room ids, item ids — and it is `Type` that tells the
+			// client which service to resolve them against; a Generic row instead carries the sort
+			// inside each id (see `GENERIC_ID_PREFIX`), so a caller asking for 5 cannot be served
+			// a ranking of bare room ids no matter which slug it named. A random draw from the
+			// item catalog until something here ranks store items.
+			if (echoed === ListEntityType.Generic) {
+				return c.json({ Type: echoed, Entities: await genericRowEntities(c) })
+			}
+
+			// PURCHASABLE ITEMS is answered by the type as well, and from the same catalogue draw —
+			// but with BARE ids. A typed row's `Type` is what tells the client which service to
+			// resolve its ids against, so the ids are plain; the `0.` prefix belongs to Generic
+			// alone, where it is the only thing saying what each id IS.
+			// The SLUG picks what is drawn here, unlike Generic: `skinsitems` draws equipment skins,
+			// the `headwearitems`-style rows draw avatar items whose names say so, everything else
+			// draws the whole avatar-item catalog. They are all `type=4` and all answer bare ids, so
+			// the row key is the only thing in the request that says which.
+			if (echoed === ListEntityType.PurchasableItems) {
+				return c.json({ Type: echoed, Entities: await purchasableItemRowEntities(c, key) })
+			}
 
 			// A per-caller row needs to know who is asking, so it is the one kind of row that
 			// reads the token. No token — or one that doesn't resolve — answers an EMPTY row

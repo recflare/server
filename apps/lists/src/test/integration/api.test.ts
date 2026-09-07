@@ -9,6 +9,8 @@ import {
 	SUBROOM_SCHEMA_DDL,
 } from '@repo/domain'
 
+import { CATALOG_SCHEMA_DDL } from '../../../../econ/src/catalog-db'
+import { CATALOG_ID_BASE } from '../../../../econ/src/catalog-load'
 import curatedLists from '../../../static/curated-lists.json'
 
 import type { Env } from '../../context'
@@ -18,6 +20,74 @@ declare module 'cloudflare:test' {
 }
 
 const ORIGIN = 'https://example.com'
+
+/**
+ * Sellable avatar items seeded into the catalog — more than a GENERIC row holds, so the row's
+ * LIMIT and its randomness are both exercised rather than trivially satisfied.
+ */
+const CATALOG_SEEDED = 120
+
+/** The row size the worker serves — see `GENERIC_ROW_SIZE`. */
+const GENERIC_ROW_SIZE = 50
+
+/** A rarity -1 row: in the catalog, absent from the storefront, never offered by a row. */
+const CATALOG_UNSELLABLE_ID = 90_001
+
+/**
+ * Named avatar items for the category rows, which filter on the NAME. One or two per category
+ * plus a pair that must NOT match, so a rule that took everything fails rather than passes.
+ */
+const NAMED_SEEDS = [
+	'Wizard Hat (Blue)',
+	'Top Hat',
+	'Artist Shirt (Gray)',
+	'Captain Jacket (Blue)',
+	'Royal Dress (Blue)',
+	'Vampire Hunter Gloves (Red)',
+	'Zombie Hands',
+	'Karate Wrist Wrap',
+	'Angled Bob Hair',
+	'Wizard Beard',
+	'Curly Mustache',
+	'Treasure Hunter Belt (Brown)',
+	'Round Earrings',
+	'Hearing Aids (BTE Earmold - Red)',
+	'Carnival Clown Shoes',
+	'Pink Pop Idol Sneakers',
+	'Flower Sandals',
+	'Destiny Hunter Boots',
+	'Barista Pants',
+	'Silly Shorts (Donut Dreams)',
+	'Archer Quiver (Green)',
+	'Plush Bunny Backpack',
+	'Backsword (Wolf Steel)',
+	// In BOTH `waistitems` and `shoulderitems` — the categories are not mutually exclusive, and
+	// nothing stops an item appearing in two rows.
+	'Samurai Belt Sword (Jade)',
+	// Matches none of the rules — the control. Renamed from "Ordinary Boots" when `footwearitems`
+	// arrived and took it: a control has to be checked against every rule, not just the ones that
+	// existed when it was written.
+	'Plain Trousers',
+	'Ordinary Socks',
+] as const
+
+/** Where the named seeds' ids start — clear of the numbered avatar items above. */
+const CATALOG_NAMED_ID = 80_001
+
+/**
+ * Whether an id is one of the seeded AVATAR ITEMS — the bulk numbered ones or the named ones.
+ * The unfiltered store rows draw from both, so a row asserting "avatar items only" has to
+ * accept either range while still rejecting the unsellable row and every skin.
+ */
+const isSeededAvatarItem = (n: number): boolean =>
+	(n >= CATALOG_ID_BASE && n < CATALOG_ID_BASE + CATALOG_SEEDED) ||
+	(n >= CATALOG_NAMED_ID && n < CATALOG_NAMED_ID + NAMED_SEEDS.length)
+
+/** Where the seeded skins' ids start — clear of the avatar items above. */
+const CATALOG_SKIN_ID = 90_002
+
+/** Seeded skins: more than a row holds, so its LIMIT and randomness are both exercised. */
+const CATALOG_SKINS_SEEDED = 70
 
 beforeAll(async () => {
 	// Seed the shared JWT signing key into the local Secrets Store so .get() resolves.
@@ -30,6 +100,50 @@ beforeAll(async () => {
 	for (const stmt of PRESENCE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	// The player-owned curated lists, which this worker owns.
 	for (const stmt of CURATED_LIST_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+
+	// The item catalog (owned by `econ`, on this same database), which the GENERIC rows draw
+	// from. Seeded with more rows than a row can hold so the LIMIT and the randomness are both
+	// exercised, and with one unsellable row the draw must never offer.
+	for (const stmt of CATALOG_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	for (let i = 0; i < CATALOG_SEEDED; i++) {
+		await env.DB.prepare(
+			`INSERT INTO catalog (item_key, catalog_id, kind, friendly_name, rarity, platform_mask)
+			 VALUES (?1, ?2, 'avatar_item', ?3, 0, -1)`
+		)
+			// Numbered from the base, exactly as a real load numbers them.
+			.bind(`seed-desc-${i},,,`, CATALOG_ID_BASE + i, `Seeded Item ${i}`)
+			.run()
+	}
+	// Named items for the category rows, which filter on the NAME for want of anything better.
+	// Deliberately mixed-case and mid-word, so a rule that only matched whole lowercase words
+	// would miss them.
+	for (const [i, name] of NAMED_SEEDS.entries()) {
+		await env.DB.prepare(
+			`INSERT INTO catalog (item_key, catalog_id, kind, friendly_name, rarity, platform_mask)
+			 VALUES (?1, ?2, 'avatar_item', ?3, 0, -1)`
+		)
+			.bind(`seed-named-${i},,,`, CATALOG_NAMED_ID + i, name)
+			.run()
+	}
+	// Rarity -1 is the developer tier: it is in the catalog and NOT in the storefront, so a row
+	// offering it would hand the client an id no storefront sells.
+	await env.DB.prepare(
+		`INSERT INTO catalog (item_key, catalog_id, kind, friendly_name, rarity, platform_mask)
+		 VALUES ('seed-unsellable,,,', ?1, 'avatar_item', 'Developer Item', -1, -1)`
+	)
+		.bind(CATALOG_UNSELLABLE_ID)
+		.run()
+	// Skins. They are in the catalog but are NOT avatar items, so an avatar-item row must never
+	// offer one — and `skinsitems` must offer nothing else. More than a row holds, so its LIMIT
+	// and randomness are exercised the same way the avatar-item rows are.
+	for (let i = 0; i < CATALOG_SKINS_SEEDED; i++) {
+		await env.DB.prepare(
+			`INSERT INTO catalog (item_key, catalog_id, kind, friendly_name, rarity, platform_mask, prefab_name)
+			 VALUES (?1, ?2, 'skin', ?3, 0, -1, '[MakerPen]')`
+		)
+			.bind(`seed-skin-guid-${i}`, CATALOG_SKIN_ID + i, `Seeded Skin ${i}`)
+			.run()
+	}
 
 	// Creation order and publish order are deliberately near-REVERSES of each other, so the
 	// `new` row and the `recentlyupdated` row can't both be passing on the same ordering.
@@ -310,30 +424,61 @@ it('matches the name case-insensitively and prefers it over the type', async () 
 	expect(((await explore.json()) as { Name: string }).Name).toBe('Discovery.PageSource.PlayExplore')
 })
 
-it('404s for a name it has nothing under', async () => {
-	// A name nothing matches is a list that does not exist. It used to answer with the
-	// default capture, which put one page's rows under another page's heading — content that
-	// looks real, where a 404 says plainly there is no such list. `17859340` is the store
-	// Featured page's own lookup (by the reference's numeric list id) and gets the same
-	// answer: nothing here is called that.
-	for (const query of [
-		'?creatorAccountId=1&type=5&name=Internal_Medieval_Items',
-		'?creatorAccountId=1&type=4&name=17859340',
-		'?type=99&name=Nope',
-		'?type=7&name=Discovery.PageSource.NotAPage',
-	]) {
+it('answers an empty placeholder list for a name it has nothing under', async () => {
+	// A name nothing matches is a list that does not exist — but the answer still has to BE a
+	// list: the client breaks on a bare `{}`, and broke differently on the 404 this sent before
+	// that. So it gets a well-formed list echoing what was asked for, with nothing in it. Empty
+	// `ItemIds` is what keeps it from reading as content, the way an unrelated capture did when
+	// this endpoint used to fall back to one.
+	//
+	// `17859340` is the store Featured page's own lookup (by the reference's numeric list id)
+	// and gets the same answer: nothing here is called that.
+	for (const [query, name, type] of [
+		['?creatorAccountId=1&type=5&name=Internal_Medieval_Items', 'Internal_Medieval_Items', 5],
+		['?creatorAccountId=1&type=4&name=17859340', '17859340', 4],
+		['?type=99&name=Nope', 'Nope', 99],
+		['?type=7&name=Discovery.PageSource.NotAPage', 'Discovery.PageSource.NotAPage', 7],
+	] as Array<[string, string, number]>) {
 		const res = await SELF.fetch(`${ORIGIN}/curatedlists${query}`)
-		expect(res.status).toBe(404)
+		expect(res.status, query).toBe(200)
+		expect(await res.json(), query).toEqual({
+			ListId: 1,
+			CreatorAccountId: query.includes('creatorAccountId=1') ? 1 : 0,
+			// The NAME and TYPE asked for are echoed: the client is looking at the list it
+			// requested, not a stand-in labelled something else.
+			Name: name,
+			Description: null,
+			ImageName: 'DefaultListImage.jpg',
+			Type: type,
+			ItemIds: [],
+			Accessibility: 0,
+			CreatedAt: '2026-08-24T18:44:52.438Z',
+		})
 	}
 
+	// `ListId` is a NUMBER on the wire, not a string — the client's parser wants one, which is
+	// why every id in the curated-list code is carried as a string and serialized by hand.
+	const raw = await (
+		await SELF.fetch(`${ORIGIN}/curatedlists?creatorAccountId=1&type=5&name=Nothing`)
+	).text()
+	expect(raw).toContain('"ListId":1')
+	expect(raw).not.toContain('"ListId":"1"')
+
 	// Naming NO list is not a miss — it asks for the page default, and only the type says
-	// which page. Without a type there is no page either, so that 404s too.
+	// which page.
 	const byType = await SELF.fetch(`${ORIGIN}/curatedlists?creatorAccountId=1&type=7`)
 	expect(byType.status).toBe(200)
 	expect(((await byType.json()) as { Name: string }).Name).toBe('Discovery.PageSource.PlayExplore')
 
+	// Without a type there is no page either, so those fall through to the placeholder like any
+	// other miss rather than erroring.
 	for (const query of ['?creatorAccountId=7&type=&name=', '']) {
-		expect((await SELF.fetch(`${ORIGIN}/curatedlists${query}`)).status).toBe(404)
+		const res = await SELF.fetch(`${ORIGIN}/curatedlists${query}`)
+		expect(res.status, query).toBe(200)
+		const list = (await res.json()) as { Name: string; ItemIds: string[]; Type: number }
+		expect(list.Name, query).toBe('')
+		expect(list.ItemIds, query).toEqual([])
+		expect(list.Type, query).toBe(0)
 	}
 })
 
@@ -473,14 +618,39 @@ it('answers an unowned reserved list EMPTY rather than with the default page', a
 	expect(typeof list.ImageName).toBe('string')
 })
 
-it('404s for a NON-reserved unknown name', async () => {
-	// The empty-list answer is the reserved prefix's alone: a name a player did not reserve
-	// and this server has nothing under is missing, not empty. An empty list would have the
-	// client render a real but blank row for a page that does not exist here.
-	const featured = await SELF.fetch(
-		`${ORIGIN}/curatedlists?creatorAccountId=1&type=4&name=17859340`
+it('keeps the placeholder and the reserved empty list distinct', async () => {
+	// Both are "a list with nothing in it", and they are NOT the same answer. Every field they
+	// differ in was arrived at against the live client, so they must not be merged on the
+	// grounds that they look alike.
+	//
+	// A reserved name is a REAL list the player simply has not saved into yet.
+	const reserved = await SELF.fetch(
+		`${ORIGIN}/curatedlists?creatorAccountId=99&type=1&name=__SavedForLater_Rooms`
 	)
-	expect(featured.status).toBe(404)
+	expect(reserved.status).toBe(200)
+	expect(await reserved.json()).toMatchObject({
+		ListId: 0,
+		CreatorAccountId: 99,
+		Name: '__SavedForLater_Rooms',
+		ItemIds: [],
+		Accessibility: 1,
+		ImageName: 'DefaultRoomImage.jpg',
+	})
+
+	// A name nobody reserved and this server has nothing under is not a list at all, and its
+	// stand-in says so: a different id, accessibility and image.
+	const missing = await SELF.fetch(
+		`${ORIGIN}/curatedlists?creatorAccountId=99&type=1&name=NotReserved`
+	)
+	expect(missing.status).toBe(200)
+	expect(await missing.json()).toMatchObject({
+		ListId: 1,
+		CreatorAccountId: 99,
+		Name: 'NotReserved',
+		ItemIds: [],
+		Accessibility: 0,
+		ImageName: 'DefaultListImage.jpg',
+	})
 })
 
 it('prefers a player’s stored list over a capture of the same name', async () => {
@@ -639,33 +809,294 @@ it('serves a discovery row from /algorithmiclists', async () => {
 	expect(await res.json()).toEqual({ Type: 1, Entities: [] })
 })
 
-it('serves the hand-picked summerpartycarousel row', async () => {
+it('fills a GENERIC (type=5) row with random purchasable items from the catalog', async () => {
 	// The store's "Medieval Masterpieces from the Community" carousel, which the client asks
-	// for by the section's `sourceMetadata` slug and with `?type=5` (Generic). Nothing ranks
-	// store items here, so the row is a fixed id list — same entity shape as any other row,
-	// ids as STRINGS and `Context` null.
-	const res = await SELF.fetch(`${ORIGIN}/algorithmiclists/summerpartycarousel?type=5`)
-	expect(res.status).toBe(200)
-	const expected = {
-		Type: 5,
-		Entities: [
-			{ Id: '257', Context: null },
-			{ Id: '192', Context: null },
-			{ Id: '641', Context: null },
-			{ Id: '657', Context: null },
-		],
+	// for by the section's `sourceMetadata` slug and with `?type=5` (Generic). Nothing here
+	// RANKS store items, so the row is a random draw from the catalog rather than a ranking or
+	// a hand-picked list pretending to be one.
+	//
+	// A Generic row's ids are `<prefix>.<id>` composites: the client splits each on `.` and
+	// needs EXACTLY two halves, reading `0` as a purchasable item and `1` as a custom avatar
+	// item. A bare `257` has no dot and is dropped, which is why these are not plain numbers
+	// like every other row's.
+	const read = async (slug: string): Promise<string[]> => {
+		const res = await SELF.fetch(`${ORIGIN}/algorithmiclists/${slug}?type=5`)
+		expect(res.status, slug).toBe(200)
+		const body = (await res.json()) as {
+			Type: number
+			Entities: Array<{ Id: string; Context: null }>
+		}
+		expect(body.Type, slug).toBe(5)
+		// Bare object, no `{ success, error, value }` envelope — the client parses the list itself.
+		expect(Object.keys(body).sort(), slug).toEqual(['Entities', 'Type'])
+		expect(
+			body.Entities.every((e) => e.Context === null),
+			slug
+		).toBe(true)
+		return body.Entities.map((e) => e.Id)
 	}
-	expect(await res.json()).toEqual(expected)
 
-	// Looked up folded, like every other row key: the casing is the reference's, not ours.
-	const cased = await SELF.fetch(`${ORIGIN}/algorithmiclists/SummerPartyCarousel?type=5`)
-	expect(await cased.json()).toEqual(expected)
+	const ids = await read('summerpartycarousel')
 
-	// The store Clothing page's "New" carousel serves the same placeholder items — both are
-	// store rows nothing ranks yet, so they share one id list rather than drifting apart.
-	const newItems = await SELF.fetch(`${ORIGIN}/algorithmiclists/newitems?type=5`)
-	expect(newItems.status).toBe(200)
-	expect(await newItems.json()).toEqual(expected)
+	// Capped at the row size even though the catalog holds more, and full rather than a
+	// handful: a row that quietly served three items would still pass a "not empty" check.
+	expect(ids).toHaveLength(GENERIC_ROW_SIZE)
+
+	// Every id is `0.<PurchasableItemId>` — exactly one dot, an integer after it. `0.1.2` or a
+	// bare `257` resolves to nothing.
+	const numbers = ids.map((id) => {
+		const parts = id.split('.')
+		expect(parts, id).toHaveLength(2)
+		expect(parts[0], id).toBe('0')
+		expect(parts[1], id).toMatch(/^\d+$/)
+		return Number(parts[1])
+	})
+
+	// The number is the `catalog_id`, which is exactly what the generated storefront lists the
+	// item under as its `PurchasableItemId` — one number, no arithmetic between them. Catalog ids
+	// start at 10000 so they cannot be mistaken for a captured storefront's own.
+	expect(numbers.every((n) => n >= CATALOG_ID_BASE)).toBe(true)
+
+	// No duplicates: one draw must not offer the same item twice.
+	expect(new Set(numbers).size).toBe(numbers.length)
+
+	// Only SELLABLE avatar items. The catalog also holds a rarity -1 developer row and a skin,
+	// and neither is in a storefront — an id no storefront sells renders as nothing, which
+	// looks exactly like an id the client failed to parse.
+	expect(numbers).not.toContain(CATALOG_UNSELLABLE_ID)
+	expect(numbers.some((n) => n >= CATALOG_SKIN_ID)).toBe(false)
+	expect(numbers.every(isSeededAvatarItem)).toBe(true)
+
+	// Actually RANDOM, not a fixed slice: two reads of 50 from 120 rows agree only by a
+	// vanishing coincidence, so identical draws mean the ORDER BY RANDOM() was lost.
+	expect(await read('summerpartycarousel')).not.toEqual(ids)
+
+	// Looked up folded, like every other row key: the casing is the reference's, not ours. And
+	// Generic is answered by the TYPE, not the slug — an unknown row, and a row with a live
+	// RANKING behind it, both answer store items rather than bare room ids the client can't
+	// split. All four draw from the same pool, so all four are the same shape.
+	for (const slug of [
+		'SummerPartyCarousel',
+		'newitems',
+		'Rooms_Battle_AlgoEndpoint_PlayHighlight_TabsTest_Explore',
+		'HotList',
+	]) {
+		const other = await read(slug)
+		expect(other, slug).toHaveLength(GENERIC_ROW_SIZE)
+		expect(
+			other.every((id) => /^0\.\d+$/.test(id)),
+			slug
+		).toBe(true)
+	}
+})
+
+it('fills a PURCHASABLE ITEMS (type=4) row with the same draw, but BARE ids', async () => {
+	// The store's clothing row (`/algorithmiclists/clothingitems?type=4`). Same random draw from
+	// the catalogue as the Generic row — nothing ranks store items here either — but the ids are
+	// PLAIN. That difference is the whole distinction between the two types: a typed row's
+	// `Type` is what tells the client which service to resolve its ids against, so its ids need
+	// say nothing about themselves, where a Generic row can name things of more than one sort
+	// and carries the sort inside each id.
+	const read = async (slug: string): Promise<string[]> => {
+		const res = await SELF.fetch(`${ORIGIN}/algorithmiclists/${slug}?type=4`)
+		expect(res.status, slug).toBe(200)
+		const body = (await res.json()) as {
+			Type: number
+			Entities: Array<{ Id: string; Context: null }>
+		}
+		expect(body.Type, slug).toBe(4)
+		expect(Object.keys(body).sort(), slug).toEqual(['Entities', 'Type'])
+		expect(
+			body.Entities.every((e) => e.Context === null),
+			slug
+		).toBe(true)
+		return body.Entities.map((e) => e.Id)
+	}
+
+	const ids = await read('clothingitems')
+	expect(ids).toHaveLength(GENERIC_ROW_SIZE)
+
+	// Bare integers — NO `0.` prefix. Serving `0.10000` here would have the client look up a
+	// purchasable item literally called "0.10000".
+	for (const id of ids) {
+		expect(id, id).toMatch(/^\d+$/)
+		expect(id, id).not.toContain('.')
+	}
+
+	// The same pool the Generic row draws from: catalog ids, so sellable avatar items only.
+	const numbers = ids.map(Number)
+	expect(new Set(numbers).size).toBe(numbers.length)
+	expect(numbers).not.toContain(CATALOG_UNSELLABLE_ID)
+	expect(numbers.some((n) => n >= CATALOG_SKIN_ID)).toBe(false)
+	expect(numbers.every(isSeededAvatarItem)).toBe(true)
+
+	// Random, and answered by the TYPE rather than the slug — like Generic.
+	expect(await read('clothingitems')).not.toEqual(ids)
+	for (const slug of ['ClothingItems', 'newitems', 'HotList', 'NoSuchRowAnywhere']) {
+		const other = await read(slug)
+		expect(other, slug).toHaveLength(GENERIC_ROW_SIZE)
+		expect(
+			other.every((id) => /^\d+$/.test(id)),
+			slug
+		).toBe(true)
+	}
+
+	// The two types stay distinct: asking the SAME slug as 5 gets prefixed ids back.
+	const generic = await SELF.fetch(`${ORIGIN}/algorithmiclists/clothingitems?type=5`)
+	const genericIds = ((await generic.json()) as { Entities: Array<{ Id: string }> }).Entities.map(
+		(e) => e.Id
+	)
+	expect(genericIds.every((id) => /^0\.\d+$/.test(id))).toBe(true)
+})
+
+it('fills the skinsitems (type=4) row with equipment skins, not avatar items', async () => {
+	// `/algorithmiclists/skinsitems?type=4` — the equipment row. Same type and same bare-id
+	// shape as every other store row, so the SLUG is the only thing in the request saying it
+	// wants something held rather than something worn.
+	const read = async (slug: string): Promise<number[]> => {
+		const res = await SELF.fetch(`${ORIGIN}/algorithmiclists/${slug}?type=4`)
+		expect(res.status, slug).toBe(200)
+		const body = (await res.json()) as {
+			Type: number
+			Entities: Array<{ Id: string; Context: null }>
+		}
+		expect(body.Type, slug).toBe(4)
+		expect(
+			body.Entities.every((e) => e.Context === null && /^\d+$/.test(e.Id)),
+			slug
+		).toBe(true)
+		return body.Entities.map((e) => Number(e.Id))
+	}
+
+	const skins = await read('skinsitems')
+	expect(skins).toHaveLength(GENERIC_ROW_SIZE)
+	expect(new Set(skins).size).toBe(skins.length)
+
+	// Skins ONLY. Every id is in the seeded skin range, and none is an avatar item — a row that
+	// quietly mixed the two would still look plausible.
+	expect(
+		skins.every((n) => n >= CATALOG_SKIN_ID && n < CATALOG_SKIN_ID + CATALOG_SKINS_SEEDED)
+	).toBe(true)
+	expect(skins.some((n) => n < CATALOG_SKIN_ID)).toBe(false)
+
+	// Still random, like the other store rows.
+	expect(await read('skinsitems')).not.toEqual(skins)
+
+	// Case-folded like every row key.
+	const cased = await read('SkinsItems')
+	expect(cased.every((n) => n >= CATALOG_SKIN_ID)).toBe(true)
+
+	// And the slug is what decides: every OTHER type=4 row still draws avatar items, so this is
+	// a row-specific answer rather than the type changing meaning.
+	for (const slug of ['clothingitems', 'newitems', 'HotList', 'NoSuchRowAnywhere']) {
+		const others = await read(slug)
+		expect(others, slug).toHaveLength(GENERIC_ROW_SIZE)
+		expect(others.every(isSeededAvatarItem), slug).toBe(true)
+	}
+
+	// `skinsitems` asked for as GENERIC still draws avatar items under the `0.` prefix: the
+	// slug picks the kind only where the type leaves it open, and a Generic row's ids say what
+	// they are for themselves.
+	const generic = await SELF.fetch(`${ORIGIN}/algorithmiclists/skinsitems?type=5`)
+	const genericIds = ((await generic.json()) as { Entities: Array<{ Id: string }> }).Entities.map(
+		(e) => e.Id
+	)
+	expect(genericIds.every((id) => /^0\.\d+$/.test(id))).toBe(true)
+	expect(genericIds.every((id) => Number(id.slice(2)) < CATALOG_SKIN_ID)).toBe(true)
+})
+
+it('filters the category rows by name', async () => {
+	// `headwearitems`, `topsitems`, `hairitems` and `waistitems` all draw avatar items, narrowed
+	// by a substring of the NAME — the catalog records no slot or category, so the name is the
+	// only thing there is to filter on.
+	const names = async (slug: string): Promise<string[]> => {
+		const res = await SELF.fetch(`${ORIGIN}/algorithmiclists/${slug}?type=4`)
+		expect(res.status, slug).toBe(200)
+		const ids = ((await res.json()) as { Entities: Array<{ Id: string }> }).Entities.map((e) =>
+			Number(e.Id)
+		)
+		// Resolve each id back to the row it names, so the assertions read as item names.
+		const rows = await env.DB.prepare(
+			`SELECT friendly_name FROM catalog WHERE catalog_id IN (${ids.map(() => '?').join(', ')})`
+		)
+			.bind(...ids)
+			.all<{ friendly_name: string }>()
+		return rows.results.map((r) => r.friendly_name).sort()
+	}
+
+	expect(await names('headwearitems')).toEqual(['Top Hat', 'Wizard Hat (Blue)'])
+	expect(await names('hairitems')).toEqual(['Angled Bob Hair'])
+
+	// Facial hair is its OWN row, and the two do not overlap: no real beard or mustache has
+	// "hair" in its name, so `hairitems` does not sweep them up.
+	expect(await names('facialhairitems')).toEqual(['Curly Mustache', 'Wizard Beard'])
+	expect(await names('hairitems')).not.toContain('Wizard Beard')
+	expect(await names('waistitems')).toEqual([
+		'Samurai Belt Sword (Jade)',
+		'Treasure Hunter Belt (Brown)',
+	])
+
+	// A needle may be a PHRASE, not just a word — "hearing aids" has a space in it, and the
+	// match is a plain substring, so nothing splits it.
+	expect(await names('accessoriesitems')).toEqual([
+		'Hearing Aids (BTE Earmold - Red)',
+		'Round Earrings',
+	])
+	expect(await names('footwearitems')).toEqual([
+		'Carnival Clown Shoes',
+		'Destiny Hunter Boots',
+		'Flower Sandals',
+		'Pink Pop Idol Sneakers',
+	])
+	expect(await names('bottomsitems')).toEqual(['Barista Pants', 'Silly Shorts (Donut Dreams)'])
+	expect(await names('shoulderitems')).toEqual([
+		'Archer Quiver (Green)',
+		'Backsword (Wolf Steel)',
+		'Plush Bunny Backpack',
+		'Samurai Belt Sword (Jade)',
+	])
+
+	// The rows OVERLAP, deliberately: a "Samurai Belt Sword" is a belt and a sword, so it is in
+	// both rows rather than being claimed by whichever rule ran first. Nothing here assigns an
+	// item to one category — the name is all there is to go on.
+	expect(await names('waistitems')).toContain('Samurai Belt Sword (Jade)')
+
+	// Several needles are ORed: a "top" is a shirt, a jacket OR a dress, and hands take gloves,
+	// hands or wrists. The group is still ANDed with the kind and rarity filters rather than
+	// escaping them.
+	expect(await names('topsitems')).toEqual([
+		'Artist Shirt (Gray)',
+		'Captain Jacket (Blue)',
+		'Royal Dress (Blue)',
+	])
+	expect(await names('handsitems')).toEqual([
+		'Karate Wrist Wrap',
+		'Vampire Hunter Gloves (Red)',
+		'Zombie Hands',
+	])
+
+	// Case-insensitive on both sides, and matched mid-word: "Wizard Hat" is found by `hat`
+	// though the name capitalises it, and the row key folds like every other.
+	expect(await names('HeadwearItems')).toEqual(['Top Hat', 'Wizard Hat (Blue)'])
+
+	// The control: nothing in the seeds matches every rule, so a filter that quietly did nothing
+	// would show up here as the unrelated items coming back too.
+	for (const slug of ['headwearitems', 'topsitems', 'handsitems', 'hairitems', 'waistitems']) {
+		const got = await names(slug)
+		expect(got, slug).not.toContain('Plain Trousers')
+		expect(got, slug).not.toContain('Ordinary Socks')
+		// And none of the bulk `Seeded Item N` rows, which no category names.
+		expect(
+			got.every((n) => !n.startsWith('Seeded Item')),
+			slug
+		).toBe(true)
+	}
+
+	// A row with no rule of its own is unfiltered — it still draws the whole avatar-item catalog.
+	const unfiltered = await SELF.fetch(`${ORIGIN}/algorithmiclists/clothingitems?type=4`)
+	expect(((await unfiltered.json()) as { Entities: unknown[] }).Entities.length).toBe(
+		GENERIC_ROW_SIZE
+	)
 })
 
 it('serves the live hot-room ranking for /algorithmiclists/HotList', async () => {
@@ -864,12 +1295,14 @@ it.each([
 })
 
 it('echoes the requested type and answers an unknown row', async () => {
-	const other = await SELF.fetch(`${ORIGIN}/algorithmiclists/Nothing_Ranks_This_Row?type=4`)
+	// Type 2 (Inventions), deliberately: 4 and 5 are answered BY THE TYPE from the item
+	// catalogue, so neither can show what an unranked row does.
+	const other = await SELF.fetch(`${ORIGIN}/algorithmiclists/Nothing_Ranks_This_Row?type=2`)
 	expect(other.status).toBe(200)
 	const body = (await other.json()) as { Type: number; Entities: unknown[] }
 	// An unknown row key answers 200 with no entities rather than 404ing: a failed request
 	// renders as a row that failed to load, an empty one as a row the client hides.
-	expect(body.Type).toBe(4)
+	expect(body.Type).toBe(2)
 	expect(body.Entities).toEqual([])
 
 	// No `type` at all falls back to Rooms (1), the only one the client asks for — falling

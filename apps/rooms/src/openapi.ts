@@ -98,6 +98,12 @@ export const playerIdParam = idParam('playerId', 'The account whose list to read
 /** The `:playerId` path parameter on the unban route. */
 export const bannedPlayerIdParam = idParam('playerId', 'The banned account to unban')
 
+/** The `:leaderboardId` path parameter on the room leaderboard routes. */
+export const leaderboardIdParam = idParam(
+	'leaderboardId',
+	'The leaderboard slot within the room — small ordinals (1, 2, 3…), unique per room only'
+)
+
 /** An optional string query parameter. */
 export function stringQuery(name: string, description: string): OpenAPIV3_1.ParameterObject {
 	return { name, in: 'query', required: false, description, schema: { type: 'string' } }
@@ -311,9 +317,6 @@ export const RoomDto = z.object({
 		.int()
 		.nullable()
 		.describe('The room’s published snapshot. Nothing takes snapshots here, so always null'),
-	FriendlyName: z
-		.string()
-		.describe('Display name. Nothing sets one apart from `Name` here, so it mirrors `Name`'),
 	CCU: z
 		.int()
 		.nullable()
@@ -607,6 +610,28 @@ export const RoomBanEnvelope = z.object({
 	success: z.boolean(),
 	error: z.string().describe('Empty on success'),
 	value: RoomBanDto.nullable().describe('Null on a rejection'),
+})
+
+/** `POST /rooms/{roomId}/leaderboards/{leaderboardId}` — configure one leaderboard slot. */
+export const LeaderboardRequest = z.object({
+	leaderboardTitle: z.string().describe('The title the board displays'),
+	statFormat: z.string().optional().describe('The stat-format int; defaults to 0'),
+	sortAscending: z
+		.string()
+		.optional()
+		.describe('`True` / `False` — whether lower scores rank first. Defaults to `False`'),
+})
+
+/**
+ * What both leaderboard routes answer: a bare success/failure carrying no entity.
+ * PascalCase `Success`/`Error` with a lowercase `error_id` — the same mixed casing the
+ * unprefixed isBanned envelope has ({@link IsBannedPascalEnvelope}), NOT the room
+ * mutations' lowercase `{ success, error, value }`.
+ */
+export const LeaderboardResultEnvelope = z.object({
+	Success: z.boolean(),
+	Error: z.string().nullable().describe('The message shown on a rejection; null on success'),
+	error_id: z.string().nullable().describe('Null. Lowercase, unlike its siblings'),
 })
 
 /** `PUT /rooms/{roomId}/warning`. */

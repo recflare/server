@@ -4564,6 +4564,110 @@
 		"RestrictedCircuitsAllowListNames": []
 	},
 	{
+		"RoomId": 45,
+		"Name": "RecRally",
+		"Description": "A six-player off-road rally race where you boost, bump, and powerslide your way to the finish line!",
+		"ImageName": "RecRally.jpg",
+		"WarningMask": 8,
+		"CustomWarning": null,
+		"CreatorAccountId": 1,
+		"State": 0,
+		"Accessibility": 1,
+		"PublishState": 0,
+		"SupportsLevelVoting": false,
+		"IsRRO": true,
+		"IsRecRoomApproved": false,
+		"ExcludeFromLists": false,
+		"ExcludeFromSearch": false,
+		"SupportsScreens": true,
+		"SupportsWalkVR": true,
+		"SupportsTeleportVR": true,
+		"SupportsVRLow": true,
+		"SupportsQuest2": true,
+		"SupportsMobile": true,
+		"SupportsJuniors": true,
+		"MinLevel": 0,
+		"AgeRating": 2,
+		"CreatedAt": "2026-02-25T20:10:07.201204Z",
+		"PublishedAt": "2026-02-25T20:10:07.201204Z",
+		"BecameRRStudioRoomAt": null,
+		"Stats": {
+			"CheerCount": 0,
+			"FavoriteCount": 0,
+			"VisitorCount": 0,
+			"VisitCount": 0
+		},
+		"RankingContext": null,
+		"IsDorm": false,
+		"IsPlacePlay": false,
+		"MaxPlayerCalculationMode": 0,
+		"MaxPlayers": 6,
+		"CloningAllowed": true,
+		"DisableMicAutoMute": false,
+		"DisableRoomComments": false,
+		"EncryptVoiceChat": false,
+		"ToxmodEnabled": true,
+		"LoadScreenLocked": false,
+		"UgcVersion": 1,
+		"PersistenceVersion": 0,
+		"UgcSubVersion": null,
+		"MinUgcSubVersion": null,
+		"AutoLocalizeRoom": false,
+		"LocalizationContext": {
+			"TargetLocale": null,
+			"Scope": null,
+			"LocalizedFields": [
+				"Description",
+				"CustomWarning"
+			]
+		},
+		"IsDeveloperOwned": true,
+		"RankedEntityId": "45",
+		"BoostCount": 0,
+		"CurrentSnapshotId": null,
+		"SubRooms": [
+			{
+				"SubRoomId": 57,
+				"RoomId": 45,
+				"CreatorAccountId": null,
+				"UnitySceneId": "56193568-9ae0-498c-8a77-4df79dec91f5",
+				"Name": "Home",
+				"CurrentSave": null,
+				"LastModeratedSaveModerationState": 0,
+				"IsSandbox": false,
+				"MaxPlayers": 6,
+				"Accessibility": 1,
+				"ShouldAutoStageSaves": true,
+				"StagedSubRoomDataSaveId": null
+			}
+		],
+		"Roles": [
+			{
+				"AccountId": 1,
+				"Role": 255,
+				"LastChangedByAccountId": null,
+				"InvitedRole": 0
+			},
+			{
+				"AccountId": 2,
+				"Role": 30,
+				"LastChangedByAccountId": null,
+				"InvitedRole": 0
+			}
+		],
+		"IsJuniorCreated": false,
+		"Tags": [
+			{
+				"Tag": "rro",
+				"Type": 0
+			}
+		],
+		"PromoImages": [],
+		"PromoExternalContent": [],
+		"LoadScreens": [],
+		"RestrictedCircuitsAllowListNames": []
+	},
+	{
 		"RoomId": 51,
 		"Name": "DriveIn",
 		"Description": "A drive-in theater, diner, and truck stop make this a multi-area paint arena",

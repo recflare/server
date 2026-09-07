@@ -1,6 +1,22 @@
 import { Hono } from 'hono'
 import { describeRoute } from 'hono-openapi'
 
+import {
+	canModerateRoom,
+	deletePresence,
+	getPlayerIdsInInstance,
+	getPresences,
+	getRoomById,
+	getStoredRoomInstance,
+	MessageType,
+	refreshInstanceFullness,
+} from '@repo/domain'
+import { logger } from '@repo/hono-helpers'
+
+// The notification-type ids the hub carries (owned by the `notify` worker). Imported as a
+// value — the enum has no runtime dependencies.
+import { KickReportCategory } from '../../../notify/src/notification-payloads'
+import { NotificationType } from '../../../notify/src/notification-types'
 import { authedId, authedRoles, unauthorized } from '../http'
 import {
 	AUTHED,
@@ -9,18 +25,23 @@ import {
 	CreateWarningRequest,
 	DeviceIdRequest,
 	form,
+	InstantKickRequest,
 	json,
 	JsonArray,
+	jsonBody,
 	ModerationBlockDetails,
 	SuccessErrorEnvelope,
 	UNAUTHORIZED_RESPONSE,
 	VoteToKickReason,
+	VoteToKickRequest,
 } from '../openapi'
-import { createReport } from '../reports-db'
+import { createReport, getActiveBan } from '../reports-db'
 import { createWarning } from '../warnings-db'
 
 import type { Context } from 'hono'
+import type { ModerationKickPayload } from '../../../notify/src/notification-payloads'
 import type { App } from '../context'
+import type { ReportRow } from '../reports-db'
 
 /**
  * Roles allowed to hand down a warning — the operator-granted elevated roles the auth
@@ -82,16 +103,209 @@ const VOTE_TO_KICK_REASONS = [
 	{ Reason: 'Not following game rules', ReportCategory: 6 },
 ] as const
 
+/** The notifications hub is a single global DO instance (see the `notify` worker). */
+const HUB_INSTANCE = 'global'
+
+/**
+ * Eject players from the instance they're standing in — the `ModerationKick` frame (id 22)
+ * the client acts on to leave a room, the same one a room ban sends (`rooms`:
+ * `pushRoomBan`). This one only kicks: `IsBan` is false, so nothing keeps them from walking
+ * straight back in, and no ban row exists to lift.
+ *
+ * Sent EPHEMERALLY, unlike the ban's frame, and to the whole batch in one round-trip. A
+ * kick is only true of the moment it happened: queued and delivered on the player's next
+ * connect it would throw them out of some unrelated session hours later. A recipient who
+ * has already gone offline needs no kick anyway.
+ *
+ * `GameSessionId` is the instance they're being removed from — every recipient is in it,
+ * which is what the caller checked before this runs. `IsHostKick` is always true: this
+ * endpoint is the room's own staff acting, never the room majority vote-kicking (that path
+ * would carry `VoteKick` and false). Built against the client's recovered payload interface
+ * so a renamed key fails the build rather than vanishing on the wire.
+ *
+ * Best-effort — presence is already deleted by the time this runs, so a hub hiccup must
+ * not fail the request.
+ */
+async function pushInstantKick(
+	c: Context<App>,
+	playerIds: number[],
+	gameSessionId: number,
+	roomName: string,
+	moderatorId: number
+): Promise<void> {
+	const frame: ModerationKickPayload = {
+		ReportCategory: KickReportCategory.Moderator,
+		Duration: 0,
+		GameSessionId: gameSessionId,
+		IsHostKick: true,
+		Message: `You have been kicked from ${roomName}.`,
+		PlayerIdReporter: moderatorId,
+		IsBan: false,
+		IsVoiceModAutoban: false,
+		IsWarning: false,
+		VoteKickReason: '',
+		TimeoutStartedAt: null,
+	}
+	try {
+		await c.env.RECFLARE_NOTIFICATIONS_HUB.getByName(HUB_INSTANCE).notifyPlayersEphemeral(
+			playerIds,
+			NotificationType.ModerationKick,
+			{ ...frame }
+		)
+	} catch (err) {
+		logger.error('failed to push ModerationKick notification', {
+			playerIds,
+			gameSessionId,
+			error: err instanceof Error ? err.message : String(err),
+		})
+	}
+}
+
+/**
+ * What a vote-to-kick Message's `Data` says, BEFORE it is serialized. It reaches the
+ * client as an escaped JSON string, never as a nested object — a Message's `Data` is a
+ * string on the wire like every other Message's, and the client's decoder rejects an
+ * object outright: `expected:'String Begin Token', actual:'{'`, which aborts the whole
+ * notification rather than dropping the field. Serialize it with {@link voteToKickData}.
+ *
+ * `PlayerId` is the account id as a STRING — the reference passes the posted form field
+ * straight through, and this mirrors it verbatim.
+ *
+ * `Response` is the empty string even though the caller posted their own vote: the frame
+ * is the PROMPT put to everyone else, so it carries no answer yet. The caller's `Response`
+ * is theirs alone and is not relayed.
+ */
+interface VoteToKickData {
+	PlayerId: string
+	Response: string
+	GameSessionId: number
+}
+
+/** Serialize a {@link VoteToKickData} into the escaped JSON string `Data` carries. */
+const voteToKickData = (data: VoteToKickData): string => JSON.stringify(data)
+
+/**
+ * The Message a vote-to-kick frame carries — the same four fields as every other Message
+ * this server sends (see the `social` routes' `Message`), `Data` string included. A type
+ * alias rather than an interface: the hub's send takes an index-signature record, which
+ * only aliases satisfy implicitly.
+ */
+type VoteToKickMessage = {
+	FromPlayerId: number
+	ToPlayerId: number
+	Type: number
+	Data: string
+}
+
+/**
+ * Put a vote-to-kick to one player — a `MessageReceived` frame carrying a Message of type
+ * 5 (`VoteToKick`), the frame their client raises the vote prompt from. Resolves false when
+ * the hub could not be reached, which the caller reports honestly: nothing stores a vote,
+ * so the notification is the whole delivery.
+ *
+ * EPHEMERAL, unlike the messages the social routes send. A vote belongs to the moment it
+ * was called: queued for an offline player, it would raise a prompt on their next connect
+ * about a session that ended hours ago, and there would be nothing left to vote on.
+ */
+async function pushVoteToKick(c: Context<App>, message: VoteToKickMessage): Promise<boolean> {
+	try {
+		await c.env.RECFLARE_NOTIFICATIONS_HUB.getByName(HUB_INSTANCE).notifyPlayerEphemeral(
+			message.ToPlayerId,
+			NotificationType.MessageReceived,
+			message
+		)
+		return true
+	} catch (err) {
+		logger.error('failed to push VoteToKick MessageReceived notification', {
+			toPlayerId: message.ToPlayerId,
+			error: err instanceof Error ? err.message : String(err),
+		})
+		return false
+	}
+}
+
+/**
+ * `Duration` on a permanent ban. The client's field is a 32-bit int of seconds that PAIRS
+ * with `TimeoutStartedAt` — start + duration is the end of the block — so a ban with no
+ * end gets the largest value the field holds, 68 years past its start.
+ */
+const PERMANENT_BAN_DURATION = 2_147_483_647
+
+/**
+ * The "not blocked" answer — the reference server's stub `ReturnModerationBlockDetails()`,
+ * widened to every key the client's `ModerationBlockDetail` decoder names (16 on the wire;
+ * the 2025 build's formatter reads them all). The ones past the stub's nine are the block
+ * kinds and screen dressings this server never uses — a device ban, a warning, the
+ * vote-kick reason, an associated account, the creator code of conduct, the top/bottom
+ * message overrides — so they carry their "none" values on every answer.
+ */
+const NOT_BLOCKED = {
+	ReportCategory: -1,
+	Duration: 0,
+	GameSessionId: 0,
+	IsHostKick: false,
+	Message: null,
+	PlayerIdReporter: null,
+	IsBan: false,
+	IsVoiceModAutoban: false,
+	IsDeviceBan: false,
+	IsWarning: false,
+	VoteKickReason: null,
+	TimeoutStartedAt: null,
+	AssociatedAccountUsername: null,
+	ShowCreatorCodeOfConduct: false,
+	TopMessageOverride: null,
+	BottomMessageOverride: null,
+}
+
+/**
+ * The block details for a ban in force — the `report` row a moderator set `banned` on.
+ *
+ * `Duration` and `TimeoutStartedAt` are a PAIR in the client: the block runs from the
+ * start for the duration. The start is the report's `created_at` — nothing records when
+ * the ban itself was handed down, and the report is the record the ban rests on — and the
+ * duration is the seconds from there to `ban_expires`, so the two sum to the expiry; or
+ * `PERMANENT_BAN_DURATION` when there is none. The category is the one the report was
+ * filed under, so the client's ban screen names the reason. `Message` is a fixed "Rule
+ * violation" rather than the report's `details` — those are the REPORTER's words, and the
+ * banned player isn't shown them, for the same reason `PlayerIdReporter` stays null: the
+ * reporter is not a host who kicked them, and naming them would tell the banned player who
+ * reported them. Everything else keeps its `NOT_BLOCKED` value: the other block kinds and
+ * screen dressings, none of which this server hands out.
+ */
+function banBlockDetails(ban: ReportRow) {
+	const startedAt = Date.parse(ban.created_at)
+	const duration =
+		ban.ban_expires === null
+			? PERMANENT_BAN_DURATION
+			: Math.max(1, Math.ceil((Date.parse(ban.ban_expires) - startedAt) / 1000))
+	return {
+		...NOT_BLOCKED,
+		ReportCategory: ban.report_category,
+		Duration: duration,
+		IsBan: true,
+		Message: 'Rule violation',
+		TimeoutStartedAt: ban.created_at,
+	}
+}
+
 // ---- Player reporting ------------------------------------------------------
 export const moderationRoutes = new Hono<App>({ strict: false })
-	// Whether the caller is currently blocked (banned / timed out / host-kicked). Bans
-	// are stored (a report row with `banned` set) and enforced at matchmake and at login,
-	// but this endpoint is not wired to them, so it's always the "not blocked" answer —
-	// the reference server's stub `ReturnModerationBlockDetails()`.
-	// `ReportCategory` is `Unknown` (-1) rather than 0, which is a real category;
-	// `Message` is null, not the empty string that stub sends — the client distinguishes
-	// "no message" from a blank one. `IsVoiceModAutoban`/`TimeoutStartedAt` are on the
-	// DTO but left unset there, so they go out with their C# defaults.
+	// Whether the caller is currently blocked (banned / timed out / host-kicked). The one
+	// kind of block this server has is the account-wide ban — a `report` row with `banned`
+	// set (see `getActiveBan`), the same row matchmake refuses on — so a caller with one in
+	// force gets it described here, and everyone else gets the "not blocked" answer of the
+	// reference server's stub `ReturnModerationBlockDetails()`. This is the screen a banned
+	// player is shown, which is why `auth` still issues them a token: without one the client
+	// never gets here, and the ban reads as a failed sign-in.
+	// Only the caller's OWN account is consulted, not the evasion arms `resolveBan` adds
+	// at matchmake and login: this screen explains a ban handed to this account, and a
+	// player blocked for sharing a network with a banned one has no report row to show.
+	// In the "not blocked" answer `ReportCategory` is `Unknown` (-1) rather than 0, which
+	// is a real category, and `Message` is null, not the empty string that stub sends —
+	// the client distinguishes "no message" from a blank one. `IsVoiceModAutoban` /
+	// `TimeoutStartedAt` are on the DTO but unset there, so they go out with their C#
+	// defaults.
 	// The newer client POSTs this with no body despite it being a pure read; it answers
 	// GET too, so the path is reachable from either build.
 	.on(
@@ -101,29 +315,40 @@ export const moderationRoutes = new Hono<App>({ strict: false })
 			tags: ['Moderation'],
 			summary: 'Whether the caller is blocked',
 			description:
-				'Ban / timeout / host-kick state for the caller. Bans are stored (a `report` row ' +
-				'with `banned` set) and enforced at matchmake and at login, but this endpoint is ' +
-				'not wired to them, so it is always the “not blocked” answer, following the ' +
-				'reference server’s stub: `ReportCategory` is `Unknown` (-1) rather than 0, which ' +
-				'is a real category, and `Message` is null rather than the empty string that stub ' +
-				'sends — the client distinguishes “no message” from a blank one. ' +
-				'`IsVoiceModAutoban` and `TimeoutStartedAt` are on the DTO but unset by that ' +
-				'stub, so they carry their defaults. Answers GET or POST: the newer client POSTs ' +
-				'it with no body.',
-			responses: { 200: json(ModerationBlockDetails, 'Always “not blocked”') },
+				'Ban / timeout / host-kick state for the caller. The one block this server hands ' +
+				'out is the account-wide ban — a `report` row with `banned` set, the same row ' +
+				'matchmake refuses on (login still issues a token, so the client can reach this ' +
+				'screen) — so a caller with one in force gets ' +
+				'`IsBan: true`, the `ReportCategory` the report was filed under, the fixed ' +
+				'`Message` “Rule violation”, and the block’s span as the pair the client reads ' +
+				'them as: `TimeoutStartedAt` is the report’s `created_at` and `Duration` the ' +
+				'seconds from there to `ban_expires` (2147483647, the int32 max, for a permanent ' +
+				'ban). ' +
+				'`PlayerIdReporter` stays null: it names a kicking host, and the reporter is not ' +
+				'shown to the player they reported. Only the caller’s own account is consulted, ' +
+				'not the ban-evasion arms.\n\n' +
+				'Everyone else gets the reference server’s stub “not blocked” answer: ' +
+				'`ReportCategory` is `Unknown` (-1) rather than 0, which is a real category, and ' +
+				'`Message` is null rather than the empty string that stub sends — the client ' +
+				'distinguishes “no message” from a blank one. `IsVoiceModAutoban` and ' +
+				'`TimeoutStartedAt` are on the DTO but unset by that stub, so they carry their ' +
+				'defaults, as do the seven keys past the stub’s nine that the 2025 client’s decoder ' +
+				'names (`IsDeviceBan`, `IsWarning`, `VoteKickReason`, `AssociatedAccountUsername`, ' +
+				'`ShowCreatorCodeOfConduct`, `TopMessageOverride`, `BottomMessageOverride`) — ' +
+				'block kinds and screen dressings this server never uses. Answers GET or POST: ' +
+				'the newer client POSTs it with no body.',
+			security: AUTHED,
+			responses: {
+				200: json(ModerationBlockDetails, 'The caller’s block, or “not blocked”'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
 		}),
-		(c) =>
-			c.json({
-				ReportCategory: -1,
-				Duration: 0,
-				GameSessionId: 0,
-				IsBan: false,
-				IsHostKick: false,
-				IsVoiceModAutoban: false,
-				Message: null,
-				PlayerIdReporter: null,
-				TimeoutStartedAt: null,
-			})
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+			const ban = await getActiveBan(c.env.DB, id)
+			return c.json(ban ? banBlockDetails(ban) : NOT_BLOCKED)
+		}
 	)
 	// The reasons the client offers when a player starts a vote-to-kick. Order matters —
 	// the client renders them in the order they arrive — and the list is grouped by the
@@ -209,10 +434,10 @@ export const moderationRoutes = new Hono<App>({ strict: false })
 			tags: ['Moderation'],
 			summary: 'Submit a player report',
 			description:
-				'Records a player report in the `report` table; nothing dedupes the rows, and ' +
-				'`moderationBlockDetails` still answers “not blocked” unconditionally. A report ' +
+				'Records a player report in the `report` table; nothing dedupes the rows. A report ' +
 				'is filed unbanned — a moderator converts one into an account-wide ban by setting ' +
-				'`banned` on the row, which is what matchmaking and `/connect/token` refuse on.\n\n' +
+				'`banned` on the row, which is what matchmaking refuses on and what ' +
+				'`moderationBlockDetails` describes to the banned player.\n\n' +
 				'The reporter is the caller (from the bearer token), NOT a body field. Only ' +
 				'`PlayerIdReported` is required; the client omits whatever it has no value for ' +
 				'(a report raised outside a room carries no `RoomId`), and those are stored as ' +
@@ -252,6 +477,212 @@ export const moderationRoutes = new Hono<App>({ strict: false })
 				roomId: roomId !== null && roomId > 0 ? roomId : null,
 				roomInstanceType: formField(body, c, 'RoomInstanceType') ?? null,
 			})
+
+			return c.json({ success: true, error: '' })
+		}
+	)
+
+	// A player calling a vote to kick another. Ungated by role — anyone may start one —
+	// but both players have to be standing in the session the vote is called in, which is
+	// what stops a client putting a vote to a room it isn't in, about someone who isn't
+	// there. Nothing tallies the votes yet: this relays the prompt and no more.
+	.post(
+		'/api/PlayerReporting/v3/voteToKick',
+		describeRoute({
+			tags: ['Moderation'],
+			summary: 'Call a vote to kick a player',
+			description:
+				'Puts a vote-to-kick to the room instance. Open to any player — no role is ' +
+				'required — but BOTH the caller and `PlayerId` must have a live `presence` row in ' +
+				'the instance `GameSessionId` names, or the call is refused with a 403. That is ' +
+				'the whole gate: without it a client could raise a vote in a session it is not ' +
+				'in, or against a player who is not there.\n\n' +
+				'Everyone else in that instance — the player being voted on included, since a ' +
+				'vote is called in front of them — gets a `MessageReceived` frame carrying a ' +
+				'Message of type 5 (`VoteToKick`). The caller is left out: they have voted ' +
+				'already, and their own `Response` is what they posted.\n\n' +
+				'`Data` is an ESCAPED JSON STRING — `"{\\"PlayerId\\":\\"205\\",…}"`, not a nested ' +
+				'object. A Message’s `Data` is a string on the wire, and an object there fails the ' +
+				"client’s decoder outright (`expected:'String Begin Token', actual:'{'`), " +
+				'aborting the notification rather than dropping the field. Inside it, `PlayerId` ' +
+				'is the account id as a STRING, as the reference relays it, and `Response` is ' +
+				'empty — the frame is the question, not an answer.\n\n' +
+				'The frames are EPHEMERAL: a vote belongs to the moment it was called, so an ' +
+				'offline player gets nothing rather than a prompt about a dead session on their ' +
+				'next connect.\n\n' +
+				'Nothing is stored — no tally, no report row, and `Reason` is accepted and ' +
+				'unused. Answers the same lowercase `{ success, error }` envelope as the report ' +
+				'write; a hub failure for any recipient is reported honestly as a 500, since ' +
+				'with nothing behind it the frame is the whole delivery.',
+			security: AUTHED,
+			requestBody: form(VoteToKickRequest, 'The vote'),
+			responses: {
+				200: json(SuccessErrorEnvelope, '`{ success: true, error: "" }`'),
+				400: json(SuccessErrorEnvelope, 'No `PlayerId` or no `GameSessionId`'),
+				401: UNAUTHORIZED_RESPONSE,
+				403: json(SuccessErrorEnvelope, 'Either player is not in that game session'),
+				500: json(SuccessErrorEnvelope, 'The notifications hub could not be reached'),
+			},
+		}),
+		async (c) => {
+			const voterId = await authedId(c)
+			if (voterId === null) return unauthorized(c)
+
+			const body = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>)
+			// Kept as posted for the frame — `Data.PlayerId` goes out as the string the
+			// reference relays — but parsed here to check it against presence.
+			const playerIdField = formField(body, c, 'PlayerId')
+			const playerId = asInt(playerIdField)
+			if (playerIdField === undefined || playerId === null) {
+				return c.json({ success: false, error: 'PlayerId is required' }, 400)
+			}
+			const gameSessionId = asInt(formField(body, c, 'GameSessionId'))
+			if (gameSessionId === null) {
+				return c.json({ success: false, error: 'GameSessionId is required' }, 400)
+			}
+
+			// One read for both players. A vote may only be called by someone standing in the
+			// session, about someone standing in the same one — the session is read from live
+			// presence, never from the body, so neither side can be asserted by the client.
+			const presences = await getPresences<{ roomInstanceId?: number }>(c.env.DB, [
+				voterId,
+				playerId,
+			])
+			const isHere = (id: number) =>
+				presences.get(id)?.roomInstance?.roomInstanceId === gameSessionId
+			if (!isHere(voterId)) {
+				return c.json({ success: false, error: 'You are not in that game session!' }, 403)
+			}
+			if (!isHere(playerId)) {
+				return c.json({ success: false, error: 'That player is not in that game session!' }, 403)
+			}
+
+			// The room votes, so the audience is everyone standing there — the player being
+			// voted on included; a vote is called in front of them. The caller is dropped:
+			// their vote is the one they just posted.
+			const audience = (await getPlayerIdsInInstance(c.env.DB, gameSessionId)).filter(
+				(id) => id !== voterId
+			)
+
+			// Every recipient is attempted even if an earlier one fails, so the reachable
+			// players still get the vote.
+			const results = await Promise.all(
+				audience.map((toPlayerId) =>
+					pushVoteToKick(c, {
+						FromPlayerId: voterId,
+						ToPlayerId: toPlayerId,
+						Type: MessageType.VoteToKick,
+						// An escaped JSON STRING, not a nested object — see VoteToKickData.
+						Data: voteToKickData({
+							PlayerId: playerIdField,
+							Response: '',
+							GameSessionId: gameSessionId,
+						}),
+					})
+				)
+			)
+			if (results.includes(false)) {
+				return c.json({ success: false, error: 'Failed to deliver vote' }, 500)
+			}
+
+			return c.json({ success: true, error: '' })
+		}
+	)
+
+	// The kick a room's own staff hand out from the moderation menu: eject named players
+	// from ONE live instance. Two gates, and both matter — the caller must be able to
+	// moderate the room the instance belongs to, and each named player must actually be
+	// standing in that instance. Without the second, a creator could name any account id
+	// and kick a stranger out of somebody else's room.
+	.post(
+		'/api/PlayerReporting/v1/instantKick',
+		describeRoute({
+			tags: ['Moderation'],
+			summary: 'Kick players out of a room instance',
+			description:
+				'Ejects the named players from one live room instance. `GameSessionId` is that ' +
+				'instance (`roomInstanceId`); the body is JSON, unlike the form posts elsewhere in ' +
+				'this controller.\n\n' +
+				'Gated to the instance’s room: the caller must be its creator or hold a role of ' +
+				'Moderator (20) or above on it — anyone else with a valid token gets a 403. ' +
+				'Nobody who can moderate the room can be kicked out of it, and a caller cannot ' +
+				'kick themselves.\n\n' +
+				'A player is only kicked if their live `presence` row puts them in **that** ' +
+				'instance. Anyone else named — offline, or standing in another room — is skipped ' +
+				'in silence, so naming an account id cannot reach into a session the caller has ' +
+				'no authority over.\n\n' +
+				'Each kicked player loses their presence row (they read offline at once and the ' +
+				'instance frees a slot) and gets a `ModerationKick` frame (id 22) — the frame the ' +
+				'client acts on to leave. It is the same frame a room ban sends, but `IsBan` is ' +
+				'false: this only removes them from the session they are in, and nothing stops ' +
+				'them rejoining. The frame is EPHEMERAL — a kick is true of the moment it ' +
+				'happened, and queueing one would eject the player from an unrelated session on ' +
+				'their next connect.\n\n' +
+				'Answers the same lowercase `{ success, error }` envelope the report write uses, ' +
+				'and says nothing about who was actually kicked — the response shape is ' +
+				'unverified against the real service.',
+			security: AUTHED,
+			requestBody: jsonBody(InstantKickRequest, 'The instance and the players to eject'),
+			responses: {
+				200: json(SuccessErrorEnvelope, '`{ success: true, error: "" }`'),
+				400: json(SuccessErrorEnvelope, 'Unparseable body, no `GameSessionId` or no `PlayerIds`'),
+				401: UNAUTHORIZED_RESPONSE,
+				403: json(SuccessErrorEnvelope, 'The caller cannot moderate the instance’s room'),
+				404: json(SuccessErrorEnvelope, 'No such game session'),
+			},
+		}),
+		async (c) => {
+			const moderatorId = await authedId(c)
+			if (moderatorId === null) return unauthorized(c)
+
+			const body = (await c.req.json().catch(() => null)) as {
+				GameSessionId?: unknown
+				PlayerIds?: unknown
+			} | null
+			if (body === null) return c.json({ success: false, error: 'Invalid request body' }, 400)
+
+			const gameSessionId = typeof body.GameSessionId === 'number' ? body.GameSessionId : Number.NaN
+			if (!Number.isInteger(gameSessionId)) {
+				return c.json({ success: false, error: 'GameSessionId is required' }, 400)
+			}
+			const playerIds = Array.isArray(body.PlayerIds)
+				? body.PlayerIds.filter((id): id is number => Number.isInteger(id))
+				: []
+			if (playerIds.length === 0) {
+				return c.json({ success: false, error: 'PlayerIds is required' }, 400)
+			}
+
+			// The instance names the room, and the room carries the roles this is gated on —
+			// a game session with no room behind it can't authorise anything.
+			const instance = await getStoredRoomInstance(c.env.DB, gameSessionId)
+			const room = instance && (await getRoomById(c.env.DB, instance.roomId))
+			if (!room) return c.json({ success: false, error: 'This game session does not exist!' }, 404)
+			if (!canModerateRoom(room, moderatorId)) {
+				return c.json({ success: false, error: 'Forbidden' }, 403)
+			}
+
+			// One read for the batch. A player is kicked only when their LIVE presence puts
+			// them in this very instance: offline, expired or standing elsewhere are all the
+			// same "not here", and are skipped rather than refused — the client sends a list
+			// and one stale id in it must not sink the rest.
+			const presences = await getPresences<{ roomInstanceId?: number }>(c.env.DB, playerIds)
+			const kicked: number[] = []
+			for (const playerId of playerIds) {
+				// The room's own staff are not kickable out of their room — otherwise a
+				// moderator could throw the creator out of it. Nor is the caller themselves.
+				if (playerId === moderatorId || canModerateRoom(room, playerId)) continue
+				if (presences.get(playerId)?.roomInstance?.roomInstanceId !== gameSessionId) continue
+				await deletePresence(c.env.DB, playerId)
+				kicked.push(playerId)
+			}
+
+			if (kicked.length > 0) {
+				// The instance just lost players — recompute its fullness so a full room opens
+				// back up, exactly as the `match` worker does when someone logs out.
+				await refreshInstanceFullness(c.env.DB, gameSessionId)
+				const roomName = typeof room.Name === 'string' ? room.Name : 'this room'
+				await pushInstantKick(c, kicked, gameSessionId, roomName, moderatorId)
+			}
 
 			return c.json({ success: true, error: '' })
 		}
