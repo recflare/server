@@ -592,7 +592,13 @@ export const InventionDetails = z.object({ Tags: z.array(InventionTagDto) })
 
 /** `GET /api/inventions/v1/personaldetails/:id` — the caller's own relation to it. */
 export const InventionPersonalDetails = z.object({
-	IsCheering: z.boolean().describe('Always false — nothing can cheer an invention yet'),
+	IsCheering: z.boolean().describe('Whether the caller currently cheers this invention'),
+})
+
+/** `POST /api/inventions/v1/cheer` JSON body. */
+export const InventionCheerRequest = z.object({
+	InventionId: z.int().describe('The invention whose cheer state is changing'),
+	Cheer: z.boolean().describe('True to cheer; false to remove the cheer'),
 })
 
 /** `POST /api/inventions/v1/settags` JSON body — both lists are replaced wholesale. */

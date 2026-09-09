@@ -41,11 +41,13 @@ import {
 	INVENTION_TAG_RESULT,
 	inventionDeleteResult,
 	inventionSaveV9Failure,
+	isInventionCheered,
 	normalizeInventionTags,
 	ownsAllInventions,
 	parsePermissionLevel,
 	publishInvention,
 	searchInventions,
+	setInventionCheer,
 	setInventionPrice,
 	setInventionTags,
 	toSaveResult,
@@ -69,6 +71,7 @@ import {
 	GenerateGiftRequest,
 	idParam,
 	intQuery,
+	InventionCheerRequest,
 	InventionDeleteResult,
 	InventionDetails,
 	InventionDto,
@@ -1192,23 +1195,26 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 		}
 	)
 
-	// The signed-in player's own relationship to an invention (`/personaldetails/2`)
-	// — just whether they're cheering it. We store no cheers (nothing can cheer an
-	// invention yet), so this is always false; it stays a 200 for signed-out callers
-	// too, since the client only reads the flag.
+	// The signed-in player's own relationship to an invention (`/personaldetails/2`) —
+	// just whether they're cheering it. Signed-out callers read false: there is no player
+	// whose interaction could be looked up, and the client still needs a flag to render.
 	.get(
 		'/api/inventions/v1/personaldetails/:inventionId{[0-9]+}',
 		describeRoute({
 			tags: ['Inventions'],
 			summary: 'The caller’s own relation to an invention',
 			description:
-				'Just whether the caller is cheering it. We store no cheers, so it is always false ' +
-				'— and this stays a 200 for signed-out callers too, since the client only reads the ' +
-				'flag.',
+				'Whether the caller is cheering this invention. Signed-out callers receive false, ' +
+				'since there is no player interaction to look up.',
 			parameters: [idParam('inventionId', 'Invention id')],
-			responses: { 200: json(InventionPersonalDetails, 'Always not cheering') },
+			responses: { 200: json(InventionPersonalDetails, 'The caller’s cheer state') },
 		}),
-		(c) => c.json({ IsCheering: false })
+		async (c) => {
+			const playerId = await authedId(c)
+			if (playerId === null) return c.json({ IsCheering: false })
+			const inventionId = Number.parseInt(c.req.param('inventionId'), 10)
+			return c.json({ IsCheering: await isInventionCheered(c.env.DB, playerId, inventionId) })
+		}
 	)
 
 	// A single version of an invention (`?inventionId=…&version=…`) — the bare
@@ -1724,6 +1730,42 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 		}
 	)
 
+	// Cheer or un-cheer an invention. The interaction row is per player and the stored
+	// invention's public CheerCount is derived from all active cheers.
+	.post(
+		'/api/inventions/v1/cheer',
+		describeRoute({
+			tags: ['Inventions'],
+			summary: 'Cheer or un-cheer an invention',
+			description:
+				'Persists the caller’s cheer state and resyncs the invention’s `CheerCount`. ' +
+				'Repeating the same state is idempotent.',
+			security: AUTHED,
+			requestBody: jsonBody(InventionCheerRequest, 'The invention and new cheer state'),
+			responses: {
+				200: json(SuccessErrorEnvelope, '`{ success: true, error: "" }`'),
+				400: json(SuccessErrorEnvelope, 'Invalid body'),
+				401: UNAUTHORIZED_RESPONSE,
+				404: json(SuccessErrorEnvelope, 'No such invention'),
+			},
+		}),
+		async (c) => {
+			const playerId = await authedId(c)
+			if (playerId === null) return unauthorized(c)
+			const body = await c.req
+				.json<{ InventionId?: unknown; Cheer?: unknown }>()
+				.catch(() => ({}) as Record<string, unknown>)
+			const inventionId = Number(body.InventionId)
+			if (!Number.isInteger(inventionId) || typeof body.Cheer !== 'boolean') {
+				return c.json({ success: false, error: 'InventionId and Cheer are required' }, 400)
+			}
+			if ((await getInventionById(c.env.DB, inventionId)) === null) {
+				return c.json({ success: false, error: 'No such invention' }, 404)
+			}
+			await setInventionCheer(c.env.DB, playerId, inventionId, body.Cheer)
+			return c.json({ success: true, error: '' })
+		}
+	)
 	// Report an invention. Stored in the `report` table the player and event reports use —
 	// same fields, same moderation life — with `invention_id` set. See
 	// migrations/0016_report_invention.sql.

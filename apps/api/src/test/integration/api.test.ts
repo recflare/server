@@ -3224,17 +3224,71 @@ describe('public endpoints', () => {
 		expect(noId.status).toBe(400)
 	})
 
-	test('GET /api/inventions/v1/personaldetails/:id reports the cheer flag', async () => {
-		// No cheer storage yet, so nobody is ever cheering — signed in or not.
-		const res = await exports.default.fetch(`${ORIGIN}/api/inventions/v1/personaldetails/2`, {
-			headers: await bearer('42'),
+	test('POST /api/inventions/v1/cheer persists and personaldetails reflects it', async () => {
+		const saved = await exports.default.fetch(`${ORIGIN}/api/inventions/v6/save`, {
+			method: 'POST',
+			headers: { ...(await bearer('8200')), 'Content-Type': 'application/json' },
+			body: JSON.stringify({ name: 'Cheerable Lamp', inventionDataFilename: 'cheerable.inv' }),
 		})
-		expect(res.status).toBe(200)
-		expect(await res.json()).toEqual({ IsCheering: false })
+		const invention = ((await saved.json()) as InventionSaveResult).Invention
+		const path = `${ORIGIN}/api/inventions/v1/cheer`
+		const cheer = async (value: boolean, sub = '42') =>
+			exports.default.fetch(path, {
+				method: 'POST',
+				headers: { ...(await bearer(sub)), 'Content-Type': 'application/json' },
+				body: JSON.stringify({ InventionId: invention.InventionId, Cheer: value }),
+			})
+		const personal = async (sub?: string) =>
+			exports.default.fetch(
+				`${ORIGIN}/api/inventions/v1/personaldetails/${invention.InventionId}`,
+				sub ? { headers: await bearer(sub) } : undefined
+			)
+		const storedCount = async (): Promise<number> => {
+			const row = await env.DB.prepare('SELECT data FROM invention WHERE id = ?1')
+				.bind(invention.InventionId)
+				.first<{ data: string }>()
+			return (JSON.parse(row!.data) as SavedInvention).CheerCount
+		}
 
-		const anon = await exports.default.fetch(`${ORIGIN}/api/inventions/v1/personaldetails/2`)
-		expect(anon.status).toBe(200)
-		expect(await anon.json()).toEqual({ IsCheering: false })
+		// The write requires a player; the read remains useful to signed-out callers.
+		expect(
+			(
+				await exports.default.fetch(path, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ InventionId: invention.InventionId, Cheer: true }),
+				})
+			).status
+		).toBe(401)
+		expect(await (await personal()).json()).toEqual({ IsCheering: false })
+
+		expect((await cheer(true)).status).toBe(200)
+		expect(await (await personal('42')).json()).toEqual({ IsCheering: true })
+		expect(await storedCount()).toBe(1)
+
+		// Repeating a state is idempotent, and a second player counts separately.
+		await cheer(true)
+		expect(await storedCount()).toBe(1)
+		await cheer(true, '43')
+		expect(await storedCount()).toBe(2)
+
+		await cheer(false)
+		expect(await (await personal('42')).json()).toEqual({ IsCheering: false })
+		expect(await (await personal('43')).json()).toEqual({ IsCheering: true })
+		expect(await storedCount()).toBe(1)
+
+		const unknown = await exports.default.fetch(path, {
+			method: 'POST',
+			headers: { ...(await bearer('42')), 'Content-Type': 'application/json' },
+			body: JSON.stringify({ InventionId: 999999, Cheer: true }),
+		})
+		expect(unknown.status).toBe(404)
+		const malformed = await exports.default.fetch(path, {
+			method: 'POST',
+			headers: { ...(await bearer('42')), 'Content-Type': 'application/json' },
+			body: JSON.stringify({ InventionId: invention.InventionId, Cheer: 'yes' }),
+		})
+		expect(malformed.status).toBe(400)
 	})
 
 	test('GET /api/inventions/v1/version serves the version; unknown versions 404', async () => {
@@ -7524,6 +7578,7 @@ describe('openapi', () => {
 			'POST /api/images/v1/cheer',
 			'POST /api/images/v4/uploadsaved',
 			'POST /api/images/v5/cheered/bulk',
+			'POST /api/inventions/v1/cheer',
 			'POST /api/inventions/v1/report',
 			'POST /api/inventions/v1/settags',
 			'POST /api/inventions/v1/update',

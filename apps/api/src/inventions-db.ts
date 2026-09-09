@@ -39,6 +39,15 @@ export const SCHEMA_DDL: string[] = [
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_invention_id ON invention (id)`,
 	`CREATE INDEX IF NOT EXISTS idx_invention_creator ON invention (creator_player_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_invention_featured ON invention (is_featured)`,
+	`CREATE TABLE IF NOT EXISTS invention_interaction (
+		player_id INTEGER NOT NULL,
+		invention_id INTEGER NOT NULL,
+		cheered INTEGER NOT NULL DEFAULT 0,
+		created_at TEXT,
+		PRIMARY KEY (player_id, invention_id)
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_invention_interaction_invention
+		ON invention_interaction (invention_id)`,
 ]
 
 /** A single saved version of an invention (Rec Room's `RRInventionVersion`). */
@@ -1014,8 +1023,63 @@ export async function deleteInvention(
 ): Promise<SavedInvention | null> {
 	const invention = await getInventionById(db, inventionId)
 	if (invention === null) return null
-	await db.prepare('DELETE FROM invention WHERE id = ?1').bind(inventionId).run()
+	await db.batch([
+		db.prepare('DELETE FROM invention WHERE id = ?1').bind(inventionId),
+		db.prepare('DELETE FROM invention_interaction WHERE invention_id = ?1').bind(inventionId),
+	])
 	return invention
+}
+
+/**
+ * Set or clear one player's cheer on an invention and resync the invention's denormalized
+ * `CheerCount`. Repeating either state is idempotent because the interaction row is keyed by
+ * `(player_id, invention_id)` and the public count is always derived from those rows.
+ */
+export async function setInventionCheer(
+	db: D1Database,
+	playerId: number,
+	inventionId: number,
+	cheer: boolean
+): Promise<number> {
+	await db
+		.prepare(
+			`INSERT INTO invention_interaction (player_id, invention_id, cheered, created_at)
+			 VALUES (?1, ?2, ?3, ?4)
+			 ON CONFLICT(player_id, invention_id) DO UPDATE SET cheered = ?3`
+		)
+		.bind(playerId, inventionId, cheer ? 1 : 0, new Date().toISOString())
+		.run()
+
+	const row = await db
+		.prepare(
+			'SELECT COUNT(*) AS n FROM invention_interaction WHERE invention_id = ?1 AND cheered = 1'
+		)
+		.bind(inventionId)
+		.first<{ n: number }>()
+	const count = row?.n ?? 0
+	await db
+		.prepare(
+			"UPDATE invention SET data = json_set(data, '$.CheerCount', CAST(?2 AS INTEGER)) WHERE id = ?1"
+		)
+		.bind(inventionId, count)
+		.run()
+	return count
+}
+
+/** Whether one player currently cheers an invention. */
+export async function isInventionCheered(
+	db: D1Database,
+	playerId: number,
+	inventionId: number
+): Promise<boolean> {
+	const row = await db
+		.prepare(
+			`SELECT 1 AS found FROM invention_interaction
+			 WHERE player_id = ?1 AND invention_id = ?2 AND cheered = 1`
+		)
+		.bind(playerId, inventionId)
+		.first<{ found: number }>()
+	return row !== null
 }
 
 /**
