@@ -60,6 +60,40 @@ export function containsSwears(value: string): boolean {
 	return value !== '' && filter.exists(value)
 }
 
+/**
+ * Where a space would be in a name if the charset allowed one: a lowercase-to-uppercase
+ * hop, the last capital of a run before a capitalised word, and either side of a run of
+ * digits. Applied in that order, so `ShitLord`, `XXFuckYou` and `Fucker123` each come
+ * apart at the seam a player wrote them with.
+ */
+const NAME_WORD_BOUNDARIES: Array<[RegExp, string]> = [
+	[/([a-z0-9])([A-Z])/g, '$1 $2'],
+	[/([A-Z]+)([A-Z][a-z])/g, '$1 $2'],
+	[/([A-Za-z])([0-9])/g, '$1 $2'],
+]
+
+/**
+ * Whether `value`, read as a NAME, contains a swear.
+ *
+ * A username or display name is letters and digits only (`nameRejection`), so it carries
+ * no spaces — and the filter matches whole words. Handing one to {@link containsSwears}
+ * as-is therefore only refuses a name that IS a swear and nothing else: `Fucker123` and
+ * `ShitLord` sail through. So the name is split at the boundaries a player types instead
+ * of a space, and the pieces are checked as words.
+ *
+ * That keeps the library's trade-off rather than reaching for substring matching, which
+ * is the tempting fix and the wrong one: `Scunthorpe`, `assassin`, `Classic`,
+ * `Cumberland` and `Shiitake` all contain a swear as a substring, and refusing someone's
+ * name without being able to say why is worse than missing `Bitchy`.
+ */
+export function nameContainsSwears(value: string): boolean {
+	const spaced = NAME_WORD_BOUNDARIES.reduce(
+		(text, [pattern, replacement]) => text.replace(pattern, replacement),
+		value
+	)
+	return containsSwears(spaced)
+}
+
 /** The mask `POST /api/sanitize/v1` uses when the request names no `ReplacementChar`. */
 export const DEFAULT_REPLACEMENT_CHAR = '*'
 

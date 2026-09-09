@@ -9,6 +9,11 @@ import {
 	nameRejection,
 } from '@repo/domain'
 
+// The profanity filter behind `api`'s `POST /api/sanitize/v1/isPure`, imported rather
+// than copied so a name is held to the very same word list every other player-typed
+// string is.
+import { nameContainsSwears } from '../../api/src/sanitize'
+
 import type { OpenAPIV3_1 } from 'openapi-types'
 
 /**
@@ -158,26 +163,44 @@ export const CreateAccountRequest = z.object({
  * writes the player-facing sentence and there's no reason to write it twice.
  */
 
-/** Zod check that defers to the shared name rule, message and all. */
+/**
+ * Zod check that defers to the shared name rule, message and all, and then refuses a name
+ * with a swear in it — the same filter, and the same word list, as `api`'s
+ * `POST /api/sanitize/v1/isPure`.
+ *
+ * Shape first, profanity second: a name that already broke the charset rule gets the one
+ * sentence that explains it rather than two, and the swear check never sees the
+ * punctuation the charset rule has already refused.
+ */
 const nameCheck = (label: string, max: number) =>
 	z
 		.string()
 		.trim()
 		.superRefine((value, ctx) => {
 			const rejection = nameRejection(value, label, max)
-			if (rejection !== null) ctx.addIssue({ code: 'custom', message: rejection })
+			if (rejection !== null) {
+				ctx.addIssue({ code: 'custom', message: rejection })
+			} else if (nameContainsSwears(value)) {
+				// Deliberately vague about WHICH word: naming it back to the player prints the
+				// swear in the UI, and the player knows what they typed.
+				ctx.addIssue({ code: 'custom', message: `Your ${label} can't contain that word.` })
+			}
 		})
 
 export const DisplayNameRequest = z.object({
 	displayName: nameCheck('display name', MAX_DISPLAY_NAME_LENGTH)
 		.min(1)
-		.describe('Trimmed; letters and digits only, max 15. Empty or invalid is rejected (400)'),
+		.describe(
+			'Trimmed; letters and digits only, max 15, no profanity. Empty or invalid is rejected (400)'
+		),
 })
 
 export const UsernameRequest = z.object({
 	username: nameCheck('username', MAX_USERNAME_LENGTH)
 		.min(1, 'You must enter a username.')
-		.describe('Trimmed; letters and digits only, max 50. Must be unique and changes must remain'),
+		.describe(
+			'Trimmed; letters and digits only, max 50, no profanity. Must be unique and changes must remain'
+		),
 })
 
 export const EmailRequest = z.object({

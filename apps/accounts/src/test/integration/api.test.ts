@@ -223,6 +223,32 @@ describe('auth-gated endpoints', () => {
 		expect(((await me.json()) as { displayName: string }).displayName).toBe('laskdjfasdlfkj')
 	})
 
+	test('PUT /account/me/displayname 400s on a name with a swear in it', async () => {
+		const headers = {
+			...(await bearer('895')),
+			'Content-Type': 'application/x-www-form-urlencoded',
+		}
+		// A name carries no spaces, so the filter has to find the swear at the seam the
+		// player typed instead of one.
+		for (const displayName of ['fuck', 'ShitLord', 'Fucker123']) {
+			const res = await exports.default.fetch(`${ORIGIN}/account/me/displayname`, {
+				...form({ displayName }),
+				headers,
+			})
+			expect(res.status).toBe(400)
+		}
+
+		// And the words that merely contain one still get through — refusing these is worse
+		// than missing a swear, because the player can't see why.
+		for (const displayName of ['Scunthorpe', 'ClassicCar', 'Cumberland']) {
+			const res = await exports.default.fetch(`${ORIGIN}/account/me/displayname`, {
+				...form({ displayName }),
+				headers,
+			})
+			expect(res.status).toBe(200)
+		}
+	})
+
 	test('PUT /account/me/username 401s without a token', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/account/me/username`, {
 			...form({ username: 'whoever' }),
@@ -242,6 +268,30 @@ describe('auth-gated endpoints', () => {
 		expect(body.success).toBe(false)
 		expect(body.error).toMatch(/already taken/i)
 		expect(body.value).toBe('')
+	})
+
+	test('PUT /account/me/username refuses a swear without spending a change', async () => {
+		const headers = {
+			...(await bearer('894')),
+			'Content-Type': 'application/x-www-form-urlencoded',
+		}
+		const res = await exports.default.fetch(`${ORIGIN}/account/me/username`, {
+			...form({ username: 'ShitLord' }),
+			headers,
+		})
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as { success: boolean; error: string; value: string }
+		expect(body.success).toBe(false)
+		// Vague on purpose — the message must not print the swear back at the player.
+		expect(body.error).toMatch(/can't contain that word/i)
+		expect(body.value).toBe('')
+
+		// The schema runs before the handler, so a refused name costs none of the account's
+		// rationed changes.
+		const me = (await (
+			await exports.default.fetch(`${ORIGIN}/account/me`, { headers: await bearer('894') })
+		).json()) as { username: string; availableUsernameChanges: number }
+		expect(me.availableUsernameChanges).toBe(3)
 	})
 
 	test('PUT /account/me/username allows three changes, decrements the counter, then blocks', async () => {

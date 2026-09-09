@@ -448,7 +448,9 @@ const app = new Hono<App>()
 			security: AUTHED,
 			responses: {
 				200: json(SuccessResponse, 'Updated'),
-				400: { description: 'Empty, over 15 characters, or non-alphanumeric (empty body)' },
+				400: {
+					description: 'Empty, over 15 characters, non-alphanumeric, or profane (empty body)',
+				},
 				401: UNAUTHORIZED_RESPONSE,
 			},
 		}),
@@ -475,7 +477,8 @@ const app = new Hono<App>()
 			tags: ['Profile'],
 			summary: 'Change username',
 			description: [
-				'Letters and digits only, at most 50 characters. Rejects a name taken by another',
+				'Letters and digits only, at most 50 characters, and free of profanity (the same',
+				'word list as `api`’s `POST /api/sanitize/v1/isPure`). Rejects a name taken by another',
 				'account and requires a remaining change; on success the name is persisted and',
 				'the counter decremented. Always HTTP 200 — failures carry a message in `error`',
 				'(see the UsernameResult envelope).',
