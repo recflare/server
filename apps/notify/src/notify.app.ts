@@ -21,6 +21,62 @@ import type { App } from './context'
 const HUB_INSTANCE = 'global'
 
 /**
+ * How many times to re-issue a hub call Cloudflare aborted mid-flight.
+ *
+ * The platform occasionally resets a Durable Object under us — "Internal error in Durable
+ * Object storage caused object to be reset", carrying `retryable: true` and
+ * `durableObjectReset: true`. It is not a fault in the call: the object is rebuilt from its
+ * last durable state and the same call succeeds. Without a retry it surfaces as a 500 and
+ * the notification is simply lost, which is why these arrive periodically rather than
+ * predictably.
+ *
+ * Two attempts after the first is plenty — a reset that persists past that is an outage,
+ * not a blip, and the caller should hear about it.
+ */
+const HUB_RETRIES = 2
+
+/**
+ * Whether an error is one Cloudflare says to retry. `retryable` is set on the error the
+ * runtime throws; `durableObjectReset` accompanies the reset flavour of it. Anything else —
+ * a bug in a hub method, a bad argument — is thrown straight back, since retrying it would
+ * only produce the same failure more slowly.
+ */
+function isRetryableHubError(err: unknown): boolean {
+	if (typeof err !== 'object' || err === null) return false
+	const fields = err as { retryable?: unknown; durableObjectReset?: unknown }
+	return fields.retryable === true || fields.durableObjectReset === true
+}
+
+/**
+ * Call the hub, retrying a reset. A FRESH stub per attempt: the one that threw is bound to
+ * the object that just died.
+ *
+ * Safe to retry because a reset rolls the object back — the aborted call left nothing
+ * behind — and because every frame the hub sends is a complete, absolute statement (a
+ * notification, not a delta), so a duplicate is at worst a repeat and never a drift.
+ */
+async function hubCall<T>(
+	c: Context<App>,
+	call: (hub: ReturnType<App['Bindings']['RECFLARE_NOTIFICATIONS_HUB']['getByName']>) => Promise<T>
+): Promise<T> {
+	let lastError: unknown
+	for (let attempt = 0; attempt <= HUB_RETRIES; attempt++) {
+		try {
+			return await call(c.env.RECFLARE_NOTIFICATIONS_HUB.getByName(HUB_INSTANCE))
+		} catch (err) {
+			if (!isRetryableHubError(err)) throw err
+			lastError = err
+			logger.warn('hub call reset, retrying', {
+				attempt: attempt + 1,
+				of: HUB_RETRIES + 1,
+				error: err instanceof Error ? err.message : String(err),
+			})
+		}
+	}
+	throw lastError
+}
+
+/**
  * A valid notification `Id` — a client-defined string tag (e.g. "AccountUpdate")
  * or a numeric code. An empty string is treated as missing.
  */
@@ -125,7 +181,9 @@ const app = new Hono<App>()
 		// DO's proof of identity, so a client sending its own must not be believed.
 		request.headers.set(OWNER_HEADER, String(playerId))
 
-		return c.env.RECFLARE_NOTIFICATIONS_HUB.getByName(HUB_INSTANCE).fetch(request)
+		// The upgrade is retried too: it is a bodyless GET, so re-issuing it is free, and a
+		// reset here would otherwise fail the client's connect outright.
+		return hubCall(c, (hub) => hub.fetch(new Request(request)))
 	})
 
 	// ---- Internal service-to-service send/broadcast --------------------------
@@ -144,11 +202,8 @@ const app = new Hono<App>()
 		if (!body || typeof body.playerId !== 'number' || !isNotificationType(body.notificationType)) {
 			return c.json({ error: 'playerId and notificationType are required' }, 400)
 		}
-		const result = await c.env.RECFLARE_NOTIFICATIONS_HUB.getByName(HUB_INSTANCE).notifyPlayer(
-			body.playerId,
-			body.notificationType,
-			body.data
-		)
+		const { playerId, notificationType, data } = body
+		const result = await hubCall(c, (hub) => hub.notifyPlayer(playerId, notificationType, data))
 		return c.json({ success: true, ...result })
 	})
 
@@ -159,10 +214,8 @@ const app = new Hono<App>()
 		if (!body || !isNotificationType(body.notificationType)) {
 			return c.json({ error: 'notificationType is required' }, 400)
 		}
-		const result = await c.env.RECFLARE_NOTIFICATIONS_HUB.getByName(HUB_INSTANCE).broadcast(
-			body.notificationType,
-			body.data
-		)
+		const { notificationType, data } = body
+		const result = await hubCall(c, (hub) => hub.broadcast(notificationType, data))
 		return c.json({ success: true, ...result })
 	})
 
@@ -171,8 +224,7 @@ const app = new Hono<App>()
 		const body = await c.req.json<{ messageContent?: string }>().catch(() => null)
 		const content = typeof body?.messageContent === 'string' ? body.messageContent.trim() : ''
 		if (content === '') return c.json({ error: 'messageContent is required' }, 400)
-		const result =
-			await c.env.RECFLARE_NOTIFICATIONS_HUB.getByName(HUB_INSTANCE).coachMessageAll(content)
+		const result = await hubCall(c, (hub) => hub.coachMessageAll(content))
 		return c.json({ success: true, ...result })
 	})
 
@@ -188,10 +240,8 @@ const app = new Hono<App>()
 			return c.json({ error: 'playerId is required' }, 400)
 		}
 		if (content === '') return c.json({ error: 'messageContent is required' }, 400)
-		const result = await c.env.RECFLARE_NOTIFICATIONS_HUB.getByName(HUB_INSTANCE).coachMessage(
-			body.playerId,
-			content
-		)
+		const { playerId } = body
+		const result = await hubCall(c, (hub) => hub.coachMessage(playerId, content))
 		return c.json({ success: true, ...result })
 	})
 
@@ -199,7 +249,7 @@ const app = new Hono<App>()
 	// didn't arrive: which connections are live, which players each one receives for,
 	// and what's queued for a player who wasn't reachable.
 	.get('/internal/hub-state', async (c) => {
-		return c.json(await c.env.RECFLARE_NOTIFICATIONS_HUB.getByName(HUB_INSTANCE).inspect())
+		return c.json(await hubCall(c, (hub) => hub.inspect()))
 	})
 
 	// Discard queued notifications, for `?playerId=` or — with the explicit `?all=true`,
@@ -215,8 +265,7 @@ const app = new Hono<App>()
 			return c.json({ error: 'pass playerId, or all=true to clear every queue' }, 400)
 		}
 
-		const result =
-			await c.env.RECFLARE_NOTIFICATIONS_HUB.getByName(HUB_INSTANCE).clearPending(playerId)
+		const result = await hubCall(c, (hub) => hub.clearPending(playerId))
 		logger.info('cleared pending notifications', { playerId: playerId ?? null, ...result })
 		return c.json({ success: true, ...result })
 	})

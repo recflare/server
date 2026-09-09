@@ -1,10 +1,12 @@
-import { adminSecretsStore, env } from 'cloudflare:test'
+import { adminSecretsStore, env, runInDurableObject } from 'cloudflare:test'
 import { exports } from 'cloudflare:workers'
 import { beforeAll, describe, expect, test } from 'vitest'
 
 import '../../notify.app'
 
 import type { Env } from '../../context'
+import { MAX_PENDING_PER_PLAYER } from '../../notifications-hub'
+
 import type { HubState } from '../../notifications-hub'
 
 declare module 'cloudflare:test' {
@@ -650,6 +652,70 @@ describe('clearing pending notifications', () => {
 		})
 		expect(res.status).toBe(401)
 		expect((await clear('all=true', await bearer('3', ['gameClient']))).status).toBe(403)
+	})
+})
+
+// What a Durable Object RESET leaves behind, and how the hub recovers from it. A reset
+// kills every socket without running webSocketClose, so the connection rows outlive the
+// sockets they name — and a stale row makes deliverToPlayer report 0 delivered, which
+// queues notifications for players who are online.
+describe('recovering from lost sockets', () => {
+	const hubState = async (): Promise<HubState> =>
+		(await (
+			await exports.default.fetch(`${ORIGIN}/internal/hub-state`, {
+				headers: await bearer('1', ['gameClient', 'moderator']),
+			})
+		).json()) as HubState
+
+	test('forgets a connection whose socket is gone, instead of queueing to it forever', async () => {
+		const playerId = 9301
+		const { ws } = await connect('conn-reset', {
+			headers: await bearer(String(playerId), ['gameClient']),
+		})
+		// Kill the socket the way a reset does — no close frame, so the DO never runs
+		// webSocketClose and the row survives.
+		await ws.close()
+
+		// First send after the socket died: nothing to deliver to, so it queues...
+		const first = await post('/internal/notify', { playerId, notificationType: 40, data: {} })
+		expect(await first.json()).toMatchObject({ queued: true, delivered: 0 })
+
+		// ...and the dead row is dropped on the way, so the player no longer looks
+		// connected to anything.
+		const state = await hubState()
+		expect(state.connections.find((c) => c.connectionId === 'conn-reset')).toBeUndefined()
+	})
+})
+
+describe('pending queue bound', () => {
+	test('keeps the newest notifications and drops the oldest past the cap', async () => {
+		// Unbounded, this is what a broken delivery path fills up — and what flushPending
+		// then reads into memory in one go. Seeded straight into the object: the point is
+		// the bound, not the 500 HTTP round trips it would take to reach it.
+		const playerId = 9302
+		const stub = env.RECFLARE_NOTIFICATIONS_HUB.getByName('global')
+		await runInDurableObject(stub, (_instance, state) => {
+			for (let i = 0; i < MAX_PENDING_PER_PLAYER + 100; i++) {
+				state.storage.sql.exec(
+					'INSERT INTO pending (playerId, payload) VALUES (?, ?)',
+					playerId,
+					JSON.stringify({ Id: '90', Msg: { i } })
+				)
+			}
+		})
+
+		// The next queued notification is what enforces the bound.
+		await post('/internal/notify', { playerId, notificationType: 90, data: { last: true } })
+
+		const state = (await (
+			await exports.default.fetch(`${ORIGIN}/internal/hub-state`, {
+				headers: await bearer('1', ['gameClient', 'moderator']),
+			})
+		).json()) as HubState
+		const queued = state.pending.find((p) => p.playerId === playerId)
+		expect(queued?.count).toBe(MAX_PENDING_PER_PLAYER)
+		// Newest-wins: the one just sent survived, the oldest hundred did not.
+		expect(JSON.parse(queued!.latest)).toEqual({ Id: '90', Msg: { last: true } })
 	})
 })
 

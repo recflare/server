@@ -99,6 +99,22 @@ export interface HubState {
 	pending: Array<{ playerId: number; count: number; latest: string }>
 }
 
+/**
+ * How many queued notifications one offline player may accumulate. Past this the OLDEST
+ * are dropped, newest kept.
+ *
+ * The queue used to be unbounded, which is fine while it only holds what one absent player
+ * missed — and is not fine at all when delivery breaks (a reset leaves connection rows with
+ * no sockets, so live players' notifications queue too; see pruneDeadConnections). Then it
+ * grows with every notification the server sends and `flushPending` reads the lot into
+ * memory and writes it to a socket in a single event, which is its own way to take the
+ * object down.
+ *
+ * Newest-wins because these are notifications: a player returning to 500 of them is served
+ * no better by the 501st-oldest, and the recent ones are the ones still worth acting on.
+ */
+export const MAX_PENDING_PER_PLAYER = 500
+
 /** The Coach system account — the `FromPlayerId` on a coach message (see coachMessageAll). */
 const COACH_PLAYER_ID = 1
 
@@ -108,7 +124,13 @@ const COACH_MESSAGE_TYPE = 100
 export class NotificationsHub extends DurableObject<Env> {
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env)
-		void ctx.blockConcurrencyWhile(async () => {
+		// Not floated: a rejection here is how a storage fault at wake-up surfaces
+		// ("Internal error in Durable Object storage caused object to be reset"), and an
+		// unhandled one tells us nothing about which object died or why. Catching doesn't
+		// prevent the reset — a throw inside blockConcurrencyWhile resets the object either
+		// way — it just leaves a trace when it happens.
+		ctx
+			.blockConcurrencyWhile(async () => {
 			this.ctx.storage.sql.exec(`
 				CREATE TABLE IF NOT EXISTS subscriptions (
 					connectionId TEXT NOT NULL,
@@ -128,7 +150,62 @@ export class NotificationsHub extends DurableObject<Env> {
 				);
 				CREATE INDEX IF NOT EXISTS idx_owner_player ON connection_owner(playerId);
 			`)
+				this.pruneDeadConnections()
+			})
+			.catch((err: unknown) => {
+				console.error('hub: storage init failed', {
+					error: err instanceof Error ? err.message : String(err),
+				})
+			})
+	}
+
+	/**
+	 * Drop connection rows with no socket behind them.
+	 *
+	 * A row is written when a socket is accepted and removed when it closes, so the two
+	 * only diverge when sockets die without `webSocketClose` running — which is exactly
+	 * what a Durable Object RESET does: the object is rebuilt, every socket is gone, and
+	 * `connection_owner` / `subscriptions` still name all of them.
+	 *
+	 * Left alone those rows are worse than useless. `deliverToPlayer` finds connection ids
+	 * for a player, sends to no sockets, and reports 0 delivered — so `notifyPlayer` QUEUES
+	 * for players who are online and reconnected long ago, and `pending` grows on every
+	 * notification the server sends. One reset then degrades delivery indefinitely.
+	 *
+	 * Safe at construction because hibernation does NOT lose sockets: `getWebSockets()`
+	 * returns them on wake, so anything missing from it is genuinely gone. And a row whose
+	 * socket has gone can never deliver anything anyway — dropping it costs nothing.
+	 */
+	private pruneDeadConnections(): void {
+		const live = new Set<string>()
+		for (const ws of this.ctx.getWebSockets()) {
+			const state = ws.deserializeAttachment() as SocketState | null
+			if (state) live.add(state.connectionId)
+		}
+
+		const known = this.ctx.storage.sql
+			.exec<{ connectionId: string }>(
+				`SELECT connectionId FROM connection_owner
+				 UNION
+				 SELECT connectionId FROM subscriptions`
+			)
+			.toArray()
+			.map((r) => r.connectionId)
+
+		const dead = known.filter((connectionId) => !live.has(connectionId))
+		if (dead.length === 0) return
+
+		for (const connectionId of dead) this.forgetConnection(connectionId)
+		console.warn('hub: pruned connections with no live socket', {
+			pruned: dead.length,
+			live: live.size,
 		})
+	}
+
+	/** Forget one connection: its ownership row and everything it subscribed to. */
+	private forgetConnection(connectionId: string): void {
+		this.ctx.storage.sql.exec('DELETE FROM subscriptions WHERE connectionId = ?', connectionId)
+		this.ctx.storage.sql.exec('DELETE FROM connection_owner WHERE connectionId = ?', connectionId)
 	}
 
 	/** WebSocket upgrade entrypoint — the worker forwards `/hub/v1` here. */
@@ -198,14 +275,7 @@ export class NotificationsHub extends DurableObject<Env> {
 		if (state) {
 			// Mirrors OnDisconnected: drop this connection's subscriptions, which
 			// also removes it from every player's connection set.
-			this.ctx.storage.sql.exec(
-				'DELETE FROM subscriptions WHERE connectionId = ?',
-				state.connectionId
-			)
-			this.ctx.storage.sql.exec(
-				'DELETE FROM connection_owner WHERE connectionId = ?',
-				state.connectionId
-			)
+			this.forgetConnection(state.connectionId)
 		}
 		try {
 			ws.close()
@@ -384,14 +454,41 @@ export class NotificationsHub extends DurableObject<Env> {
 		}
 
 		if (delivered === 0) {
-			this.ctx.storage.sql.exec(
-				'INSERT INTO pending (playerId, payload) VALUES (?, ?)',
-				playerId,
-				payload
-			)
+			this.queuePending(playerId, payload)
 			return { delivered: 0, queued: true }
 		}
 		return { delivered, queued: false }
+	}
+
+	/**
+	 * Queue a notification for a player who wasn't reachable, keeping the queue to
+	 * {@link MAX_PENDING_PER_PLAYER}. Trimming is oldest-first and happens on the write, so
+	 * the bound holds no matter how the queue got long.
+	 */
+	private queuePending(playerId: number, payload: string): void {
+		this.ctx.storage.sql.exec(
+			'INSERT INTO pending (playerId, payload) VALUES (?, ?)',
+			playerId,
+			payload
+		)
+		const trimmed = this.ctx.storage.sql
+			.exec(
+				`DELETE FROM pending
+				 WHERE playerId = ?1 AND id NOT IN (
+				   SELECT id FROM pending WHERE playerId = ?1 ORDER BY id DESC LIMIT ?2
+				 )
+				 RETURNING id`,
+				playerId,
+				MAX_PENDING_PER_PLAYER
+			)
+			.toArray().length
+		if (trimmed > 0) {
+			console.warn('hub: pending queue full, dropped oldest notifications', {
+				playerId,
+				dropped: trimmed,
+				cap: MAX_PENDING_PER_PLAYER,
+			})
+		}
 	}
 
 	/**
@@ -580,7 +677,16 @@ export class NotificationsHub extends DurableObject<Env> {
 
 		let delivered = 0
 		for (const connectionId of connectionIds) {
-			for (const ws of this.ctx.getWebSockets(connectionId)) {
+			const sockets = this.ctx.getWebSockets(connectionId)
+			// A connection id with no socket behind it is a row left over from a close we
+			// never saw — a reset, most likely (see pruneDeadConnections). Repaired the
+			// moment we trip over it, or every later send for this player queues instead of
+			// delivering, forever.
+			if (sockets.length === 0) {
+				this.forgetConnection(connectionId)
+				continue
+			}
+			for (const ws of sockets) {
 				ws.send(this.invocation('Notification', [payload]))
 				delivered++
 			}
