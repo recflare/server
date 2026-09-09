@@ -12,7 +12,10 @@ import {
 	SCHEMA_DDL,
 } from '../../message-db'
 import {
+	addThreadMember,
+	ChatThreadType,
 	createThread,
+	joinedChatContents,
 	findThreadWithMembers,
 	getThreadForPlayer,
 	getThreadsForPlayer,
@@ -394,8 +397,107 @@ describe('GET /settings/partyinvite', () => {
 	})
 })
 
+// The GET serves the caller's CURRENT party — the thread named by their `LatestPartyChat`
+// player setting — as the BARE thread, where the POST wraps the same projection.
 describe('GET /thread/party', () => {
-	it('answers an empty object', async () => {
+	async function settings(playerId: number): Promise<Record<string, string>> {
+		return (
+			(await env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(
+				`player:${playerId}`,
+				'json'
+			)) ?? {}
+		)
+	}
+
+	it('answers the party named by LatestPartyChat, bare — no ChatResult wrapper', async () => {
+		const caller = 883201
+		const created = await SELF.fetch(`${ORIGIN}/thread/party`, {
+			method: 'POST',
+			headers: await bearer(caller),
+		})
+		const { ChatThread } = (await created.json()) as { ChatThread: { ChatThreadId: number } }
+
+		const res = await SELF.fetch(`${ORIGIN}/thread/party?maxCount=1&mode=0`, {
+			headers: await bearer(caller),
+		})
+		expect(res.status).toBe(200)
+		// The whole body is the thread: no `ChatThread`/`ChatResult` keys around it.
+		expect(await res.json()).toEqual({
+			ChatThreadId: ChatThread.ChatThreadId,
+			ChatThreadType: ChatThreadType.Party,
+			LastReadMessageId: 0,
+			Messages: [],
+			LatestMessage: null,
+			PlayerIds: [caller],
+			ChatThreadName: null,
+			SnoozedUntil: null,
+			IsFavorited: false,
+			ClubId: null,
+		})
+	})
+
+	it('POST records the thread id in the caller’s LatestPartyChat setting', async () => {
+		const caller = 883202
+		await env.RECFLARE_PLAYER_SETTINGS.put(
+			`player:${caller}`,
+			JSON.stringify({ OobeState: 'Complete' })
+		)
+		const created = await SELF.fetch(`${ORIGIN}/thread/party`, {
+			method: 'POST',
+			headers: await bearer(caller),
+		})
+		const { ChatThread } = (await created.json()) as { ChatThread: { ChatThreadId: number } }
+
+		// Merged, not overwritten: the bag holds every other setting the player has.
+		expect(await settings(caller)).toEqual({
+			OobeState: 'Complete',
+			LatestPartyChat: String(ChatThread.ChatThreadId),
+		})
+	})
+
+	it('follows the setting to the newest party after a second one is opened', async () => {
+		const caller = 883203
+		await SELF.fetch(`${ORIGIN}/thread/party`, { method: 'POST', headers: await bearer(caller) })
+		const second = await SELF.fetch(`${ORIGIN}/thread/party`, {
+			method: 'POST',
+			headers: await bearer(caller),
+		})
+		const { ChatThread } = (await second.json()) as { ChatThread: { ChatThreadId: number } }
+
+		const res = await SELF.fetch(`${ORIGIN}/thread/party`, { headers: await bearer(caller) })
+		const body = (await res.json()) as { ChatThreadId: number }
+		expect(body.ChatThreadId).toBe(ChatThread.ChatThreadId)
+	})
+
+	it('carries the party’s members and messages once it has them', async () => {
+		const caller = 883204
+		const guest = 883205
+		const created = await SELF.fetch(`${ORIGIN}/thread/party`, {
+			method: 'POST',
+			headers: await bearer(caller),
+		})
+		const { ChatThread } = (await created.json()) as { ChatThread: { ChatThreadId: number } }
+		await addThreadMember(env.DB, ChatThread.ChatThreadId, guest)
+		const posted = await postMessage(env.DB, {
+			chatThreadId: ChatThread.ChatThreadId,
+			senderPlayerId: caller,
+			contents: '{"Type":0,"Version":1,"Data":"regroup at the bridge"}',
+		})
+
+		const res = await SELF.fetch(`${ORIGIN}/thread/party`, { headers: await bearer(caller) })
+		const body = (await res.json()) as {
+			PlayerIds: number[]
+			Messages: Array<{ ChatMessageId: number; Contents: string }>
+			LatestMessage: { ChatMessageId: number } | null
+		}
+		expect(body.PlayerIds).toEqual([caller, guest])
+		// PascalCase messages here too — the camelCase spelling is the other projections'.
+		expect(body.Messages).toHaveLength(1)
+		expect(body.Messages[0]?.ChatMessageId).toBe(posted.chatMessageId)
+		expect(body.LatestMessage?.ChatMessageId).toBe(posted.chatMessageId)
+	})
+
+	it('answers {} for a player who has never opened one', async () => {
 		const res = await SELF.fetch(`${ORIGIN}/thread/party?maxCount=1&mode=0`, {
 			headers: await bearer(883001),
 		})
@@ -403,8 +505,335 @@ describe('GET /thread/party', () => {
 		expect(await res.json()).toEqual({})
 	})
 
+	it('JOINS a caller who holds the key but isn’t on the thread yet', async () => {
+		// How a player enters someone else's party: the client points their
+		// LatestPartyChat at it, and they have no membership row until this read.
+		const host = 883210
+		const guest = 883211
+		const created = await SELF.fetch(`${ORIGIN}/thread/party`, {
+			method: 'POST',
+			headers: await bearer(host),
+		})
+		const { ChatThread } = (await created.json()) as { ChatThread: { ChatThreadId: number } }
+		await env.RECFLARE_PLAYER_SETTINGS.put(
+			`player:${guest}`,
+			JSON.stringify({ LatestPartyChat: String(ChatThread.ChatThreadId) })
+		)
+		expect(await isThreadMember(env.DB, ChatThread.ChatThreadId, guest)).toBe(false)
+
+		const res = await SELF.fetch(`${ORIGIN}/thread/party`, { headers: await bearer(guest) })
+		const body = (await res.json()) as { ChatThreadId: number; PlayerIds: number[] }
+
+		// They're on the thread now, and the body they get back says so.
+		expect(await isThreadMember(env.DB, ChatThread.ChatThreadId, guest)).toBe(true)
+		expect(body.ChatThreadId).toBe(ChatThread.ChatThreadId)
+		expect(body.PlayerIds).toEqual([host, guest])
+		// The host sees them too — one thread, one roster.
+		expect((await getThreadForPlayer(env.DB, ChatThread.ChatThreadId, host))?.playerIds).toEqual([
+			host,
+			guest,
+		])
+	})
+
+	it('re-joining is a no-op — the roster doesn’t grow on every read', async () => {
+		const caller = 883212
+		await SELF.fetch(`${ORIGIN}/thread/party`, { method: 'POST', headers: await bearer(caller) })
+
+		for (let i = 0; i < 3; i++) {
+			await SELF.fetch(`${ORIGIN}/thread/party`, { headers: await bearer(caller) })
+		}
+		const res = await SELF.fetch(`${ORIGIN}/thread/party`, { headers: await bearer(caller) })
+		expect(((await res.json()) as { PlayerIds: number[] }).PlayerIds).toEqual([caller])
+	})
+
+	it('re-joins a caller who left, while their key still names the party', async () => {
+		// Leaving doesn't clear the key, so the next read walks them back in. Ending a
+		// party is what drops the key (`match`'s POST /player/logout).
+		const caller = 883206
+		const created = await SELF.fetch(`${ORIGIN}/thread/party`, {
+			method: 'POST',
+			headers: await bearer(caller),
+		})
+		const { ChatThread } = (await created.json()) as { ChatThread: { ChatThreadId: number } }
+		await removeThreadMember(env.DB, ChatThread.ChatThreadId, caller)
+
+		const res = await SELF.fetch(`${ORIGIN}/thread/party`, { headers: await bearer(caller) })
+		expect(((await res.json()) as { ChatThreadId: number }).ChatThreadId).toBe(
+			ChatThread.ChatThreadId
+		)
+		expect(await isThreadMember(env.DB, ChatThread.ChatThreadId, caller)).toBe(true)
+	})
+
+	it('serves the party from D1 alone, with no LatestPartyChat key at all', async () => {
+		// The fast path: a player already on a party is answered from the membership join,
+		// so the settings KV is never read. Proven by deleting the key the POST wrote.
+		const caller = 883230
+		const created = await SELF.fetch(`${ORIGIN}/thread/party`, {
+			method: 'POST',
+			headers: await bearer(caller),
+		})
+		const { ChatThread } = (await created.json()) as { ChatThread: { ChatThreadId: number } }
+		await env.RECFLARE_PLAYER_SETTINGS.delete(`player:${caller}`)
+
+		const res = await SELF.fetch(`${ORIGIN}/thread/party`, { headers: await bearer(caller) })
+		expect(((await res.json()) as { ChatThreadId: number }).ChatThreadId).toBe(
+			ChatThread.ChatThreadId
+		)
+	})
+
+	it('serves the NEWEST party when the caller is a member of several', async () => {
+		// Membership outlives a party — nothing removes the row when one ends — so the
+		// party you are in is the most recent one you are on.
+		const caller = 883231
+		await SELF.fetch(`${ORIGIN}/thread/party`, { method: 'POST', headers: await bearer(caller) })
+		const second = await SELF.fetch(`${ORIGIN}/thread/party`, {
+			method: 'POST',
+			headers: await bearer(caller),
+		})
+		const { ChatThread } = (await second.json()) as { ChatThread: { ChatThreadId: number } }
+
+		const res = await SELF.fetch(`${ORIGIN}/thread/party`, { headers: await bearer(caller) })
+		expect(((await res.json()) as { ChatThreadId: number }).ChatThreadId).toBe(
+			ChatThread.ChatThreadId
+		)
+	})
+
+	it('prefers the party the caller is ON over one their key merely names', async () => {
+		// The consequence of checking D1 first: while a membership row survives, a key
+		// pointing somewhere else is not consulted. Switching parties means leaving the old
+		// one (DELETE /thread/{id}/leave), not just repointing the key.
+		const caller = 883232
+		const host = 883233
+		const mine = await SELF.fetch(`${ORIGIN}/thread/party`, {
+			method: 'POST',
+			headers: await bearer(caller),
+		})
+		const other = await SELF.fetch(`${ORIGIN}/thread/party`, {
+			method: 'POST',
+			headers: await bearer(host),
+		})
+		const own = (await mine.json()) as { ChatThread: { ChatThreadId: number } }
+		const theirs = (await other.json()) as { ChatThread: { ChatThreadId: number } }
+		await env.RECFLARE_PLAYER_SETTINGS.put(
+			`player:${caller}`,
+			JSON.stringify({ LatestPartyChat: String(theirs.ChatThread.ChatThreadId) })
+		)
+
+		const res = await SELF.fetch(`${ORIGIN}/thread/party`, { headers: await bearer(caller) })
+		expect(((await res.json()) as { ChatThreadId: number }).ChatThreadId).toBe(
+			own.ChatThread.ChatThreadId
+		)
+		expect(await isThreadMember(env.DB, theirs.ChatThread.ChatThreadId, caller)).toBe(false)
+	})
+
+	/** Age a party by rewriting its `created_at` — what the join window is measured from. */
+	async function openedMinutesAgo(chatThreadId: number, minutes: number): Promise<void> {
+		await env.DB.prepare('UPDATE message_thread SET created_at = ?2 WHERE chat_thread_id = ?1')
+			.bind(chatThreadId, new Date(Date.now() - minutes * 60_000).toISOString())
+			.run()
+	}
+
+	it('refuses to join a party older than the 60-minute invite lifetime', async () => {
+		const host = 883220
+		const latecomer = 883221
+		const created = await SELF.fetch(`${ORIGIN}/thread/party`, {
+			method: 'POST',
+			headers: await bearer(host),
+		})
+		const { ChatThread } = (await created.json()) as { ChatThread: { ChatThreadId: number } }
+		await openedMinutesAgo(ChatThread.ChatThreadId, 61)
+		await env.RECFLARE_PLAYER_SETTINGS.put(
+			`player:${latecomer}`,
+			JSON.stringify({ LatestPartyChat: String(ChatThread.ChatThreadId) })
+		)
+
+		const res = await SELF.fetch(`${ORIGIN}/thread/party`, { headers: await bearer(latecomer) })
+		expect(await res.json()).toEqual({})
+		// Refused, not quietly joined: no membership row was written.
+		expect(await isThreadMember(env.DB, ChatThread.ChatThreadId, latecomer)).toBe(false)
+	})
+
+	it('still joins a party inside the window', async () => {
+		const host = 883222
+		const guest = 883223
+		const created = await SELF.fetch(`${ORIGIN}/thread/party`, {
+			method: 'POST',
+			headers: await bearer(host),
+		})
+		const { ChatThread } = (await created.json()) as { ChatThread: { ChatThreadId: number } }
+		await openedMinutesAgo(ChatThread.ChatThreadId, 59)
+		await env.RECFLARE_PLAYER_SETTINGS.put(
+			`player:${guest}`,
+			JSON.stringify({ LatestPartyChat: String(ChatThread.ChatThreadId) })
+		)
+
+		const res = await SELF.fetch(`${ORIGIN}/thread/party`, { headers: await bearer(guest) })
+		expect(((await res.json()) as { PlayerIds: number[] }).PlayerIds).toEqual([host, guest])
+	})
+
+	it('keeps serving an aged party to the players already on it', async () => {
+		// The window gates JOINING only — a party doesn't go dark on its own members.
+		const host = 883224
+		const created = await SELF.fetch(`${ORIGIN}/thread/party`, {
+			method: 'POST',
+			headers: await bearer(host),
+		})
+		const { ChatThread } = (await created.json()) as { ChatThread: { ChatThreadId: number } }
+		await openedMinutesAgo(ChatThread.ChatThreadId, 240)
+
+		const res = await SELF.fetch(`${ORIGIN}/thread/party`, { headers: await bearer(host) })
+		expect(((await res.json()) as { ChatThreadId: number }).ChatThreadId).toBe(
+			ChatThread.ChatThreadId
+		)
+	})
+
+	it('refuses to join a party whose created_at won’t parse', async () => {
+		// Fails closed: no timestamp, no join.
+		const host = 883225
+		const stranger = 883226
+		const created = await SELF.fetch(`${ORIGIN}/thread/party`, {
+			method: 'POST',
+			headers: await bearer(host),
+		})
+		const { ChatThread } = (await created.json()) as { ChatThread: { ChatThreadId: number } }
+		await env.DB.prepare('UPDATE message_thread SET created_at = ?2 WHERE chat_thread_id = ?1')
+			.bind(ChatThread.ChatThreadId, 'not-a-timestamp')
+			.run()
+		await env.RECFLARE_PLAYER_SETTINGS.put(
+			`player:${stranger}`,
+			JSON.stringify({ LatestPartyChat: String(ChatThread.ChatThreadId) })
+		)
+
+		const res = await SELF.fetch(`${ORIGIN}/thread/party`, { headers: await bearer(stranger) })
+		expect(await res.json()).toEqual({})
+		expect(await isThreadMember(env.DB, ChatThread.ChatThreadId, stranger)).toBe(false)
+	})
+
+	it('answers {} when the setting names a thread that isn’t a party, joining nobody', async () => {
+		// The type check runs BEFORE the join, so a key pointed at someone else's DM can't
+		// put the caller in it.
+		const caller = 883207
+		const dm = await createThread(env.DB, [883208, 883213])
+		await env.RECFLARE_PLAYER_SETTINGS.put(
+			`player:${caller}`,
+			JSON.stringify({ LatestPartyChat: String(dm) })
+		)
+		const res = await SELF.fetch(`${ORIGIN}/thread/party`, { headers: await bearer(caller) })
+		expect(await res.json()).toEqual({})
+		expect(await isThreadMember(env.DB, dm, caller)).toBe(false)
+	})
+
+	it('answers {} when the setting names a thread that doesn’t exist', async () => {
+		const caller = 883214
+		await env.RECFLARE_PLAYER_SETTINGS.put(
+			`player:${caller}`,
+			JSON.stringify({ LatestPartyChat: '99999' })
+		)
+		const res = await SELF.fetch(`${ORIGIN}/thread/party`, { headers: await bearer(caller) })
+		expect(await res.json()).toEqual({})
+		expect(await isThreadMember(env.DB, 99999, caller)).toBe(false)
+	})
+
+	it('answers {} for an unparseable stored id', async () => {
+		const caller = 883209
+		await env.RECFLARE_PLAYER_SETTINGS.put(
+			`player:${caller}`,
+			JSON.stringify({ LatestPartyChat: 'not-an-id' })
+		)
+		const res = await SELF.fetch(`${ORIGIN}/thread/party`, { headers: await bearer(caller) })
+		expect(await res.json()).toEqual({})
+	})
+
 	it('401s without a token', async () => {
 		const res = await SELF.fetch(`${ORIGIN}/thread/party?maxCount=1&mode=0`)
+		expect(res.status).toBe(401)
+	})
+})
+
+// The POST on the same path is not a stub: it opens a real thread, of type Party, with
+// only the caller on it — and answers the client's own PascalCase CreatePartyChat shape,
+// which is neither of the two camelCase thread projections.
+describe('POST /thread/party', () => {
+	it('answers the PascalCase { ChatThread, ChatResult } wrapper for an empty party', async () => {
+		const caller = 883101
+		const res = await SELF.fetch(`${ORIGIN}/thread/party`, {
+			method: 'POST',
+			headers: await bearer(caller),
+		})
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as { ChatThread: { ChatThreadId: number }; ChatResult: number }
+		// Every wire key, exactly — a party opens empty, unnamed and with no club, and the
+		// client reads none of the camelCase spellings the other thread routes serve.
+		expect(body).toEqual({
+			ChatThread: {
+				ChatThreadId: body.ChatThread.ChatThreadId,
+				ChatThreadType: ChatThreadType.Party,
+				LastReadMessageId: 0,
+				Messages: [],
+				LatestMessage: null,
+				PlayerIds: [caller],
+				ChatThreadName: null,
+				SnoozedUntil: null,
+				IsFavorited: false,
+				ClubId: null,
+			},
+			ChatResult: 0,
+		})
+
+		// And it's a real thread: it reads back through the normal thread routes.
+		const stored = await getThreadForPlayer(env.DB, body.ChatThread.ChatThreadId, caller)
+		expect(stored?.chatThreadType).toBe(ChatThreadType.Party)
+		expect(stored?.playerIds).toEqual([caller])
+	})
+
+	it('posts no “started a chat” notice into the party', async () => {
+		const caller = 883105
+		const res = await SELF.fetch(`${ORIGIN}/thread/party`, {
+			method: 'POST',
+			headers: await bearer(caller),
+		})
+		const { ChatThread } = (await res.json()) as { ChatThread: { ChatThreadId: number } }
+		expect(await getThreadMessages(env.DB, ChatThread.ChatThreadId)).toEqual([])
+	})
+
+	it('opens a NEW party every call rather than resolving to the last one', async () => {
+		const caller = 883102
+		const first = await SELF.fetch(`${ORIGIN}/thread/party`, {
+			method: 'POST',
+			headers: await bearer(caller),
+		})
+		const second = await SELF.fetch(`${ORIGIN}/thread/party`, {
+			method: 'POST',
+			headers: await bearer(caller),
+		})
+		const a = (await first.json()) as { ChatThread: { ChatThreadId: number } }
+		const b = (await second.json()) as { ChatThread: { ChatThreadId: number } }
+		expect(b.ChatThread.ChatThreadId).not.toBe(a.ChatThread.ChatThreadId)
+	})
+
+	it('keeps party threads out of the DM fetch-or-create', async () => {
+		// A party the caller invited someone onto has the same roster as their DM would.
+		const caller = 883103
+		const other = 883104
+		const res = await SELF.fetch(`${ORIGIN}/thread/party`, {
+			method: 'POST',
+			headers: await bearer(caller),
+		})
+		const { ChatThread } = (await res.json()) as { ChatThread: { ChatThreadId: number } }
+		await addThreadMember(env.DB, ChatThread.ChatThreadId, other)
+
+		const dm = await SELF.fetch(`${ORIGIN}/thread/withmembers`, {
+			method: 'POST',
+			headers: { ...(await bearer(caller)), 'content-type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({ ids: String(other) }),
+		})
+		const opened = (await dm.json()) as { chatThreadId: number; chatThreadType: number }
+		expect(opened.chatThreadId).not.toBe(ChatThread.ChatThreadId)
+		expect(opened.chatThreadType).toBe(ChatThreadType.Player)
+	})
+
+	it('401s without a token', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/thread/party`, { method: 'POST' })
 		expect(res.status).toBe(401)
 	})
 })
@@ -991,11 +1420,28 @@ describe('ChatMessageReceived push', () => {
 		}
 
 		const sent = await hub.getByName('global').takeSent()
-		expect(sent.map((n) => n.playerId).sort((a, b) => a - b)).toEqual([caller, 886002, 886003])
 		expect(sent.every((n) => n.notificationType === NotificationType.ChatMessageReceived)).toBe(
 			true
 		)
-		expect(sent[0]!.data).toEqual({
+		// TWO waves over one channel, because that channel is all the client has: the
+		// thread's opening notice, which is what makes the new conversation appear at all,
+		// and then the message itself. Each goes to all three members.
+		const notice = sent.filter((n) => (n.data as { senderPlayerId: number }).senderPlayerId === -5)
+		const message = sent.filter(
+			(n) => (n.data as { senderPlayerId: number }).senderPlayerId === caller
+		)
+		for (const wave of [notice, message]) {
+			expect(wave.map((n) => n.playerId).sort((a, b) => a - b)).toEqual([caller, 886002, 886003])
+		}
+		expect(notice[0]!.data).toEqual({
+			chatMessageId: expect.any(Number),
+			chatThreadId: chatThread.chatThreadId,
+			senderPlayerId: SYSTEM_SENDER_ID,
+			timeSent: expect.any(String),
+			contents: startedChatContents(caller),
+			moderationState: 0,
+		})
+		expect(message[0]!.data).toEqual({
 			chatMessageId: chatThread.latestMessage.chatMessageId,
 			chatThreadId: chatThread.chatThreadId,
 			senderPlayerId: caller,
@@ -1005,8 +1451,144 @@ describe('ChatMessageReceived push', () => {
 		})
 	})
 
-	it('pushes nothing when there is no message to push', async () => {
-		await send(886004, 'ids=886005&messageContents=')
+	it('pushes the opening notice even when no message is sent', async () => {
+		// The thread is real whether or not anything was said in it, and a thread nobody
+		// was told about is one nobody sees — the client has no "thread opened" channel.
+		const caller = 886004
+		await send(caller, 'ids=886005&messageContents=')
+		const sent = await hub.getByName('global').takeSent()
+		expect(sent.map((n) => n.playerId).sort((a, b) => a - b)).toEqual([caller, 886005])
+		expect((sent[0]!.data as { senderPlayerId: number }).senderPlayerId).toBe(SYSTEM_SENDER_ID)
+		expect((sent[0]!.data as { contents: string }).contents).toBe(startedChatContents(caller))
+	})
+
+	it('pushes nothing when the thread already existed and nothing was said', async () => {
+		// Second call on the same pair: no new thread, no message — nothing to announce.
+		await send(886006, 'ids=886007&messageContents=')
+		await hub.getByName('global').takeSent()
+		await send(886006, 'ids=886007&messageContents=')
+		expect(await hub.getByName('global').takeSent()).toEqual([])
+	})
+
+	async function withMembers(caller: number, body: string): Promise<Response> {
+		return SELF.fetch(`${ORIGIN}/thread/withmembers`, {
+			method: 'POST',
+			headers: {
+				...(await bearer(caller)),
+				'Content-Type': 'application/x-www-form-urlencoded',
+			},
+			body,
+		})
+	}
+
+	it('POST /thread/withmembers announces the thread it opens', async () => {
+		// The reported bug: this opened the conversation silently, so the other player saw
+		// nothing until the first message arrived.
+		const caller = 886010
+		const other = 886011
+		const res = await withMembers(caller, `ids=${other}`)
+		const { chatThreadId } = (await res.json()) as { chatThreadId: number }
+
+		const sent = await hub.getByName('global').takeSent()
+		expect(sent.map((n) => n.playerId).sort((a, b) => a - b)).toEqual([caller, other])
+		expect(sent.every((n) => n.notificationType === NotificationType.ChatMessageReceived)).toBe(
+			true
+		)
+		expect(sent[0]!.data).toEqual({
+			chatMessageId: expect.any(Number),
+			chatThreadId,
+			senderPlayerId: SYSTEM_SENDER_ID,
+			timeSent: expect.any(String),
+			contents: startedChatContents(caller),
+			moderationState: 0,
+		})
+	})
+
+	it('POST /thread/withmembers pushes nothing when it resolves to an existing thread', async () => {
+		// Fetch-or-create: the second call opens nothing, so there is nothing to announce
+		// — re-announcing would ping both players every time the screen is opened.
+		const caller = 886012
+		await withMembers(caller, 'ids=886013')
+		await hub.getByName('global').takeSent()
+		await withMembers(caller, 'ids=886013')
+		expect(await hub.getByName('global').takeSent()).toEqual([])
+	})
+
+	it('adding a member announces the join to the WHOLE thread', async () => {
+		const caller = 886014
+		const existing = 886015
+		const added = 886016
+		const res = await withMembers(caller, `ids=${existing}`)
+		const { chatThreadId } = (await res.json()) as { chatThreadId: number }
+		await hub.getByName('global').takeSent()
+
+		await SELF.fetch(`${ORIGIN}/thread/${chatThreadId}/member/${added}`, {
+			method: 'POST',
+			headers: await bearer(caller),
+		})
+
+		// Everyone: the two who were already there because the roster changed under them,
+		// and the new member because this is what puts the thread on their screen.
+		const sent = await hub.getByName('global').takeSent()
+		expect(sent.map((n) => n.playerId).sort((a, b) => a - b)).toEqual([caller, existing, added])
+		expect(sent.every((n) => n.notificationType === NotificationType.ChatMessageReceived)).toBe(
+			true
+		)
+		expect(sent[0]!.data).toMatchObject({
+			chatThreadId,
+			senderPlayerId: SYSTEM_SENDER_ID,
+			contents: joinedChatContents(added),
+		})
+
+		// The notice is a real message on the thread, not just a frame — the mirror of the
+		// "left" one, and it is the thread's newest.
+		const [newest] = await getThreadMessages(env.DB, chatThreadId, { limit: 1 })
+		expect(newest?.contents).toBe(joinedChatContents(added))
+	})
+
+	it('joining a party announces it to the party', async () => {
+		const host = 886017
+		const guest = 886018
+		const created = await SELF.fetch(`${ORIGIN}/thread/party`, {
+			method: 'POST',
+			headers: await bearer(host),
+		})
+		const { ChatThread } = (await created.json()) as { ChatThread: { ChatThreadId: number } }
+		await env.RECFLARE_PLAYER_SETTINGS.put(
+			`player:${guest}`,
+			JSON.stringify({ LatestPartyChat: String(ChatThread.ChatThreadId) })
+		)
+		await hub.getByName('global').takeSent()
+
+		await SELF.fetch(`${ORIGIN}/thread/party`, { headers: await bearer(guest) })
+
+		// The host hears about it too — that is the point of announcing a join.
+		const sent = await hub.getByName('global').takeSent()
+		expect(sent.map((n) => n.playerId).sort((a, b) => a - b)).toEqual([host, guest])
+		expect(sent[0]!.data).toMatchObject({
+			chatThreadId: ChatThread.ChatThreadId,
+			senderPlayerId: SYSTEM_SENDER_ID,
+			contents: joinedChatContents(guest),
+		})
+	})
+
+	it('announces a party join once, not on every subsequent read', async () => {
+		// The join happens once; reading your own party afterwards is not a roster change.
+		const host = 886019
+		const guest = 886020
+		const created = await SELF.fetch(`${ORIGIN}/thread/party`, {
+			method: 'POST',
+			headers: await bearer(host),
+		})
+		const { ChatThread } = (await created.json()) as { ChatThread: { ChatThreadId: number } }
+		await env.RECFLARE_PLAYER_SETTINGS.put(
+			`player:${guest}`,
+			JSON.stringify({ LatestPartyChat: String(ChatThread.ChatThreadId) })
+		)
+
+		await SELF.fetch(`${ORIGIN}/thread/party`, { headers: await bearer(guest) })
+		await hub.getByName('global').takeSent()
+		await SELF.fetch(`${ORIGIN}/thread/party`, { headers: await bearer(guest) })
 		expect(await hub.getByName('global').takeSent()).toEqual([])
 	})
 })
@@ -1629,6 +2211,7 @@ describe('openapi', () => {
 			'GET /thread/{id}',
 			'GET /thread/{id}/message',
 			'POST /thread',
+			'POST /thread/party',
 			'POST /thread/withmembers',
 			'POST /thread/{id}',
 			'POST /thread/{id}/favorite',

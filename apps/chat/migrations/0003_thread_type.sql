@@ -1,0 +1,12 @@
+-- Give a thread its kind. `chat_thread_type` is the client's ChatThreadType enum
+-- (0 Player · 1 Club · 2 Party), which 0002 left off because every thread this server
+-- served was a plain player conversation and src/thread-db.ts answered a constant 0.
+-- Party threads (`POST /thread/party`) are type 2, so the value now varies per row and
+-- has to be stored. Generated from src/thread-db.ts (THREAD_SCHEMA_DDL) — keep in sync.
+--
+-- Defaulted 0 (Player), which is what every existing row is: the column is backfilled by
+-- the default, not by an UPDATE.
+--
+-- No index: it is read alongside the thread row that is already being fetched by primary
+-- key or by the membership join, never selected on.
+ALTER TABLE message_thread ADD COLUMN chat_thread_type INTEGER NOT NULL DEFAULT 0;

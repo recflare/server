@@ -16,6 +16,7 @@ import {
 	ChatResult,
 	ChatThreadDto,
 	ChatThreadWithMessagesDto,
+	CreatePartyChatResponse,
 	CreateThreadRequest,
 	CreateThreadResponse,
 	FavoriteThreadRequest,
@@ -23,8 +24,8 @@ import {
 	json,
 	messageCountParam,
 	NOT_A_MEMBER_RESPONSE,
+	PartyChatThread,
 	PartyInviteSettings,
-	PartyThread,
 	RenameThreadRequest,
 	SendMessageRequest,
 	SendMessageResponse,
@@ -36,11 +37,16 @@ import {
 } from './openapi'
 import {
 	addThreadMember,
+	ChatThreadType,
+	createThread,
 	getOrCreateThreadWithMembers,
 	getThreadForPlayer,
 	getThreadMemberIds,
+	getPartyThreadForPlayer,
+	getThreadMeta,
 	getThreadsForPlayer,
 	isThreadMember,
+	joinedChatContents,
 	leftChatContents,
 	markThreadRead,
 	postMessage,
@@ -54,6 +60,7 @@ import {
 import type { Context } from 'hono'
 import type { App, Env } from './context'
 import type { ChatMessage } from './message-db'
+import type { ChatThread } from './thread-db'
 
 /**
  * Resolve the account id from a Bearer token. Returns `null` when the header is
@@ -108,6 +115,25 @@ const CHAT_PLAYER_ALREADY_ON_THREAD = 4
 const PARTY_INVITE_LIFETIME_MINUTES = 60
 
 /**
+ * Whether a party is still open to newcomers — `GET /thread/party` joins the caller only
+ * inside this window, measured from the thread's `created_at`.
+ *
+ * It is the invite lifetime above, deliberately the same number rather than a second one:
+ * a player joins a party by holding its id in `LatestPartyChat`, which is what an invite
+ * puts there, so the join is the redemption of that invite and can't outlive it. A party
+ * older than the window still belongs to the people already on it — this gates JOINING,
+ * not reading, so nobody's own party expires out from under them.
+ *
+ * Fails CLOSED on a `created_at` that won't parse: no timestamp, no join. Nothing writes
+ * one that can't, and the alternative is an unbounded join window on a corrupt row.
+ */
+function isPartyJoinable(createdAt: string, now = Date.now()): boolean {
+	const opened = Date.parse(createdAt)
+	if (Number.isNaN(opened)) return false
+	return now - opened <= PARTY_INVITE_LIFETIME_MINUTES * 60_000
+}
+
+/**
  * Who may start a chat with a player — the client's `ChatPrivacy` enum, served numerically
  * like every other enum on this build. `Friends` is what a fresh account reports, and what
  * a player who has never touched their privacy screen reads back here.
@@ -133,6 +159,20 @@ const CHAT_PRIVACY_NAMES = ['Friends', 'Favorites', 'NoOne'] as const
  */
 const DM_PRIVACY_KEY = 'directMessagePrivacySetting'
 const GROUP_PRIVACY_KEY = 'groupChatPrivacySetting'
+
+/**
+ * Where a player's CURRENT party lives: the thread id of the party they most recently
+ * opened, written by `POST /thread/party` and read back by the GET on the same path.
+ *
+ * It is a player setting rather than a column because the party is a property of the
+ * PLAYER, not of the thread — "which party am I in" has one answer per person, and a
+ * player is in exactly one at a time. The settings bag is already read and written per
+ * player here, the same way the two privacy settings are.
+ *
+ * Nothing clears it: a party the player has left, or one that no longer exists, is
+ * filtered out on the read instead, which also covers an id written by something else.
+ */
+const LATEST_PARTY_CHAT_KEY = 'LatestPartyChat'
 
 /**
  * A `ChatPrivacy` out of whatever was stored or posted — the member name as the client
@@ -200,15 +240,86 @@ async function writeChatPrivacy(
 	accountId: number,
 	settings: Partial<Record<typeof DM_PRIVACY_KEY | typeof GROUP_PRIVACY_KEY, ChatPrivacyValue>>
 ): Promise<void> {
-	const merged: Record<string, string> = { ...(await getPlayerSettings(env, accountId)) }
+	const patch: Record<string, string> = {}
 	for (const [key, value] of Object.entries(settings)) {
-		if (value !== undefined) merged[key] = CHAT_PRIVACY_NAMES[value]
+		if (value !== undefined) patch[key] = CHAT_PRIVACY_NAMES[value]
 	}
+	await mergePlayerSettings(env, accountId, patch)
+}
+
+/**
+ * Merge keys into the player's settings map, the way the `playersettings` worker's own PUT
+ * does. Never a whole-map write: the bag holds every setting the player has (OOBE state,
+ * tutorial mask, …) and storing one key on its own would wipe the rest. Values are strings,
+ * which is what that worker stores and what its GET serves back.
+ */
+async function mergePlayerSettings(
+	env: Env,
+	accountId: number,
+	patch: Record<string, string>
+): Promise<void> {
+	const merged: Record<string, string> = { ...(await getPlayerSettings(env, accountId)), ...patch }
 	await env.RECFLARE_PLAYER_SETTINGS.put(`player:${accountId}`, JSON.stringify(merged))
+}
+
+/**
+ * The thread id in the player's `LatestPartyChat` setting, or null when they have no party
+ * — nothing stored, or something stored that isn't a positive integer (the bag's values are
+ * strings, and this one could have been written by hand).
+ */
+async function readLatestPartyChatId(env: Env, accountId: number): Promise<number | null> {
+	const stored = (await getPlayerSettings(env, accountId)) ?? {}
+	const id = Number.parseInt(String(stored[LATEST_PARTY_CHAT_KEY] ?? ''), 10)
+	return Number.isNaN(id) || id <= 0 ? null : id
 }
 
 /** The hub is a single global Durable Object instance, as every worker addresses it. */
 const HUB_INSTANCE = 'global'
+
+/**
+ * Push a thread's most recent message to everyone on it. This is how a NEW thread
+ * announces itself.
+ *
+ * The client has exactly two chat channels, `ChatMessageReceived` and `PlayerLeftChat`,
+ * and both carry a MESSAGE: there is no "a thread was opened" or "you were added" frame to
+ * send. So a conversation someone gains access to stays invisible on their client until a
+ * message arrives on it — which is why `/thread/withmembers` used to go unnoticed until the
+ * sender typed something, the thread having been created with only its "started a chat"
+ * notice and that notice never having left the database.
+ *
+ * Sending the notice fixes that without inventing anything: the message being pushed is one
+ * that genuinely exists on the thread. A no-op for a thread with nothing in it.
+ */
+async function pushThreadLatestMessage(c: Context<App>, chatThreadId: number): Promise<void> {
+	const [latest] = await getThreadMessages(c.env.DB, chatThreadId, { limit: 1 })
+	if (latest === undefined) return
+	await pushChatMessage(c, latest)
+}
+
+/**
+ * Announce that a player is now on a thread: post the `Player <@U…> joined` notice and push
+ * it to the whole thread.
+ *
+ * The exact shape of the leave route's goodbye, and for the same reasons. Everyone is told,
+ * not just the player who joined: a roster change is the thread's business — the others
+ * need to know who they are talking to — and there is no roster channel to say it on, so
+ * the notice is the message AND the signal. The new member is a member by the time this
+ * runs, so the same push is what puts the conversation on their screen.
+ *
+ * Call it AFTER the membership row exists, or the joiner is left out of the fan-out.
+ */
+async function announceJoin(
+	c: Context<App>,
+	chatThreadId: number,
+	playerId: number
+): Promise<void> {
+	const notice = await postMessage(c.env.DB, {
+		chatThreadId,
+		senderPlayerId: SYSTEM_SENDER_ID,
+		contents: joinedChatContents(playerId),
+	})
+	await pushChatMessage(c, notice)
+}
 
 /**
  * Push ChatMessageReceived to everyone in the thread once a message lands, so the
@@ -300,6 +411,33 @@ function toSentChatMessage(message: ChatMessage) {
 		TimeSent: message.timeSent,
 		Contents: message.contents,
 		ModerationState: message.moderationState,
+	}
+}
+
+/**
+ * A thread in the PascalCase shape `POST /thread/party` answers — the client's
+ * CreatePartyChat formatter, which is its own and reads none of the camelCase keys the
+ * thread payloads carry. Ten wire keys; see {@link PartyChatThread} for why the CLR
+ * type's other three never appear.
+ *
+ * `Messages` and `LatestMessage` are both present here, unlike the camelCase pair which
+ * carries one or the other, and `ChatThreadName` goes out NULL when unnamed rather than
+ * as the empty string the camelCase projections must send.
+ */
+function toPartyChatThread(thread: ChatThread, messages: ChatMessage[]) {
+	return {
+		ChatThreadId: thread.chatThreadId,
+		ChatThreadType: thread.chatThreadType,
+		LastReadMessageId: thread.lastReadMessageId,
+		Messages: messages.map(toSentChatMessage),
+		LatestMessage: thread.latestMessage === null ? null : toSentChatMessage(thread.latestMessage),
+		PlayerIds: thread.playerIds,
+		// This formatter takes the null; only the camelCase projections have to send ''.
+		ChatThreadName: thread.chatThreadName === '' ? null : thread.chatThreadName,
+		SnoozedUntil: thread.snoozedUntil,
+		IsFavorited: thread.isFavorited,
+		// No thread on this table carries a club — club chat lives in the `clubs` worker.
+		ClubId: null,
 	}
 }
 
@@ -607,7 +745,12 @@ const app = new Hono<App>()
 			const members = [...new Set([id, ...(await memberIds(c))])]
 			if (members.length < 2 || members.length > MAX_THREAD_MEMBERS) return c.body(null, 400)
 
-			const chatThreadId = await getOrCreateThreadWithMembers(c.env.DB, members, id)
+			const { chatThreadId, created } = await getOrCreateThreadWithMembers(c.env.DB, members, id)
+			// A thread nobody has been told about is a thread nobody sees. Push its opening
+			// notice the moment it exists, rather than leaving the conversation to surface on
+			// whatever message happens to follow — there may not be one: this route is also
+			// called with an empty `messageContents`.
+			if (created) await pushThreadLatestMessage(c, chatThreadId)
 
 			const contents = (await formField(c, 'messageContents'))?.trim()
 			const posted =
@@ -663,21 +806,74 @@ const app = new Hono<App>()
 		}
 	)
 
-	// The party thread (`/thread/party?maxCount=1&mode=0`). STUB: the response shape is
-	// unknown — it hasn't been observed off a live client — so this answers an empty
-	// object, which parses as "no party" rather than failing the client's deserializer the
-	// way a 404 or a bare array would. `maxCount` and `mode` are accepted and ignored.
-	// Replace the body once the real shape is captured.
+	// The caller's current party (`/thread/party?maxCount=1&mode=0`) — the client's
+	// GetPartyChat.
+	//
+	// TWO paths, cheapest first:
+	//
+	//  1. ALREADY IN A PARTY — one D1 query (`getPartyThreadForPlayer`: the membership join,
+	//     filtered to party threads, newest first) answers it outright. This is the common
+	//     case, every read after the first, and it touches the settings KV not at all.
+	//  2. NOT IN ONE YET — only then is the caller's `LatestPartyChat` player setting read.
+	//     The POST below writes that key for the player who OPENED the party; the client
+	//     writes it (through `playersettings`) for a player pulled into someone else's. Such
+	//     a player holds the key but no membership row — nothing has added them — so a
+	//     membership-only read answered them "no party", which is the bug the join fixes.
+	//     The read puts them on the thread and then serves it: `GET /thread/party` is how
+	//     you enter a party, not merely how you look at one.
+	//
+	// Reaching path 2 means the caller is in NO party, so they cannot already be a member of
+	// the thread the key names — which is why the join here needs no membership check of its
+	// own, and why the age gate below can be unconditional.
+	//
+	// On path 2 the thread is checked to exist, to be a party, and to be YOUNGER THAN THE
+	// INVITE LIFETIME before anyone is added to it, so a key naming a DM, a thread that is
+	// gone, or an hours-old party can't produce a membership row in it.
+	//
+	// The age check gates JOINING only — path 1 never reaches it, so a party keeps being
+	// served to the players already on it however old it is, rather than going dark on them
+	// after an hour. `LatestPartyChat` is the caller's own player setting, which the client
+	// can PUT to anything through the `playersettings` worker, so the key IS the invite here
+	// and the window is what keeps it from being a permanent one. Tighten further (an invite
+	// the party actually issued) if parties ever need to be closed outright.
+	//
+	// SAME PATH, DIFFERENT BODY from the POST: this one is the BARE thread, with no
+	// `{ ChatThread, ChatResult }` wrapper around it. Same ten-key PascalCase projection
+	// inside, so the two share `toPartyChatThread` — but nothing else, which is why these
+	// are two handlers rather than one verb-agnostic one.
+	//
+	// No party answers `{}`: the client parses that as a thread with everything at its
+	// default, which reads as "no party", where a 404 or a null body would fail its
+	// deserializer.
+	//
+	// `maxCount` and `mode` are accepted and ignored. `maxCount=1` is most likely the
+	// number of party chats wanted, which is already what a single-thread body serves; if
+	// it turns out to size `Messages` instead, ignoring it only ever serves MORE history
+	// than asked for, where guessing wrong the other way would truncate the party's
+	// messages to one. `mode` is unknown.
 	.get(
 		'/thread/party',
 		describeRoute({
 			tags: ['Threads'],
-			summary: 'The caller’s party thread (stub)',
+			summary: 'The caller’s current party thread (GetPartyChat)',
 			description: [
-				'STUB — the response shape has not been observed off a live client, so this answers an',
-				'empty object `{}`, which parses as "no party" rather than failing the client’s',
-				'deserializer the way a 404 or a bare array would. `maxCount` and `mode` are accepted and',
-				'ignored. Replace the body once the real shape is captured.',
+				'The party the caller is currently in: the newest party thread they are a member of,',
+				'answered from a single query. Failing that, the thread named by their own',
+				'`LatestPartyChat` player setting — which `POST /thread/party` writes for the player',
+				'who opened the party and the client writes for a player who joins someone else’s.',
+				'',
+				'That second path JOINS: a caller who is not on any party yet is ADDED to the thread',
+				'their key names and then served it, which is how a player pulled into someone else’s',
+				'party enters it — they hold the key but no membership row, and a membership-only read',
+				'answers them "no party". The thread must exist, be a party, and be younger than the',
+				'60-minute invite lifetime before anyone is added, so a key naming a DM, a deleted',
+				'thread or a stale party answers `{}` and writes nothing. The age gate is on JOINING',
+				'only — a player already on a party is served it however old it is. A join posts a',
+				'"Player <@U…> joined" notice and pushes it to the party, so the people already in it',
+				'see who arrived.',
+				'',
+				'The BARE thread, unlike the POST on the same path, which wraps the same projection in',
+				'`{ ChatThread, ChatResult }`. `maxCount` and `mode` are accepted and ignored.',
 			].join(' '),
 			security: AUTHED,
 			parameters: [
@@ -685,26 +881,121 @@ const app = new Hono<App>()
 					name: 'maxCount',
 					in: 'query',
 					required: false,
-					description: 'Page size the client sends (1). Ignored by the stub',
+					description: 'Page size the client sends (1). Accepted and ignored',
 					schema: { type: 'integer' },
 				},
 				{
 					name: 'mode',
 					in: 'query',
 					required: false,
-					description: 'Unknown mode selector the client sends (0). Ignored by the stub',
+					description: 'Unknown mode selector the client sends (0). Accepted and ignored',
 					schema: { type: 'integer' },
 				},
 			],
 			responses: {
-				200: json(PartyThread, 'Always `{}` — the stub carries no party'),
+				200: json(PartyChatThread, 'The caller’s party, or `{}` when they have none'),
 				401: UNAUTHORIZED_RESPONSE,
 			},
 		}),
 		async (c) => {
 			const id = await authedId(c)
 			if (id === null) return c.body(null, 401)
-			return c.json({})
+
+			// Path 1: already in a party. One query, no settings read.
+			let thread = await getPartyThreadForPlayer(c.env.DB, id)
+
+			// Path 2: not in one — the key is the only thing that can name a party to join.
+			if (thread === null) {
+				const chatThreadId = await readLatestPartyChatId(c.env, id)
+				if (chatThreadId === null) return c.json({})
+
+				// Checked BEFORE the join: a gone thread, one of some other type, or a party
+				// too old to still be taking people isn't something to put anybody on —
+				// whoever wrote the key.
+				const meta = await getThreadMeta(c.env.DB, chatThreadId)
+				if (meta === null || meta.chatThreadType !== ChatThreadType.Party) return c.json({})
+				if (!isPartyJoinable(meta.createdAt)) return c.json({})
+
+				await addThreadMember(c.env.DB, chatThreadId, id)
+				// The same announcement the add-member route makes: the party learns someone
+				// walked in. It is also usually a party's FIRST message — one opens empty.
+				await announceJoin(c, chatThreadId, id)
+				thread = await getThreadForPlayer(c.env.DB, chatThreadId, id)
+				if (thread === null) throw new Error(`party thread ${chatThreadId} vanished after join`)
+			}
+
+			const messages = await getThreadMessages(c.env.DB, thread.chatThreadId, {
+				limit: DEFAULT_THREAD_MESSAGE_COUNT,
+			})
+			return c.json(toPartyChatThread(thread, messages))
+		}
+	)
+
+	// Open a party — the client's CreatePartyChat. A thread of type 2
+	// (`ChatThreadType.Party`) holding only the caller, which the client then fills by
+	// inviting people onto it (`POST /thread/{id}/member/{playerId}`). The one place a
+	// thread is opened with a single member: every other create refuses a roster of just
+	// yourself, because a DM with nobody in it is a mistake, whereas a party you are so far
+	// the only member of is exactly what starting one looks like.
+	//
+	// Takes NO query params and NO body — the client posts to the bare path.
+	//
+	// Always a NEW party, never a fetch-or-create: a party is a session, not a standing
+	// conversation with a set of people, so resolving to the one you left this morning
+	// would hand the invitees its history.
+	//
+	// It opens EMPTY — no system "started a chat" notice, unlike every other new thread
+	// here. The observed response carries `Messages: []` with a null `LatestMessage`, so a
+	// notice would be a message the reference doesn't post.
+	//
+	// The body is the PascalCase `{ ChatThread, ChatResult }` wrapper, bare — no
+	// `{ success, error, value }` envelope — and the thread inside it is its own
+	// projection: ten keys, both `Messages` and `LatestMessage`, a null `ChatThreadName`,
+	// and a `ClubId` that exists nowhere else. See `toPartyChatThread`.
+	.post(
+		'/thread/party',
+		describeRoute({
+			tags: ['Threads'],
+			summary: 'Open a party thread for the caller (CreatePartyChat)',
+			description: [
+				'The client’s CreatePartyChat. Opens a thread of type 2 (Party) whose only member is',
+				'the caller — the client fills it by inviting players on afterwards. No query params',
+				'and no body. Always a new party, never a fetch-or-create: a party is a session rather',
+				'than a standing conversation, so an old one would hand the invitees its history. The',
+				'only create that accepts a roster of just the caller, and the only one that opens with',
+				'no messages at all — no “started a chat” notice, matching the observed',
+				'`Messages: []`. Records the new thread as the caller’s `LatestPartyChat` player',
+				'setting, which is where `GET /thread/party` looks for it. Answers the bare PascalCase',
+				'`{ ChatThread, ChatResult }` wrapper, whose thread is a projection of its own — not the',
+				'camelCase shape the other thread routes serve.',
+			].join(' '),
+			security: AUTHED,
+			responses: {
+				200: json(CreatePartyChatResponse, 'The new party thread, empty, with ChatResult 0'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return c.body(null, 401)
+
+			const chatThreadId = await createThread(c.env.DB, [id], null, undefined, ChatThreadType.Party)
+			// This is what makes the party findable: the GET resolves the caller's current
+			// party through this key and nothing else. Written before the response, so a
+			// client that opens the party and immediately re-reads it can't miss it.
+			await mergePlayerSettings(c.env, id, { [LATEST_PARTY_CHAT_KEY]: String(chatThreadId) })
+
+			const thread = await getThreadForPlayer(c.env.DB, chatThreadId, id)
+			if (thread === null) throw new Error(`party thread ${chatThreadId} vanished after creation`)
+			// Read the messages back rather than assuming []: the party is empty as it is
+			// created, but the projection shouldn't be the thing that says so.
+			const messages = await getThreadMessages(c.env.DB, chatThreadId, {
+				limit: DEFAULT_THREAD_MESSAGE_COUNT,
+			})
+			return c.json({
+				ChatThread: toPartyChatThread(thread, messages),
+				ChatResult: CHAT_SUCCESS,
+			})
 		}
 	)
 
@@ -887,7 +1178,11 @@ const app = new Hono<App>()
 			// rather than a lonely thread.
 			if (members.length < 2 || members.length > MAX_THREAD_MEMBERS) return c.body(null, 400)
 
-			const chatThreadId = await getOrCreateThreadWithMembers(c.env.DB, members, id)
+			const { chatThreadId, created } = await getOrCreateThreadWithMembers(c.env.DB, members, id)
+			// The reported bug: this opened the thread silently, so the other player saw
+			// nothing until the first message landed. The opening notice is what tells them.
+			if (created) await pushThreadLatestMessage(c, chatThreadId)
+
 			const limit = await formMessageCount(c, DEFAULT_THREAD_MESSAGE_COUNT)
 			const thread = await threadWithMessages(c, chatThreadId, id, limit)
 			if (thread === null) throw new Error(`thread ${chatThreadId} vanished after creation`)
@@ -1102,7 +1397,10 @@ const app = new Hono<App>()
 				'you’re part of. Answers a bare ChatResult rather than an HTTP status, as the reference',
 				'does: 3 when the caller isn’t a member (which doubles as "no such thread", keeping a',
 				'thread’s existence private), 4 when the target is already on it, 0 on success.',
-				'Idempotent — re-adding an existing member changes nothing.',
+				'Idempotent — re-adding an existing member changes nothing. On success a',
+				'"Player <@U…> joined" system notice is posted and pushed to the whole thread: the',
+				'existing members because the roster changed, the new one because that push is what',
+				'puts the conversation on their screen.',
 			].join(' '),
 			{
 				parameters: [
@@ -1132,6 +1430,9 @@ const app = new Hono<App>()
 			}
 
 			await addThreadMember(c.env.DB, chatThreadId, playerId)
+			// Everyone hears about it — the existing members because the roster changed under
+			// them, the new one because this is what puts the conversation on their screen.
+			await announceJoin(c, chatThreadId, playerId)
 			return c.json(CHAT_SUCCESS)
 		}
 	)

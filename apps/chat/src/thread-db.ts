@@ -31,6 +31,7 @@ export const THREAD_SCHEMA_DDL: string[] = [
 	`CREATE TABLE IF NOT EXISTS message_thread (
 		chat_thread_id INTEGER PRIMARY KEY AUTOINCREMENT,
 		chat_thread_name TEXT,
+		chat_thread_type INTEGER NOT NULL DEFAULT 0,
 		latest_message_id INTEGER,
 		created_at TEXT NOT NULL
 	)`,
@@ -70,23 +71,36 @@ export interface ChatThread {
 	 */
 	chatThreadName: string
 	/**
-	 * Which kind of conversation this is. Every thread the reference serves here comes back
-	 * as 0, and nothing in the worker distinguishes DMs from groups, so it's a constant —
-	 * but the field itself has to be present: the client deserializes it as a non-nullable
-	 * int and drops the whole response when it's missing.
+	 * Which kind of conversation this is — the client's `ChatThreadType`: 0 Player,
+	 * 1 Club, 2 Party. Player covers both DMs and group chats; nothing here distinguishes
+	 * the two. The field has to be present whatever its value: the client deserializes it
+	 * as a non-nullable int and drops the whole response when it's missing.
 	 */
-	chatThreadType: number
+	chatThreadType: ChatThreadTypeValue
 	snoozedUntil: string | null
 	isFavorited: boolean
 }
 
-/** The only thread type the reference ever serves. See `ChatThread.chatThreadType`. */
-const CHAT_THREAD_TYPE_DEFAULT = 0
+/**
+ * The client's `ChatThreadType` enum, stored on the thread and served numerically like
+ * every other enum on this build. A plain conversation — DM or group — is `Player`;
+ * `Party` is what `POST /thread/party` opens. Nothing here serves `Club` yet: club chat
+ * lives in the `clubs` worker, and the member is here so a stored 1 renders as itself
+ * rather than being read as a player thread.
+ */
+export const ChatThreadType = {
+	Player: 0,
+	Club: 1,
+	Party: 2,
+} as const
+
+export type ChatThreadTypeValue = (typeof ChatThreadType)[keyof typeof ChatThreadType]
 
 /** The joined row backing a rendered thread, before it's shaped for the client. */
 interface ThreadRow {
 	chat_thread_id: number
 	chat_thread_name: string | null
+	chat_thread_type: number
 	player_ids: string | null
 	last_read_message_id: number | null
 	snoozed_until: string | null
@@ -119,30 +133,24 @@ function toThread(row: ThreadRow): ChatThread {
 		lastReadMessageId: row.last_read_message_id ?? 0,
 		// Null in the column means "unnamed"; the client dereferences it unchecked.
 		chatThreadName: row.chat_thread_name ?? '',
-		chatThreadType: CHAT_THREAD_TYPE_DEFAULT,
+		chatThreadType: row.chat_thread_type as ChatThreadTypeValue,
 		snoozedUntil: row.snoozed_until,
 		isFavorited: row.is_favorited !== 0,
 	}
 }
 
 /**
- * The thread list as it renders for one player, newest conversation first — the
- * `?MessageCount=N` page of the thread endpoint.
- *
- * Reads only threads the player is a member of, so the membership join is the
- * authorization check as well as the query. The inner ordered subquery around
+ * The shared projection behind every rendered thread — the list, the single read and the
+ * party read. Membership LEADS the join, so it is the authorization check as well as the
+ * query: a row only exists for a thread `me` is in. The inner ordered subquery around
  * group_concat is what makes `playerIds` come back sorted rather than in row order.
+ *
+ * Callers append their own WHERE (and ORDER/LIMIT) and bind `?1` onwards from there.
  */
-export async function getThreadsForPlayer(
-	db: D1Database,
-	playerId: number,
-	{ limit = 50 }: { limit?: number } = {}
-): Promise<ChatThread[]> {
-	const { results } = await db
-		.prepare(
-			`SELECT
+const THREAD_SELECT = `SELECT
 				t.chat_thread_id,
 				t.chat_thread_name,
+				t.chat_thread_type,
 				(SELECT group_concat(player_id) FROM
 					(SELECT player_id FROM thread_member WHERE chat_thread_id = t.chat_thread_id
 					 ORDER BY player_id)) AS player_ids,
@@ -157,7 +165,22 @@ export async function getThreadsForPlayer(
 				msg.moderation_state AS msg_moderation_state
 			 FROM thread_member me
 			 JOIN message_thread t ON t.chat_thread_id = me.chat_thread_id
-			 LEFT JOIN message msg ON msg.chat_message_id = t.latest_message_id
+			 LEFT JOIN message msg ON msg.chat_message_id = t.latest_message_id`
+
+/**
+ * The thread list as it renders for one player, newest conversation first — the
+ * `?MessageCount=N` page of the thread endpoint.
+ *
+ * Membership scopes the query — see {@link THREAD_SELECT}.
+ */
+export async function getThreadsForPlayer(
+	db: D1Database,
+	playerId: number,
+	{ limit = 50 }: { limit?: number } = {}
+): Promise<ChatThread[]> {
+	const { results } = await db
+		.prepare(
+			`${THREAD_SELECT}
 			 WHERE me.player_id = ?1
 			 ORDER BY t.latest_message_id DESC
 			 LIMIT ?2`
@@ -175,29 +198,71 @@ export async function getThreadForPlayer(
 ): Promise<ChatThread | null> {
 	const row = await db
 		.prepare(
-			`SELECT
-				t.chat_thread_id,
-				t.chat_thread_name,
-				(SELECT group_concat(player_id) FROM
-					(SELECT player_id FROM thread_member WHERE chat_thread_id = t.chat_thread_id
-					 ORDER BY player_id)) AS player_ids,
-				me.last_read_message_id,
-				me.snoozed_until,
-				me.is_favorited,
-				msg.chat_message_id AS msg_chat_message_id,
-				msg.chat_thread_id AS msg_chat_thread_id,
-				msg.sender_player_id AS msg_sender_player_id,
-				msg.time_sent AS msg_time_sent,
-				msg.contents AS msg_contents,
-				msg.moderation_state AS msg_moderation_state
-			 FROM thread_member me
-			 JOIN message_thread t ON t.chat_thread_id = me.chat_thread_id
-			 LEFT JOIN message msg ON msg.chat_message_id = t.latest_message_id
+			`${THREAD_SELECT}
 			 WHERE me.chat_thread_id = ?1 AND me.player_id = ?2`
 		)
 		.bind(chatThreadId, playerId)
 		.first<ThreadRow>()
 	return row === null ? null : toThread(row)
+}
+
+/**
+ * The party a player is already in, or null — the newest party thread carrying a
+ * membership row for them, rendered exactly as {@link getThreadForPlayer} renders one.
+ *
+ * The fast path behind `GET /thread/party`: a player already on a party is answered from
+ * ONE D1 query, with no player-settings read at all. `LatestPartyChat` is consulted only
+ * when this comes back null — that is, only for a player who has yet to JOIN a party.
+ *
+ * Newest first (by thread id, which is monotonic) because a player can hold membership in
+ * parties they never formally left: the one they are in is the most recent one they are on.
+ */
+export async function getPartyThreadForPlayer(
+	db: D1Database,
+	playerId: number
+): Promise<ChatThread | null> {
+	const row = await db
+		.prepare(
+			`${THREAD_SELECT}
+			 WHERE me.player_id = ?1 AND t.chat_thread_type = ?2
+			 ORDER BY t.chat_thread_id DESC
+			 LIMIT 1`
+		)
+		.bind(playerId, ChatThreadType.Party)
+		.first<ThreadRow>()
+	return row === null ? null : toThread(row)
+}
+
+/** What a thread IS, without any of what's in it. See {@link getThreadMeta}. */
+export interface ThreadMeta {
+	chatThreadType: ChatThreadTypeValue
+	/** ISO-8601 UTC, as `created_at` stores it. */
+	createdAt: string
+}
+
+/**
+ * A thread's kind and age, or null when there is no such thread — the one read here that
+ * does NOT go through membership.
+ *
+ * It exists for the party join (`GET /thread/party`), which has to know a thread is real,
+ * is a party, and is still young enough to join BEFORE it puts the caller on it; every
+ * other read is membership-scoped, and a caller joining a party is by definition not a
+ * member yet. It answers these two fields and nothing else — no name, no roster, no
+ * messages — precisely so it can't become a way to read a thread you aren't in.
+ */
+export async function getThreadMeta(
+	db: D1Database,
+	chatThreadId: number
+): Promise<ThreadMeta | null> {
+	const row = await db
+		.prepare(
+			'SELECT chat_thread_type, created_at FROM message_thread WHERE chat_thread_id = ?1'
+		)
+		.bind(chatThreadId)
+		.first<{ chat_thread_type: number; created_at: string }>()
+	return row === null
+		? null
+		: { chatThreadType: row.chat_thread_type as ChatThreadTypeValue, createdAt: row.created_at }
 }
 
 /**
@@ -244,6 +309,19 @@ export function leftChatContents(playerId: number): string {
 }
 
 /**
+ * The counterpart notice when someone is pulled onto a thread or walks into a party:
+ * `Player <@U14922080> joined`. Same `<@U…>` mention token as the other two.
+ *
+ * It carries the roster change as a MESSAGE because that is the only way to carry one: the
+ * client has no join/leave channel, only `ChatMessageReceived` and `PlayerLeftChat`, both
+ * of which take a message. So the notice is both what the thread shows and what tells
+ * everyone — the new member's client included — that the roster moved.
+ */
+export function joinedChatContents(playerId: number): string {
+	return JSON.stringify({ Type: 0, Version: 1, Data: `Player <@U${playerId}> joined` })
+}
+
+/**
  * Rename a thread. An empty name clears it back to unnamed, which renders as the member
  * list rather than a blank title.
  */
@@ -269,19 +347,24 @@ export async function setThreadName(
  *
  * Every call opens a *distinct* thread, even for a member set that already has one —
  * threads are not keyed by their membership, and the same pair may hold several.
+ *
+ * `type` is the thread's kind and defaults to `Player`, which covers DMs and group chats
+ * alike; a party opens as `Party`.
  */
 export async function createThread(
 	db: D1Database,
 	playerIds: number[],
 	name: string | null = null,
-	startedBy?: number
+	startedBy?: number,
+	type: ChatThreadTypeValue = ChatThreadType.Player
 ): Promise<number> {
 	const row = await db
 		.prepare(
-			`INSERT INTO message_thread (chat_thread_name, created_at) VALUES (?1, ?2)
+			`INSERT INTO message_thread (chat_thread_name, chat_thread_type, created_at)
+			 VALUES (?1, ?2, ?3)
 			 RETURNING chat_thread_id`
 		)
-		.bind(name, new Date().toISOString())
+		.bind(name, type, new Date().toISOString())
 		.first<{ chat_thread_id: number }>()
 	if (row === null) throw new Error('failed to create chat thread')
 
@@ -322,27 +405,33 @@ export async function createThread(
  * thread is gone are ignored rather than resolved to: matching one would hand back an id
  * that nothing else in the worker can render, and — since the oldest match wins — it
  * would keep winning on every subsequent call.
+ *
+ * Matching is also scoped to one `type`: a party whose roster happens to be the people
+ * you are opening a DM with is a different conversation, and handing it back would drop
+ * the DM into the party.
  */
 export async function findThreadWithMembers(
 	db: D1Database,
-	playerIds: number[]
+	playerIds: number[],
+	type: ChatThreadTypeValue = ChatThreadType.Player
 ): Promise<number | null> {
 	const members = [...new Set(playerIds)]
 	if (members.length === 0) return null
 
-	// ?1 is the member count; ?2… are the ids themselves.
-	const placeholders = members.map((_, i) => `?${i + 2}`).join(', ')
+	// ?1 is the member count, ?2 the thread type; ?3… are the ids themselves.
+	const placeholders = members.map((_, i) => `?${i + 3}`).join(', ')
 	const row = await db
 		.prepare(
 			`SELECT m.chat_thread_id FROM thread_member m
 			 JOIN message_thread t ON t.chat_thread_id = m.chat_thread_id
+			 WHERE t.chat_thread_type = ?2
 			 GROUP BY m.chat_thread_id
 			 HAVING COUNT(*) = ?1
 			    AND COUNT(CASE WHEN m.player_id IN (${placeholders}) THEN 1 END) = ?1
 			 ORDER BY m.chat_thread_id
 			 LIMIT 1`
 		)
-		.bind(members.length, ...members)
+		.bind(members.length, type, ...members)
 		.first<{ chat_thread_id: number }>()
 	return row?.chat_thread_id ?? null
 }
@@ -352,16 +441,20 @@ export async function findThreadWithMembers(
  * simultaneous first-messages to the same set can still race into two threads; the
  * oldest-match rule in `findThreadWithMembers` means both parties converge on one of
  * them afterwards.
+ *
+ * `created` says which happened. The caller needs it: a thread that was just opened has to
+ * be PUSHED to its members, or it sits on the server unseen until somebody posts to it —
+ * the client has no "you were added to a thread" channel, so the opening notice going out
+ * over the socket is the only thing that makes a new conversation appear.
  */
 export async function getOrCreateThreadWithMembers(
 	db: D1Database,
 	playerIds: number[],
 	startedBy: number
-): Promise<number> {
-	return (
-		(await findThreadWithMembers(db, playerIds)) ??
-		(await createThread(db, playerIds, null, startedBy))
-	)
+): Promise<{ chatThreadId: number; created: boolean }> {
+	const existing = await findThreadWithMembers(db, playerIds)
+	if (existing !== null) return { chatThreadId: existing, created: false }
+	return { chatThreadId: await createThread(db, playerIds, null, startedBy), created: true }
 }
 
 /** Everyone in a thread, ordered by id — the fan-out list for a push notification. */

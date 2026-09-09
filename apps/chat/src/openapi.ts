@@ -86,7 +86,9 @@ const threadBase = {
 	chatThreadName: z
 		.string()
 		.describe('Empty for DMs and unnamed groups — never null (the client dereferences it)'),
-	chatThreadType: z.int().describe('Always 0 — the only type the reference serves'),
+	chatThreadType: z
+		.int()
+		.describe('The ChatThreadType enum, numeric: 0 Player (DMs and groups) · 1 Club · 2 Party'),
 	snoozedUntil: z.string().nullable().describe('An instant, or null when not snoozed'),
 	isFavorited: z.boolean(),
 }
@@ -233,11 +235,56 @@ export const ChatPrivacySettings = z.object({
 })
 
 /**
- * `GET /thread/party` — STUB. The real shape hasn't been observed off a live client, so
- * the route answers an empty object and this schema says so rather than guessing at
- * fields. Fill both in together once the real response is captured.
+ * A thread in the PascalCase spelling the two `/thread/party` routes serve — the client's
+ * CreatePartyChat and GetPartyChat — the THIRD projection of a thread in this worker, and deliberately not
+ * unified with the two camelCase ones ({@link ChatThreadDto}, {@link
+ * ChatThreadWithMessagesDto}): the client has a separate formatter for this response, and
+ * a camelCase body decodes to a thread with every field at its default.
+ *
+ * Ten wire keys, off the client's own formatter. Its CLR type declares thirteen fields:
+ * two are `[IgnoreDataMember]` and one is a plain field rather than an auto-property, so
+ * none of the three ever serialises — don't add them back.
+ *
+ * Differences from the camelCase DTOs beyond the casing:
+ * - `Messages` and `LatestMessage` are BOTH present, where the camelCase pair carries one
+ *   or the other. A party opens empty, so they come back `[]` and null.
+ * - `ChatThreadName` is NULL for an unnamed thread, not the empty string the camelCase
+ *   projections have to send (the client dereferences that one unchecked; this formatter
+ *   takes the null).
+ * - `ClubId` exists only here — null for a party, and for everything this worker serves:
+ *   club chat lives in the `clubs` worker and nothing on this table carries a club.
+ *
+ * `GET /thread/party` serves this BARE; the POST wraps it in {@link
+ * CreatePartyChatResponse}. The GET also answers `{}` for a caller with no party, which
+ * decodes to a thread with every field at its default — the client reads that as no party,
+ * where a 404 or a null body would fail its deserializer.
  */
-export const PartyThread = z.object({}).describe('Stub — always empty; the real shape is unknown')
+export const PartyChatThread = z.object({
+	ChatThreadId: z.int(),
+	ChatThreadType: z.int().describe('The ChatThreadType enum: 0 Player · 1 Club · 2 Party'),
+	LastReadMessageId: z.int().describe('0 for a party that was just opened'),
+	Messages: z
+		.array(SentChatMessage)
+		.describe('Empty for a party just opened — nothing is posted into it'),
+	LatestMessage: SentChatMessage.nullable().describe('Null while the thread has no messages'),
+	PlayerIds: z.array(z.int()).describe('Just the caller, until players are invited on'),
+	ChatThreadName: z.string().nullable().describe('NULL when unnamed — not the empty string'),
+	SnoozedUntil: z.string().nullable().describe('An instant, or null when not snoozed'),
+	IsFavorited: z.boolean(),
+	ClubId: z.int().nullable().describe('Always null here — this worker serves no club threads'),
+})
+
+/**
+ * `POST /thread/party` — the client's CreatePartyChat. A bare two-key wrapper, PascalCase
+ * like the thread inside it, with no `{ success, error, value }` envelope around it.
+ *
+ * `ChatResult` is the same twenty-member enum {@link ChatResult} records, served
+ * numerically; the create either works or fails the request, so it is always 0 here.
+ */
+export const CreatePartyChatResponse = z.object({
+	ChatThread: PartyChatThread,
+	ChatResult: ChatResult,
+})
 
 /** `GET /` — the liveness probe. */
 export const ServiceStatus = z.object({
