@@ -504,24 +504,45 @@ function toAvatarV2Dto(avatar: Avatar) {
 }
 
 /**
- * The subset of a storefront catalog (`static/storefronts/sf{N}.json`) that `buyItem`
- * reads: each store item carries the `GiftDrop` describing what you get, a list of
- * `Prices` per currency, and optionally `SubscriberPrices` — the discounted list a Rec Room
- * Plus subscriber is shown and pays. The catalogs hold more fields (IsFeatured, …) that
- * the purchase path doesn't need.
+ * A storefront catalog entry's `GiftDrop` (`static/storefronts/sf{N}.json`) — what a store
+ * item hands over. Field-for-field the client's own `GiftDrop` class, in its declared
+ * order, so a name here is a name the client reads.
+ *
+ * REQUIRED vs OPTIONAL is about what this server produces, not what the client declares:
+ * the required eleven are the ones every drop-building helper here sets (a game reward, a
+ * level-up box, a challenge gift — see {@link toGameRewardDrop} and friends), and they are
+ * the only ones the purchase and roll paths read. The rest are optional because nothing
+ * here synthesizes one, whether or not a captured catalog carries it — `GiftDropId`,
+ * `Unique`, `SubscribersOnly`, `ItemSetId` and `ItemSetFriendlyName` are on all 5,875
+ * captured entries, while `TagList`, `CustomAvatarItemId`, `AvatarItemId`,
+ * `EquipmentItemId` and `ThumbnailImageName` are on none of them.
+ *
+ * The store item around it carries `Prices` per currency and optionally `SubscriberPrices`
+ * — the discounted list a Rec Room Plus subscriber is shown and pays. Both hold more
+ * fields (IsFeatured, …) the purchase path doesn't need.
  */
 interface StoreGiftDrop {
+	/**
+	 * The drop's own id. Every captured entry has it equal to the item's
+	 * `PurchasableItemId`, which is why the paths that need one (a weekly gift, a skin)
+	 * take it off there instead of from here.
+	 */
+	GiftDropId?: number
 	FriendlyName: string
-	Tooltip: string
+	/**
+	 * NULL on 23 captured entries — the client's field is a plain string, but the catalogs
+	 * keep null and `""` apart, so a reader passing it on has to collapse it (`?? ''`).
+	 */
+	Tooltip: string | null
+	/** Not on any captured entry; nothing here reads or sets one. */
+	TagList?: string
 	ConsumableItemDesc: string
 	AvatarItemDesc: string
+	/** A UGC item's guid. Not on any captured entry — the captures predate them. */
+	CustomAvatarItemId?: string | null
 	AvatarItemType: number | null
 	EquipmentPrefabName: string
 	EquipmentModificationGuid: string
-	Rarity: number
-	Context: number
-	Currency: number
-	CurrencyType: number
 	/**
 	 * A QUERY drop — a loot box rather than an item. Its item fields are all empty on
 	 * purpose: what the player gets is rolled at grant time from everything of the target
@@ -530,16 +551,37 @@ interface StoreGiftDrop {
 	 * random 4-star item that you don't have."
 	 */
 	IsQuery?: boolean
+	/** Whether the player may hold only one. Nothing here enforces it. */
+	Unique?: boolean
+	/** Whether only a Rec Room Plus subscriber may buy it. Nothing here enforces it. */
+	SubscribersOnly?: boolean
+	Rarity: number
+	CurrencyType: number
+	Currency: number
+	Context: number
+	/** The set the item belongs to; null on 92 captured entries. */
+	ItemSetId?: number | null
+	ItemSetFriendlyName?: string
+	/** Catalog ids for the item the drop carries. Not on any captured entry. */
+	AvatarItemId?: number | null
+	EquipmentItemId?: number | null
+	/** Not on any captured entry; the client falls back to the item's own thumbnail. */
+	ThumbnailImageName?: string
+
+	// ---- Not part of the client's class -------------------------------------
+
 	/**
 	 * The rarity a query drop rolls at, when it differs from the box's own `Rarity`. The
 	 * sf2 boxes carry both and they agree; sf3's don't carry it at all, hence the fallback
-	 * to `Rarity`.
+	 * to `Rarity`. The client's `GiftDrop` has no such field — it is the catalog's, and
+	 * only this server reads it.
 	 */
 	QueryRedirectRarity?: number
 	/**
-	 * XP the drop pays out. No storefront catalog sets it — a bought item is an item — but a
-	 * game reward is XP in a gift box, so the box and its notification carry the amount from
-	 * here. The XP itself is banked in `progression`, not read back off the box.
+	 * XP the drop pays out. Ours, not the client's and not any catalog's — a bought item is
+	 * an item, but a game reward is XP in a gift box, so the box and its notification carry
+	 * the amount from here. The XP itself is banked in `progression`, not read back off the
+	 * box.
 	 */
 	Xp?: number
 }
@@ -815,7 +857,7 @@ function toAvatarItem(giftDrop: StoreGiftDrop): AvatarItem {
 		AvatarItemDesc: giftDrop.AvatarItemDesc,
 		PlatformMask: -1,
 		FriendlyName: giftDrop.FriendlyName,
-		Tooltip: giftDrop.Tooltip,
+		Tooltip: giftDrop.Tooltip ?? '',
 		Rarity: giftDrop.Rarity,
 	}
 }
@@ -826,7 +868,7 @@ function toEquipment(giftDrop: StoreGiftDrop): Equipment {
 		ModificationGuid: giftDrop.EquipmentModificationGuid,
 		PrefabName: giftDrop.EquipmentPrefabName,
 		FriendlyName: giftDrop.FriendlyName,
-		Tooltip: giftDrop.Tooltip,
+		Tooltip: giftDrop.Tooltip ?? '',
 		Rarity: giftDrop.Rarity,
 		PlatformMask: -1,
 		Favorited: false,
