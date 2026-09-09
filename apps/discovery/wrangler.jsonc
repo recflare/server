@@ -16,6 +16,9 @@
 	// nothing documents and the client never asks for. With it, the Worker sees every
 	// request and the files are reachable only through the binding, i.e. only under
 	// `/sections/pagesource/:type`.
+	"cache": {
+		"enabled": true
+	},
 	"assets": {
 		"binding": "ASSETS",
 		"directory": "./static",
