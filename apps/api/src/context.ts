@@ -15,6 +15,8 @@ export type Env = SharedHonoEnv & {
 	 * for local dev and tests.
 	 */
 	DOMAIN: string
+	/** Maximum accepted size of each API-owned image upload, in bytes. */
+	RECFLARE_MAX_API_UPLOAD_BYTES?: string
 	// Shared rooms database (schema/migrations owned by the `rooms` worker). Used
 	// read-only here to resolve room roles for `/api/rooms/v1/verifyRole`.
 	DB: D1Database

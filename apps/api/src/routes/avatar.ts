@@ -104,6 +104,7 @@ import {
 	UpdatePriceRequest,
 } from '../openapi'
 import { createReport } from '../reports-db'
+import { exceedsApiUploadLimit, maxApiUploadBytes } from '../upload-limit'
 
 import type { Context } from 'hono'
 import type { App } from '../context'
@@ -455,6 +456,7 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 				200: json(CustomAvatarItemResponse, 'The created item'),
 				400: json(CustomAvatarItemResponse, 'Missing or malformed metadata / files'),
 				401: UNAUTHORIZED_RESPONSE,
+				413: json(CustomAvatarItemResponse, 'Either file exceeds the configured per-file limit'),
 			},
 		}),
 		async (c) => {
@@ -480,6 +482,31 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 				return fail('BaseAvatarItemColor is required')
 			if (!(body.thumbnailImage instanceof File)) return fail('thumbnailImage is required')
 			if (!(body.design instanceof File)) return fail('design is required')
+			const limit = maxApiUploadBytes(c.env)
+			// Each file gets the full per-file ceiling. Check both before either is copied into
+			// an ArrayBuffer or written, so a rejected request never leaves half an item in R2.
+			if (exceedsApiUploadLimit(body.thumbnailImage, limit)) {
+				return c.json(
+					{
+						Value: null,
+						Success: false,
+						Error: `thumbnailImage exceeds the ${limit}-byte upload limit`,
+						error_id: null,
+					},
+					413
+				)
+			}
+			if (exceedsApiUploadLimit(body.design, limit)) {
+				return c.json(
+					{
+						Value: null,
+						Success: false,
+						Error: `design exceeds the ${limit}-byte upload limit`,
+						error_id: null,
+					},
+					413
+				)
+			}
 
 			// Both files go to the shared image bucket, foldered by upload date and keyed by
 			// the item's id (chosen here so the keys can carry it). The `img` worker serves

@@ -4014,6 +4014,53 @@ describe('custom avatar items', () => {
 		expect(await res.json()).toMatchObject({ Success: false, Value: null })
 	})
 
+	test('POST rejects either oversized file before writing anything to R2', async () => {
+		const previous = env.RECFLARE_MAX_API_UPLOAD_BYTES
+		env.RECFLARE_MAX_API_UPLOAD_BYTES = '3'
+		try {
+			const objectsBefore = (await env.IMAGES.list({ prefix: 'avatar-item/' })).objects.length
+			const upload = async (thumbnail: Uint8Array, design: Uint8Array) => {
+				const form = new FormData()
+				form.set(
+					'metadata',
+					JSON.stringify({ Name: 'bounded', BaseAvatarItemId: 1, BaseAvatarItemColor: '#fff' })
+				)
+				form.set('thumbnailImage', new File([thumbnail], 'thumb.png', { type: 'image/png' }))
+				form.set('design', new File([design], 'design.png', { type: 'image/png' }))
+				return exports.default.fetch(`${ORIGIN}/api/customAvatarItems/v1`, {
+					method: 'POST',
+					headers: await bearer('205'),
+					body: form,
+				})
+			}
+
+			const oversizedThumbnail = await upload(new Uint8Array(4), new Uint8Array(3))
+			expect(oversizedThumbnail.status).toBe(413)
+			expect(await oversizedThumbnail.json()).toMatchObject({
+				Success: false,
+				Error: 'thumbnailImage exceeds the 3-byte upload limit',
+			})
+
+			const oversizedDesign = await upload(new Uint8Array(3), new Uint8Array(4))
+			expect(oversizedDesign.status).toBe(413)
+			expect(await oversizedDesign.json()).toMatchObject({
+				Success: false,
+				Error: 'design exceeds the 3-byte upload limit',
+			})
+
+			// Neither rejected request may create metadata or leave one of its two objects behind.
+			const row = await env.DB.prepare(
+				"SELECT COUNT(*) AS n FROM custom_avatar_item WHERE name = 'bounded'"
+			).first<{ n: number }>()
+			expect(row?.n).toBe(0)
+			expect((await env.IMAGES.list({ prefix: 'avatar-item/' })).objects).toHaveLength(
+				objectsBefore
+			)
+		} finally {
+			env.RECFLARE_MAX_API_UPLOAD_BYTES = previous
+		}
+	})
+
 	test('POST 401s without a token', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/api/customAvatarItems/v1`, {
 			method: 'POST',
@@ -5301,6 +5348,26 @@ describe('images', () => {
 			body: 'foo=bar',
 		})
 		expect(res.status).toBe(400)
+	})
+
+	test('POST /api/images/v4/uploadsaved rejects an oversized image before storing it', async () => {
+		const previous = env.RECFLARE_MAX_API_UPLOAD_BYTES
+		env.RECFLARE_MAX_API_UPLOAD_BYTES = '3'
+		try {
+			const objectsBefore = (await env.IMAGES.list()).objects.length
+			const fd = new FormData()
+			fd.append('image', new File([new Uint8Array(4)], 'large.png', { type: 'image/png' }))
+			const res = await exports.default.fetch(`${ORIGIN}/api/images/v4/uploadsaved`, {
+				method: 'POST',
+				headers: await bearer('42'),
+				body: fd,
+			})
+			expect(res.status).toBe(413)
+			expect(await res.json()).toEqual({ error: 'image exceeds the 3-byte upload limit' })
+			expect((await env.IMAGES.list()).objects).toHaveLength(objectsBefore)
+		} finally {
+			env.RECFLARE_MAX_API_UPLOAD_BYTES = previous
+		}
 	})
 
 	test('GET /api/images/v4/room/:id returns a public room feed, filtered/sorted/paginated', async () => {
