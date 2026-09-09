@@ -12,7 +12,9 @@ import {
 	HealthResponse,
 	json,
 	PlayerSettingEntry,
+	SettingFormDelete,
 	SettingFormWrite,
+	SettingJsonDelete,
 	SettingJsonWrite,
 	UNAUTHORIZED_RESPONSE,
 } from './openapi'
@@ -26,7 +28,7 @@ import type { App } from './context'
  * (`player:{id}`); a player with nothing stored is seeded with the reference defaults on
  * their first read.
  *
- * Both routes are auth-gated on the Bearer JWT issued by the `auth` worker.
+ * Every `/playersettings` route is auth-gated on the Bearer JWT issued by the `auth` worker.
  */
 
 /**
@@ -76,6 +78,45 @@ async function parseSettings(c: Context<App>): Promise<Array<{ key: string; valu
 	const key = typeof form.key === 'string' ? form.key : ''
 	const value = typeof form.value === 'string' ? form.value : ''
 	return key ? [{ key, value }] : []
+}
+
+/**
+ * Pull the setting name(s) to remove out of a DELETE body. The client sends a bare
+ * form-urlencoded `key=PlayerShoppingBagId` — with no `value`, and (unlike its PUTs) not
+ * always a `content-type` Hono's body parser recognises on a DELETE, so an unparsed body
+ * is re-read as raw text. A JSON body is accepted too, as a bare string, a `{ key }`
+ * object, or an array of either. Blank names are dropped.
+ */
+async function parseDeleteKeys(c: Context<App>): Promise<string[]> {
+	const contentType = c.req.header('content-type') ?? ''
+
+	if (contentType.includes('application/json')) {
+		const body = await c.req.json<unknown>().catch(() => null)
+		const list = Array.isArray(body) ? body : body == null ? [] : [body]
+		return list
+			.map((o) => {
+				if (typeof o === 'string') return o
+				const rec = o as Record<string, unknown>
+				const key = rec.key ?? rec.Key
+				return typeof key === 'string' ? key : ''
+			})
+			.filter((k) => k !== '')
+	}
+
+	// Pick ONE read of the body from the content-type: Hono's parser only recognises the
+	// form types, and re-reading as text after it has cached a FormData re-serialises the
+	// body as multipart, so trying both in turn parses garbage.
+	let key = ''
+	if (contentType.includes('form-data') || contentType.includes('x-www-form-urlencoded')) {
+		const form = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>)
+		if (typeof form.key === 'string') key = form.key
+	} else {
+		key = new URLSearchParams(await c.req.text().catch(() => '')).get('key') ?? ''
+	}
+
+	// Last resort, for a client that hangs the name off the URL instead.
+	if (key === '') key = c.req.query('key') ?? ''
+	return key ? [key] : []
 }
 
 const app = new Hono<App>()
@@ -176,6 +217,59 @@ const app = new Hono<App>()
 			for (const { key, value } of incoming) merged[key] = value
 
 			await c.env.RECFLARE_PLAYER_SETTINGS.put(kvKey, JSON.stringify(merged))
+			return c.body(null, 200)
+		}
+	)
+
+	// Remove a setting from the caller's map. The client sends `key=PlayerShoppingBagId`
+	// when it drops a value it no longer wants defaulted (a stale shopping bag id, say)
+	// rather than writing an empty string over it.
+	.delete(
+		'/playersettings',
+		describeRoute({
+			tags: ['Player Settings'],
+			summary: 'Delete a player setting',
+			description: [
+				'Removes the named setting(s) from the caller’s KV map. The client sends a bare',
+				'form-urlencoded `key=PlayerShoppingBagId` (no `value`); a JSON body — a string, a',
+				'`{ key }` object, or an array of either — and a `?key=` query param are also read.',
+				'Deleting a key that isn’t stored, or sending nothing to delete, is a no-op 200, not a',
+				'404. Empty body on success.',
+				'',
+				'Note that emptying the map entirely puts the player back to a first read: the next',
+				'`GET` re-seeds the defaults.',
+			].join(' '),
+			security: AUTHED,
+			requestBody: formOrJson(SettingFormDelete, SettingJsonDelete, 'The setting(s) to remove'),
+			responses: {
+				200: { description: 'Removed, or nothing to remove (empty body)' },
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const keys = await parseDeleteKeys(c)
+			if (keys.length === 0) return c.body(null, 200)
+
+			const kvKey = `player:${id}`
+			const existing = await c.env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(
+				kvKey,
+				'json'
+			)
+			if (!existing) return c.body(null, 200)
+
+			const remaining = { ...existing }
+			let removed = false
+			for (const key of keys) {
+				if (key in remaining) {
+					delete remaining[key]
+					removed = true
+				}
+			}
+			if (removed) await c.env.RECFLARE_PLAYER_SETTINGS.put(kvKey, JSON.stringify(remaining))
+
 			return c.body(null, 200)
 		}
 	)

@@ -53,6 +53,17 @@ function putForm(
 	}
 }
 
+function deleteForm(
+	fields: Record<string, string>,
+	headers: Record<string, string> = {}
+): RequestInit {
+	return {
+		method: 'DELETE',
+		headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...headers },
+		body: new URLSearchParams(fields).toString(),
+	}
+}
+
 describe('playersettings endpoints', () => {
 	it('GET / reports service status', async () => {
 		const res = await SELF.fetch(`${ORIGIN}/`)
@@ -134,6 +145,80 @@ describe('playersettings endpoints', () => {
 		expect(res.status).toBe(200)
 	})
 
+	it('DELETE /playersettings 401s without a token', async () => {
+		const res = await SELF.fetch(
+			`${ORIGIN}/playersettings`,
+			deleteForm({ key: 'PlayerShoppingBagId' })
+		)
+		expect(res.status).toBe(401)
+	})
+
+	it('DELETE /playersettings removes the named key and leaves the rest', async () => {
+		await SELF.fetch(
+			`${ORIGIN}/playersettings`,
+			putForm({ key: 'PlayerShoppingBagId', value: 'bag-1' }, await bearer('20'))
+		)
+		await SELF.fetch(
+			`${ORIGIN}/playersettings`,
+			putForm({ key: 'PlayerSessionCount', value: '3' }, await bearer('20'))
+		)
+
+		const res = await SELF.fetch(
+			`${ORIGIN}/playersettings`,
+			deleteForm({ key: 'PlayerShoppingBagId' }, await bearer('20'))
+		)
+		expect(res.status).toBe(200)
+
+		const stored = await env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(
+			'player:20',
+			'json'
+		)
+		expect(stored).toEqual({ PlayerSessionCount: '3' })
+	})
+
+	it('DELETE /playersettings reads a body with no content-type', async () => {
+		await SELF.fetch(
+			`${ORIGIN}/playersettings`,
+			putForm({ key: 'PlayerShoppingBagId', value: 'bag-2' }, await bearer('21'))
+		)
+
+		const res = await SELF.fetch(`${ORIGIN}/playersettings`, {
+			method: 'DELETE',
+			headers: await bearer('21'),
+			body: 'key=PlayerShoppingBagId',
+		})
+		expect(res.status).toBe(200)
+
+		const stored = await env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(
+			'player:21',
+			'json'
+		)
+		expect(stored).toEqual({})
+	})
+
+	it('DELETE /playersettings 200s for an unknown key and an empty body', async () => {
+		await SELF.fetch(
+			`${ORIGIN}/playersettings`,
+			putForm({ key: 'A', value: '1' }, await bearer('22'))
+		)
+
+		const unknown = await SELF.fetch(
+			`${ORIGIN}/playersettings`,
+			deleteForm({ key: 'NotStored' }, await bearer('22'))
+		)
+		expect(unknown.status).toBe(200)
+
+		const empty = await SELF.fetch(`${ORIGIN}/playersettings`, deleteForm({}, await bearer('22')))
+		expect(empty.status).toBe(200)
+
+		// Neither call touched the stored map.
+		const stored = await env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(
+			'player:22',
+			'json'
+		)
+		expect(stored).toEqual({ A: '1' })
+	})
+
 	it('GET /openapi.json documents every route', async () => {
 		const res = await SELF.fetch(`${ORIGIN}/openapi.json`)
 		expect(res.status).toBe(200)
@@ -154,7 +239,12 @@ describe('playersettings endpoints', () => {
 				Object.keys(ops).map((method) => `${method.toUpperCase()} ${path}`)
 			)
 		)
-		expect([...documented].sort()).toEqual(['GET /', 'GET /playersettings', 'PUT /playersettings'])
+		expect([...documented].sort()).toEqual([
+			'DELETE /playersettings',
+			'GET /',
+			'GET /playersettings',
+			'PUT /playersettings',
+		])
 
 		// Every operation carries a summary — a path present but undescribed is not
 		// documentation.

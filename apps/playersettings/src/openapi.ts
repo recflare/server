@@ -103,3 +103,23 @@ export const SettingJsonWrite = z.union([
 		})
 	),
 ])
+
+/**
+ * The form-encoded delete the client actually sends: a bare `key=PlayerShoppingBagId`,
+ * with no `value`. An empty `key` is ignored.
+ */
+export const SettingFormDelete = z.object({
+	key: z.string().describe('The setting name to remove; an empty key is ignored'),
+})
+
+/**
+ * The JSON form of the same delete. Accepted as a bare setting name, a `{ key }` /
+ * `{ Key }` object, or an array of either.
+ */
+export const SettingJsonDelete = z.union([
+	z.string(),
+	z.object({ key: z.string().optional(), Key: z.string().optional() }),
+	z.array(
+		z.union([z.string(), z.object({ key: z.string().optional(), Key: z.string().optional() })])
+	),
+])
