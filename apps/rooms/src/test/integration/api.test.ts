@@ -195,6 +195,23 @@ describe('rooms endpoints', () => {
 		expect(await res.json()).toEqual([])
 	})
 
+	// Stub, same reasoning: the profile asks for a showcase for any player, and an
+	// unregistered path leaves the profile half-drawn. No auth, and no such player is
+	// still [] rather than a 404.
+	it('GET /showcase/:playerId returns [] for any player', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/showcase/205`)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([])
+
+		const unknown = await SELF.fetch(`${ORIGIN}/showcase/99999`)
+		expect(unknown.status).toBe(200)
+		expect(await unknown.json()).toEqual([])
+	})
+
+	it('GET /showcase/:playerId 404s on a non-numeric id', async () => {
+		expect((await SELF.fetch(`${ORIGIN}/showcase/abc`)).status).toBe(404)
+	})
+
 	it('GET /rooms/:id 404s for a room not in D1', async () => {
 		const res = await SELF.fetch(`${ORIGIN}/rooms/99999`)
 		expect(res.status).toBe(404)
@@ -4088,6 +4105,7 @@ describe('rooms endpoints', () => {
 			'GET /rooms/{roomId}/subrooms/{subRoomId}/saves/no_unity_assets',
 			'GET /rooms/{roomId}/subrooms/{subRoomId}/saves/{saveId}',
 			'GET /roomserver/rooms/createdby/me',
+			'GET /showcase/{playerId}',
 			'POST /rooms/bulk',
 			'POST /rooms/{roomId}/bans',
 			'POST /rooms/{roomId}/clone',

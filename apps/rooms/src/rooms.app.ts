@@ -123,6 +123,7 @@ import {
 	SaveSubRoomDataRequest,
 	SearchSuggestions,
 	ServiceStatus,
+	ShowcasedRooms,
 	stringQuery,
 	SubRoomAccessibilityRequest,
 	SubRoomDataSaveResponseDto,
@@ -1280,6 +1281,29 @@ const app = new Hono<App>()
 		}),
 		async (c) =>
 			c.json(await getPublicRoomsByCreator(c.env.DB, Number.parseInt(c.req.param('accountId'), 10)))
+	)
+
+	// A player's showcased rooms — the hand-picked rail the client draws on a profile,
+	// separate from `ownedby/{accountId}` (which is everything public they own). Stub →
+	// empty list: nothing stores a showcase yet, and an empty rail is what a player who
+	// has picked nothing looks like, where a 404 leaves the profile half-drawn. No auth,
+	// matching the profile list it sits beside — a showcase is public by definition.
+	.get(
+		'/showcase/:playerId{[0-9]+}',
+		describeRoute({
+			tags: ['Rooms'],
+			summary: 'A player’s showcased rooms',
+			description: [
+				'The rooms a player has showcased on their profile, as a bare array. Nothing stores a',
+				'showcase yet, so this is a stub serving an empty list — which the client reads as',
+				'“nothing showcased”, the same as a player who has picked none. Unlike',
+				'`ownedby/{accountId}`, which lists everything public the account owns, a showcase is',
+				'a chosen subset. No auth: a profile is public.',
+			].join(' '),
+			parameters: [playerIdParam],
+			responses: { 200: json(ShowcasedRooms, 'An empty list') },
+		}),
+		(c) => c.json([])
 	)
 
 	// Rooms the caller has favorited (from the interaction table). Auth-gated.

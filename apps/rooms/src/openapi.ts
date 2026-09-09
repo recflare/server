@@ -875,6 +875,14 @@ export const RoomExperiencePlayer = z
 	.describe('Always empty — no per-room experience is tracked')
 
 /**
+ * `GET /showcase/{playerId}` — the rooms a player showcases on their profile. Stubbed
+ * empty; nothing stores a showcase, so the element shape is unknown until something does.
+ */
+export const ShowcasedRooms = z
+	.array(z.unknown())
+	.describe('Always empty — no room showcase is stored')
+
+/**
  * `GET /rooms/curated_playlists` — the curated room playlists the discovery pages'
  * playlist sections draw from. Nothing curates one on this server, so the list is always
  * empty and the element shape is unknown until something fills it.
