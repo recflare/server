@@ -290,9 +290,13 @@ export interface PlayerEventNotification {
 }
 
 /**
- * The client's BASE event — the 17-key shape the browse feed (`GET /api/playerevents/v1`)
- * serves, and the same thing the v2 envelope carries once `Tags` is added. PascalCase like
- * the stored record, but not identical to it — don't unify them:
+ * The client's BASE event — the 17-key shape the browse feed (`GET /api/playerevents/v1`),
+ * the room shelf (`.../room/{roomId}`) and the bulk read (`POST|GET .../bulk`) all serve,
+ * and the same thing the v2 envelope carries once `Tags` is added. Those three are one
+ * generic helper over one element type on the client side, so they are shape-identical by
+ * construction there; `toEventBase` is what holds that here.
+ *
+ * PascalCase like the stored record, but not identical to it — don't unify them:
  *
  * - it drops `State`, which neither the feed nor the envelope carries;
  * - it carries `BroadcastingRoomInstanceId`, which the record has no field for (nothing
@@ -300,8 +304,8 @@ export interface PlayerEventNotification {
  * - its `ImageName` is a string: an event with no image reads `""`, where the record holds
  *   null.
  *
- * The by-id / bulk / search reads serve the stored RECORD verbatim instead, `State` and
- * nullable `ImageName` included. Two shapes; keep them apart.
+ * The by-id, search, searchlive and club reads serve the stored RECORD verbatim instead,
+ * `State` and nullable `ImageName` included. Two shapes; keep them apart.
  */
 export interface PlayerEventBase extends Omit<PlayerEvent, 'State' | 'ImageName'> {
 	ImageName: string
@@ -856,9 +860,12 @@ export async function getEventById(db: D1Database, eventId: number): Promise<Pla
 }
 
 /**
- * Several events by id — the bulk fetch. Answers in the order the ids were asked for
- * (the client renders them in the order it requested), skipping ids with no row rather
- * than leaving a hole. Duplicated ids resolve to the same event.
+ * Several events by id — the bulk fetch behind `POST /api/playerevents/v1/bulk` (the form
+ * body the client sends) and the query-string GET on the same path. Answers in the order
+ * the ids were asked for (the client renders them in the order it requested), skipping ids
+ * with no row rather than leaving a hole. Duplicated ids resolve to the same event.
+ *
+ * Returns stored records; both routes project them with `toEventBase` before serving.
  */
 export async function getEventsByIds(db: D1Database, ids: number[]): Promise<PlayerEvent[]> {
 	if (ids.length === 0) return []
@@ -907,7 +914,8 @@ export async function getEventsByClubs(db: D1Database, clubIds: number[]): Promi
 
 /**
  * A room's events — what is happening in this room and what is coming up, soonest first.
- * Backs the room's event shelf (`GET /api/playerevents/v1/room/{roomId}`).
+ * Backs the room's event shelf (`GET /api/playerevents/v1/room/{roomId}`), which serves
+ * them through `toEventBase` like the browse feed and the bulk read.
  *
  * FINISHED events are left out, like the browse feed's: this answers "what can I still turn
  * up to in this room", and an event that ended last month is not that. Running events count

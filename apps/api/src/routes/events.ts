@@ -35,9 +35,10 @@ import {
 	toEventResult,
 	updateEvent,
 } from '../events-db'
-import { authedId, queryIds, unauthorized } from '../http'
+import { authedId, parseFormIds, queryIds, unauthorized } from '../http'
 import {
 	AUTHED,
+	BulkIdsRequest,
 	form,
 	idParam,
 	intQuery,
@@ -383,9 +384,12 @@ export const eventRoutes = new Hono<App>({ strict: false })
 	)
 
 	// A room's event shelf (`/room/12`) — what is on in this room, current and upcoming.
-	// A bare array of the stored record, like the multi-club shelf and `/searchlive`: the
-	// single-club form's `{ ContinuationToken, Events }` envelope is the odd one out, and a
-	// room's shelf is small enough that there is nothing to page.
+	// A bare array, no envelope: the single-club form's `{ ContinuationToken, Events }` is
+	// the odd one out, and a room's shelf is small enough that there is nothing to page.
+	//
+	// The BASE event, not the stored record. The client reads this through the same generic
+	// helper and the same element type as the browse feed and the bulk read, so those three
+	// are shape-identical on its side — `toEventBase` is what keeps them identical here.
 	.get(
 		'/api/playerevents/v1/room/:roomId{[0-9]+}',
 		describeRoute({
@@ -393,17 +397,25 @@ export const eventRoutes = new Hono<App>({ strict: false })
 			summary: 'Player events in one room',
 			description:
 				'The events scheduled in a room — the shelf on the room’s page — soonest first. A ' +
-				'bare array of the stored record, the same projection `/searchlive` and the ' +
-				'multi-club shelf serve.\n\n' +
+				'bare array of the client’s BASE event (17 keys — no `State`, `ImageName` as `""` ' +
+				'rather than null, plus `BroadcastingRoomInstanceId`), the same projection the ' +
+				'browse feed and the bulk read serve: the client decodes all three through one ' +
+				'generic helper and one element type. `/searchlive` and the club shelves serve the ' +
+				'stored record instead.\n\n' +
 				'CURRENT and UPCOMING only: the filter is on the END time, so a running event stays ' +
 				'listed until it is over rather than vanishing the moment it starts, and an event ' +
 				'that has finished is dropped — this answers what someone can still turn up to. A ' +
 				'room with nothing scheduled, and a room id that does not exist, both answer an ' +
 				'empty array; the shelf is about events, not about whether the room is real.',
 			parameters: [idParam('roomId', 'Room id')],
-			responses: { 200: json(PlayerEventDto.array(), 'The room’s current and upcoming events') },
+			responses: {
+				200: json(PlayerEventBaseDto.array(), 'The room’s current and upcoming events'),
+			},
 		}),
-		async (c) => c.json(await getEventsByRoom(c.env.DB, Number.parseInt(c.req.param('roomId'), 10)))
+		async (c) => {
+			const events = await getEventsByRoom(c.env.DB, Number.parseInt(c.req.param('roomId'), 10))
+			return c.json(events.map(toEventBase))
+		}
 	)
 
 	// Live player-event search (the "happening now" browse query) — events that have
@@ -457,22 +469,62 @@ export const eventRoutes = new Hono<App>({ strict: false })
 		}
 	)
 
-	// Bulk fetch (`?id=1&id=2`) — the events behind a list of ids the client already
-	// holds. Answers in the order asked for; ids with no event are skipped.
-	.get(
+	// Bulk fetch — the events behind a list of ids the client already holds. What the
+	// client actually calls is the POST, with the ids in a form body
+	// (`Ids=101&Ids=102&Ids=103`, or `Ids=13` for one); the GET below is the same read with
+	// the ids in the query, kept for hand-written calls.
+	//
+	// The BASE event, like the browse feed and the room shelf: one generic helper and one
+	// element type decode all three on the client, so this is "the feed, filtered to these
+	// ids" and must not drift into the stored-record shape the by-id read serves.
+	//
+	// Answers in the order asked for — the client renders them in request order — and skips
+	// ids with no event rather than leaving a hole, so the result may be shorter than the
+	// request. A bare array either way: no envelope, no `{ ContinuationToken, Events }`.
+	.post(
 		'/api/playerevents/v1/bulk',
 		describeRoute({
 			tags: ['Events'],
 			summary: 'Several player events by id',
 			description:
-				'The events behind a list of ids the client already holds (`?id=1&id=2`). Answers ' +
-				'in the order the ids were asked for — the client renders them in request order — ' +
-				'and skips ids with no event rather than leaving a hole, so the result may be ' +
-				'shorter than the request. A bare array.',
-			parameters: [intQuery('id', 'Repeatable event id')],
-			responses: { 200: json(PlayerEventDto.array(), 'The events that exist, in request order') },
+				'The events behind a list of ids the client already holds, as a form body: `Ids` ' +
+				'repeated once per id (`Ids=101&Ids=102&Ids=103`), or one comma-separated `Ids=1,2,3`. ' +
+				'A bare array of the client’s BASE event — the same projection the browse feed and ' +
+				'the room shelf serve, this one filtered to the requested ids.\n\n' +
+				'Answers in the order the ids were asked for and skips ids with no event rather ' +
+				'than leaving a hole, so the result may be shorter than the request. No ids at all ' +
+				'is an empty array, not a 400.',
+			requestBody: form(BulkIdsRequest, 'The event ids to look up'),
+			responses: {
+				200: json(PlayerEventBaseDto.array(), 'The events that exist, in request order'),
+			},
 		}),
-		async (c) => c.json(await getEventsByIds(c.env.DB, queryIds(c)))
+		async (c) => {
+			const events = await getEventsByIds(c.env.DB, await parseFormIds(c))
+			return c.json(events.map(toEventBase))
+		}
+	)
+
+	// The same read with the ids in the query (`?id=1&id=2`) — not what the client sends,
+	// but the shape stays identical to the POST's so the path can't answer two things.
+	.get(
+		'/api/playerevents/v1/bulk',
+		describeRoute({
+			tags: ['Events'],
+			summary: 'Several player events by id (query form)',
+			description:
+				'The same read as the POST on this path, with the ids in the query (`?id=1&id=2`) ' +
+				'rather than a form body — the client sends the POST. Identical response: a bare ' +
+				'array of the BASE event, in request order, skipping ids with no event.',
+			parameters: [intQuery('id', 'Repeatable event id')],
+			responses: {
+				200: json(PlayerEventBaseDto.array(), 'The events that exist, in request order'),
+			},
+		}),
+		async (c) => {
+			const events = await getEventsByIds(c.env.DB, queryIds(c))
+			return c.json(events.map(toEventBase))
+		}
 	)
 
 	// RSVP. One row per player per event, so responding again replaces the previous

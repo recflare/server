@@ -6210,6 +6210,16 @@ describe('player events', () => {
 		return { ...rest, ImageName: imageName, State: 0 }
 	}
 
+	/**
+	 * The client's BASE event behind an envelope's event — what the browse feed, the room
+	 * shelf and the bulk read all serve. The envelope minus `Tags`, plus a null
+	 * `BroadcastingRoomInstanceId`; `ImageName` is already `""` on the envelope.
+	 */
+	const asBase = (event: PlayerEventEnvelope): Record<string, unknown> => {
+		const { Tags: _tags, ...rest } = event
+		return { ...rest, BroadcastingRoomInstanceId: null }
+	}
+
 	// The fixture set every test below reads. Times are relative to the run so the
 	// upcoming/live/finished distinction the browse queries make is real.
 	let upcoming: PlayerEventEnvelope
@@ -6610,7 +6620,61 @@ describe('player events', () => {
 		expect(await (await get(path)).json()).toEqual(asRecord(upcoming))
 	})
 
-	test('GET /api/playerevents/v1/bulk answers in request order, skipping unknown ids', async () => {
+	test('POST /api/playerevents/v1/bulk answers the requested ids as base events', async () => {
+		// What the client sends: `Ids` repeated once per id, form-urlencoded.
+		const body = new URLSearchParams()
+		for (const id of [clubEvent.PlayerEventId, 999999, upcoming.PlayerEventId]) {
+			body.append('Ids', String(id))
+		}
+		const res = await exports.default.fetch(`${ORIGIN}/api/playerevents/v1/bulk`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			body,
+		})
+		expect(res.status).toBe(200)
+		const events = (await res.json()) as PlayerEvent[]
+
+		// Request order, not id order — and the missing id leaves no hole.
+		expect(events.map((e) => e.PlayerEventId)).toEqual([
+			clubEvent.PlayerEventId,
+			upcoming.PlayerEventId,
+		])
+
+		// A bare array — no envelope — of the BASE event, the same projection the browse feed
+		// and the room shelf serve. Not the stored record: no `State`.
+		const entry = events.find((e) => e.PlayerEventId === upcoming.PlayerEventId)!
+		expect(entry).toEqual(asBase(upcoming))
+		expect(Object.keys(entry)).toHaveLength(17)
+		expect(Object.hasOwn(entry, 'State')).toBe(false)
+	})
+
+	test('POST /api/playerevents/v1/bulk reads a single id and the comma-separated form', async () => {
+		const bulk = async (raw: string): Promise<PlayerEvent[]> => {
+			const res = await exports.default.fetch(`${ORIGIN}/api/playerevents/v1/bulk`, {
+				method: 'POST',
+				headers: { 'content-type': 'application/x-www-form-urlencoded' },
+				body: raw,
+			})
+			expect(res.status).toBe(200)
+			return (await res.json()) as PlayerEvent[]
+		}
+
+		// The raw one-id body the client sends for a single event.
+		expect((await bulk(`Ids=${upcoming.PlayerEventId}`)).map((e) => e.PlayerEventId)).toEqual([
+			upcoming.PlayerEventId,
+		])
+		// …and the comma-separated spelling the other bulk POSTs take.
+		expect(
+			(await bulk(`Ids=${clubEvent.PlayerEventId},${upcoming.PlayerEventId}`)).map(
+				(e) => e.PlayerEventId
+			)
+		).toEqual([clubEvent.PlayerEventId, upcoming.PlayerEventId])
+		// Nothing to look up is an empty array, not every event and not a 400.
+		expect(await bulk('')).toEqual([])
+		expect(await bulk('Ids=')).toEqual([])
+	})
+
+	test('GET /api/playerevents/v1/bulk answers the same shape as the POST', async () => {
 		const res = await get(
 			`/api/playerevents/v1/bulk?id=${clubEvent.PlayerEventId}&id=999999&id=${upcoming.PlayerEventId}`
 		)
@@ -6621,6 +6685,10 @@ describe('player events', () => {
 			clubEvent.PlayerEventId,
 			upcoming.PlayerEventId,
 		])
+		// The same base projection the POST serves: one path, one shape.
+		expect(events.find((e) => e.PlayerEventId === upcoming.PlayerEventId)).toEqual(
+			asBase(upcoming)
+		)
 
 		// No ids is an empty list, not every event.
 		expect(await (await get('/api/playerevents/v1/bulk')).json()).toEqual([])
@@ -6812,9 +6880,15 @@ describe('player events', () => {
 		expect(events.map((e) => e.PlayerEventId)).not.toContain(finished.PlayerEventId)
 		expect(events.map((e) => e.PlayerEventId)).not.toContain(elsewhere.PlayerEventId)
 
-		// A bare array of the STORED record, like `/searchlive` and the multi-club shelf —
-		// not the base projection the browse feed serves, and not the single-club envelope.
-		expect(events[0]).toEqual(asRecord(running, null))
+		// The BASE event, 17 keys — the same projection the browse feed and the bulk read
+		// serve, since the client decodes all three through one helper and one element type.
+		// Not the stored record (`/searchlive` and the club shelves keep that), and not the
+		// single-club envelope.
+		expect(events[0]).toEqual(asBase(running))
+		expect(Object.keys(events[0]!)).toHaveLength(17)
+		expect(Object.hasOwn(events[0]!, 'State')).toBe(false)
+		// An event created with no banner reads `""` here, never the record's null.
+		expect(events[0]!.ImageName).toBe('')
 
 		// A room with nothing scheduled, and a room id nothing knows about, are both empty.
 		expect(await (await get('/api/playerevents/v1/room/999999')).json()).toEqual([])
@@ -7605,6 +7679,7 @@ describe('openapi', () => {
 			'POST /api/messages/v3/delete',
 			'POST /api/playerReputation/v1/bulk',
 			'POST /api/playerReputation/v2/bulk',
+			'POST /api/playerevents/v1/bulk',
 			'POST /api/playerevents/v1/bulkInvite',
 			'POST /api/playerevents/v1/report',
 			'POST /api/playerevents/v1/respond',

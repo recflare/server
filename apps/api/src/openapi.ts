@@ -400,9 +400,15 @@ export const CustomAvatarItemResponse = z.object({
 	error_id: z.string().nullable(),
 })
 
-/** The `Ids` form body the bulk POST endpoints take. */
+/**
+ * The `Ids` form body the bulk POST endpoints take, in either of the two spellings the
+ * client sends: `Ids` REPEATED once per id (`Ids=101&Ids=102&Ids=103`) or a single
+ * comma-separated `Ids=1,2,3`. Both are read by `parseFormIds`.
+ */
 export const BulkIdsRequest = z.object({
-	Ids: z.string().describe('Comma-separated account ids, e.g. `1,2,3`'),
+	Ids: z
+		.union([z.string(), z.array(z.string())])
+		.describe('Repeated (`Ids=101&Ids=102`) or comma-separated (`Ids=1,2,3`)'),
 })
 
 // ---- Inventions ------------------------------------------------------------
@@ -1013,13 +1019,23 @@ export const PlayerEventDetailsDto = PlayerEventDto.extend({
 })
 
 /**
- * The client's BASE event, 17 keys — what `GET /api/playerevents/v1` serves, and what the
- * v2 envelope carries once `Tags` is added. The stored record minus `State`, with
- * `ImageName` as a string (`""`, not null) and a `BroadcastingRoomInstanceId` (always null —
- * nothing broadcasts an event yet).
+ * The client's BASE event, 17 keys — the stored record minus `State`, with `ImageName` as a
+ * string (`""`, not null) and a `BroadcastingRoomInstanceId` (always null — nothing
+ * broadcasts an event yet). It is also what the v2 envelope carries once `Tags` is added.
  *
- * The by-id, bulk and search reads serve the stored RECORD verbatim instead, so don't unify
- * the two.
+ * THREE reads serve exactly this, through one generic helper on the client and one element
+ * type: the browse feed (`GET /api/playerevents/v1`), the room shelf
+ * (`GET /api/playerevents/v1/room/{roomId}`) and the bulk read
+ * (`POST|GET /api/playerevents/v1/bulk`). They are shape-identical by construction on the
+ * client side; keep them that way here.
+ *
+ * The remaining reads — by id, search, searchlive and the club feeds — serve the stored
+ * RECORD verbatim, `State` and nullable `ImageName` included. Two projections; don't unify
+ * them.
+ *
+ * `DefaultBroadcastPermissions` and `CanRequestBroadcastPermissions` are the client's
+ * broadcast-permission enum, whose members are NOT 0/1/2: None 0, RoomOwners 256, All
+ * 2147483647. Reading them as an ordinal is the classic way to break broadcast.
  */
 export const PlayerEventBaseDto = PlayerEventDto.omit({ State: true, ImageName: true }).extend({
 	ImageName: z.string().describe('Empty string when the event has no image, never null'),
