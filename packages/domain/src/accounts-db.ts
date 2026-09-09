@@ -35,7 +35,7 @@ export interface Account {
 	profileImage: string
 	/** Profile banner image key, set by `accounts` `PUT /account/me/bannerimage`. `""` until then. */
 	bannerImage: string
-	/** The emoji shown beside the display name. No route sets it yet — always `""`. */
+	/** The emoji beside the display name, set by `accounts` `PUT /account/me/emoji`. `""` until then. */
 	displayEmoji: string
 	isJunior: boolean
 	platforms: number

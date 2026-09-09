@@ -32,6 +32,7 @@ import {
 	CreateAccountResult,
 	DisplayNameRequest,
 	EmailRequest,
+	EmojiRequest,
 	form,
 	HealthResponse,
 	IdentityFlagsRequest,
@@ -45,7 +46,9 @@ import {
 	SuccessResponse,
 	UsernameRequest,
 	UsernameResult,
+	WhitelistedEmojis,
 } from './openapi'
+import { resolveWhitelistedEmoji, WHITELISTED_EMOJIS } from './whitelisted-emojis'
 
 import type { Context } from 'hono'
 import type { Account } from '@repo/domain'
@@ -109,8 +112,8 @@ function toAccountDto(account: Account) {
 		username: account.username,
 		displayName: account.displayName,
 		profileImage: account.profileImage,
-		// Nothing writes these yet, and rows stored before they existed have neither
-		// key — always emit them as "" rather than letting them go missing.
+		// Rows stored before these fields existed have neither key — always emit them as
+		// "" rather than letting them go missing.
 		bannerImage: account.bannerImage ?? '',
 		displayEmoji: account.displayEmoji ?? '',
 		isJunior: account.isJunior,
@@ -208,6 +211,24 @@ const app = new Hono<App>()
 			responses: { 200: json(HealthResponse, 'Service is up') },
 		}),
 		(c) => c.json({ service: 'accounts', status: 'ok' })
+	)
+
+	// ---- Emoji config --------------------------------------------------------
+	// The picker the client fills its displayEmoji grid from. A BARE array — no
+	// `{ success, error, value }` envelope and no wrapper object; the client parses the
+	// response body itself as the list.
+	.get(
+		'/emojiConfig/whitelistedEmojis',
+		describeRoute({
+			tags: ['Config'],
+			summary: 'Emoji a player may use as their displayEmoji',
+			description: [
+				'A bare JSON array of emoji, in the order the client draws them. Static — not',
+				'auth-gated, and identical for every player.',
+			].join(' '),
+			responses: { 200: json(WhitelistedEmojis, 'The whitelisted emoji, in picker order') },
+		}),
+		(c) => c.json(WHITELISTED_EMOJIS)
 	)
 
 	// ---- Self account --------------------------------------------------------
@@ -660,6 +681,46 @@ const app = new Hono<App>()
 			if (id === null) return unauthorized(c)
 			const { bio } = c.req.valid('form')
 			const account = await updateAccount(c.env.DB, id, { bio })
+			await pushAccountUpdate(c, account)
+			return c.json({ success: true })
+		}
+	)
+
+	// The emoji shown beside the player's display name. The body is a single field —
+	// `displayEmoji=%F0%9F%A4%AA` — and the value is checked against the same list
+	// `GET /emojiConfig/whitelistedEmojis` serves, then stored in that list's CANONICAL
+	// form: `displayEmoji` is compared as a plain string, and the client highlights the
+	// current pick by matching it against the picker list it fetched, so a stored value
+	// that differs only by a variation selector highlights nothing.
+	//
+	// Broadcast like every other public-DTO mutation here — the emoji rides along in the
+	// AccountUpdate payload, so it redraws beside the name without a refetch.
+	.put(
+		'/account/me/emoji',
+		describeRoute({
+			tags: ['Profile'],
+			summary: 'Set display emoji',
+			description: [
+				'Persists the emoji shown beside the display name and broadcasts it in the',
+				'AccountUpdate payload. The value must be one the whitelist serves; an empty value',
+				'clears the pick.',
+			].join(' '),
+			security: AUTHED,
+			requestBody: form(EmojiRequest, 'A whitelisted emoji, or "" to clear'),
+			responses: {
+				200: json(SuccessResponse, 'Updated'),
+				400: { description: 'Not a whitelisted emoji (empty body)' },
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+			const submitted = (await formField(c, 'displayEmoji')).trim()
+			// An empty value clears the pick; anything else has to be on the list.
+			const displayEmoji = submitted === '' ? '' : resolveWhitelistedEmoji(submitted)
+			if (displayEmoji === null) return c.body(null, 400)
+			const account = await updateAccount(c.env.DB, id, { displayEmoji })
 			await pushAccountUpdate(c, account)
 			return c.json({ success: true })
 		}

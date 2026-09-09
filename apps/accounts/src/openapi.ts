@@ -75,7 +75,7 @@ export const AccountDto = z.object({
 	bannerImage: z.string().describe('Profile banner key — always "" (nothing sets it yet)'),
 	displayEmoji: z
 		.string()
-		.describe('Emoji beside the display name — always "" (nothing sets it yet)'),
+		.describe('Emoji beside the display name, set by PUT /account/me/emoji; "" when unset'),
 	isJunior: z.boolean(),
 	platforms: z.int().describe('PlatformType bitmask of linked platforms'),
 	personalPronouns: z.int().describe('Pronoun flags bitmask'),
@@ -138,6 +138,15 @@ export const ParentalControl = z.object({ accountId: z.int(), disallowInAppPurch
  * stores per-player privacy yet.
  */
 export const PrivacySettings = z.object({ accountId: z.int(), isRecentHistoryVisible: z.boolean() })
+
+/**
+ * `GET /emojiConfig/whitelistedEmojis` response — a BARE array of emoji, no envelope
+ * and no object around it (see `WHITELISTED_EMOJIS`).
+ */
+export const WhitelistedEmojis = z
+	.string()
+	.array()
+	.describe('The emoji a player may set as their displayEmoji, in picker order')
 
 /** Root health check. */
 export const HealthResponse = z.object({ service: z.literal('accounts'), status: z.literal('ok') })
@@ -228,6 +237,16 @@ export const PronounsRequest = z.object({
 export const BioRequest = z.object({
 	// Not trimmed — a bio is free text, and leading whitespace is the player's business.
 	bio: z.string().refine(isValidBio).describe('Free text, max 255; empty is allowed'),
+})
+
+/**
+ * `PUT /account/me/emoji` form body. The value must be one of the emoji served by
+ * `GET /emojiConfig/whitelistedEmojis`; an empty value clears the current pick. Checked
+ * in the handler rather than here, because the check also CANONICALIZES the value
+ * (see `resolveWhitelistedEmoji`) and a schema can only accept or reject it.
+ */
+export const EmojiRequest = z.object({
+	displayEmoji: z.string().describe('A whitelisted emoji, or "" to clear'),
 })
 
 export const ProfileImageRequest = z.object({

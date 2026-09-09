@@ -6,6 +6,8 @@ import '../../accounts.app'
 
 import { SCHEMA_DDL } from '@repo/domain'
 
+import { WHITELISTED_EMOJIS } from '../../whitelisted-emojis'
+
 import type { Env } from '../../context'
 
 declare module 'cloudflare:test' {
@@ -173,7 +175,7 @@ describe('auth-gated endpoints', () => {
 			// An unset email is "", not null — the client reads it as a string, and the
 			// hub frame this DTO also rides drops null values outright.
 			email: '',
-			// Nothing sets these yet, but the key has to be present — the client reads
+			// Unset on a fresh account, but the key has to be present — the client reads
 			// both off the account DTO.
 			bannerImage: '',
 			displayEmoji: '',
@@ -403,6 +405,91 @@ describe('auth-gated endpoints', () => {
 		expect(sent.map((n) => (n.data as { bannerImage?: string }).bannerImage)).toContain(key)
 	})
 
+	test('PUT /account/me/emoji persists the emoji and pushes the profile update', async () => {
+		type Sent = { playerId: number; notificationType: string | number; data: unknown }
+		const hub = () => env.RECFLARE_NOTIFICATIONS_HUB.getByName('global')
+		await hub().fetch('http://do/', { method: 'DELETE' })
+
+		// Exactly the body the client sends: one urlencoded field (`%F0%9F%A4%AA`).
+		const res = await exports.default.fetch(`${ORIGIN}/account/me/emoji`, {
+			method: 'PUT',
+			headers: { ...(await bearer('779')), 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: 'displayEmoji=%F0%9F%A4%AA',
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ success: true })
+
+		// Served back by both the self and public reads — displayEmoji is in the public DTO.
+		const me = await exports.default.fetch(`${ORIGIN}/account/me`, { headers: await bearer('779') })
+		expect(((await me.json()) as { displayEmoji: string }).displayEmoji).toBe('\u{1F92A}')
+		const pub = await exports.default.fetch(`${ORIGIN}/account/779`)
+		expect(((await pub.json()) as { displayEmoji: string }).displayEmoji).toBe('\u{1F92A}')
+
+		// And it rides the profile-update notification, so it redraws beside the name.
+		const sent = (await (await hub().fetch('http://do/all')).json()) as Sent[]
+		expect(sent.length).toBeGreaterThan(0)
+		expect(sent.map((n) => (n.data as { displayEmoji?: string }).displayEmoji)).toContain(
+			'\u{1F92A}'
+		)
+	})
+
+	// The pick is stored in the whitelist's CANONICAL form. A client that posts the emoji
+	// without its U+FE0F variation selector means the same pick, but storing what arrived
+	// would leave a string the picker list no longer matches, so the current pick would
+	// stop highlighting.
+	test('PUT /account/me/emoji canonicalizes a pick sent without its variation selector', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/account/me/emoji`, {
+			...form({ displayEmoji: '\u{2764}' }),
+			headers: { ...(await bearer('780')), 'Content-Type': 'application/x-www-form-urlencoded' },
+		})
+		expect(res.status).toBe(200)
+
+		const me = await exports.default.fetch(`${ORIGIN}/account/me`, { headers: await bearer('780') })
+		const stored = ((await me.json()) as { displayEmoji: string }).displayEmoji
+		expect(stored).toBe('\u{2764}\u{FE0F}')
+		expect(WHITELISTED_EMOJIS).toContain(stored)
+	})
+
+	// An empty value clears the pick rather than 400ing — that's how the picker's "none"
+	// gets back to no emoji at all.
+	test('PUT /account/me/emoji clears the pick on an empty value', async () => {
+		const set = await exports.default.fetch(`${ORIGIN}/account/me/emoji`, {
+			...form({ displayEmoji: '\u{1F389}' }),
+			headers: { ...(await bearer('781')), 'Content-Type': 'application/x-www-form-urlencoded' },
+		})
+		expect(set.status).toBe(200)
+
+		const cleared = await exports.default.fetch(`${ORIGIN}/account/me/emoji`, {
+			...form({ displayEmoji: '' }),
+			headers: { ...(await bearer('781')), 'Content-Type': 'application/x-www-form-urlencoded' },
+		})
+		expect(cleared.status).toBe(200)
+
+		const me = await exports.default.fetch(`${ORIGIN}/account/me`, { headers: await bearer('781') })
+		expect(((await me.json()) as { displayEmoji: string }).displayEmoji).toBe('')
+	})
+
+	// displayEmoji renders beside the display name, so an unchecked field would be a
+	// free-text label on every profile. Off-list values are refused, not stored.
+	test('PUT /account/me/emoji 401s without a token, 400s on an off-list value', async () => {
+		const anon = await exports.default.fetch(`${ORIGIN}/account/me/emoji`, {
+			...form({ displayEmoji: '\u{1F92A}' }),
+		})
+		expect(anon.status).toBe(401)
+
+		for (const displayEmoji of ['not an emoji', '\u{1F92A}\u{1F92A}', '\u{1F595}\u{1F3FB}']) {
+			const res = await exports.default.fetch(`${ORIGIN}/account/me/emoji`, {
+				...form({ displayEmoji }),
+				headers: { ...(await bearer('782')), 'Content-Type': 'application/x-www-form-urlencoded' },
+			})
+			expect(res.status).toBe(400)
+		}
+
+		// Nothing was stored by the refusals.
+		const me = await exports.default.fetch(`${ORIGIN}/account/me`, { headers: await bearer('782') })
+		expect(((await me.json()) as { displayEmoji: string }).displayEmoji).toBe('')
+	})
+
 	test('PUT /account/me/bannerimage 401s without a token, 400s without an imageName', async () => {
 		const anon = await exports.default.fetch(`${ORIGIN}/account/me/bannerimage`, {
 			...form({ imageName: 'x.jpg' }),
@@ -563,6 +650,7 @@ describe('auth-gated endpoints', () => {
 			'GET /account/{id}',
 			'GET /account/{id}/bio',
 			'GET /accountprivacysettings/{id}',
+			'GET /emojiConfig/whitelistedEmojis',
 			'GET /parentalcontrol/me',
 			'POST /account/create',
 			'POST /account/me/email',
@@ -570,6 +658,7 @@ describe('auth-gated endpoints', () => {
 			'PUT /account/me/bannerimage',
 			'PUT /account/me/bio',
 			'PUT /account/me/displayname',
+			'PUT /account/me/emoji',
 			'PUT /account/me/identityflags',
 			'PUT /account/me/personalpronouns',
 			'PUT /account/me/profileimage',
@@ -757,4 +846,27 @@ test('POST /account/me/phone stores an E.164 number exactly as the client sends 
 	).first<{ phone: string }>()
 	// Verbatim — no normalising, no stripping of the +.
 	expect(row?.phone).toBe('+15552223333')
+})
+
+// The emoji picker. Served as a BARE array — the client parses the response body itself
+// as the list, so wrapping it in `{ value: [...] }` or the success envelope every
+// mutation here uses would leave the picker empty.
+test('GET /emojiConfig/whitelistedEmojis serves the list as a bare array', async () => {
+	const res = await exports.default.fetch(`${ORIGIN}/emojiConfig/whitelistedEmojis`)
+	expect(res.status).toBe(200)
+	const body = (await res.json()) as string[]
+	expect(Array.isArray(body)).toBe(true)
+	expect(body).toEqual(WHITELISTED_EMOJIS)
+	// Order is the picker's order, and the first entry anchors it.
+	expect(body[0]).toBe('😀')
+	// Every entry is a non-empty string and appears once — a duplicate draws twice in
+	// the grid, and the list is compared against `displayEmoji` as an exact string.
+	expect(body.every((e) => typeof e === 'string' && e.length > 0)).toBe(true)
+	expect(new Set(body).size).toBe(body.length)
+})
+
+// Not auth-gated: the client asks for the picker before it has a token in hand.
+test('GET /emojiConfig/whitelistedEmojis needs no bearer token', async () => {
+	const res = await exports.default.fetch(`${ORIGIN}/emojiConfig/whitelistedEmojis`)
+	expect(res.status).toBe(200)
 })
