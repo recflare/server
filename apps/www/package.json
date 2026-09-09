@@ -19,8 +19,8 @@
 		"@repo/domain": "workspace:*",
 		"@repo/hono-helpers": "workspace:*",
 		"@repo/jwt": "workspace:*",
-		"@scalar/api-reference": "1.63.0",
-		"hono": "4.12.27",
+		"@scalar/api-reference": "1.67.0",
+		"hono": "4.13.5",
 		"react": "19.2.7",
 		"react-dom": "19.2.7",
 		"workers-tagged-logger": "1.0.1"
@@ -36,6 +36,6 @@
 		"@vitejs/plugin-react": "5.2.0",
 		"vite": "6.4.3",
 		"vitest": "4.1.9",
-		"wrangler": "4.105.0"
+		"wrangler": "4.128.0"
 	}
 }

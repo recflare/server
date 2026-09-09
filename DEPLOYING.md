@@ -193,16 +193,17 @@ the same `.env` you already created. `.env.example` carries each one commented o
 its built-in default: copy the lines you want to change into your `.env`, uncomment them,
 edit the value, then re-deploy the worker that reads them.
 
-| `.env` variable                         | Read by | Default | What it does                                                   |
-| --------------------------------------- | ------- | ------- | -------------------------------------------------------------- |
-| `RECFLARE_MAX_ACCOUNTS_PER_PLATFORM_ID` | `auth`  | `3`     | Accounts one Steam-verified identity may create. `0` disables. |
-| `RECFLARE_MAX_ACCOUNTS_PER_IP`          | `auth`  | `3`     | Accounts one signup IP may create. `0` disables.               |
-| `RECFLARE_STARTING_TOKENS`              | `econ`  | `10000` | RecCenterTokens a new player is granted.                       |
-| `RECFLARE_ROOM_REDIRECTS`               | `match` | unset   | Rooms to switch out on matchmake, e.g. `2=MyHub`.              |
-| `RECFLARE_PHOTON_REALTIME_APP_ID`       | `match` | empty   | Your Photon Realtime app id. No app ships with recflare.       |
-| `RECFLARE_PHOTON_VOICE_APP_ID`          | `match` | empty   | Your Photon Voice app id.                                      |
-| `RECFLARE_PHOTON_CHAT_APP_ID`           | `match` | empty   | Your Photon Chat app id.                                       |
-| `RECFLARE_PHOTON_REGION`                | `match` | `us`    | Photon region every session is pinned to.                      |
+| `.env` variable                         | Read by   | Default    | What it does                                                   |
+| --------------------------------------- | --------- | ---------- | -------------------------------------------------------------- |
+| `RECFLARE_MAX_ACCOUNTS_PER_PLATFORM_ID` | `auth`    | `3`        | Accounts one Steam-verified identity may create. `0` disables. |
+| `RECFLARE_MAX_ACCOUNTS_PER_IP`          | `auth`    | `3`        | Accounts one signup IP may create. `0` disables.               |
+| `RECFLARE_STARTING_TOKENS`              | `econ`    | `10000`    | RecCenterTokens a new player is granted.                       |
+| `RECFLARE_MAX_UPLOAD_BYTES`             | `storage` | `67108864` | Maximum binary upload size; larger files receive HTTP 413.     |
+| `RECFLARE_ROOM_REDIRECTS`               | `match`   | unset      | Rooms to switch out on matchmake, e.g. `2=MyHub`.              |
+| `RECFLARE_PHOTON_REALTIME_APP_ID`       | `match`   | empty      | Your Photon Realtime app id. No app ships with recflare.       |
+| `RECFLARE_PHOTON_VOICE_APP_ID`          | `match`   | empty      | Your Photon Voice app id.                                      |
+| `RECFLARE_PHOTON_CHAT_APP_ID`           | `match`   | empty      | Your Photon Chat app id.                                       |
+| `RECFLARE_PHOTON_REGION`                | `match`   | `us`       | Photon region every session is pinned to.                      |
 
 Then deploy just the worker that reads it:
 
