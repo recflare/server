@@ -4,6 +4,7 @@ import { describeRoute } from 'hono-openapi'
 import {
 	CURRENT_OUTFIT_SLOT,
 	getOutfit,
+	getOutfits,
 	getOutfitsByAccounts,
 	inventionDescriptionRejection,
 	inventionLongDescriptionRejection,
@@ -1021,29 +1022,46 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 		}
 	)
 
-	// The caller's outfit wardrobe. An empty list for now — the outfits saved through
-	// `PUT /outfits/me` are in the shared `outfit` table already, but which of them
-	// belong in this list (and in what shape) has not been pinned down, so it answers []
-	// rather than guessing.
+	// The caller's outfit wardrobe — every slot they have saved, ordered by slot. The same
+	// read as `econ`'s `GET /api/avatar/v3/saved`, on the bare path the newer client uses:
+	// both worker's write paths land in the shared `outfit` table, so both list endpoints
+	// serve the same rows.
+	//
+	// Slot 0 is INCLUDED. It is the outfit being worn (what `/outfits/me` reads), but it is
+	// also a saved slot: the newer client picks the slot it saves into (`/api/avatar/v4/saved/set`
+	// 400s without one), so filtering slot 0 out would hide a real saved outfit whenever a
+	// wardrobe entry lands there. Showing the worn outfit as a wardrobe entry is the cheaper
+	// mistake of the two.
+	//
+	// Rows are served exactly as they were stored, unprojected — see the note atop
+	// `outfits-db.ts`: econ's saved slots hold the old flat PascalCase outfit while
+	// `/outfits/me` holds the newer envelope, and neither is converted into the other.
 	.get(
 		'/outfits/me/saved',
 		describeRoute({
 			tags: ['Avatar', '2025'],
 			summary: 'The caller’s saved outfits',
 			description:
-				'The wardrobe behind the newer outfit screen. Empty for now: the outfits saved ' +
-				'through `PUT /outfits/me` are in the shared `outfit` table, but which of them this ' +
-				'list should carry, and in what shape, is not pinned down yet.',
+				'The wardrobe behind the newer outfit screen: every slot the caller has saved, ' +
+				'ordered by slot, and `[]` when they have saved none. The same rows `econ`’s ' +
+				'`GET /api/avatar/v3/saved` serves — both write paths land in the shared `outfit` ' +
+				'table.\n\n' +
+				'Slot 0 is included. It is the outfit being worn (what `GET /outfits/me` reads) but ' +
+				'it is a saved slot too, and the client chooses the slot it saves into, so omitting ' +
+				'it would hide a real outfit whenever a wardrobe entry lands there.\n\n' +
+				'Each outfit is served exactly as it was stored, unprojected: slots written through ' +
+				'`PUT /outfits/me` hold the newer envelope while `econ`’s saved-set slots hold the ' +
+				'old flat shape, and neither is converted into the other.',
 			security: AUTHED,
 			responses: {
-				200: json(JsonArray, 'An empty list'),
+				200: json(JsonArray, 'The saved outfits, ordered by slot (empty when none)'),
 				401: UNAUTHORIZED_RESPONSE,
 			},
 		}),
 		async (c) => {
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
-			return c.json([])
+			return c.json(await getOutfits(c.env.DB, id))
 		}
 	)
 

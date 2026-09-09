@@ -1566,15 +1566,58 @@ describe('public endpoints', () => {
 		expect(((await worn.json()) as { Name: string | null }).Name).toBe(null)
 	})
 
-	test('GET /outfits/me/saved 401s without a token, returns [] with one', async () => {
+	test('GET /outfits/me/saved lists every saved slot, ordered by slot', async () => {
 		const anon = await exports.default.fetch(`${ORIGIN}/outfits/me/saved`)
 		expect(anon.status).toBe(401)
-		// Empty even for account 42, which saved an outfit through PUT /outfits/me above.
-		const res = await exports.default.fetch(`${ORIGIN}/outfits/me/saved`, {
-			headers: await bearer(),
+
+		// A distinct account, so this doesn't depend on what the tests above saved for 42.
+		const saved = async (sub: string) => {
+			const res = await exports.default.fetch(`${ORIGIN}/outfits/me/saved`, {
+				headers: await bearer(sub),
+			})
+			expect(res.status).toBe(200)
+			return (await res.json()) as Array<Record<string, unknown>>
+		}
+
+		// A player who has never saved gets [], not the empty-outfit envelope `/outfits/me`
+		// serves — an empty wardrobe is an empty list.
+		expect(await saved('4242')).toEqual([])
+
+		const outfit = (slot: number, name: string | null) => ({
+			DataVersion: 2,
+			LegacyData: {
+				SelectionsV1: '193a3bf9-abc0-4d78-8d63-92046908b1c5,,0',
+				SelectionsV2: '{"selections":[]}',
+				FaceFeatures: '{"ver":7}',
+				SkinColor: 'Dc6StLFk60u5iUTrb3_C3w',
+				HairColor: 'UAT0OaWEkUG-mWDIyiX1Kg',
+			},
+			CustomizationSettings: '{"AvatarVersion":2,"AvatarBodyType":0}',
+			Selections: [],
+			Slot: slot,
+			Name: name,
+			Accessibility: 1,
+			ThumbnailFileName: null,
 		})
-		expect(res.status).toBe(200)
-		expect(await res.json()).toEqual([])
+
+		// Saved out of order, to prove the list is ordered by slot rather than by write time.
+		for (const [slot, name] of [
+			[2, 'two'],
+			[0, null],
+		] as Array<[number, string | null]>) {
+			await exports.default.fetch(`${ORIGIN}/outfits/me`, {
+				method: 'PUT',
+				headers: { ...(await bearer('4242')), 'content-type': 'application/json' },
+				body: JSON.stringify(outfit(slot, name)),
+			})
+		}
+
+		// Slot 0 is in the list: it is the outfit being worn, but it is a saved slot too, and
+		// the client picks the slot it writes. Each row comes back verbatim.
+		expect(await saved('4242')).toEqual([outfit(0, null), outfit(2, 'two')])
+
+		// Another account's wardrobe is its own.
+		expect(await saved('4343')).toEqual([])
 	})
 
 	test('POST /outfits/bulk serves each account’s worn outfit, keyed by id', async () => {
