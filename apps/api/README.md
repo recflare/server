@@ -8,6 +8,8 @@ API surface. Database-backed queries and on-disk JSON files are stubbed for now
 
 - **Auth-gated routes** validate the Bearer JWT issued by the `auth` worker
   (same dev secret, see `src/jwt.ts`) and 401 when it's missing/invalid.
+- **API-owned uploads** enforce `RECFLARE_MAX_API_UPLOAD_BYTES` per file (64 MiB
+  by default) before copying a parsed file into an `ArrayBuffer` or writing it to R2.
 - **Static data** is served verbatim:
   - `src/default-avatar-items.ts` → `GET /api/avatar/v4/items`
   - `src/default-settings.ts` → `GET /api/settings/v2`

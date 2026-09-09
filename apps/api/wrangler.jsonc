@@ -74,6 +74,10 @@
 	"vars": {
 		"ENVIRONMENT": "development", // overridden during deployment
 		"SENTRY_RELEASE": "unknown", // overridden during deployment
-		"DOMAIN": "rec.example.com" // base domain; overridden during deployment
+		"DOMAIN": "rec.example.com", // base domain; overridden during deployment
+		// Per-file ceiling for saved images and custom-avatar-item files. Multipart parsing
+		// happens first, but this prevents oversized files from being copied into another
+		// ArrayBuffer and persisted to R2. Invalid/non-positive values fall back to 64 MiB.
+		"RECFLARE_MAX_API_UPLOAD_BYTES": "67108864"
 	}
 }

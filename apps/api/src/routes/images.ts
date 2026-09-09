@@ -46,6 +46,7 @@ import {
 	UploadImageRequest,
 	UploadImageResponse,
 } from '../openapi'
+import { exceedsApiUploadLimit, maxApiUploadBytes } from '../upload-limit'
 
 import type { Context } from 'hono'
 import type { App } from '../context'
@@ -210,6 +211,7 @@ export const imageRoutes = new Hono<App>({ strict: false })
 				200: json(UploadImageResponse, 'The stored bucket key'),
 				400: json(ErrorResponse, 'No file in the request'),
 				401: UNAUTHORIZED_RESPONSE,
+				413: json(ErrorResponse, 'The image exceeds the configured per-file limit'),
 			},
 		}),
 		async (c) => {
@@ -221,6 +223,12 @@ export const imageRoutes = new Hono<App>({ strict: false })
 			const candidate = body.image ?? body.file
 			if (!(candidate instanceof File)) return c.json({ error: 'No file found in request' }, 400)
 			const file = candidate
+			const limit = maxApiUploadBytes(c.env)
+			// parseBody has already materialized the multipart part. Reject it before arrayBuffer()
+			// creates another full-size allocation and before the object can consume R2 storage.
+			if (exceedsApiUploadLimit(file, limit)) {
+				return c.json({ error: `image exceeds the ${limit}-byte upload limit` }, 413)
+			}
 
 			// `imgMeta` is a JSON blob describing the upload (`SavedImageMetaDTO`),
 			// posted as a multipart field. It carries the metadata we record on the image
