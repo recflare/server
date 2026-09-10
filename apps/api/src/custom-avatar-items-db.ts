@@ -350,24 +350,40 @@ export async function searchCustomAvatarItems(
  * What an account has authored (`GET /api/customAvatarItems/v2/fromCreator/:id`), newest
  * first, with the total for the client's paginated envelope. `includeUnpublished` is for
  * the creator looking at their own shelf: it adds the `Accessibility` 0 items everyone
- * else is not shown. Paging is not applied yet (the client sends none), so `TotalResults`
- * always equals the list length.
+ * else is not shown. When a page is requested, `Results` is sliced in SQL while
+ * `TotalResults` remains the complete matching count. Omitting `page` preserves the
+ * unpaged creator-profile response.
  */
 export async function listCustomAvatarItemsByCreator(
 	db: D1Database,
 	creatorAccountId: number,
-	includeUnpublished = false
+	includeUnpublished = false,
+	page?: { skip: number; take: number }
 ): Promise<{ Results: CustomAvatarItem[]; TotalResults: number }> {
-	const { results } = await db
-		.prepare(
-			`SELECT * FROM custom_avatar_item
-			 WHERE creator_account_id = ?1 AND (accessibility != 0 OR ?2)
-			 ORDER BY created_at DESC, custom_avatar_item_id`
-		)
-		.bind(creatorAccountId, includeUnpublished ? 1 : 0)
-		.all<Row>()
-	const items = results.map(toDto)
-	return { Results: items, TotalResults: items.length }
+	const where = 'creator_account_id = ?1 AND (accessibility != 0 OR ?2)'
+	const binds = [creatorAccountId, includeUnpublished ? 1 : 0]
+	const paging = page
+		? {
+				skip: Math.max(page.skip, 0),
+				take: Math.min(Math.max(page.take, 0), 200),
+			}
+		: null
+
+	const [rows, count] = await Promise.all([
+		db
+			.prepare(
+				`SELECT * FROM custom_avatar_item WHERE ${where}
+				 ORDER BY created_at DESC, custom_avatar_item_id
+				 ${paging === null ? '' : 'LIMIT ?3 OFFSET ?4'}`
+			)
+			.bind(...binds, ...(paging === null ? [] : [paging.take, paging.skip]))
+			.all<Row>(),
+		db
+			.prepare(`SELECT COUNT(*) AS total FROM custom_avatar_item WHERE ${where}`)
+			.bind(...binds)
+			.first<{ total: number }>(),
+	])
+	return { Results: rows.results.map(toDto), TotalResults: count?.total ?? 0 }
 }
 
 /** The editable fields of `PUT /api/customAvatarItems/v1/:id`; null/undefined = leave alone. */

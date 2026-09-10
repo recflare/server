@@ -57,6 +57,11 @@ export const AUTHED = [{ bearerAuth: [] }]
  */
 export const OPTIONAL_AUTHED: OpenAPIV3_1.SecurityRequirementObject[] = [{}, { bearerAuth: [] }]
 
+/** An optional integer query parameter. */
+export function intQuery(name: string, description: string): OpenAPIV3_1.ParameterObject {
+	return { name, in: 'query', required: false, description, schema: { type: 'integer' } }
+}
+
 // ---- Loose shapes ----------------------------------------------------------
 // Several routes serve opaque static catalogs (avatar items, the weekly challenge) or
 // empty-list stubs. Modelling every catalog field adds noise without value, so these

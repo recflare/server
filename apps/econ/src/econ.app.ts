@@ -21,6 +21,7 @@ import { validateAndGetAccountId, validateAndGetPlus, validateAndGetVersion } fr
 
 import {
 	getCustomAvatarItems,
+	listCustomAvatarItemsByCreator,
 	toUgcPurchasable,
 	UGC_ITEM_TYPE_CUSTOM_AVATAR_ITEM,
 } from '../../api/src/custom-avatar-items-db'
@@ -101,6 +102,7 @@ import {
 	GameRewardRequest,
 	InfluencerIdsResponse,
 	InfluencerTierResponse,
+	intQuery,
 	ItemPurchaseInfoList,
 	ItemPurchaseInfosRequest,
 	json,
@@ -2375,29 +2377,38 @@ const app = new Hono<App>({ strict: false })
 		}
 	)
 
-	// The player's owned custom avatar items. [Authorize]; paginated. Empty stub for
-	// now (no DB binding). The client downloads these when custom-item creation is
-	// allowed; a 404 here surfaces as "Failed to download unlocked avatar items".
+	// The player's owned custom avatar items. These are authored items in the shared
+	// api-owned table, including the caller's unpublished drafts. The client downloads
+	// these when custom-item creation is allowed; a 404 here surfaces as "Failed to
+	// download unlocked avatar items".
 	.get(
 		'/econ/customAvatarItems/v1/owned',
 		describeRoute({
 			tags: ['Avatar'],
 			summary: 'Owned custom avatar items',
 			description: [
-				'Paginated owned custom items. Empty stub for now. The client requests this when',
-				'custom-item creation is allowed; a 404 shows as “Failed to download unlocked',
-				'avatar items”.',
+				'Custom avatar items authored by the caller, including unpublished drafts, newest',
+				'first. The shared custom_avatar_item table is owned by the api worker; skip/take',
+				'page its rows here while TotalResults remains the complete authored count.',
 			].join(' '),
 			security: AUTHED,
+			parameters: [
+				intQuery('skip', 'How many owned items to skip (default 0)'),
+				intQuery('take', 'How many owned items to return (default 50, maximum 200)'),
+			],
 			responses: {
-				200: json(CustomAvatarItemsResponse, 'Paginated results (empty for now)'),
+				200: json(CustomAvatarItemsResponse, 'The caller’s paginated authored items'),
 				401: UNAUTHORIZED_RESPONSE,
 			},
 		}),
 		async (c) => {
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
-			return c.json({ Results: [], TotalResults: 0 })
+			const skip = Number.parseInt(c.req.query('skip') ?? '0', 10) || 0
+			const take = Number.parseInt(c.req.query('take') ?? '50', 10) || 50
+			return c.json(
+				await listCustomAvatarItemsByCreator(c.env.DB, id, true, { skip, take })
+			)
 		}
 	)
 

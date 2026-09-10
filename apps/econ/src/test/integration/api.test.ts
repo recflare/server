@@ -492,14 +492,63 @@ describe('econ endpoints', () => {
 		expect(res.status).toBe(404)
 	})
 
-	test('GET /econ/customAvatarItems/v1/owned 401s without a token, returns an empty paginated stub', async () => {
+	test('GET /econ/customAvatarItems/v1/owned returns only the caller’s paginated authored items', async () => {
 		const anon = await exports.default.fetch(`${ORIGIN}/econ/customAvatarItems/v1/owned`)
 		expect(anon.status).toBe(401)
-		const res = await exports.default.fetch(`${ORIGIN}/econ/customAvatarItems/v1/owned`, {
-			headers: await bearer(),
+
+		const customItem = (
+			creatorAccountId: number,
+			name: string,
+			accessibility: number,
+			createdAt: string
+		) =>
+			createCustomAvatarItem(
+				env.DB,
+				{
+					customAvatarItemId: crypto.randomUUID(),
+					creatorAccountId,
+					name,
+					description: '',
+					price: 0,
+					baseAvatarItemId: 1,
+					baseAvatarItemColor: '#fff',
+					accessibility,
+					designFilename: `${name}-design.png`,
+					thumbnailImageFilename: `${name}-thumb.png`,
+				},
+				new Date(createdAt)
+			)
+
+		await customItem(62_000, 'older public', 1, '2026-06-01T00:00:00Z')
+		await customItem(62_000, 'middle draft', 0, '2026-06-02T00:00:00Z')
+		await customItem(62_000, 'newest public', 1, '2026-06-03T00:00:00Z')
+		await customItem(62_001, 'someone else', 1, '2026-06-04T00:00:00Z')
+
+		const first = await exports.default.fetch(
+			`${ORIGIN}/econ/customAvatarItems/v1/owned?skip=0&take=2`,
+			{ headers: await bearer('62000') }
+		)
+		expect(first.status).toBe(200)
+		const firstPage = (await first.json()) as {
+			Results: Array<{ CreatorAccountId: number; Name: string; Accessibility: number }>
+			TotalResults: number
+		}
+		expect(firstPage.TotalResults).toBe(3)
+		expect(firstPage.Results.map((item) => item.Name)).toEqual([
+			'newest public',
+			'middle draft',
+		])
+		expect(firstPage.Results.every((item) => item.CreatorAccountId === 62_000)).toBe(true)
+		expect(firstPage.Results[1]?.Accessibility).toBe(0)
+
+		const second = await exports.default.fetch(
+			`${ORIGIN}/econ/customAvatarItems/v1/owned?skip=2&take=2`,
+			{ headers: await bearer('62000') }
+		)
+		expect(await second.json()).toMatchObject({
+			Results: [{ Name: 'older public', CreatorAccountId: 62_000 }],
+			TotalResults: 3,
 		})
-		expect(res.status).toBe(200)
-		expect(await res.json()).toEqual({ Results: [], TotalResults: 0 })
 	})
 
 	test('GET /api/objectives/v1/myprogress returns the default progress (no auth)', async () => {
