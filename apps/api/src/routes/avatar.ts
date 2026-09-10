@@ -15,7 +15,7 @@ import {
 } from '@repo/domain'
 
 import {
-	createCustomAvatarItem,
+	createCustomAvatarItemWithAssets,
 	deleteCustomAvatarItem,
 	getCustomAvatarItem,
 	getCustomAvatarItems,
@@ -518,27 +518,30 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 			const prefix = `avatar-item/${new Date().toISOString().slice(0, 10)}/${customAvatarItemId}`
 			const thumbnailImageFilename = `${prefix}-thumb.png`
 			const designFilename = `${prefix}-design.png`
-			await Promise.all([
-				c.env.IMAGES.put(thumbnailImageFilename, await body.thumbnailImage.arrayBuffer(), {
-					httpMetadata: { contentType: body.thumbnailImage.type || 'image/png' },
-				}),
-				c.env.IMAGES.put(designFilename, await body.design.arrayBuffer(), {
-					httpMetadata: { contentType: body.design.type || 'image/png' },
-				}),
-			])
-
-			const item = await createCustomAvatarItem(c.env.DB, {
-				customAvatarItemId,
-				creatorAccountId: id,
-				name: meta.Name,
-				description: typeof meta.Description === 'string' ? meta.Description : '',
-				price: typeof meta.Price === 'number' ? meta.Price : 0,
-				baseAvatarItemId: meta.BaseAvatarItemId,
-				baseAvatarItemColor: meta.BaseAvatarItemColor,
-				accessibility: typeof meta.Accessibility === 'number' ? meta.Accessibility : 0,
-				designFilename,
-				thumbnailImageFilename,
-			})
+			const item = await createCustomAvatarItemWithAssets(
+				c.env.DB,
+				c.env.IMAGES,
+				{
+					customAvatarItemId,
+					creatorAccountId: id,
+					name: meta.Name,
+					description: typeof meta.Description === 'string' ? meta.Description : '',
+					price: typeof meta.Price === 'number' ? meta.Price : 0,
+					baseAvatarItemId: meta.BaseAvatarItemId,
+					baseAvatarItemColor: meta.BaseAvatarItemColor,
+					accessibility: typeof meta.Accessibility === 'number' ? meta.Accessibility : 0,
+					designFilename,
+					thumbnailImageFilename,
+				},
+				{
+					bytes: await body.thumbnailImage.arrayBuffer(),
+					contentType: body.thumbnailImage.type || 'image/png',
+				},
+				{
+					bytes: await body.design.arrayBuffer(),
+					contentType: body.design.type || 'image/png',
+				}
+			)
 			return c.json({ Value: item, Success: true, Error: null, error_id: null })
 		}
 	)

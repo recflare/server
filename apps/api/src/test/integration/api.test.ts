@@ -33,6 +33,7 @@ import { PLATFORM_SCHEMA_DDL } from '../../../../auth/src/platform-db'
 import { banEvasionMatch, resolveBan } from '../../bans-db'
 import {
 	createCustomAvatarItem,
+	createCustomAvatarItemWithAssets,
 	SCHEMA_DDL as CUSTOM_AVATAR_ITEM_SCHEMA_DDL,
 } from '../../custom-avatar-items-db'
 import {
@@ -3934,6 +3935,82 @@ describe('custom avatar items', () => {
 			.bind(body.Value.CustomAvatarItemId)
 			.first()
 		expect(row).toEqual({ name: 'custom shirt 1', creator_account_id: 205 })
+	})
+
+	test('custom avatar creation cleans up both R2 keys after every partial failure', async () => {
+		const input = (id: string) => ({
+			customAvatarItemId: id,
+			creatorAccountId: 205,
+			name: 'failure-safe item',
+			description: '',
+			price: 0,
+			baseAvatarItemId: 1,
+			baseAvatarItemColor: '#fff',
+			accessibility: 0,
+			designFilename: `avatar-item/test/${id}-design.png`,
+			thumbnailImageFilename: `avatar-item/test/${id}-thumb.png`,
+		})
+		const asset = { bytes: new Uint8Array([1]).buffer, contentType: 'image/png' }
+
+		const fakeBucket = (failPutAt?: number, failDeleteAt?: number) => {
+			const objects = new Set<string>()
+			const deleted: string[] = []
+			let puts = 0
+			let deletes = 0
+			const bucket = {
+				put: async (key: string) => {
+					puts += 1
+					if (puts === failPutAt) throw new Error(`put ${puts} failed`)
+					objects.add(key)
+					return {} as R2Object
+				},
+				delete: async (key: string) => {
+					deletes += 1
+					deleted.push(key)
+					if (deletes === failDeleteAt) throw new Error(`delete ${deletes} failed`)
+					objects.delete(key)
+				},
+			} as unknown as R2Bucket
+			return { bucket, objects, deleted }
+		}
+
+		const firstId = crypto.randomUUID()
+		const first = fakeBucket(1)
+		await expect(
+			createCustomAvatarItemWithAssets(env.DB, first.bucket, input(firstId), asset, asset)
+		).rejects.toThrow('put 1 failed')
+		expect(first.objects.size).toBe(0)
+		expect(first.deleted).toEqual([
+			input(firstId).thumbnailImageFilename,
+			input(firstId).designFilename,
+		])
+
+		// Even if one idempotent delete fails, the other key is still cleaned and the original
+		// upload error remains the one the caller receives.
+		const secondId = crypto.randomUUID()
+		const second = fakeBucket(2, 1)
+		await expect(
+			createCustomAvatarItemWithAssets(env.DB, second.bucket, input(secondId), asset, asset)
+		).rejects.toThrow('put 2 failed')
+		expect(second.deleted).toEqual([
+			input(secondId).thumbnailImageFilename,
+			input(secondId).designFilename,
+		])
+		expect(second.objects.has(input(secondId).designFilename)).toBe(false)
+
+		// A duplicate id forces the D1 insert to fail after both writes. Both fresh objects
+		// must be removed rather than becoming unreferenced bucket data.
+		const duplicateId = crypto.randomUUID()
+		await createCustomAvatarItem(env.DB, input(duplicateId))
+		const database = fakeBucket()
+		await expect(
+			createCustomAvatarItemWithAssets(env.DB, database.bucket, input(duplicateId), asset, asset)
+		).rejects.toThrow()
+		expect(database.objects.size).toBe(0)
+		expect(database.deleted).toEqual([
+			input(duplicateId).thumbnailImageFilename,
+			input(duplicateId).designFilename,
+		])
 	})
 
 	test('PUT edits the creator’s item, leaving nulled fields alone', async () => {

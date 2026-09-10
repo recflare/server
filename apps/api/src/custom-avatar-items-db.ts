@@ -154,6 +154,44 @@ export async function createCustomAvatarItem(
 	return toDto(row)
 }
 
+export interface CustomAvatarItemAsset {
+	bytes: ArrayBuffer
+	contentType: string
+}
+
+/**
+ * Store both assets and their metadata row as one failure-safe create operation.
+ *
+ * R2 and D1 cannot share a transaction, so a failure after either object write is
+ * compensated by deleting both fresh keys. Writes are deliberately sequential: with
+ * `Promise.all`, one rejected put can race cleanup while the other put is still completing
+ * and recreate an orphan after it was deleted. R2 deletes are idempotent, and both are
+ * attempted with `allSettled` so one cleanup failure cannot prevent the other.
+ */
+export async function createCustomAvatarItemWithAssets(
+	db: D1Database,
+	bucket: R2Bucket,
+	input: CreateCustomAvatarItemInput,
+	thumbnail: CustomAvatarItemAsset,
+	design: CustomAvatarItemAsset
+): Promise<CustomAvatarItem> {
+	try {
+		await bucket.put(input.thumbnailImageFilename, thumbnail.bytes, {
+			httpMetadata: { contentType: thumbnail.contentType },
+		})
+		await bucket.put(input.designFilename, design.bytes, {
+			httpMetadata: { contentType: design.contentType },
+		})
+		return await createCustomAvatarItem(db, input)
+	} catch (error) {
+		await Promise.allSettled([
+			bucket.delete(input.thumbnailImageFilename),
+			bucket.delete(input.designFilename),
+		])
+		throw error
+	}
+}
+
 /**
  * The `ItemType` that names a custom avatar item in a UGC-purchasable reference
  * (`POST /api/ugcPurchasables/v1/items/bulk`'s `Ids[].itemType`).
