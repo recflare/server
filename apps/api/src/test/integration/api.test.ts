@@ -922,12 +922,38 @@ describe('public endpoints', () => {
 		expect(applyLevelUps(1, 9)).toEqual({ level: 1, xp: 9 })
 	})
 
-	test('POST /api/players/v2/progression/bulk returns an array', async () => {
-		const res = await exports.default.fetch(`${ORIGIN}/api/players/v2/progression/bulk`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-			body: new URLSearchParams({ Ids: '1,2,3' }),
-		})
+	test.each([
+		['/api/players/v1/progression/bulk', 4301, 4401],
+		['/api/players/v2/progression/bulk', 4302, 4402],
+		['/api/v1/progression/bulk', 4303, 4403],
+	])(
+		'POST %s returns stored and default progression in request order',
+		async (path, storedId, defaultId) => {
+			await addXp(env.DB, storedId, 25)
+			const body = new URLSearchParams()
+			body.append('Ids', String(defaultId))
+			body.append('Ids', `${storedId},${defaultId}`)
+
+			const res = await exports.default.fetch(`${ORIGIN}${path}`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+				body,
+			})
+			expect(res.status).toBe(200)
+			expect(await res.json()).toEqual([
+				{ PlayerId: defaultId, Level: 1, XP: 0 },
+				{ PlayerId: storedId, Level: 3, XP: 5 },
+				{ PlayerId: defaultId, Level: 1, XP: 0 },
+			])
+		}
+	)
+
+	test.each([
+		'/api/players/v1/progression/bulk',
+		'/api/players/v2/progression/bulk',
+		'/api/v1/progression/bulk',
+	])('POST %s returns [] without ids', async (path) => {
+		const res = await exports.default.fetch(`${ORIGIN}${path}`, { method: 'POST' })
 		expect(res.status).toBe(200)
 		expect(await res.json()).toEqual([])
 	})

@@ -19,7 +19,6 @@ import {
 	BulkIdsRequest,
 	CheerPlayerRequest,
 	CheerPlayerResponse,
-	SetSelectedCheerRequest,
 	form,
 	idParam,
 	intQuery,
@@ -27,6 +26,7 @@ import {
 	JsonArray,
 	ProgressionDto,
 	ReputationDto,
+	SetSelectedCheerRequest,
 	UNAUTHORIZED_RESPONSE,
 } from '../openapi'
 import {
@@ -463,29 +463,25 @@ export const progressionRoutes = new Hono<App>({ strict: false })
 		describeRoute({
 			tags: ['Progression'],
 			summary: 'Progressions in bulk (v1)',
-			description: 'No progression is stored yet, so this is an empty list.',
+			description:
+				'One progression per requested id, in request order. Players without stored ' +
+				'progression receive the level 1 / 0 XP default.',
 			requestBody: BULK_ID_BODY,
-			responses: { 200: json(JsonArray, 'An empty list') },
+			responses: { 200: json(ProgressionDto.array(), 'One progression per requested id') },
 		}),
-		async (c) => {
-			await parseFormIds(c) // TODO: query PlayerProgressions for these ids
-			return c.json([])
-		}
+		async (c) => c.json(await getProgressions(c.env.DB, await parseFormIds(c)))
 	)
-	// v2 is identical to v1 — same form-id parse + PlayerProgressions query.
+	// v2 is identical to v1 — same form-id parse and progression lookup.
 	.post(
 		'/api/players/v2/progression/bulk',
 		describeRoute({
 			tags: ['Progression'],
 			summary: 'Progressions in bulk (v2)',
-			description: 'Identical to v1 — same ids in, same empty list out.',
+			description: 'Identical to v1 — same ids in, same progression records out.',
 			requestBody: BULK_ID_BODY,
-			responses: { 200: json(JsonArray, 'An empty list') },
+			responses: { 200: json(ProgressionDto.array(), 'One progression per requested id') },
 		}),
-		async (c) => {
-			await parseFormIds(c) // TODO: query PlayerProgressions for these ids
-			return c.json([])
-		}
+		async (c) => c.json(await getProgressions(c.env.DB, await parseFormIds(c)))
 	)
 	// The 2023 client calls this as a GET with repeated `id` query params.
 	// Return a default progression per requested id.
@@ -509,15 +505,12 @@ export const progressionRoutes = new Hono<App>({ strict: false })
 			tags: ['Progression'],
 			summary: 'Progressions in bulk (unversioned path)',
 			description:
-				'An older unversioned path some client builds still call. Same empty answer as ' +
-				'the versioned POST forms.',
+				'An older unversioned path some client builds still call. It serves the same ' +
+				'progression records as the versioned POST forms.',
 			requestBody: BULK_ID_BODY,
-			responses: { 200: json(JsonArray, 'An empty list') },
+			responses: { 200: json(ProgressionDto.array(), 'One progression per requested id') },
 		}),
-		async (c) => {
-			await parseFormIds(c) // TODO: query PlayerProgressions for these ids
-			return c.json([])
-		}
+		async (c) => c.json(await getProgressions(c.env.DB, await parseFormIds(c)))
 	)
 
 	// The progression events running right now — the limited-time XP events the client shows
