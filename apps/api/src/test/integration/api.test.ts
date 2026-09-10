@@ -3594,21 +3594,52 @@ describe('public endpoints', () => {
 		).toBe(403)
 	})
 
-	test('GET /api/inventions/v1/fromcreators is an empty feed for now', async () => {
-		// A stub: the client renders an empty array as "this creator has published nothing",
-		// where a 404 would read as a row that failed to load.
+	test('GET /api/inventions/v1/fromcreators serves a paginated public creator feed', async () => {
+		const invention = (
+			id: number,
+			creatorId: number,
+			createdAt: string,
+			overrides: Partial<SavedInvention> = {}
+		): SavedInvention =>
+			({
+				InventionId: id,
+				ReplicationId: crypto.randomUUID(),
+				CreatorPlayerId: creatorId,
+				Name: `Creator invention ${id}`,
+				Description: '',
+				ImageName: '',
+				CurrentVersionNumber: 1,
+				CurrentVersion: { InventionId: id, VersionNumber: 1, BlobName: '' },
+				IsPublished: true,
+				HideFromPlayer: false,
+				Accessibility: 1,
+				CreatedAt: createdAt,
+				...overrides,
+			}) as unknown as SavedInvention
+
+		for (const item of [
+			invention(50_101, 91_001, '2026-09-01T00:00:00Z'),
+			invention(50_102, 91_002, '2026-09-03T00:00:00Z'),
+			invention(50_103, 91_001, '2026-09-02T00:00:00Z'),
+			invention(50_104, 91_003, '2026-09-04T00:00:00Z'),
+			invention(50_105, 91_001, '2026-09-05T00:00:00Z', { IsPublished: false }),
+			invention(50_106, 91_001, '2026-09-06T00:00:00Z', { HideFromPlayer: true }),
+			invention(50_107, 91_001, '2026-09-07T00:00:00Z', { Accessibility: 2 }),
+		]) {
+			await env.DB.prepare('INSERT INTO invention (data) VALUES (?1)')
+				.bind(JSON.stringify(item))
+				.run()
+		}
+
 		const res = await exports.default.fetch(
-			`${ORIGIN}/api/inventions/v1/fromcreators?id=207&skip=0&take=100`
+			`${ORIGIN}/api/inventions/v1/fromcreators?id=91001&id=91002&id=91001&skip=1&take=2`
 		)
 		expect(res.status).toBe(200)
-		expect(await res.json()).toEqual([])
+		expect(((await res.json()) as SavedInvention[]).map((i) => i.InventionId)).toEqual([
+			50_103, 50_101,
+		])
 
-		// The params are accepted and ignored, including a repeated `id` and none at all.
-		expect(
-			await (
-				await exports.default.fetch(`${ORIGIN}/api/inventions/v1/fromcreators?id=1&id=2`)
-			).json()
-		).toEqual([])
+		// Other creators and non-public inventions stay out; no creator ids means no feed.
 		expect(
 			await (await exports.default.fetch(`${ORIGIN}/api/inventions/v1/fromcreators`)).json()
 		).toEqual([])

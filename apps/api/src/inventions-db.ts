@@ -565,6 +565,40 @@ export async function getInventionsByCreator(
 }
 
 /**
+ * Published inventions from several creators — the `v1/fromcreators` shelf used for a
+ * creator list and for accounts the player follows. This is a public feed, so drafts,
+ * hidden inventions and unlisted inventions stay out just as they do in search.
+ *
+ * Creator ids are passed to SQLite as one JSON array rather than expanded into one bind per
+ * id. A player can follow more accounts than D1 permits variables in one statement, while
+ * `json_each` keeps this a single indexed creator lookup regardless. Duplicate creator ids
+ * cannot duplicate inventions because membership is tested with `IN`.
+ */
+export async function getInventionsFromCreators(
+	db: D1Database,
+	creatorPlayerIds: number[],
+	skip: number,
+	take: number
+): Promise<SavedInvention[]> {
+	const limit = Math.max(take, 0)
+	const offset = Math.max(skip, 0)
+	if (creatorPlayerIds.length === 0 || limit === 0) return []
+
+	const creatorIds = JSON.stringify([...new Set(creatorPlayerIds)])
+	const { results } = await db
+		.prepare(
+			`SELECT data FROM invention
+			 WHERE creator_player_id IN (SELECT value FROM json_each(?1))
+			   AND ${VISIBLE_IN_FEEDS.join(' AND ')}
+			 ORDER BY json_extract(data, '$.CreatedAt') DESC, id DESC
+			 LIMIT ?2 OFFSET ?3`
+		)
+		.bind(creatorIds, limit, offset)
+		.all<InventionRow>()
+	return results.map((r) => JSON.parse(r.data) as SavedInvention)
+}
+
+/**
  * The player's "my inventions" shelf (`v2/mine`): everything they created, plus
  * everything they BOUGHT. Ownership of a bought invention lives in the
  * `inventory_invention` table the `econ` worker writes at purchase time — a creator is
