@@ -19,7 +19,7 @@ missing/invalid). `~` = optional auth: served to anyone, personalised for a vali
 | GET      | `/api/avatar/v1/defaultunlocked`                     |      | Default-unlocked avatar items (static)  |
 | GET      | `/api/avatar/v1/defaultbaseavataritems`              |      | Default base avatar items (stub `[]`)   |
 | GET      | `/api/avatar/v4/items`                               | ✓    | Owned items + the default catalog       |
-| GET      | `/econ/customAvatarItems/v1/owned`                   | ✓    | Owned custom avatar items (stub)        |
+| GET      | `/econ/customAvatarItems/v1/owned`                   | ✓    | Owned custom avatar items               |
 | GET      | `/api/objectives/v1/myprogress`                      |      | Objectives progress (static)            |
 | GET/POST | `/api/objectives/v1/cleargroup`                      |      | Clear an objectives group (no-op `[]`)  |
 | GET      | `/api/avatar/v2`                                     | ✓    | The player's own avatar                 |
