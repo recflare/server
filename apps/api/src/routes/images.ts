@@ -132,10 +132,12 @@ async function readPostedSetting(c: Context<App>): Promise<number | undefined> {
 	if (body === null || typeof body !== 'object' || Array.isArray(body)) return undefined
 
 	const raw = (body as Record<string, unknown>).Setting ?? (body as Record<string, unknown>).setting
-	if (typeof raw === 'number') return Number.isFinite(raw) ? Math.trunc(raw) : undefined
+	if (typeof raw === 'number') return Number.isSafeInteger(raw) ? raw : undefined
 	if (typeof raw !== 'string') return undefined
-	const parsed = Number.parseInt(raw.trim(), 10)
-	return Number.isNaN(parsed) ? undefined : parsed
+	const value = raw.trim()
+	if (!/^-?\d+$/.test(value)) return undefined
+	const parsed = Number(value)
+	return Number.isSafeInteger(parsed) ? parsed : undefined
 }
 
 /**
@@ -161,8 +163,13 @@ async function cheerLookupIds(c: Context<App>): Promise<number[]> {
 	}
 	return raw
 		.flatMap((value) => value.split(','))
-		.map((value) => Number.parseInt(value.trim(), 10))
-		.filter((imageId) => !Number.isNaN(imageId))
+		.map((value) => {
+			const trimmed = value.trim()
+			if (!/^\d+$/.test(trimmed)) return null
+			const imageId = Number(trimmed)
+			return Number.isSafeInteger(imageId) ? imageId : null
+		})
+		.filter((imageId): imageId is number => imageId !== null)
 }
 
 /**
