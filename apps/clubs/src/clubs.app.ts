@@ -616,7 +616,8 @@ const app = new Hono<App>()
 			responses: { 200: json(ClubSearchResponse, 'The matching page of clubs') },
 		}),
 		async (c) => {
-			const count = Number.parseInt(c.req.query('count') ?? '', 10)
+			const rawCount = (c.req.query('count') ?? '').trim()
+			const count = /^\d+$/.test(rawCount) ? Number(rawCount) : Number.NaN
 			return c.json(
 				await searchClubs(
 					c.env.DB,
