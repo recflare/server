@@ -887,6 +887,271 @@ function roomIdFromPath(path: string): number | null {
 	return match ? Number.parseInt(match[1], 10) : null
 }
 
+
+/** Public account shape, from `GET /account/:id` or `/account/search`. */
+interface PublicAccount {
+        accountId: number
+        username: string
+        displayName: string
+        profileImage: string
+        bannerImage: string
+        createdAt: string
+}
+
+/** A player's public photo, from the `ImagesPlayer` projection. */
+interface PublicPhoto {
+        SavedImageId: number
+        ImageName: string
+        CreatedAt: string
+        CheerCount: number
+}
+
+/** A player's public room — the narrow shape `/rooms/createdby/:id` serves. */
+interface PublicRoom {
+        RoomId: number
+        Name: string
+        ImageName: string
+        Stats: { VisitCount: number; CheerCount: number; FavoriteCount: number }
+}
+
+/** Prefix-search accounts by username — backs the header search bar. */
+async function searchPlayers(query: string): Promise<PublicAccount[]> {
+        if (query.trim() === '') return []
+        return call<PublicAccount[]>(`${where().accounts}/account/search?name=${encodeURIComponent(query.trim())}`)
+}
+
+const fetchPublicAccount = (username: string): Promise<PublicAccount | null> =>
+        searchPlayers(username).then(
+                (matches) => matches.find((m) => m.username.toLowerCase() === username.toLowerCase()) ?? null
+        )
+
+const fetchPublicPhotos = (accountId: number): Promise<PublicPhoto[]> =>
+        call<PublicPhoto[]>(`${where().api}/api/images/v4/player/${accountId}`)
+
+const fetchPublicRooms = (accountId: number): Promise<PublicRoom[]> =>
+        call<PublicRoom[]>(`${where().rooms}/rooms/ownedby/${accountId}`)
+
+/** The `/u/<username>` path, or null for any other path. */
+function usernameFromPath(path: string): string | null {
+        const match = /^\/u\/([^/]+)$/.exec(path)
+        return match ? decodeURIComponent(match[1]) : null
+}
+
+/**
+ * The header search bar — a rec.net-style bubble dropdown of matching players as you
+ * type. Debounced so it doesn't fire a search per keystroke; closes on selecting a
+ * result, on Escape, or on clicking outside it.
+ */
+function PlayerSearch({ navigate }: { navigate: Navigate }) {
+        const [query, setQuery] = useState('')
+        const [results, setResults] = useState<PublicAccount[]>([])
+        const [open, setOpen] = useState(false)
+        const containerRef = useRef<HTMLDivElement>(null)
+
+        useEffect(() => {
+                if (query.trim() === '') {
+                        setResults([])
+                        return
+                }
+                const timeout = setTimeout(() => {
+                        void searchPlayers(query)
+                                .then((r) => setResults(r.slice(0, 6)))
+                                .catch(() => setResults([]))
+                }, 250)
+                return () => clearTimeout(timeout)
+        }, [query])
+
+        useEffect(() => {
+                const onClickOutside = (e: MouseEvent) => {
+                        if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+                                setOpen(false)
+                        }
+                }
+                document.addEventListener('mousedown', onClickOutside)
+                return () => document.removeEventListener('mousedown', onClickOutside)
+        }, [])
+
+        const go = (username: string) => {
+                setOpen(false)
+                setQuery('')
+                navigate(`/u/${encodeURIComponent(username)}`)
+        }
+
+        return (
+                <div className="player-search" ref={containerRef}>
+                        <input
+                                type="text"
+                                placeholder="Search players…"
+                                value={query}
+                                onChange={(e) => {
+                                        setQuery(e.target.value)
+                                        setOpen(true)
+                                }}
+                                onFocus={() => setOpen(true)}
+                                onKeyDown={(e) => {
+                                        if (e.key === 'Escape') setOpen(false)
+                                        if (e.key === 'Enter' && results[0]) go(results[0].username)
+                                }}
+                        />
+                        {open && results.length > 0 && (
+                                <div className="player-search-bubble">
+                                        {results.map((r) => (
+                                                <button
+                                                        key={r.accountId}
+                                                        className="player-search-result"
+                                                        onClick={() => go(r.username)}
+                                                >
+                                                        <img
+                                                                className="player-search-avatar"
+                                                                src={`${where().img}/${r.profileImage}?width=64`}
+                                                                alt=""
+                                                        />
+                                                        <span>
+                                                                <span className="player-search-name">
+                                                                        {r.displayName || r.username}
+                                                                </span>
+                                                                <span className="player-search-handle">@{r.username}</span>
+                                                        </span>
+                                                </button>
+                                        ))}
+                                </div>
+                        )}
+                </div>
+        )
+}
+
+/**
+ * A player's public profile page (`/u/<username>`) — banner, avatar, bio-adjacent
+ * info, their public rooms, and their public photos. Read-only: this is the
+ * "rec.net-style profile" other players browse to, not the owner's own dashboard
+ * (that stays on `/account`).
+ */
+function PlayerPage({ username, navigate }: { username: string; navigate: Navigate }) {
+        const [account, setAccount] = useState<PublicAccount | null | undefined>(undefined)
+        const [rooms, setRooms] = useState<PublicRoom[] | null>(null)
+        const [photos, setPhotos] = useState<PublicPhoto[] | null>(null)
+        const [error, setError] = useState('')
+
+        useEffect(() => {
+                setAccount(undefined)
+                setRooms(null)
+                setPhotos(null)
+                void fetchPublicAccount(username)
+                        .then((a) => {
+                                setAccount(a)
+                                if (a) {
+                                        void fetchPublicRooms(a.accountId).then(setRooms).catch(() => setRooms([]))
+                                        void fetchPublicPhotos(a.accountId).then(setPhotos).catch(() => setPhotos([]))
+                                }
+                        })
+                        .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+        }, [username])
+
+        if (error) {
+                return (
+                        <main className="shell">
+                                <p className="error">{error}</p>
+                        </main>
+                )
+        }
+        if (account === undefined) {
+                return (
+                        <main className="shell">
+                                <p className="muted">Loading…</p>
+                        </main>
+                )
+        }
+        if (account === null) {
+                return (
+                        <main className="shell">
+                                <p className="muted">There&apos;s no player called @{username}.</p>
+                        </main>
+                )
+        }
+
+        const created = new Date(account.createdAt)
+
+        return (
+                <main className="shell wide">
+                        <section className="card player-hero">
+                                {account.bannerImage && (
+                                        <img
+                                                className="player-banner"
+                                                src={`${where().img}/${account.bannerImage}?width=1024`}
+                                                alt=""
+                                        />
+                                )}
+                                <div className="player-hero-body">
+                                        <img
+                                                className="player-avatar"
+                                                src={`${where().img}/${account.profileImage}?width=256`}
+                                                alt=""
+                                        />
+                                        <div>
+                                                <h1>{account.displayName || account.username}</h1>
+                                                <p className="handle">
+                                                        @{account.username}
+                                                        {!Number.isNaN(created.getTime()) &&
+                                                                ` · joined ${created.toLocaleDateString()}`}
+                                                </p>
+                                        </div>
+                                </div>
+                        </section>
+
+                        <section className="card">
+                                <h2>Rooms</h2>
+                                {rooms === null ? (
+                                        <p className="muted">Loading…</p>
+                                ) : rooms.length === 0 ? (
+                                        <p className="muted">No public rooms.</p>
+                                ) : (
+                                        <ul className="rooms">
+                                                {rooms.map((room) => (
+                                                        <li className="room" key={room.RoomId}>
+                                                                <Link to={`/rooms/${room.RoomId}`} navigate={navigate} className="room-link">
+                                                                        <img
+                                                                                className="room-thumb"
+                                                                                src={`${where().img}/${room.ImageName}?width=256`}
+                                                                                alt=""
+                                                                                loading="lazy"
+                                                                        />
+                                                                        <div className="room-body">
+                                                                                <span className="room-name">^{room.Name}</span>
+                                                                                <p className="room-stats">
+                                                                                        {room.Stats.VisitCount.toLocaleString()} visits
+                                                                                </p>
+                                                                        </div>
+                                                                </Link>
+                                                        </li>
+                                                ))}
+                                        </ul>
+                                )}
+                        </section>
+
+                        <section className="card">
+                                <h2>Photos</h2>
+                                {photos === null ? (
+                                        <p className="muted">Loading…</p>
+                                ) : photos.length === 0 ? (
+                                        <p className="muted">No public photos.</p>
+                                ) : (
+                                        <div className="photo-grid">
+                                                {photos.map((p) => (
+                                                        <img
+                                                                key={p.SavedImageId}
+                                                                className="photo-thumb"
+                                                                src={`${where().img}/${p.ImageName}?width=256`}
+                                                                alt=""
+                                                                loading="lazy"
+                                                        />
+                                                ))}
+                                        </div>
+                                )}
+                        </section>
+                </main>
+        )
+}
+
 export function App() {
 	// undefined = still checking the session; null = signed out.
 	const [account, setAccount] = useState<SelfAccount | null | undefined>(undefined)
@@ -895,6 +1160,7 @@ export function App() {
 	const [config, setConfig] = useState<SiteConfig | undefined>(undefined)
 	const { path, navigate } = useRouter()
 	const roomId = roomIdFromPath(path)
+	const lookupUsername = usernameFromPath(path)
 
 	useEffect(() => {
 		// Config first, and everything else after it: it carries the hostnames every other
@@ -952,6 +1218,8 @@ export function App() {
 				// Its own page rather than a dashboard tab: this path is Discord's registered
 				// redirect URI, so it has to be one stable URL a cold load can land on.
 				<ClaimPage account={account} config={config} navigate={navigate} />
+			) : lookupUsername !== null ? (
+				<PlayerPage username={lookupUsername} navigate={navigate} />
 			) : roomId !== null ? (
 				<RoomPage account={account} roomId={roomId} navigate={navigate} />
 			) : (
@@ -1002,6 +1270,7 @@ function NavBar({
 				Rug Room
 			</Link>
 			<nav className="nav-links">
+				<PlayerSearch navigate={navigate} />
 				<a href={DISCORD_INVITE} target="_blank" rel="noreferrer">
 					Discord
 				</a>
