@@ -832,7 +832,8 @@ const app = new Hono<App>()
 			responses: { 200: json(SearchSuggestions, 'The suggestions, best match first') },
 		}),
 		async (c) => {
-			const take = Number.parseInt(c.req.query('take') ?? '', 10)
+			const rawTake = (c.req.query('take') ?? '').trim()
+			const take = /^\d+$/.test(rawTake) ? Number(rawTake) : Number.NaN
 			return c.json(
 				await autocompleteRoomSearch(
 					c.env.DB,
