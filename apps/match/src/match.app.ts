@@ -1704,8 +1704,9 @@ const app = new Hono<App>()
 			responses: { 200: json(InstanceIdResponse, 'The instance id, or 0') },
 		}),
 		async (c) => {
-			const playerId = Number.parseInt(c.req.query('id') ?? '', 10)
-			if (!Number.isInteger(playerId)) return c.json(NO_INSTANCE)
+			const rawPlayerId = (c.req.query('id') ?? '').trim()
+			const playerId = /^\d+$/.test(rawPlayerId) ? Number(rawPlayerId) : Number.NaN
+			if (!Number.isSafeInteger(playerId) || playerId <= 0) return c.json(NO_INSTANCE)
 
 			const presence = await getPresence<RoomInstance>(c.env.DB, playerId)
 			return c.json(presence?.roomInstance?.roomInstanceId ?? NO_INSTANCE)
