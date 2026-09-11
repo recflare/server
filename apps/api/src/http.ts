@@ -40,6 +40,13 @@ export function unauthorized(c: Context<App>) {
  * empty. Values that aren't integers are dropped; duplicates and order are left alone,
  * since the caller renders them in request order.
  */
+function strictId(value: string): number | null {
+	const trimmed = value.trim()
+	if (!/^\d+$/.test(trimmed)) return null
+	const id = Number(trimmed)
+	return Number.isSafeInteger(id) ? id : null
+}
+
 export async function parseFormIds(c: Context<App>): Promise<number[]> {
 	const body = await c.req
 		.parseBody({ all: true })
@@ -48,8 +55,8 @@ export async function parseFormIds(c: Context<App>): Promise<number[]> {
 	return raw
 		.filter((v): v is string => typeof v === 'string')
 		.flatMap((v) => v.split(','))
-		.map((s) => Number.parseInt(s.trim(), 10))
-		.filter((n) => !Number.isNaN(n))
+		.map(strictId)
+		.filter((n): n is number => n !== null)
 }
 
 /** Read integer ids from repeated `id` query params. The 2023 client passes these to
@@ -58,7 +65,7 @@ export function queryIds(c: Context<App>): number[] {
 	return (
 		c.req
 			.queries('id')
-			?.map((s) => Number.parseInt(s.trim(), 10))
-			.filter((n) => !Number.isNaN(n)) ?? []
+			?.map(strictId)
+			.filter((n): n is number => n !== null) ?? []
 	)
 }
