@@ -312,8 +312,13 @@ const app = new Hono<App>()
 				c.req
 					.queries('id')
 					?.flatMap((v) => v.split(','))
-					.map((s) => Number.parseInt(s.trim(), 10))
-					.filter((n) => !Number.isNaN(n)) ?? []
+					.map((s) => {
+						const value = s.trim()
+						if (!/^\d+$/.test(value)) return null
+						const id = Number(value)
+						return Number.isSafeInteger(id) ? id : null
+					})
+					.filter((n): n is number => n !== null) ?? []
 			// Resolve stored accounts, synthesizing a default for any id not in the DB
 			// so every requested id is present in the response.
 			const stored = new Map((await getAccountsByIds(c.env.DB, ids)).map((a) => [a.accountId, a]))
