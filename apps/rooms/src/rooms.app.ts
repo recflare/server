@@ -157,8 +157,10 @@ import type { App } from './context'
 function firstId(idParam: string): number | undefined {
 	return idParam
 		.split(',')
-		.map((s) => Number.parseInt(s.trim(), 10))
-		.find((n) => !Number.isNaN(n))
+		.map((s) => s.trim())
+		.filter((s) => /^\d+$/.test(s))
+		.map(Number)
+		.find((n) => Number.isSafeInteger(n) && n > 0)
 }
 
 /** Parse all valid integer ids from a comma-separated `id` query param. */
