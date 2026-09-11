@@ -1160,12 +1160,12 @@ async function readMatchmakeBody(
 			values
 				.map((v) =>
 					typeof v === 'number'
-						? Math.trunc(v)
-						: typeof v === 'string'
-							? Number.parseInt(v.trim(), 10)
+						? v
+						: typeof v === 'string' && /^\d+$/.test(v.trim())
+							? Number(v.trim())
 							: Number.NaN
 				)
-				.filter((n) => Number.isFinite(n) && n > 0)
+				.filter((n) => Number.isSafeInteger(n) && n > 0)
 		),
 	]
 	return { joinMode, additionalPlayerIds }
