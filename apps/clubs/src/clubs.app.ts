@@ -464,7 +464,9 @@ const app = new Hono<App>()
 			responses: { 200: json(ClubAnnouncementsEnvelope, 'The club’s noticeboard') },
 		}),
 		async (c) => {
-			const clubId = Number.parseInt(c.req.param('clubId'), 10)
+			const rawClubId = c.req.param('clubId').trim()
+			const clubId = /^\d+$/.test(rawClubId) ? Number(rawClubId) : Number.NaN
+			if (!Number.isSafeInteger(clubId) || clubId <= 0) return c.json([])
 			const announcements = await getClubAnnouncements(c.env.DB, clubId)
 			return c.json({
 				error: '',
