@@ -493,7 +493,7 @@ const app = new Hono<App>()
 		async (c) => {
 			const { platform, id } = c.req.param()
 			logger.info('cached login lookup', { platform, id })
-			const platformInt = Number.parseInt(platform, 10)
+			const platformInt = /^\d+$/.test(platform.trim()) ? Number(platform) : Number.NaN
 			// SIDELOADED APKs ONLY. A sideloaded build has no Meta SDK behind it, so it can't
 			// produce a real Meta identity or a nonce to prove one with — it asks about the
 			// placeholder identity `1/1`, and an empty picker leaves it stuck on the platform
