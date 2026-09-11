@@ -1942,6 +1942,40 @@ const app = new Hono<App>()
 		}
 	)
 
+	// Return the authenticated player's effective role in a room. This legacy route is
+	// used by the 2023 client when refreshing room permissions after a role change.
+	.get(
+		'/rooms/:roomId{[0-9]+}/roles/myrole',
+		describeRoute({
+			tags: ['Room settings'],
+			summary: 'Get my role in a room',
+			description:
+				'Returns the authenticated caller’s effective room role as a bare integer. 255 is the creator; explicit Room.Roles values are returned verbatim (30 co-owner, 20 moderator, 10 host/member); 0 means no explicit role.',
+			security: AUTHED,
+			parameters: [roomIdParam],
+			responses: {
+				200: { description: 'The caller’s room role as a bare integer' },
+				401: UNAUTHORIZED_RESPONSE,
+				404: { description: 'Room not found' },
+			},
+		}),
+		async (c) => {
+			const accountId = await authedAccountId(c)
+			if (accountId === null) return unauthorized(c)
+
+			const roomId = Number.parseInt(c.req.param('roomId'), 10)
+			const room = await getRoomById(c.env.DB, roomId)
+			if (!room) return c.body(null, 404)
+			if (room.CreatorAccountId === accountId) return c.json(255)
+
+			const roles = Array.isArray(room.Roles)
+				? (room.Roles as Array<{ AccountId?: unknown; Role?: unknown }>)
+				: []
+			const entry = roles.find((r) => r.AccountId === accountId && typeof r.Role === 'number')
+			return c.json(entry?.Role ?? 0)
+		}
+	)
+
 	// Set a member's role in a room (`Roles[].Role`). Auth-gated (401) and gated to
 	// the room creator or a co-owner (403 otherwise) — the same owner/co-owner check
 	// the other room-admin actions use. Body is the `role` form field (an integer role

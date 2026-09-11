@@ -1629,6 +1629,29 @@ describe('rooms endpoints', () => {
 		expect(interactions!.n).toBe(0)
 	})
 
+	it('GET /rooms/:id/roles/myrole reports the caller’s effective legacy room role', async () => {
+		const myRole = async (roomId: number, accountId?: string) =>
+			SELF.fetch(`${ORIGIN}/rooms/${roomId}/roles/myrole`, {
+				headers: accountId ? await bearer(accountId) : undefined,
+			})
+
+		expect((await myRole(2)).status).toBe(401)
+
+		const owner = await myRole(2, '1')
+		expect(owner.status).toBe(200)
+		expect(await owner.json()).toBe(255)
+
+		const coOwner = await myRole(2, '2')
+		expect(coOwner.status).toBe(200)
+		expect(await coOwner.json()).toBe(30)
+
+		const ordinary = await myRole(2, '999')
+		expect(ordinary.status).toBe(200)
+		expect(await ordinary.json()).toBe(0)
+
+		expect((await myRole(99999, '1')).status).toBe(404)
+	})
+
 	it('PUT /rooms/:id/roles/:accountId is auth-gated, owner/co-owner-only, and persists', async () => {
 		const rolesOf = async (): Promise<Array<{ AccountId: number; Role: number }>> => {
 			const room = (await (await SELF.fetch(`${ORIGIN}/rooms/2`)).json()) as {
@@ -4100,6 +4123,7 @@ describe('rooms endpoints', () => {
 			'GET /rooms/{roomId}/experience/player',
 			'GET /rooms/{roomId}/interactionby/me',
 			'GET /rooms/{roomId}/playerdata/me',
+			'GET /rooms/{roomId}/roles/myrole',
 			'GET /rooms/{roomId}/similar',
 			'GET /rooms/{roomId}/subrooms/{subRoomId}/saves',
 			'GET /rooms/{roomId}/subrooms/{subRoomId}/saves/no_unity_assets',
