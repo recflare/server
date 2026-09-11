@@ -773,7 +773,8 @@ const app = new Hono<App>()
 			// Echoed, but only when it fits the byte the client reads it back into — anything
 			// outside 0–255 can't round-trip, so a nonsense `?type=` gets the default instead of a
 			// number that would break the response on the way in.
-			const type = Number.parseInt(c.req.query('type') ?? '', 10)
+			const rawType = (c.req.query('type') ?? '').trim()
+			const type = /^-?\d+$/.test(rawType) ? Number(rawType) : Number.NaN
 			const echoed =
 				type >= 0 && type <= MAX_LIST_ENTITY_TYPE ? type : DEFAULT_ALGORITHMIC_LIST_TYPE
 
