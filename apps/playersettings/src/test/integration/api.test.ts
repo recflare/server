@@ -145,6 +145,21 @@ describe('playersettings endpoints', () => {
 		expect(res.status).toBe(200)
 	})
 
+	it('PUT /playersettings ignores null and primitive JSON array entries', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/playersettings`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json', ...(await bearer('10')) },
+			body: JSON.stringify([null, 12, false, { Key: 'PlayerSessionCount', Value: 4 }]),
+		})
+		expect(res.status).toBe(200)
+
+		const stored = await env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(
+			'player:10',
+			'json'
+		)
+		expect(stored).toEqual({ PlayerSessionCount: '4' })
+	})
+
 	it('DELETE /playersettings 401s without a token', async () => {
 		const res = await SELF.fetch(
 			`${ORIGIN}/playersettings`,
@@ -217,6 +232,26 @@ describe('playersettings endpoints', () => {
 			'json'
 		)
 		expect(stored).toEqual({ A: '1' })
+	})
+
+	it('DELETE /playersettings ignores null and primitive JSON array entries', async () => {
+		await env.RECFLARE_PLAYER_SETTINGS.put(
+			'player:23',
+			JSON.stringify({ Keep: 'yes', Remove: 'me' })
+		)
+
+		const res = await SELF.fetch(`${ORIGIN}/playersettings`, {
+			method: 'DELETE',
+			headers: { 'Content-Type': 'application/json', ...(await bearer('23')) },
+			body: JSON.stringify([null, 12, false, { Key: 'Remove' }]),
+		})
+		expect(res.status).toBe(200)
+
+		const stored = await env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(
+			'player:23',
+			'json'
+		)
+		expect(stored).toEqual({ Keep: 'yes' })
 	})
 
 	it('GET /openapi.json documents every route', async () => {
