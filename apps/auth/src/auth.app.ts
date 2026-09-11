@@ -209,12 +209,21 @@ async function authedId(c: Context<App>): Promise<number | null> {
  * tokens are deterministic.
  */
 function accountRoles(
-	account: Pick<Account, 'isDeveloper' | 'isModerator' | 'isJunior'> | null
+	account: Pick<
+		Account,
+		| 'isDeveloper'
+		| 'isModerator'
+		| 'isCommunityTeam'
+		| 'isVolunteerModerator'
+		| 'isJunior'
+	> | null
 ): string[] {
 	const roles = ['screenshare']
 	if (!account) return roles
 	if (account.isDeveloper) roles.push('developer')
 	if (account.isModerator) roles.push('moderator')
+	if (account.isCommunityTeam) roles.push('communityTeam')
+	if (account.isVolunteerModerator) roles.push('volunteerModerator')
 	if (account.isJunior) roles.push('junior')
 	return roles
 }
@@ -1192,6 +1201,30 @@ const app = new Hono<App>()
 		if (!account) return c.body(null, 404)
 		return c.json(account.isModerator === true)
 	})
+
+	// Community Team is an identity/support role and does not inherit moderator privileges.
+	.get('/role/communityteam/:id', describeRoute(roleLookup('communityTeam')), async (c) => {
+		const { id } = c.req.param()
+		logger.info('community team role lookup', { id })
+		const accountId = Number.parseInt(id, 10)
+		const account = Number.isNaN(accountId) ? null : await getAccount(c.env.DB, accountId)
+		if (!account) return c.body(null, 404)
+		return c.json(account.isCommunityTeam === true)
+	})
+
+	// Volunteer Moderator remains distinct from the full moderator role.
+	.get(
+		'/role/volunteermoderator/:id',
+		describeRoute(roleLookup('volunteerModerator')),
+		async (c) => {
+			const { id } = c.req.param()
+			logger.info('volunteer moderator role lookup', { id })
+			const accountId = Number.parseInt(id, 10)
+			const account = Number.isNaN(accountId) ? null : await getAccount(c.env.DB, accountId)
+			if (!account) return c.body(null, 404)
+			return c.json(account.isVolunteerModerator === true)
+		}
+	)
 
 	// @guess Oculus nonce. The client asks for this before a Meta login; the exact shape
 	// it expects hasn't been observed, so this mints a fresh 64-char hex nonce (the length

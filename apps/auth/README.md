@@ -14,6 +14,8 @@ authenticates players and issues the JWTs every other worker verifies.
 | POST   | `/account/me/changepassword`               | Change the caller's password (auth-gated)              |
 | GET    | `/role/developer/:id`                      | Developer role lookup; a bare JSON boolean             |
 | GET    | `/role/moderator/:id`                      | Moderator role lookup; a bare JSON boolean             |
+| GET    | `/role/communityteam/:id`                  | Community Team role lookup; a bare JSON boolean        |
+| GET    | `/role/volunteermoderator/:id`             | Volunteer Moderator role lookup; a bare JSON boolean   |
 | GET    | `/openapi.json`                            | Generated OpenAPI 3.1 spec (see below)                 |
 
 ## API documentation

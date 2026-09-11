@@ -102,6 +102,18 @@ export interface Account {
 	 */
 	isModerator?: boolean
 	/**
+	 * Whether this account belongs to the Community Team. Operator-granted only via
+	 * `runx admin grant-community-team`; absent/false means no role.
+	 */
+	isCommunityTeam?: boolean
+	/**
+	 * Whether this account is a Volunteer Moderator. Operator-granted only via
+	 * `runx admin grant-volunteer-moderator`; absent/false means no role.
+	 *
+	 * This is deliberately separate from full `moderator` permissions.
+	 */
+	isVolunteerModerator?: boolean
+	/**
 	 * Whether this account has Rec Room Plus — the paid tier the client's API calls a
 	 * `CampusCard`. Nothing SELLS one here. Absent/false means no Plus.
 	 *

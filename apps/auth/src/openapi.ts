@@ -232,13 +232,22 @@ export const RestrictionDto = z.object({
 	DisplayReason: z.string().nullable().describe('Reason shown to the player. Free text'),
 })
 
-export function roleLookup(role: 'developer' | 'moderator') {
+export function roleLookup(
+	role: 'developer' | 'moderator' | 'communityTeam' | 'volunteerModerator'
+) {
+	const grantCommand =
+		role === 'communityTeam'
+			? 'grant-community-team'
+			: role === 'volunteerModerator'
+				? 'grant-volunteer-moderator'
+				: `grant-${role}`
+
 	return {
 		tags: ['Roles'],
 		summary: `Whether a player has the ${role} role`,
 		description:
 			`Returns a bare JSON boolean (\`true\`/\`false\`), not an object. Off by default and ` +
-			`granted only by an operator via \`runx admin grant-${role}\`. The same flag also rides ` +
+			`granted only by an operator via \`runx admin ${grantCommand}\`. The same flag also rides ` +
 			`in the access token's \`role\` claim, so the client rarely needs this route.`,
 		parameters: [
 			{

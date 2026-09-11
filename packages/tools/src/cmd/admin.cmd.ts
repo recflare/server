@@ -157,6 +157,16 @@ function grantRoleCommand(name: string, jsonKey: string, roleLabel: string, noun
 
 const grantDeveloper = grantRoleCommand('grant-developer', 'isDeveloper', 'developer')
 const grantModerator = grantRoleCommand('grant-moderator', 'isModerator', 'moderator')
+const grantCommunityTeam = grantRoleCommand(
+	'grant-community-team',
+	'isCommunityTeam',
+	'community team'
+)
+const grantVolunteerModerator = grantRoleCommand(
+	'grant-volunteer-moderator',
+	'isVolunteerModerator',
+	'volunteer moderator'
+)
 
 /**
  * Rec Room Plus, the account's `hasPlus` flag. Players normally get it themselves by
@@ -191,7 +201,9 @@ const lookup = new Command('lookup')
 			json_extract(data, '$.lastLoginTime') AS lastLoginTime,
 			(json_extract(data, '$.passwordHash') IS NOT NULL) AS hasPassword,
 			(json_extract(data, '$.isDeveloper') = 1) AS isDeveloper,
-			(json_extract(data, '$.isModerator') = 1) AS isModerator
+			(json_extract(data, '$.isModerator') = 1) AS isModerator,
+			(json_extract(data, '$.isCommunityTeam') = 1) AS isCommunityTeam,
+			(json_extract(data, '$.isVolunteerModerator') = 1) AS isVolunteerModerator
 			FROM account WHERE ${where}`
 		const res = await execSql(sql, remote)
 		const row = res.results[0]
@@ -205,7 +217,13 @@ const lookup = new Command('lookup')
 				: typeof v === 'object'
 					? JSON.stringify(v)
 					: String(v as number | string | boolean)
-		const boolKeys = new Set(['hasPassword', 'isDeveloper', 'isModerator'])
+		const boolKeys = new Set([
+			'hasPassword',
+			'isDeveloper',
+			'isModerator',
+			'isCommunityTeam',
+			'isVolunteerModerator',
+		])
 		const table = new Table()
 		for (const [key, value] of Object.entries(row)) {
 			const shown = boolKeys.has(key) ? (value === 1 ? 'yes' : 'no') : asText(value)
@@ -223,6 +241,8 @@ export const adminCmd = new Command('admin')
 	.addCommand(clearPassword)
 	.addCommand(grantDeveloper)
 	.addCommand(grantModerator)
+	.addCommand(grantCommunityTeam)
+	.addCommand(grantVolunteerModerator)
 	.addCommand(grantPlus)
 	.addCommand(lookup)
 	.addHelpText(
