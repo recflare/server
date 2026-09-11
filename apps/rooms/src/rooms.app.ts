@@ -187,8 +187,10 @@ function excludePrivateRooms(value: string | undefined): boolean {
 function allIds(idParam: string): number[] {
 	return idParam
 		.split(',')
-		.map((s) => Number.parseInt(s.trim(), 10))
-		.filter((n) => !Number.isNaN(n))
+		.map((s) => s.trim())
+		.filter((s) => /^\d+$/.test(s))
+		.map(Number)
+		.filter((n) => Number.isSafeInteger(n) && n > 0)
 }
 
 /**
