@@ -45,10 +45,14 @@ services but would require small code changes.
 
 **You must have all these requirements or RecFlare deployment will fail!**
 
+> **Windows:** the deployment tooling currently targets Linux/POSIX shells. On Windows,
+> use WSL2 and run the commands from inside your Linux distribution. Native PowerShell
+> and Command Prompt deployments are not currently supported.
+
 - node 24 (https://nodejs.org)
 - pnpm (install with `npm install -g pnpm`)
 - bun (https://bun.sh)
-- jq/awk/sed (on Windows try `winget jq` etc.)
+- jq/awk/sed
 - A Cloudflare account with a zone (domain) you control, for deploying.
 
 Cloudflare's free plan is good enough for testing (100k worker requests/day) but the
