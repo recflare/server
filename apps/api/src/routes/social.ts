@@ -147,10 +147,17 @@ async function applyFlag(
  * no integer id is present.
  */
 async function targetPlayerId(c: Context<App>): Promise<number | null> {
+	const parsePlayerId = (value: string): number | null => {
+		const trimmed = value.trim()
+		if (!/^\d+$/.test(trimmed)) return null
+		const id = Number(trimmed)
+		return Number.isSafeInteger(id) && id > 0 ? id : null
+	}
+
 	const fromQuery = c.req.query('playerId') ?? c.req.query('id')
 	if (fromQuery !== undefined) {
-		const n = Number.parseInt(fromQuery, 10)
-		if (!Number.isNaN(n)) return n
+		const id = parsePlayerId(fromQuery)
+		if (id !== null) return id
 	}
 	// Body may be JSON or form-encoded; Hono's parseBody only handles the latter.
 	const contentType = c.req.header('content-type') ?? ''
@@ -158,11 +165,10 @@ async function targetPlayerId(c: Context<App>): Promise<number | null> {
 		? await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>)
 		: ((await c.req.parseBody().catch(() => ({}))) as Record<string, unknown>)
 	const raw = body.PlayerId ?? body.playerId ?? body.Id
-	if (typeof raw === 'number') return Number.isNaN(raw) ? null : raw
-	if (typeof raw === 'string') {
-		const n = Number.parseInt(raw, 10)
-		if (!Number.isNaN(n)) return n
+	if (typeof raw === 'number') {
+		return Number.isSafeInteger(raw) && raw > 0 ? raw : null
 	}
+	if (typeof raw === 'string') return parsePlayerId(raw)
 	return null
 }
 
