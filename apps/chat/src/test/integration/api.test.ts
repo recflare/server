@@ -3,6 +3,7 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 import '../../chat.app'
 
+import { RELATIONSHIP_SCHEMA_DDL } from '../../../../../packages/domain/src/relationships-db'
 import { NotificationType } from '../../../../notify/src/notification-types'
 import {
 	ChatModerationState,
@@ -15,11 +16,11 @@ import {
 	addThreadMember,
 	ChatThreadType,
 	createThread,
-	joinedChatContents,
 	findThreadWithMembers,
 	getThreadForPlayer,
 	getThreadsForPlayer,
 	isThreadMember,
+	joinedChatContents,
 	leftChatContents,
 	markThreadRead,
 	postMessage,
@@ -71,6 +72,7 @@ beforeAll(async () => {
 	await adminSecretsStore(env.JWT_SECRET).create(TEST_SECRET)
 	for (const stmt of SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of THREAD_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	for (const stmt of RELATIONSHIP_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 })
 
 describe('chat endpoints', () => {
@@ -993,22 +995,87 @@ describe('PUT /thread/chatPrivacySetting', () => {
 describe('GET /thread/checkCanSendDirectMessageWithPrivacySetting', () => {
 	const path = `${ORIGIN}/thread/checkCanSendDirectMessageWithPrivacySetting`
 
-	it('always allows the DM, as a bare ChatResult integer', async () => {
-		const res = await SELF.fetch(`${path}?receivingPlayerId=205`, {
-			headers: await bearer(884001),
+	async function relationship(
+		requester: number,
+		target: number,
+		options: {
+			friend?: boolean
+			requesterFavorite?: boolean
+			targetFavorite?: boolean
+			requesterIgnored?: boolean
+			targetIgnored?: boolean
+		} = {}
+	) {
+		await env.DB.prepare(
+			`INSERT INTO relationship
+			 (requester_id, target_id, relationship_type, requester_favorited,
+			  requester_ignored, requester_muted, target_favorited, target_ignored, target_muted)
+			 VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7, 0)`
+		)
+			.bind(
+				requester,
+				target,
+				options.friend ? 3 : 0,
+				options.requesterFavorite ? 1 : 0,
+				options.requesterIgnored ? 1 : 0,
+				options.targetFavorite ? 1 : 0,
+				options.targetIgnored ? 1 : 0
+			)
+			.run()
+	}
+
+	async function setting(player: number, value: 'Friends' | 'Favorites' | 'NoOne') {
+		await env.RECFLARE_PLAYER_SETTINGS.put(
+			`player:${player}`,
+			JSON.stringify({ directMessagePrivacySetting: value })
+		)
+	}
+
+	async function check(sender: number, recipient: number) {
+		return (
+			await SELF.fetch(`${path}?receivingPlayerId=${recipient}`, { headers: await bearer(sender) })
+		).text()
+	}
+
+	it('enforces Friends and Favorites from each player’s perspective', async () => {
+		await relationship(884010, 884011, { friend: true })
+		await setting(884010, 'Friends')
+		await setting(884011, 'Friends')
+		expect(await check(884010, 884011)).toBe('0')
+
+		await relationship(884012, 884013, {
+			requesterFavorite: true,
+			targetFavorite: true,
 		})
-		expect(res.status).toBe(200)
-		expect(res.headers.get('content-type')).toContain('application/json')
-		// The whole body is the ChatResult — 0 is Success. NOT a boolean: the client
-		// instantiates its response wrapper with the enum, so `true` would decode as nothing.
-		expect(await res.text()).toBe('0')
+		await setting(884012, 'Favorites')
+		await setting(884013, 'Favorites')
+		expect(await check(884012, 884013)).toBe('0')
 	})
 
-	it('answers the same for any player, and with no player named', async () => {
-		// `receivingPlayerId` is ignored — nothing here stores a privacy setting to refuse on.
-		for (const query of ['?receivingPlayerId=205', '?receivingPlayerId=999999', '']) {
-			const res = await SELF.fetch(`${path}${query}`, { headers: await bearer(884002) })
-			expect(await res.text()).toBe('0')
+	it('distinguishes local and remote privacy refusals', async () => {
+		await setting(884020, 'NoOne')
+		expect(await check(884020, 884021)).toBe('15')
+
+		await setting(884023, 'NoOne')
+		expect(await check(884022, 884023)).toBe('16')
+	})
+
+	it('treats either side’s ignore flag as a block', async () => {
+		await relationship(884030, 884031, { requesterIgnored: true })
+		expect(await check(884030, 884031)).toBe('15')
+
+		await relationship(884032, 884033, { targetIgnored: true })
+		expect(await check(884032, 884033)).toBe('16')
+	})
+
+	it('keeps the legacy allow for players who never stored a setting', async () => {
+		expect(await check(884040, 884041)).toBe('0')
+	})
+
+	it('rejects a missing or invalid receiving player id', async () => {
+		for (const query of ['', '?receivingPlayerId=nope', '?receivingPlayerId=0']) {
+			const res = await SELF.fetch(`${path}${query}`, { headers: await bearer(884050) })
+			expect(await res.text()).toBe('1')
 		}
 	})
 
@@ -1844,6 +1911,32 @@ describe('POST /thread/:id', () => {
 		expect(sent.every((n) => n.notificationType === NotificationType.ChatMessageReceived)).toBe(
 			true
 		)
+	})
+
+	it('enforces changed privacy on an existing DM without storing or notifying', async () => {
+		const hub = env.RECFLARE_NOTIFICATIONS_HUB as unknown as {
+			getByName(name: string): {
+				takeSent(): Promise<Array<{ playerId: number; notificationType: NotificationType }>>
+			}
+		}
+		const sender = 889030
+		const recipient = 889031
+		const chatThreadId = await createThread(env.DB, [sender, recipient], null, sender)
+		const before = await getThreadMessages(env.DB, chatThreadId)
+		await env.RECFLARE_PLAYER_SETTINGS.put(
+			`player:${recipient}`,
+			JSON.stringify({ directMessagePrivacySetting: 'NoOne' })
+		)
+		await hub.getByName('global').takeSent()
+
+		const body = (await (await send(sender, `/thread/${chatThreadId}`)).json()) as {
+			ChatMessage: unknown
+			ChatResult: number
+			chatResult: number
+		}
+		expect(body).toMatchObject({ ChatMessage: null, ChatResult: 16, chatResult: 16 })
+		expect(await getThreadMessages(env.DB, chatThreadId)).toEqual(before)
+		expect(await hub.getByName('global').takeSent()).toEqual([])
 	})
 
 	it('reports invalid arguments for blank contents without storing anything', async () => {

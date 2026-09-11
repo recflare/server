@@ -40,9 +40,9 @@ import {
 	ChatThreadType,
 	createThread,
 	getOrCreateThreadWithMembers,
+	getPartyThreadForPlayer,
 	getThreadForPlayer,
 	getThreadMemberIds,
-	getPartyThreadForPlayer,
 	getThreadMeta,
 	getThreadsForPlayer,
 	isThreadMember,
@@ -106,6 +106,8 @@ const CHAT_SUCCESS = 0
 const CHAT_INVALID_ARGUMENTS = 1
 const CHAT_MEMBERSHIP_NOT_FOUND = 3
 const CHAT_PLAYER_ALREADY_ON_THREAD = 4
+const CHAT_LOCAL_PRIVACY_DENIED = 15
+const CHAT_REMOTE_PRIVACY_DENIED = 16
 
 /**
  * How long a party invite link stays usable, in minutes (`GET /settings/partyinvite`).
@@ -225,6 +227,86 @@ async function readChatPrivacy(
 		directMessagePrivacySetting: parseChatPrivacy(stored[DM_PRIVACY_KEY]) ?? ChatPrivacy.Friends,
 		groupChatPrivacySetting: parseChatPrivacy(stored[GROUP_PRIVACY_KEY]) ?? ChatPrivacy.Friends,
 	}
+}
+
+interface PairRelationship {
+	requester_id: number
+	target_id: number
+	relationship_type: number
+	requester_favorited: number
+	requester_ignored: number
+	target_favorited: number
+	target_ignored: number
+}
+
+interface RelationshipView {
+	friend: boolean
+	favorited: boolean
+	ignored: boolean
+}
+
+async function relationshipViews(
+	db: D1Database,
+	localId: number,
+	remoteId: number
+): Promise<{ local: RelationshipView; remote: RelationshipView }> {
+	const row = await db
+		.prepare(
+			`SELECT requester_id, target_id, relationship_type,
+			        requester_favorited, requester_ignored,
+			        target_favorited, target_ignored
+			 FROM relationship
+			 WHERE (requester_id = ?1 AND target_id = ?2)
+			    OR (requester_id = ?2 AND target_id = ?1)
+			 LIMIT 1`
+		)
+		.bind(localId, remoteId)
+		.first<PairRelationship>()
+	if (row === null) {
+		const empty = { friend: false, favorited: false, ignored: false }
+		return { local: empty, remote: empty }
+	}
+	const friend = row.relationship_type === 3
+	const localIsRequester = row.requester_id === localId
+	return {
+		local: {
+			friend,
+			favorited: (localIsRequester ? row.requester_favorited : row.target_favorited) !== 0,
+			ignored: (localIsRequester ? row.requester_ignored : row.target_ignored) !== 0,
+		},
+		remote: {
+			friend,
+			favorited: (localIsRequester ? row.target_favorited : row.requester_favorited) !== 0,
+			ignored: (localIsRequester ? row.target_ignored : row.requester_ignored) !== 0,
+		},
+	}
+}
+
+function privacyAllows(setting: ChatPrivacyValue, relationship: RelationshipView): boolean {
+	if (relationship.ignored || setting === ChatPrivacy.NoOne) return false
+	return setting === ChatPrivacy.Friends ? relationship.friend : relationship.favorited
+}
+
+async function directMessageResult(env: Env, localId: number, remoteId: number): Promise<number> {
+	if (localId === remoteId) return CHAT_SUCCESS
+	const [localSettings, remoteSettings, views] = await Promise.all([
+		getPlayerSettings(env, localId),
+		getPlayerSettings(env, remoteId),
+		relationshipViews(env.DB, localId, remoteId),
+	])
+	const localSetting = parseChatPrivacy(localSettings?.[DM_PRIVACY_KEY])
+	const remoteSetting = parseChatPrivacy(remoteSettings?.[DM_PRIVACY_KEY])
+	if (
+		views.local.ignored ||
+		(localSetting !== undefined && !privacyAllows(localSetting, views.local))
+	)
+		return CHAT_LOCAL_PRIVACY_DENIED
+	if (
+		views.remote.ignored ||
+		(remoteSetting !== undefined && !privacyAllows(remoteSetting, views.remote))
+	)
+		return CHAT_REMOTE_PRIVACY_DENIED
+	return CHAT_SUCCESS
 }
 
 /**
@@ -459,6 +541,20 @@ async function sendToThread(c: Context<App>) {
 
 	const chatThreadId = Number.parseInt(c.req.param('id') ?? '', 10)
 	if (!(await isThreadMember(c.env.DB, chatThreadId, id))) return c.notFound()
+
+	const members = await getThreadMemberIds(c.env.DB, chatThreadId)
+	const other = members.length === 2 ? members.find((memberId) => memberId !== id) : undefined
+	const privacyResult =
+		other === undefined ? CHAT_SUCCESS : await directMessageResult(c.env, id, other)
+	if (privacyResult !== CHAT_SUCCESS) {
+		const thread = await threadWithMessages(c, chatThreadId, id, DEFAULT_THREAD_MESSAGE_COUNT)
+		return c.json({
+			ChatMessage: null,
+			ChatResult: privacyResult,
+			chatResult: privacyResult,
+			chatThread: thread,
+		})
+	}
 
 	// Stored as sent but for the profanity mask: the envelope carries its own Type/Version
 	// and may hold fields we know nothing about (the client sends Version 2 with a `<=>`
@@ -1005,11 +1101,8 @@ const app = new Hono<App>()
 	// two directions to be wrong in: it describes a player as more private than the server
 	// actually enforces, rather than less.
 	//
-	// STORED, NOT ENFORCED. The PUT below keeps the player's choice, but nothing checks it:
-	// the DM check further down allows every message regardless, because this server has no
-	// friends/favorites list to test a sender against. Wire the two together once it does —
-	// a screen that says "Favorites" while anyone can message you is worse than one that
-	// says nothing.
+	// Stored choices are enforced by the preflight check and by sends to existing direct
+	// threads. Accounts without a stored choice retain the legacy permissive behaviour.
 	//
 	// `playerId` comes off the TOKEN, not a query param: the answer is about the caller.
 	.get(
@@ -1022,8 +1115,8 @@ const app = new Hono<App>()
 				'`ChatPrivacy` enum by NUMBER (0 Friends · 1 Favorites · 2 NoOne) — note the PUT takes',
 				'the same enum by NAME. Read from the caller’s `playersettings` map; a player who has',
 				'never set them reads `Friends` for both, as does one whose stored value won’t parse.',
-				'Stored but not enforced: the DM check allows every message. `playerId` is the caller,',
-				'read from the token.',
+				'Stored choices are enforced for direct-message checks and sends; `playerId` is the',
+				'caller, read from the token.',
 			].join(' '),
 			security: AUTHED,
 			responses: {
@@ -1062,7 +1155,7 @@ const app = new Hono<App>()
 				'sends one field per call, so an absent field leaves that setting as it was, and the',
 				'write merges into the settings map so the player’s other settings are untouched. A',
 				'body with nothing readable in it is a no-op 200 answering the stored settings, not a',
-				'400. Stored, not enforced: nothing checks these when a message is sent.',
+				'400. Stored direct-message choices are enforced on preflight and existing-thread sends.',
 			].join(' '),
 			security: AUTHED,
 			requestBody: form(ChatPrivacySettingRequest, 'The setting(s) to store'),
@@ -1087,11 +1180,7 @@ const app = new Hono<App>()
 		}
 	)
 
-	// May the caller DM this player? Asked before the client opens a new direct message, so
-	// it can grey the button out rather than let the send fail. Always 0 (Success): the
-	// setting the name refers to is stored (see `/thread/chatPrivacySetting`) but can't be
-	// checked, since Friends and Favorites both need a friends list this server doesn't
-	// keep. Enforce it here the moment one exists.
+	// May the caller DM this player? Asked before the client opens a new direct message.
 	//
 	// The body is a bare ChatResult INTEGER — the client instantiates its response wrapper
 	// with the ChatResult enum, not a bool, so `true` decodes as nothing. The refusals this
@@ -1107,31 +1196,33 @@ const app = new Hono<App>()
 			description: [
 				'Whether the caller may open a direct message with `receivingPlayerId`, as a bare',
 				'ChatResult integer — 0 (Success) means allowed; a real refusal would be 15 (the',
-				'caller’s own privacy setting) or 16 (the other player’s). Always 0 here: the settings',
-				'`/thread/chatPrivacySetting` stores are not enforced, since Friends and Favorites both',
-				'need a friends list this server doesn’t keep.',
-				'`receivingPlayerId` is accepted and ignored; the answer is the same for every player,',
-				'and the client asks again for the next one.',
+				'caller’s own privacy setting) or 16 (the other player’s). Stored Friends and Favorites',
+				'choices are evaluated against the shared relationship row from each player’s perspective;',
+				'either player ignoring the other also refuses the chat. Accounts that have never stored',
+				'a setting retain the server’s legacy permissive behaviour.',
 			].join(' '),
 			security: AUTHED,
 			parameters: [
 				{
 					name: 'receivingPlayerId',
 					in: 'query',
-					required: false,
-					description: 'The player the caller wants to message. Accepted and ignored.',
+					required: true,
+					description: 'The player the caller wants to message.',
 					schema: { type: 'integer' },
 				},
 			],
 			responses: {
-				200: json(ChatResult, 'Always 0 (Success) — the DM is allowed'),
+				200: json(ChatResult, '0 allowed · 15 local privacy refusal · 16 remote privacy refusal'),
 				401: UNAUTHORIZED_RESPONSE,
 			},
 		}),
 		async (c) => {
 			const id = await authedId(c)
 			if (id === null) return c.body(null, 401)
-			return c.json(CHAT_SUCCESS)
+			const receivingPlayerId = Number.parseInt(c.req.query('receivingPlayerId') ?? '', 10)
+			if (!Number.isSafeInteger(receivingPlayerId) || receivingPlayerId <= 0)
+				return c.json(CHAT_INVALID_ARGUMENTS)
+			return c.json(await directMessageResult(c.env, id, receivingPlayerId))
 		}
 	)
 
