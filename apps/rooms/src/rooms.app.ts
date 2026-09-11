@@ -381,8 +381,15 @@ async function isStaff(c: Context<App>): Promise<boolean> {
 async function pathBan(c: Context<App>): Promise<boolean> {
 	// Both routes constrain these to `[0-9]+`, so neither is ever missing — the fallback is
 	// only here because a helper is typed against the whole app rather than one route.
-	const id = (name: string) => Number.parseInt(c.req.param(name) ?? '', 10)
-	return isPlayerBannedFromRoom(c.env.DB, id('roomId'), id('playerId'))
+	const id = (name: string): number | null => {
+		const raw = c.req.param(name) ?? ''
+		const value = /^\d+$/.test(raw) ? Number(raw) : Number.NaN
+		return Number.isSafeInteger(value) && value > 0 ? value : null
+	}
+	const roomId = id('roomId')
+	const playerId = id('playerId')
+	if (roomId === null || playerId === null) return false
+	return isPlayerBannedFromRoom(c.env.DB, roomId, playerId)
 }
 
 /** 401 for the auth-gated `*by/me` endpoints — no stub-account fallback. */
