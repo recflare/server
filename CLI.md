@@ -39,9 +39,9 @@ Leaves the account with no login credential (only platform login).
 bun runx admin clear-password --username alice
 ```
 
-### `grant-developer` / `grant-moderator` — grant or revoke a role
+### Staff role grants — grant or revoke a role
 
-Both are off by default; only these commands set them. A granted role backs its
+All staff roles are off by default; operator commands grant them. Available commands are `grant-developer`, `grant-moderator`, `grant-community-team`, and `grant-volunteer-moderator`. A granted role backs its
 `GET /role/<role>/:id` lookup **and** rides in the login token's `role` claim, so it
 takes effect on the account's next login or token refresh.
 
@@ -59,7 +59,7 @@ bun runx admin lookup --username alice
 ```
 
 Prints id, username, platform, platform id, created/last-login times, and whether
-the account has a password, the developer role, and the moderator role.
+the account has a password, the developer role, moderator role, Community Team role, and Volunteer Moderator role.
 
 ## Options
 
