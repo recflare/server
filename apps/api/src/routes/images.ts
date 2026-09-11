@@ -362,7 +362,9 @@ export const imageRoutes = new Hono<App>({ strict: false })
 		}),
 		async (c) => {
 			const roomId = Number.parseInt(c.req.param('roomId'), 10)
-			const sort = Number.parseInt(c.req.query('sort') ?? '0', 10) || 0
+			const rawSort = (c.req.query('sort') ?? '0').trim()
+			const parsedSort = /^-?\d+$/.test(rawSort) ? Number(rawSort) : Number.NaN
+			const sort = Number.isSafeInteger(parsedSort) ? parsedSort : 0
 			const filter = Number.parseInt(c.req.query('filter') ?? '0', 10) || 0
 			const skip = Number.parseInt(c.req.query('skip') ?? '0', 10) || 0
 			const take = Number.parseInt(c.req.query('take') ?? '100', 10) || 100
