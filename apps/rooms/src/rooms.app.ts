@@ -876,7 +876,9 @@ const app = new Hono<App>()
 		async (c) => {
 			const tag = c.req.query('tag') ?? ''
 			const skip = Number.parseInt(c.req.query('skip') ?? '0', 10) || 0
-			const take = Number.parseInt(c.req.query('take') ?? '100', 10) || 100
+			const rawTake = (c.req.query('take') ?? '100').trim()
+			const parsedTake = /^\d+$/.test(rawTake) ? Number(rawTake) : Number.NaN
+			const take = Number.isSafeInteger(parsedTake) && parsedTake > 0 ? parsedTake : 100
 			return c.json(await getHotRooms(c.env.DB, tag, skip, take))
 		}
 	)
