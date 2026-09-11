@@ -447,9 +447,10 @@ async function ownedList(
 	type: string | undefined,
 	name: string | undefined
 ): Promise<CuratedList | undefined> {
-	const accountId = Number.parseInt(creatorAccountId ?? '', 10)
+	const rawAccountId = (creatorAccountId ?? '').trim()
+	const accountId = /^\d+$/.test(rawAccountId) ? Number(rawAccountId) : Number.NaN
 	const listType = Number.parseInt(type ?? '', 10)
-	if (!Number.isInteger(accountId) || !Number.isInteger(listType) || !name) return undefined
+	if (!Number.isSafeInteger(accountId) || !Number.isInteger(listType) || !name) return undefined
 
 	return getPlayerList(c.env.DB, accountId, listType, name)
 }
