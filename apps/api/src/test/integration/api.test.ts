@@ -4550,14 +4550,34 @@ describe('player reports', () => {
 		})
 	})
 
-	// Append-only: a second report against the same player is a second row.
-	test('POST /api/PlayerReporting/v3/create appends rather than dedupes', async () => {
-		await submit({ PlayerIdReported: '207', Details: 'first' }, await bearer())
-		await submit({ PlayerIdReported: '207', Details: 'second' }, await bearer())
+	test('POST /api/PlayerReporting/v3/create suppresses a recent identical replay', async () => {
+		const fields = { PlayerIdReported: '207', ReportCategory: '100', Details: 'same incident' }
+		const first = await submit(fields, await bearer())
+		const replay = await submit(fields, await bearer())
+		expect(first.status).toBe(200)
+		expect(await first.json()).toEqual({ success: true, error: '' })
+		expect(replay.status).toBe(200)
+		expect(await replay.json()).toEqual({ success: true, error: '' })
 		const rows = await getReportsAgainst(env.DB, 207)
-		expect(rows).toHaveLength(2)
-		// Newest first.
-		expect(rows.map((r) => r.details)).toEqual(['second', 'first'])
+		expect(rows).toHaveLength(1)
+	})
+
+	test('POST /api/PlayerReporting/v3/create keeps distinct incidents and targets', async () => {
+		await submit({ PlayerIdReported: '208', Details: 'first incident' }, await bearer())
+		await submit({ PlayerIdReported: '208', Details: 'second incident' }, await bearer())
+		await submit({ PlayerIdReported: '209', Details: 'first incident' }, await bearer())
+		expect(await getReportsAgainst(env.DB, 208)).toHaveLength(2)
+		expect(await getReportsAgainst(env.DB, 209)).toHaveLength(1)
+	})
+
+	test('POST /api/PlayerReporting/v3/create accepts the incident after the replay window', async () => {
+		const fields = { PlayerIdReported: '215', Details: 'recurring incident' }
+		await submit(fields, await bearer())
+		await env.DB.prepare(
+			"UPDATE report SET created_at = '2020-01-01T00:00:00.000Z' WHERE reported_player_id = 215"
+		).run()
+		await submit(fields, await bearer())
+		expect(await getReportsAgainst(env.DB, 215)).toHaveLength(2)
 	})
 
 	test('POST /api/PlayerReporting/v3/create 401s without a bearer token', async () => {
@@ -6740,9 +6760,7 @@ describe('player events', () => {
 			upcoming.PlayerEventId,
 		])
 		// The same base projection the POST serves: one path, one shape.
-		expect(events.find((e) => e.PlayerEventId === upcoming.PlayerEventId)).toEqual(
-			asBase(upcoming)
-		)
+		expect(events.find((e) => e.PlayerEventId === upcoming.PlayerEventId)).toEqual(asBase(upcoming))
 
 		// No ids is an empty list, not every event.
 		expect(await (await get('/api/playerevents/v1/bulk')).json()).toEqual([])

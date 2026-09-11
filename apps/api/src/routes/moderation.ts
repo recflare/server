@@ -35,7 +35,7 @@ import {
 	VoteToKickReason,
 	VoteToKickRequest,
 } from '../openapi'
-import { createReport, getActiveBan } from '../reports-db'
+import { createPlayerReportOnce, getActiveBan } from '../reports-db'
 import { createWarning } from '../warnings-db'
 
 import type { Context } from 'hono'
@@ -434,7 +434,8 @@ export const moderationRoutes = new Hono<App>({ strict: false })
 			tags: ['Moderation'],
 			summary: 'Submit a player report',
 			description:
-				'Records a player report in the `report` table; nothing dedupes the rows. A report ' +
+				'Records a player report in the `report` table. Identical retries by the same ' +
+				'caller are accepted but stored only once within a five-minute window. A report ' +
 				'is filed unbanned — a moderator converts one into an account-wide ban by setting ' +
 				'`banned` on the row, which is what matchmaking refuses on and what ' +
 				'`moderationBlockDetails` describes to the banned player.\n\n' +
@@ -467,7 +468,7 @@ export const moderationRoutes = new Hono<App>({ strict: false })
 			// 0 / -1 are the client's "no room" values — store null rather than a bogus id.
 			const roomId = asInt(formField(body, c, 'RoomId'))
 
-			await createReport(c.env.DB, {
+			await createPlayerReportOnce(c.env.DB, {
 				reporterPlayerId: reporterId,
 				reportedPlayerId,
 				reportCategory: asInt(formField(body, c, 'ReportCategory')) ?? 0,

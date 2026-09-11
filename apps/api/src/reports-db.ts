@@ -159,6 +159,51 @@ export async function createReport(db: D1Database, input: NewReport): Promise<Re
 	return row!
 }
 
+/**
+ * Record an ordinary player report unless the same caller recently submitted the same
+ * incident. Category, details and room context distinguish legitimate later incidents;
+ * heights are measurements rather than incident identity and are intentionally ignored.
+ * The single INSERT ... SELECT also makes concurrent client retries safe.
+ */
+export async function createPlayerReportOnce(
+	db: D1Database,
+	input: NewReport,
+	options: { now?: Date; replayWindowMs?: number } = {}
+): Promise<ReportRow | null> {
+	const now = options.now ?? new Date()
+	const cutoff = new Date(now.getTime() - (options.replayWindowMs ?? 5 * 60_000)).toISOString()
+	return db
+		.prepare(
+			`INSERT INTO report (
+				reporter_player_id, reported_player_id, report_category, details,
+				height_reporter, height_reported, room_id, room_instance_type, created_at
+			 )
+			 SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9
+			 WHERE NOT EXISTS (
+				SELECT 1 FROM report
+				 WHERE reporter_player_id = ?1 AND reported_player_id = ?2
+					AND report_category = ?3 AND details IS ?4
+					AND room_id IS ?7 AND room_instance_type IS ?8
+					AND event_id IS NULL AND invention_id IS NULL
+					AND custom_avatar_item_id IS NULL AND created_at >= ?10
+			 )
+			 RETURNING *`
+		)
+		.bind(
+			input.reporterPlayerId,
+			input.reportedPlayerId,
+			input.reportCategory ?? 0,
+			input.details ?? null,
+			input.heightReporter ?? null,
+			input.heightReported ?? null,
+			input.roomId ?? null,
+			input.roomInstanceType ?? null,
+			now.toISOString(),
+			cutoff
+		)
+		.first<ReportRow>()
+}
+
 /** Every report filed against a player, newest first. Backs a future moderation view. */
 export async function getReportsAgainst(db: D1Database, playerId: number): Promise<ReportRow[]> {
 	const { results } = await db
