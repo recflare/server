@@ -1111,8 +1111,10 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 			},
 		}),
 		async (c) => {
-			const inventionId = Number.parseInt(c.req.query('inventionId') ?? '', 10)
-			if (Number.isNaN(inventionId)) return c.json({ error: 'inventionId is required' }, 400)
+			const rawInventionId = (c.req.query('inventionId') ?? '').trim()
+			const inventionId = /^\d+$/.test(rawInventionId) ? Number(rawInventionId) : Number.NaN
+			if (!Number.isSafeInteger(inventionId) || inventionId <= 0)
+				return c.json({ error: 'inventionId is required' }, 400)
 			const invention = await getInventionById(c.env.DB, inventionId)
 			return invention ? c.json(invention) : c.notFound()
 		}
