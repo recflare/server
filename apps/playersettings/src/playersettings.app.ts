@@ -57,6 +57,7 @@ async function parseSettings(c: Context<App>): Promise<Array<{ key: string; valu
 		const list = Array.isArray(body) ? body : body == null ? [] : [body]
 		return list
 			.map((o) => {
+				if (typeof o !== 'object' || o === null) return { key: '', value: '' }
 				const rec = o as Record<string, unknown>
 				const key = rec.key ?? rec.Key
 				const value = rec.value ?? rec.Value
@@ -96,6 +97,7 @@ async function parseDeleteKeys(c: Context<App>): Promise<string[]> {
 		return list
 			.map((o) => {
 				if (typeof o === 'string') return o
+				if (typeof o !== 'object' || o === null) return ''
 				const rec = o as Record<string, unknown>
 				const key = rec.key ?? rec.Key
 				return typeof key === 'string' ? key : ''
