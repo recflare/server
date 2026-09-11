@@ -129,11 +129,12 @@ export const roomRoutes = new Hono<App>({ strict: false })
 				if (typeof fromBody === 'string' && fromBody !== '') return fromBody
 				return c.req.query(name) ?? ''
 			}
-			const roomId = Number.parseInt(param('roomId'), 10)
+			const rawRoomId = param('roomId').trim()
+			const roomId = /^\d+$/.test(rawRoomId) ? Number(rawRoomId) : Number.NaN
 			const role = Number.parseInt(param('role'), 10)
 
 			const accountId = await authedId(c)
-			if (accountId === null || Number.isNaN(roomId)) return c.json(false)
+			if (accountId === null || !Number.isSafeInteger(roomId) || roomId <= 0) return c.json(false)
 
 			const room = await getRoomById(c.env.DB, roomId)
 			if (!room) return c.json(false)
