@@ -3723,8 +3723,10 @@ const app = new Hono<App>({ strict: false })
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
 
-			const inventionId = Number.parseInt(c.req.query('inventionId') ?? '', 10)
-			if (Number.isNaN(inventionId)) return c.json({ error: 'inventionId is required' }, 400)
+			const rawInventionId = (c.req.query('inventionId') ?? '').trim()
+			const inventionId = /^\d+$/.test(rawInventionId) ? Number(rawInventionId) : Number.NaN
+			if (!Number.isSafeInteger(inventionId) || inventionId <= 0)
+				return c.json({ error: 'inventionId is required' }, 400)
 			// Absent/non-numeric requestedPrice reads as 0, which only matches a free invention —
 			// a priced one then fails the confirmation below rather than selling for nothing.
 			const requestedPrice = Number.parseInt(c.req.query('requestedPrice') ?? '0', 10) || 0
