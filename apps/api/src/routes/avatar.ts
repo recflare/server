@@ -341,7 +341,9 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 			const giftContext =
 				typeof body.GiftContext === 'string' ? Number.parseInt(body.GiftContext, 10) || 0 : 0
 			const message = typeof body.Message === 'string' ? body.Message : ''
-			const xp = typeof body.Xp === 'string' ? Number.parseInt(body.Xp, 10) || 0 : 0
+			const rawXp = typeof body.Xp === 'string' ? body.Xp.trim() : ''
+			const parsedXp = /^-?\d+$/.test(rawXp) ? Number(rawXp) : Number.NaN
+			const xp = Number.isSafeInteger(parsedXp) ? parsedXp : 0
 
 			// No EarnableRewards binding → always fall back to a token gift.
 			const tokenAmounts = [10, 25, 50, 100, 250, 500]
