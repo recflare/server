@@ -259,10 +259,8 @@ const app = new Hono<App>()
 
 			const body = (await c.req.parseBody().catch(() => ({}))) as Record<string, unknown>
 			const key = Object.keys(body).find((k) => k.toLowerCase() === 'clubid')
-			const clubId = Number.parseInt(
-				typeof body[key ?? ''] === 'string' ? String(body[key ?? '']) : '',
-				10
-			)
+			const rawClubId = typeof body[key ?? ''] === 'string' ? String(body[key ?? '']).trim() : ''
+			const clubId = /^\d+$/.test(rawClubId) ? Number(rawClubId) : Number.NaN
 			if (Number.isNaN(clubId) || clubId === 0) return clubError(c, 'Invalid clubId.')
 
 			const club = await getClub(c.env.DB, clubId)
