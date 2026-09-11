@@ -84,8 +84,11 @@ const DEFAULT_THREAD_MESSAGE_COUNT = 50
 function messageCount(c: Context<App>, fallback = DEFAULT_MESSAGE_COUNT): number {
 	// The GET routes spell it `MessageCount` in the query; the POST forms spell it
 	// `messageCount` in the body. Accept either, wherever it turns up.
-	const raw = Number.parseInt(c.req.query('MessageCount') ?? c.req.query('messageCount') ?? '', 10)
-	if (Number.isNaN(raw) || raw <= 0) return fallback
+	const value = (c.req.query('MessageCount') ?? c.req.query('messageCount') ?? '').trim()
+	if (!/^\d+$/.test(value)) return fallback
+
+	const raw = Number(value)
+	if (!Number.isSafeInteger(raw) || raw <= 0) return fallback
 	return Math.min(raw, MAX_MESSAGE_COUNT)
 }
 
