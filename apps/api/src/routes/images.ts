@@ -364,8 +364,12 @@ export const imageRoutes = new Hono<App>({ strict: false })
 			const roomId = Number.parseInt(c.req.param('roomId'), 10)
 			const sort = Number.parseInt(c.req.query('sort') ?? '0', 10) || 0
 			const filter = Number.parseInt(c.req.query('filter') ?? '0', 10) || 0
-			const skip = Number.parseInt(c.req.query('skip') ?? '0', 10) || 0
-			const take = Number.parseInt(c.req.query('take') ?? '100', 10) || 100
+			const rawSkip = (c.req.query('skip') ?? '0').trim()
+			const parsedSkip = /^\d+$/.test(rawSkip) ? Number(rawSkip) : Number.NaN
+			const skip = Number.isSafeInteger(parsedSkip) ? parsedSkip : 0
+			const rawTake = (c.req.query('take') ?? '100').trim()
+			const parsedTake = /^\d+$/.test(rawTake) ? Number(rawTake) : Number.NaN
+			const take = Number.isSafeInteger(parsedTake) && parsedTake > 0 ? parsedTake : 100
 			return c.json(await getImagesByRoom(c.env.DB, roomId, sort, filter, skip, take))
 		}
 	)
