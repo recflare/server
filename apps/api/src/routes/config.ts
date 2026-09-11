@@ -164,7 +164,7 @@ export const configRoutes = new Hono<App>({ strict: false })
 		}),
 		async (c) => {
 			const version = await validateAndGetVersion(c.req.raw, await c.env.JWT_SECRET.get())
-			const newerThanTarget = version !== null && version > GAME_VERSION
+			const newerThanTarget = version !== null && version > '20230414'
 			return c.json(newerThanTarget ? gameConfigsV1All2025 : gameConfigsV1All)
 		}
 	)

@@ -1,5 +1,5 @@
 /*
- * RecFlare — a poster for a game that's up right now.
+ * Rug Room — a poster for a game that's up right now.
  *
  * The page's job is to show that real people are playing on this server, then get you
  * into the game or the Discord. So the surface is warm-dark (the room the
@@ -947,6 +947,151 @@ h2 {
 .blob-upload button[type='submit'] {
 	padding: 8px 14px;
 	font-size: 0.85rem;
+}
+
+/* ---- Public player lookup ------------------------------------------------ */
+
+.player-search {
+        position: relative;
+        min-width: 190px;
+}
+
+.player-search input {
+        width: 190px;
+        margin: 0;
+        padding: 7px 10px;
+        font-size: 0.85rem;
+}
+
+.player-search-bubble {
+        position: absolute;
+        z-index: 20;
+        top: calc(100% + 8px);
+        left: 0;
+        width: 300px;
+        padding: 6px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--surface);
+        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.25);
+}
+
+.player-search-result {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        width: 100%;
+        padding: 8px;
+        border: 0;
+        border-radius: 7px;
+        background: transparent;
+        color: var(--text);
+        text-align: left;
+        font: inherit;
+        cursor: pointer;
+}
+
+.player-search-result:hover {
+        background: var(--surface-hi);
+}
+
+.player-search-avatar {
+        width: 36px;
+        height: 36px;
+        flex: 0 0 36px;
+        border-radius: 50%;
+        object-fit: cover;
+        background: var(--surface-hi);
+}
+
+.player-search-name,
+.player-search-handle {
+        display: block;
+}
+
+.player-search-name {
+        font-weight: 600;
+}
+
+.player-search-handle {
+        color: var(--muted);
+        font-size: 0.8rem;
+}
+
+.player-hero {
+        overflow: hidden;
+        padding: 0;
+}
+
+.player-banner {
+        display: block;
+        width: 100%;
+        height: 220px;
+        object-fit: cover;
+        background: var(--surface-hi);
+}
+
+.player-hero-body {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        padding: 20px;
+}
+
+.player-avatar {
+        width: 96px;
+        height: 96px;
+        flex: 0 0 96px;
+        border-radius: 50%;
+        object-fit: cover;
+        background: var(--surface-hi);
+        border: 3px solid var(--surface);
+}
+
+.player-hero-body h1 {
+        margin: 0;
+}
+
+.handle {
+        margin: 4px 0 0;
+        color: var(--muted);
+}
+
+.photo-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 10px;
+}
+
+.photo-thumb {
+        display: block;
+        width: 100%;
+        aspect-ratio: 1;
+        object-fit: cover;
+        border-radius: 8px;
+        background: var(--surface-hi);
+}
+
+@media (max-width: 700px) {
+        .player-search {
+                min-width: 0;
+        }
+
+        .player-search input {
+                width: 140px;
+        }
+
+        .player-search-bubble {
+                width: min(300px, calc(100vw - 40px));
+        }
+
+        .player-banner {
+                height: 160px;
+        }
+
+        .photo-grid {
+                grid-template-columns: repeat(2, 1fr);
+        }
 }
 
 /* ---- Forms -------------------------------------------------------------- */

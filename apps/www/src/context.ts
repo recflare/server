@@ -52,6 +52,7 @@ export type Env = SharedHonoEnv & {
 	 * signature/exp checks are the ones every other worker runs.
 	 */
 	JWT_SECRET: SecretsStoreSecret
+        INTERNAL_SECRET: string
 	/**
 	 * The Discord application's client id. PUBLIC — it ships to the browser, which needs
 	 * it to build the authorize URL — but kept in the Secrets Store beside its secret so

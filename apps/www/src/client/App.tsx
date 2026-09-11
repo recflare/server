@@ -6,11 +6,11 @@ import { GAME_VERSION } from '@repo/domain/src/presence-db'
 import { NotificationType } from '../../../notify/src/notification-types'
 import { authFailure, authUnreachable } from '../auth-messages'
 import {
-	DISCORD_INVITE,
-	DOWNLOAD_URL,
-	LICENSE_URL,
-	QUEST_DOWNLOAD_URL,
-	SOURCE_REPO,
+    DISCORD_INVITE,
+    DOWNLOAD_URL,
+    LICENSE_URL,
+    QUEST_DOWNLOAD_URL,
+    SOURCE_REPO,
 } from '../links'
 
 import type { ReactNode } from 'react'
@@ -572,6 +572,21 @@ const coachMessageAll = (messageContent: string): Promise<{ sent?: number }> =>
 		authed: true,
 	})
 
+interface OnlinePlayer {
+        accountId: number
+        username: string
+        displayName: string
+        roomId: number | null
+        roomInstanceId: number | null
+        roomName: string
+}
+
+const fetchOnlinePlayers = (): Promise<{ players: OnlinePlayer[] }> =>
+        call<{ players: OnlinePlayer[] }>('/api/admin/online-players', {
+                authed: true,
+        })
+
+
 /**
  * The same coach message to ONE player. `notify` queues it when they're offline, so
  * `queued` (rather than a 0 delivery) is what "they weren't online" looks like here —
@@ -872,6 +887,271 @@ function roomIdFromPath(path: string): number | null {
 	return match ? Number.parseInt(match[1], 10) : null
 }
 
+
+/** Public account shape, from `GET /account/:id` or `/account/search`. */
+interface PublicAccount {
+        accountId: number
+        username: string
+        displayName: string
+        profileImage: string
+        bannerImage: string
+        createdAt: string
+}
+
+/** A player's public photo, from the `ImagesPlayer` projection. */
+interface PublicPhoto {
+        SavedImageId: number
+        ImageName: string
+        CreatedAt: string
+        CheerCount: number
+}
+
+/** A player's public room — the narrow shape `/rooms/createdby/:id` serves. */
+interface PublicRoom {
+        RoomId: number
+        Name: string
+        ImageName: string
+        Stats: { VisitCount: number; CheerCount: number; FavoriteCount: number }
+}
+
+/** Prefix-search accounts by username — backs the header search bar. */
+async function searchPlayers(query: string): Promise<PublicAccount[]> {
+        if (query.trim() === '') return []
+        return call<PublicAccount[]>(`${where().accounts}/account/search?name=${encodeURIComponent(query.trim())}`)
+}
+
+const fetchPublicAccount = (username: string): Promise<PublicAccount | null> =>
+        searchPlayers(username).then(
+                (matches) => matches.find((m) => m.username.toLowerCase() === username.toLowerCase()) ?? null
+        )
+
+const fetchPublicPhotos = (accountId: number): Promise<PublicPhoto[]> =>
+        call<PublicPhoto[]>(`${where().api}/api/images/v4/player/${accountId}`)
+
+const fetchPublicRooms = (accountId: number): Promise<PublicRoom[]> =>
+        call<PublicRoom[]>(`${where().rooms}/rooms/ownedby/${accountId}`)
+
+/** The `/u/<username>` path, or null for any other path. */
+function usernameFromPath(path: string): string | null {
+        const match = /^\/u\/([^/]+)$/.exec(path)
+        return match ? decodeURIComponent(match[1]) : null
+}
+
+/**
+ * The header search bar — a rec.net-style bubble dropdown of matching players as you
+ * type. Debounced so it doesn't fire a search per keystroke; closes on selecting a
+ * result, on Escape, or on clicking outside it.
+ */
+function PlayerSearch({ navigate }: { navigate: Navigate }) {
+        const [query, setQuery] = useState('')
+        const [results, setResults] = useState<PublicAccount[]>([])
+        const [open, setOpen] = useState(false)
+        const containerRef = useRef<HTMLDivElement>(null)
+
+        useEffect(() => {
+                if (query.trim() === '') {
+                        setResults([])
+                        return
+                }
+                const timeout = setTimeout(() => {
+                        void searchPlayers(query)
+                                .then((r) => setResults(r.slice(0, 6)))
+                                .catch(() => setResults([]))
+                }, 250)
+                return () => clearTimeout(timeout)
+        }, [query])
+
+        useEffect(() => {
+                const onClickOutside = (e: MouseEvent) => {
+                        if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+                                setOpen(false)
+                        }
+                }
+                document.addEventListener('mousedown', onClickOutside)
+                return () => document.removeEventListener('mousedown', onClickOutside)
+        }, [])
+
+        const go = (username: string) => {
+                setOpen(false)
+                setQuery('')
+                navigate(`/u/${encodeURIComponent(username)}`)
+        }
+
+        return (
+                <div className="player-search" ref={containerRef}>
+                        <input
+                                type="text"
+                                placeholder="Search players…"
+                                value={query}
+                                onChange={(e) => {
+                                        setQuery(e.target.value)
+                                        setOpen(true)
+                                }}
+                                onFocus={() => setOpen(true)}
+                                onKeyDown={(e) => {
+                                        if (e.key === 'Escape') setOpen(false)
+                                        if (e.key === 'Enter' && results[0]) go(results[0].username)
+                                }}
+                        />
+                        {open && results.length > 0 && (
+                                <div className="player-search-bubble">
+                                        {results.map((r) => (
+                                                <button
+                                                        key={r.accountId}
+                                                        className="player-search-result"
+                                                        onClick={() => go(r.username)}
+                                                >
+                                                        <img
+                                                                className="player-search-avatar"
+                                                                src={`${where().img}/${r.profileImage}?width=64`}
+                                                                alt=""
+                                                        />
+                                                        <span>
+                                                                <span className="player-search-name">
+                                                                        {r.displayName || r.username}
+                                                                </span>
+                                                                <span className="player-search-handle">@{r.username}</span>
+                                                        </span>
+                                                </button>
+                                        ))}
+                                </div>
+                        )}
+                </div>
+        )
+}
+
+/**
+ * A player's public profile page (`/u/<username>`) — banner, avatar, bio-adjacent
+ * info, their public rooms, and their public photos. Read-only: this is the
+ * "rec.net-style profile" other players browse to, not the owner's own dashboard
+ * (that stays on `/account`).
+ */
+function PlayerPage({ username, navigate }: { username: string; navigate: Navigate }) {
+        const [account, setAccount] = useState<PublicAccount | null | undefined>(undefined)
+        const [rooms, setRooms] = useState<PublicRoom[] | null>(null)
+        const [photos, setPhotos] = useState<PublicPhoto[] | null>(null)
+        const [error, setError] = useState('')
+
+        useEffect(() => {
+                setAccount(undefined)
+                setRooms(null)
+                setPhotos(null)
+                void fetchPublicAccount(username)
+                        .then((a) => {
+                                setAccount(a)
+                                if (a) {
+                                        void fetchPublicRooms(a.accountId).then(setRooms).catch(() => setRooms([]))
+                                        void fetchPublicPhotos(a.accountId).then(setPhotos).catch(() => setPhotos([]))
+                                }
+                        })
+                        .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+        }, [username])
+
+        if (error) {
+                return (
+                        <main className="shell">
+                                <p className="error">{error}</p>
+                        </main>
+                )
+        }
+        if (account === undefined) {
+                return (
+                        <main className="shell">
+                                <p className="muted">Loading…</p>
+                        </main>
+                )
+        }
+        if (account === null) {
+                return (
+                        <main className="shell">
+                                <p className="muted">There&apos;s no player called @{username}.</p>
+                        </main>
+                )
+        }
+
+        const created = new Date(account.createdAt)
+
+        return (
+                <main className="shell wide">
+                        <section className="card player-hero">
+                                {account.bannerImage && (
+                                        <img
+                                                className="player-banner"
+                                                src={`${where().img}/${account.bannerImage}?width=1024`}
+                                                alt=""
+                                        />
+                                )}
+                                <div className="player-hero-body">
+                                        <img
+                                                className="player-avatar"
+                                                src={`${where().img}/${account.profileImage}?width=256`}
+                                                alt=""
+                                        />
+                                        <div>
+                                                <h1>{account.displayName || account.username}</h1>
+                                                <p className="handle">
+                                                        @{account.username}
+                                                        {!Number.isNaN(created.getTime()) &&
+                                                                ` · joined ${created.toLocaleDateString()}`}
+                                                </p>
+                                        </div>
+                                </div>
+                        </section>
+
+                        <section className="card">
+                                <h2>Rooms</h2>
+                                {rooms === null ? (
+                                        <p className="muted">Loading…</p>
+                                ) : rooms.length === 0 ? (
+                                        <p className="muted">No public rooms.</p>
+                                ) : (
+                                        <ul className="rooms">
+                                                {rooms.map((room) => (
+                                                        <li className="room" key={room.RoomId}>
+                                                                <Link to={`/rooms/${room.RoomId}`} navigate={navigate} className="room-link">
+                                                                        <img
+                                                                                className="room-thumb"
+                                                                                src={`${where().img}/${room.ImageName}?width=256`}
+                                                                                alt=""
+                                                                                loading="lazy"
+                                                                        />
+                                                                        <div className="room-body">
+                                                                                <span className="room-name">^{room.Name}</span>
+                                                                                <p className="room-stats">
+                                                                                        {room.Stats.VisitCount.toLocaleString()} visits
+                                                                                </p>
+                                                                        </div>
+                                                                </Link>
+                                                        </li>
+                                                ))}
+                                        </ul>
+                                )}
+                        </section>
+
+                        <section className="card">
+                                <h2>Photos</h2>
+                                {photos === null ? (
+                                        <p className="muted">Loading…</p>
+                                ) : photos.length === 0 ? (
+                                        <p className="muted">No public photos.</p>
+                                ) : (
+                                        <div className="photo-grid">
+                                                {photos.map((p) => (
+                                                        <img
+                                                                key={p.SavedImageId}
+                                                                className="photo-thumb"
+                                                                src={`${where().img}/${p.ImageName}?width=256`}
+                                                                alt=""
+                                                                loading="lazy"
+                                                        />
+                                                ))}
+                                        </div>
+                                )}
+                        </section>
+                </main>
+        )
+}
+
 export function App() {
 	// undefined = still checking the session; null = signed out.
 	const [account, setAccount] = useState<SelfAccount | null | undefined>(undefined)
@@ -880,6 +1160,7 @@ export function App() {
 	const [config, setConfig] = useState<SiteConfig | undefined>(undefined)
 	const { path, navigate } = useRouter()
 	const roomId = roomIdFromPath(path)
+	const lookupUsername = usernameFromPath(path)
 
 	useEffect(() => {
 		// Config first, and everything else after it: it carries the hostnames every other
@@ -937,6 +1218,8 @@ export function App() {
 				// Its own page rather than a dashboard tab: this path is Discord's registered
 				// redirect URI, so it has to be one stable URL a cold load can land on.
 				<ClaimPage account={account} config={config} navigate={navigate} />
+			) : lookupUsername !== null ? (
+				<PlayerPage username={lookupUsername} navigate={navigate} />
 			) : roomId !== null ? (
 				<RoomPage account={account} roomId={roomId} navigate={navigate} />
 			) : (
@@ -964,9 +1247,6 @@ function SiteFooter() {
 				<a href={DISCORD_INVITE} target="_blank" rel="noreferrer">
 					Discord
 				</a>
-				<a href={SOURCE_REPO} target="_blank" rel="noreferrer">
-					GitHub
-				</a>
 			</nav>
 		</footer>
 	)
@@ -987,9 +1267,10 @@ function NavBar({
 	return (
 		<header className="nav">
 			<Link to="/" navigate={navigate} className="brand">
-				RecFlare
+				Rug Room
 			</Link>
 			<nav className="nav-links">
+				<PlayerSearch navigate={navigate} />
 				<a href={DISCORD_INVITE} target="_blank" rel="noreferrer">
 					Discord
 				</a>
@@ -1127,7 +1408,7 @@ function Stage({
 				    trademark stays out of the headline and appears lower down, in
 				    plain nominative use next to the disclaimer. */}
 				<h1 className="stage-title">
-					Play <em>today</em>!
+					Play like it&apos;s <em>2024</em>.
 				</h1>
 				<p className="stage-lede">
 					The servers you remember, rebuilt and running — free, open source, and up right now.
@@ -1197,23 +1478,25 @@ function Stage({
 	)
 }
 
-/** The slideshow's back/forward mark. Decorative — the buttons carry the label. */
+/**
+ * The slideshow's back/forward mark. Decorative — the buttons carry the label.
+ */
 function Chevron({ next }: { next?: boolean }) {
-	return (
-		<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false">
-			<path
-				d={next ? 'M9 5l7 7-7 7' : 'M15 5l-7 7 7 7'}
-				fill="none"
-				stroke="currentColor"
-				strokeWidth="2.2"
-				strokeLinecap="round"
-				strokeLinejoin="round"
-			/>
-		</svg>
-	)
+    return (
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false">
+                    <path
+                            d={next ? 'M9 5l7 7-7 7' : 'M15 5l-7 7 7 7'}
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2.2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                    />
+            </svg>
+    )
 }
 
-/** What RecFlare is, under the fold, for whoever wants it. */
+/** What Rug Room is, under the fold, for whoever wants it. */
 function About({ slides, error }: { slides: Slide[] | null; error: string }) {
 	// The feed answering is proof the server replied, so the indicator can't claim
 	// the server is up when it isn't.
@@ -1222,27 +1505,26 @@ function About({ slides, error }: { slides: Slide[] | null; error: string }) {
 	return (
 		<section className="about">
 			<div>
-				<h2 className="about-title">A cloud architected server for the 2023/2025 game clients</h2>
+				<h2 className="about-title">Rug Room is a Community Made 2023 revival, soon to be 2025!</h2>
 				<p className="about-lede">
-					A free fan project, made by players who missed it. Aiming to be{' '}
-					<strong>feature-complete</strong> and infinitely scalable —{' '}
-					<strong>architected for the cloud</strong>, no gatekeeping, no basement server.
+					A free fan project, made by players who missed it. Built to be{' '}
+					<strong>feature-complete</strong> and always growing!{' '}
 				</p>
 			</div>
 			<div className="about-side">
 				<div className="about-links">
-					<a className="cta ghost" href={SOURCE_REPO} target="_blank" rel="noreferrer">
+					<a className="cta ghost" href="#" target="_blank" rel="noreferrer">
 						View the source
 					</a>
 				</div>
 				<div className="status-block">
 					<p className={`status ${state}`}>
 						<span className="dot" />
-						{state === 'online'
-							? 'Servers are up'
-							: state === 'down'
-								? "Can't reach the servers"
-								: 'Checking…'}
+						{state === 'down'
+						        ? "Can't reach the servers"
+						        : state === 'online'
+						                ? 'Servers are online'
+						                : 'Checking…'}
 					</p>
 					{/* Only when it's actually up: when it isn't, people want the status, not the joke. */}
 					{state === 'online' && <p className="status-quip">The cloud never goes down, right?</p>}
@@ -2113,6 +2395,7 @@ function Dashboard({
 			render: () => <EmailForm account={account} onChange={onChange} />,
 		},
 		{ id: 'password', label: 'Password', render: () => <PasswordForm /> },
+                                        { id: 'online-players', label: 'Online Players', render: () => <OnlinePlayersForm /> },
 		// Only when the operator has Discord configured — otherwise the panel has nothing to
 		// offer and the tab is a promise the server can't keep. The claim also still lives at
 		// /claim, because that URL is Discord's registered redirect and has to keep working.
@@ -2263,14 +2546,103 @@ function RoomCard({
 	)
 }
 
+/** Admin-only: send a coach/system message to every online player. */
+function OnlinePlayersForm() {
+        const [players, setPlayers] = useState<OnlinePlayer[]>([])
+        const [loading, setLoading] = useState(true)
+        const [error, setError] = useState('')
+
+        const load = useCallback(async () => {
+                setLoading(true)
+                setError('')
+
+                try {
+                        const result = await fetchOnlinePlayers()
+                        setPlayers(result.players ?? [])
+                } catch (e) {
+                        setError(e instanceof Error ? e.message : 'Failed to load online players.')
+                } finally {
+                        setLoading(false)
+                }
+        }, [])
+
+        useEffect(() => {
+                void load()
+        }, [load])
+
+        return (
+                <section className="card">
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem' }}>
+                                <div>
+                                        <h2>Online Players</h2>
+                                        <p className="muted">
+                                                Players with an active presence right now.
+                                        </p>
+                                </div>
+
+                                <button type="button" onClick={() => void load()} disabled={loading}>
+                                        {loading ? 'Refreshing…' : 'Refresh'}
+                                </button>
+                        </div>
+
+                        {error && <p className="error">{error}</p>}
+
+                        {!loading && !error && (
+                                <>
+                                        <p className="big">
+                                                {players.length} online player{players.length === 1 ? '' : 's'}
+                                        </p>
+
+                                        {players.length === 0 ? (
+                                                <p className="muted">Nobody is currently online.</p>
+                                        ) : (
+                                                <div>
+                                                        {players.map((player) => (
+                                                                <div
+                                                                        key={player.accountId}
+                                                                        style={{
+                                                                                display: 'flex',
+                                                                                justifyContent: 'space-between',
+                                                                                alignItems: 'center',
+                                                                                padding: '0.75rem 0',
+                                                                                borderBottom: '1px solid rgba(255,255,255,0.08)',
+                                                                        }}
+                                                                >
+                                                                        <div>
+                                                                                <strong>
+                                                                                        {player.displayName || player.username}
+                                                                                </strong>
+                                                                                <div className="muted">
+                                                                                        @{player.username}
+                                                                                </div>
+                                                                                <div className="muted">
+                                                                                        Room: {player.roomName}
+                                                                                </div>
+                                                                        </div>
+
+                                                                        <div style={{ textAlign: 'right' }}>
+                                                                                <strong>{player.roomName}</strong>
+                                                                                <div className="muted">
+                                                                                        #{player.accountId}
+                                                                                </div>
+                                                                        </div>
+                                                                </div>
+                                                        ))}
+                                                </div>
+                                        )}
+                                </>
+                        )}
+                </section>
+        )
+}
+
 /**
  * Admin-only: send a coach/system message, either to one player by `@username` or to
  * everyone online.
  *
  * The two go to different endpoints because they behave differently, not just in reach:
- * the broadcast is online-only (nothing holds a message with no addressee), while a named
- * recipient's message is queued by the hub and delivered whenever they next connect. The
- * recipient box therefore says which of those the operator is about to do.
+ * the broadcast is online-only, while a named recipient's message is queued by the hub
+ * and delivered whenever they next connect.
  */
 function CoachMessageForm() {
 	const [recipient, setRecipient] = useState('')
@@ -2495,6 +2867,61 @@ function EmailForm({
 			</form>
 		</section>
 	)
+}
+
+
+function SignupPage({
+        navigate,
+        onAuthed,
+}: {
+        navigate: Navigate
+        onAuthed: (a: SelfAccount) => void
+}) {
+        const [password, setPassword] = useState('')
+        const { pending, error, run } = useAction()
+
+        return (
+                <main className="card">
+                        <h1>Create account</h1>
+
+                        <form
+                                onSubmit={(e) => {
+                                        e.preventDefault()
+
+                                        void run(async () => {
+                                                await call('/api/signup', {
+                                                        json: { password },
+                                                })
+
+                                                const me = await call<SelfAccount>('/api/me', {
+                                                        authed: true,
+                                                })
+                                                onAuthed(me)
+                                                navigate('/account')
+
+                                                return ''
+                                        })
+                                }}
+                        >
+                                <label>
+                                        Password
+                                        <input
+                                                type="password"
+                                                value={password}
+                                                autoComplete="new-password"
+                                                onChange={(e) => setPassword(e.target.value)}
+                                                required
+                                        />
+                                </label>
+
+                                {error && <p className="error">{error}</p>}
+
+                                <button type="submit" disabled={pending}>
+                                        {pending ? 'Creating…' : 'Create account'}
+                                </button>
+                        </form>
+                </main>
+        )
 }
 
 function PasswordForm() {

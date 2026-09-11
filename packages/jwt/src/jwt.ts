@@ -225,8 +225,8 @@ export async function generateToken(
 	// authorize itself; a token with only `sub` is rejected before login finishes.
 	return sign(
 		{
-			iss: 'https://auth.recflare.net',
-			aud: 'https://auth.recflare.net',
+			iss: 'https://auth.rugnetarchival.xyz',
+			aud: 'https://auth.rugnetarchival.xyz',
 			nbf: now,
 			iat: now,
 			exp: now + TOKEN_TTL_SECONDS,

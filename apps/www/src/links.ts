@@ -1,29 +1,20 @@
-/**
- * Outbound links shared by the React client and the Worker-rendered pages.
- *
- * The privacy policy (`privacy.ts`) is rendered server-side while the rest of the site
- * is a React SPA, so both need the same Discord/GitHub URLs. They live here so a moved
- * invite or a renamed repo is one edit, not two that can silently drift — the policy
- * naming a dead contact channel is exactly what VRC.Privacy.4 fails on.
- */
+/** The community Discord */
+export const DISCORD_INVITE = 'https://discord.gg/m569yWvGEG'
 
-/** The community Discord — the join instructions and the build both live there. */
-export const DISCORD_INVITE = 'https://join.recflare.net'
-
-/** Where the stage's "Download for PC" button goes: the client's release listing. */
-export const DOWNLOAD_URL = 'https://github.com/recflare/client/releases'
+/** Where the stage's "Download for PC" button goes. */
+export const DOWNLOAD_URL = 'https://discord.gg/m569yWvGEG'
 
 /** The stage's "Download for Quest" button: the build's listing on the Meta store. */
 export const QUEST_DOWNLOAD_URL = 'https://www.meta.com/s/6lL20Fnhz'
 
-/** The public source repo, linked from the homepage and footer. */
-export const SOURCE_REPO = 'https://github.com/orgs/recflare/repositories'
+/** Community/source link */
+export const SOURCE_REPO = 'https://discord.gg/m569yWvGEG'
 
-/** The repo's licence, behind the footer's "MIT licensed". */
-export const LICENSE_URL = `${SOURCE_REPO}/blob/main/LICENSE`
+/** License */
+export const LICENSE_URL = 'https://docs.google.com/document/d/1wy1cveZqbsL0OorG_6P8PmN0rhsFq84063nsVf8zu4E/edit?usp=sharing'
 
-/** Where a data-deletion or privacy request can be opened without a Discord account. */
-export const ISSUES_URL = `${SOURCE_REPO}/issues/new`
+/** Privacy/data-deletion contact. */
+export const ISSUES_URL = 'https://discord.gg/m569yWvGEG'
 
 /**
  * Mailbox for privacy and data-deletion requests, or '' when there isn't one.
@@ -34,4 +25,4 @@ export const ISSUES_URL = `${SOURCE_REPO}/issues/new`
  * are free and open to anyone in any region — which is what VRC.Privacy.4 asks for. Set
  * it to a real, monitored mailbox and the policy adds it as the preferred contact.
  */
-export const PRIVACY_EMAIL: string = 'privacy@recflare.net'
+export const PRIVACY_EMAIL: string = 'fusionthemadman@gmail.com'

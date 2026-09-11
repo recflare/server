@@ -14,7 +14,7 @@
 		{
 			"binding": "DB",
 			"database_name": "recflare",
-			"database_id": "local"
+			"database_id": "b7569377-8aec-4b39-8ade-4400b8d39bd7"
 		}
 	],
 	// React SPA client build (Vite emits it to dist/www/client). Static assets are
@@ -38,6 +38,7 @@
 	// Horizon Store re-fetches the privacy policy URL to confirm it's live, and dropping
 	// it from this list would serve that fetch the SPA shell instead of the policy.
 	"assets": {
+                "directory": "./dist/client",
 		"binding": "ASSETS",
 		"not_found_handling": "single-page-application",
 		"run_worker_first": ["/api/*", "/docs", "/docs/openapi/*", "/privacy", "/server-status"]
@@ -59,12 +60,12 @@
 	"secrets_store_secrets": [
 		{
 			"binding": "TURNSTILE_SITE_KEY",
-			"store_id": "local",
+			"store_id": "108d4951c92b427a92cf6ef643d14626",
 			"secret_name": "TURNSTILE_SITE_KEY"
 		},
 		{
 			"binding": "TURNSTILE_SECRET_KEY",
-			"store_id": "local",
+			"store_id": "108d4951c92b427a92cf6ef643d14626",
 			"secret_name": "TURNSTILE_SECRET_KEY"
 		},
 		// The shared HS256 signing key, bound here for the ONE www route that acts on a
@@ -128,25 +129,10 @@
 		// (see run-wrangler-deploy). www serves these to the SPA via `/api/config`, which
 		// is how one client build works for any operator. For local dev, point it at a
 		// deployed domain so the page has real workers to call.
-		"DOMAIN": "rec.example.com",
-		// The Discord server the benefits claim checks membership of, and the roles in it
-		// that grant Rec Room Plus. Every value here is a Discord SNOWFLAKE — all digits, no
-		// letters — copied off a client with Developer Mode on (right-click the server or the
-		// role → Copy ID). They are ids, not names: "Supporter" is what the role is called,
-		// 1077000000000000002 is what goes here. Not credentials, so they live in this file
-		// rather than in the Secrets Store; quoted as STRINGS because a snowflake exceeds
-		// 2^53 and would lose precision as a JSON number.
-		//
-		// ROLE_IDS is a LIST, separated by commas and/or whitespace. Any ONE of them
-		// qualifies, so several tiers can share the benefit:
-		//
-		//   "DISCORD_BENEFITS_ROLE_IDS": "1077000000000000001,1077000000000000002"
-		//
-		// Empty by default: an operator who hasn't set up a Discord app has no server to
-		// point at, and an empty value (or one that parses to no ids) closes the claim — see
-		// src/discord.ts `discordConfig` — instead of leaving a form that grants Plus to
-		// anyone who signs in with Discord.
-		"DISCORD_GUILD_ID": "",
-		"DISCORD_BENEFITS_ROLE_IDS": ""
+		"DOMAIN": "rugnetarchival.xyz"
+         // Discord benefits are disabled for this private deployment.
+         "DISCORD_GUILD_ID": "",
+         "DISCORD_BENEFITS_ROLE_IDS": ""
+ e0f802cee5db61f6e278c204f6ecf6d98cca9ce0
 	}
 }

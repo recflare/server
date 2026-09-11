@@ -31,6 +31,8 @@ export const SCHEMA_DDL: string[] = [
 export interface Account {
 	accountId: number
 	username: string
+	/** Set by an admin via the ban command. Login/token refresh is refused while true. */
+	isBanned?: boolean
 	displayName: string
 	profileImage: string
 	/** Profile banner image key, set by `accounts` `PUT /account/me/bannerimage`. `""` until then. */
@@ -280,6 +282,20 @@ export async function setLastLoginTime(db: D1Database, id: number, time: string)
 			"UPDATE account SET data = json_set(data, '$.lastLoginTime', ?2) WHERE account_id = ?1"
 		)
 		.bind(id, time)
+		.run()
+}
+
+/**
+ * Set (or clear, with banned=false) an account's ban flag. Enforced at login/
+ * token-refresh time in auth.app.ts — a banned account is refused a new token,
+ * but does NOT kill an already-active session (RecFlare's REST API has no way
+ * to forcibly disconnect an active Photon session); the current session runs
+ * until it naturally expires or the player tries to relogin/refresh.
+ */
+export async function setBanned(db: D1Database, id: number, banned: boolean): Promise<void> {
+	await db
+		.prepare("UPDATE account SET data = json_set(data, '$.isBanned', ?2) WHERE account_id = ?1")
+		.bind(id, banned)
 		.run()
 }
 
