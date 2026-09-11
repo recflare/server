@@ -4123,6 +4123,7 @@ describe('rooms endpoints', () => {
 			'GET /rooms/{roomId}/experience/player',
 			'GET /rooms/{roomId}/interactionby/me',
 			'GET /rooms/{roomId}/playerdata/me',
+			'GET /rooms/{roomId}/roles/myrole',
 			'GET /rooms/{roomId}/similar',
 			'GET /rooms/{roomId}/subrooms/{subRoomId}/saves',
 			'GET /rooms/{roomId}/subrooms/{subRoomId}/saves/no_unity_assets',
