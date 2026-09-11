@@ -1214,8 +1214,10 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 			},
 		}),
 		async (c) => {
-			const roomId = Number.parseInt(c.req.query('id') ?? '', 10)
-			if (Number.isNaN(roomId)) return c.json({ error: 'id is required' }, 400)
+			const rawRoomId = (c.req.query('id') ?? '').trim()
+			const roomId = /^\d+$/.test(rawRoomId) ? Number(rawRoomId) : Number.NaN
+			if (!Number.isSafeInteger(roomId) || roomId <= 0)
+				return c.json({ error: 'id is required' }, 400)
 			const skip = Number.parseInt(c.req.query('skip') ?? '0', 10) || 0
 			const take = Number.parseInt(c.req.query('take') ?? '100', 10) || 100
 			return c.json(await getInventionsByRoom(c.env.DB, roomId, skip, take))
