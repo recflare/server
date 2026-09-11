@@ -1175,8 +1175,12 @@ const app = new Hono<App>()
 	.get('/role/developer/:id', describeRoute(roleLookup('developer')), async (c) => {
 		const { id } = c.req.param()
 		logger.info('developer role lookup', { id })
-		const accountId = Number.parseInt(id, 10)
-		const account = Number.isNaN(accountId) ? null : await getAccount(c.env.DB, accountId)
+		const rawAccountId = id.trim()
+		const accountId = /^\d+$/.test(rawAccountId) ? Number(rawAccountId) : Number.NaN
+		const account =
+			Number.isSafeInteger(accountId) && accountId > 0
+				? await getAccount(c.env.DB, accountId)
+				: null
 		if (!account) return c.body(null, 404)
 		return c.json(account.isDeveloper === true)
 	})
@@ -1187,8 +1191,12 @@ const app = new Hono<App>()
 	.get('/role/moderator/:id', describeRoute(roleLookup('moderator')), async (c) => {
 		const { id } = c.req.param()
 		logger.info('moderator role lookup', { id })
-		const accountId = Number.parseInt(id, 10)
-		const account = Number.isNaN(accountId) ? null : await getAccount(c.env.DB, accountId)
+		const rawAccountId = id.trim()
+		const accountId = /^\d+$/.test(rawAccountId) ? Number(rawAccountId) : Number.NaN
+		const account =
+			Number.isSafeInteger(accountId) && accountId > 0
+				? await getAccount(c.env.DB, accountId)
+				: null
 		if (!account) return c.body(null, 404)
 		return c.json(account.isModerator === true)
 	})
