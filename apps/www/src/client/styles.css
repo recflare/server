@@ -1150,3 +1150,260 @@ button[type='submit']:disabled {
 		transition-duration: 0.01ms !important;
 	}
 }
+
+/* ---- Player search ------------------------------------------------------ */
+
+.player-search {
+        position: relative;
+        width: min(280px, 100%);
+}
+
+.player-search input {
+        margin: 0;
+        height: 40px;
+        padding: 8px 12px;
+        border-radius: 999px;
+        background: var(--surface);
+        border-color: var(--line);
+        transition:
+                border-color 0.15s ease,
+                background 0.15s ease,
+                box-shadow 0.15s ease;
+}
+
+.player-search input:focus {
+        border-color: var(--accent);
+        background: var(--surface-hi);
+        box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+        outline: none;
+}
+
+.player-search-bubble {
+        position: absolute;
+        z-index: 20;
+        top: calc(100% + 8px);
+        left: 0;
+        right: 0;
+        padding: 6px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        box-shadow: 0 12px 30px rgb(0 0 0 / 28%);
+}
+
+.player-search-result {
+        display: flex;
+        align-items: center;
+        width: 100%;
+        gap: 10px;
+        padding: 8px;
+        border: 0;
+        border-radius: 8px;
+        background: transparent;
+        color: var(--text);
+        text-align: left;
+        cursor: pointer;
+        font-family: var(--body);
+}
+
+.player-search-result:hover,
+.player-search-result:focus-visible {
+        background: var(--surface-hi);
+}
+
+.player-search-avatar {
+        width: 36px;
+        height: 36px;
+        flex: none;
+        object-fit: cover;
+        border-radius: 50%;
+        border: 1px solid var(--line);
+        background: var(--surface-hi);
+}
+
+.player-search-name {
+        display: block;
+        overflow: hidden;
+        font-weight: 600;
+        line-height: 1.25;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+}
+
+.player-search-handle {
+        display: block;
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 0.78rem;
+        line-height: 1.2;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+}
+
+
+
+        .nav {
+                flex-wrap: wrap;
+        }
+
+        .player-profile-grid {
+                grid-template-columns: 1fr;
+        }
+}
+
+@media (max-width: 520px) {
+        .player-profile-hero {
+                margin-bottom: 62px;
+        }
+
+        .player-profile-banner {
+                height: 100px;
+        }
+
+        .player-profile-info {
+                right: 14px;
+                bottom: 14px;
+                left: 14px;
+                gap: 12px;
+        }
+
+        .player-avatar {
+                width: 88px;
+                height: 88px;
+                border-width: 3px;
+        }
+
+        .player-profile-name h1 {
+                font-size: 1.35rem;
+        }
+
+        .player-photos {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+}
+
+/* ---- Public player profiles -------------------------------------------- */
+
+.player-hero {
+        position: relative;
+        overflow: hidden;
+        padding: 0;
+        margin-bottom: 16px;
+        background: var(--surface);
+}
+
+.player-banner {
+        display: block;
+        width: 100%;
+        height: 220px;
+        object-fit: cover;
+        border-bottom: 1px solid var(--line);
+        background:
+                radial-gradient(
+                        circle at 80% 20%,
+                        color-mix(in srgb, var(--accent) 24%, transparent),
+                        transparent 45%
+                ),
+                linear-gradient(
+                        135deg,
+                        var(--surface-hi),
+                        var(--surface)
+                );
+}
+
+.player-hero-body {
+        display: flex;
+        align-items: flex-end;
+        gap: 18px;
+        padding: 0 24px 24px;
+        min-height: 112px;
+}
+
+.player-hero:not(:has(.player-banner)) .player-hero-body {
+        padding-top: 24px;
+}
+
+.player-avatar {
+        width: 112px;
+        height: 112px;
+        flex: none;
+        object-fit: cover;
+        margin-top: -56px;
+        border: 4px solid var(--surface);
+        border-radius: 50%;
+        background: var(--surface-hi);
+        box-shadow: 0 5px 20px rgb(0 0 0 / 30%);
+}
+
+.player-hero-body h1 {
+        margin: 0;
+        font-size: clamp(1.5rem, 4vw, 2.1rem);
+        line-height: 1.05;
+        overflow-wrap: anywhere;
+}
+
+.player-hero-body .handle {
+        margin: 6px 0 0;
+        color: var(--muted);
+        font-size: 0.9rem;
+}
+
+.player-hero + .card {
+        margin-top: 16px;
+}
+
+.photo-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 16px;
+}
+
+.photo-thumb {
+        display: block;
+        width: 100%;
+        aspect-ratio: 1 / 1;
+        object-fit: cover;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        background: var(--surface-hi);
+        transition:
+                transform 0.15s ease,
+                border-color 0.15s ease,
+                box-shadow 0.15s ease;
+}
+
+.photo-thumb:hover {
+        transform: translateY(-2px);
+        border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
+        box-shadow: 0 6px 18px rgb(0 0 0 / 22%);
+}
+
+@media (max-width: 620px) {
+        .player-banner {
+                height: 160px;
+        }
+
+        .player-hero-body {
+                align-items: flex-start;
+                flex-direction: column;
+                gap: 10px;
+                padding: 0 18px 20px;
+        }
+
+        .player-avatar {
+                width: 92px;
+                height: 92px;
+                margin-top: -46px;
+                border-width: 3px;
+        }
+
+        .player-hero-body h1 {
+                font-size: 1.5rem;
+        }
+
+        .photo-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+}
