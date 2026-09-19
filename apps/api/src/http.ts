@@ -1,4 +1,4 @@
-import { validateAndGetAccountId, validateAndGetRoles } from '@repo/jwt'
+import { validateAndGetAccountId, validateAndGetPlatform, validateAndGetRoles } from '@repo/jwt'
 
 import type { Context } from 'hono'
 import type { App } from './context'
@@ -20,6 +20,15 @@ export async function authedId(c: Context<App>): Promise<number | null> {
  */
 export async function authedRoles(c: Context<App>): Promise<string[] | null> {
 	return validateAndGetRoles(c.req.raw, await c.env.JWT_SECRET.get())
+}
+
+/**
+ * The `platform` claim from a Bearer token — the PlatformType int the caller signed in
+ * from. `null` when the request carries no valid token or the token names no platform.
+ * Shaped to mirror {@link authedId}.
+ */
+export async function authedPlatform(c: Context<App>): Promise<number | null> {
+	return validateAndGetPlatform(c.req.raw, await c.env.JWT_SECRET.get())
 }
 
 /** Results.Unauthorized() equivalent — 401 with empty body. */

@@ -135,6 +135,34 @@ export async function validateAndGetVersion(
 	}
 }
 
+/**
+ * Validate a request's bearer token and return its `platform` claim — the PlatformType int
+ * the caller signed in from (0 Steam, 1 Oculus, …), stamped by {@link generateToken}, which
+ * writes the same number under `rn.plat` too; that is read as the fallback. `null` when the
+ * request carries no valid token, and `null` too when a valid token names no platform (or
+ * names one that isn't an integer): callers then serve the platform-neutral answer rather
+ * than guess one.
+ */
+export async function validateAndGetPlatform(
+	request: Request,
+	secret: string
+): Promise<number | null> {
+	const authHeader = request.headers.get('Authorization')
+	if (!authHeader || !authHeader.toLowerCase().startsWith('bearer ')) return null
+
+	const token = authHeader.slice('bearer '.length)
+	try {
+		const payload = await verify(token, secret, 'HS256') // checks exp/nbf/signature
+		// `generateToken` stamps both as numbers; the Photon token's `rn.plat` is a string,
+		// so a numeric string is accepted as well.
+		const raw = payload.platform ?? payload['rn.plat']
+		const platform = typeof raw === 'string' && /^-?\d+$/.test(raw) ? Number(raw) : raw
+		return typeof platform === 'number' && Number.isInteger(platform) ? platform : null
+	} catch {
+		return null
+	}
+}
+
 /** Scopes stamped onto every token (as a claim array). */
 const TOKEN_SCOPES = [
 	'profile',
