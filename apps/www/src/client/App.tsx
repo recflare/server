@@ -810,6 +810,10 @@ function usernameFromPath(path: string): string | null {
 	return match ? decodeURIComponent(match[1]) : null
 }
 
+// Off for now, not gone: the search bar is hidden from the nav while `/u/:name` profiles
+// stay reachable by URL. Flip this to put it back — nothing else was removed.
+const SHOW_PLAYER_SEARCH: boolean = false
+
 /**
  * The header search bar — a rec.net-style bubble dropdown of matching players as you
  * type. Debounced so it doesn't fire a search per keystroke; closes on selecting a
@@ -880,6 +884,46 @@ function PlayerSearch({ navigate }: { navigate: Navigate }) {
 				</div>
 			)}
 		</div>
+	)
+}
+
+/**
+ * A grid of photo thumbnails; clicking one opens it full size.
+ *
+ * The thumbnail is the img worker's cached 256px variant; the popup asks for the same key
+ * with NO transform, which is the original upload. The popup is a native `<dialog>` opened
+ * with `showModal()`, so Escape, the backdrop, and keeping focus inside it are the
+ * browser's work rather than ours — all that's added is closing on a click anywhere, since
+ * there is nothing in it to interact with but the photo.
+ *
+ * Safe to call `where()` in render: a caller only has photos to pass once a fetch that
+ * went through it has resolved (see MyRooms).
+ */
+function PhotoGrid({ photos }: { photos: PublicPhoto[] }) {
+	const [open, setOpen] = useState<PublicPhoto | null>(null)
+	const dialogRef = useRef<HTMLDialogElement>(null)
+
+	useEffect(() => {
+		if (open) dialogRef.current?.showModal()
+	}, [open])
+
+	return (
+		<>
+			<div className="photo-grid">
+				{photos.map((p) => (
+					<button key={p.SavedImageId} className="photo-button" onClick={() => setOpen(p)} aria-label="View photo">
+						<img className="photo-thumb" src={`${where().img}/${p.ImageName}?width=256`} alt="" loading="lazy" />
+					</button>
+				))}
+			</div>
+			{/* Mounted only while open, so the full-size image isn't fetched until asked for.
+			    `onClose` covers Escape, which closes the dialog without going through us. */}
+			{open && (
+				<dialog ref={dialogRef} className="photo-modal" onClose={() => setOpen(null)} onClick={() => setOpen(null)}>
+					<img src={`${where().img}/${open.ImageName}`} alt="" />
+				</dialog>
+			)}
+		</>
 	)
 }
 
@@ -982,11 +1026,7 @@ function PlayerPage({ username, navigate }: { username: string; navigate: Naviga
 				) : photos.length === 0 ? (
 					<p className="muted">No public photos.</p>
 				) : (
-					<div className="photo-grid">
-						{photos.map((p) => (
-							<img key={p.SavedImageId} className="photo-thumb" src={`${where().img}/${p.ImageName}?width=256`} alt="" loading="lazy" />
-						))}
-					</div>
+					<PhotoGrid photos={photos} />
 				)}
 			</section>
 		</main>
@@ -1131,7 +1171,7 @@ function NavBar({
 				RecFlare
 			</Link>
 			<nav className="nav-links">
-				<PlayerSearch navigate={navigate} />
+				{SHOW_PLAYER_SEARCH && <PlayerSearch navigate={navigate} />}
 				<a href={DISCORD_INVITE} target="_blank" rel="noreferrer">
 					Discord
 				</a>
@@ -2319,6 +2359,7 @@ function Dashboard({
 		// First, so a player who just signed in lands on what they made rather than on a
 		// settings form they opened the page to avoid.
 		{ id: 'rooms', label: 'My rooms', render: () => <MyRooms navigate={navigate} /> },
+		{ id: 'photos', label: 'My photos', render: () => <MyPhotos accountId={account.accountId} /> },
 		{
 			id: 'username',
 			label: 'Username',
@@ -2422,6 +2463,42 @@ function MyRooms({ navigate }: { navigate: Navigate }) {
 						<RoomCard key={room.RoomId} room={room} imgHost={where().img} navigate={navigate} />
 					))}
 				</ul>
+			)}
+		</section>
+	)
+}
+
+/**
+ * The photos the signed-in player has taken — the same grid their public profile shows.
+ *
+ * Public photos only, because it reads the same list the profile does
+ * (`/api/images/v4/player/:id`, which serves nothing private). Unlike "My rooms" there is
+ * no owner's view behind it yet: a photo kept private in game doesn't appear here.
+ */
+function MyPhotos({ accountId }: { accountId: number }) {
+	const [photos, setPhotos] = useState<PublicPhoto[] | null>(null)
+	const [error, setError] = useState('')
+
+	useEffect(() => {
+		void fetchPublicPhotos(accountId)
+			.then(setPhotos)
+			.catch((e) => setError(e instanceof Error ? e.message : String(e)))
+	}, [accountId])
+
+	return (
+		<section className="card">
+			<h2>My photos</h2>
+			<p className="muted">The public photos you&apos;ve taken in game, newest first.</p>
+			{error ? (
+				<p className="error">{error}</p>
+			) : photos === null ? (
+				<p className="muted">Loading…</p>
+			) : photos.length === 0 ? (
+				<p className="muted">
+					No public photos yet. Photos you take in game and share publicly show up here.
+				</p>
+			) : (
+				<PhotoGrid photos={photos} />
 			)}
 		</section>
 	)

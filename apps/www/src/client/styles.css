@@ -1721,6 +1721,7 @@ button[type='submit']:disabled {
 }
 
 .player-hero:not(:has(.player-banner)) .player-hero-body {
+	align-items: center;
 	padding-top: 24px;
 }
 
@@ -1734,6 +1735,12 @@ button[type='submit']:disabled {
 	border-radius: 50%;
 	background: var(--surface-hi);
 	box-shadow: 0 5px 20px rgb(0 0 0 / 30%);
+}
+
+/* The negative margin hangs the avatar over the banner's bottom edge. With no banner
+   there is nothing to hang over, and the card's `overflow: hidden` clips the top off. */
+.player-hero:not(:has(.player-banner)) .player-avatar {
+	margin-top: 0;
 }
 
 .player-hero-body h1 {
@@ -1760,6 +1767,16 @@ button[type='submit']:disabled {
 	margin-top: 16px;
 }
 
+/* The thumbnail's click target: a real button, for the keyboard, with none of its looks. */
+.photo-button {
+	display: block;
+	padding: 0;
+	border: 0;
+	border-radius: 9px;
+	background: none;
+	cursor: zoom-in;
+}
+
 .photo-thumb {
 	display: block;
 	width: 100%;
@@ -1780,6 +1797,30 @@ button[type='submit']:disabled {
 	box-shadow: 0 6px 18px rgb(0 0 0 / 22%);
 }
 
+/* The full-size popup. The dialog itself is invisible — just the photo, fitted to the
+   viewport, over the dimmed page. */
+.photo-modal {
+	max-width: 94vw;
+	max-height: 94vh;
+	padding: 0;
+	border: 0;
+	background: none;
+	overflow: visible;
+	cursor: zoom-out;
+}
+
+.photo-modal::backdrop {
+	background: rgb(0 0 0 / 80%);
+}
+
+.photo-modal img {
+	display: block;
+	max-width: 94vw;
+	max-height: 94vh;
+	border-radius: 9px;
+	box-shadow: 0 10px 40px rgb(0 0 0 / 50%);
+}
+
 @media (max-width: 620px) {
 	.player-banner {
 		height: 160px;
@@ -1790,6 +1831,10 @@ button[type='submit']:disabled {
 		flex-direction: column;
 		gap: 10px;
 		padding: 0 18px 20px;
+	}
+
+	.player-hero:not(:has(.player-banner)) .player-hero-body {
+		align-items: flex-start;
 	}
 
 	.player-avatar {
