@@ -27,6 +27,8 @@
  * as JSON by 0022_custom_avatar_item_json.sql, applied under its own `migrations_table`).
  */
 
+import { PlatformType } from '@repo/domain/src/enums'
+
 import { COACH_ACCOUNT_ID } from './custom-avatar-items-load'
 
 /** Schema DDL (mirror of migrations/0022_custom_avatar_item_json.sql). */
@@ -294,6 +296,47 @@ export async function getCustomAvatarItems(
 		.all<Row>()
 	const byId = new Map(results.map(toDto).map((item) => [item.CustomAvatarItemId, item]))
 	return ids.flatMap((id) => byId.get(id) ?? [])
+}
+
+/**
+ * Where the QUEST builds of the assetbundles live, relative to the PC ones. An assetbundle is
+ * built per Unity target, and a save names its bundle by bare filename for the client to fetch
+ * from the cdn's `/avatar/`; the Android build of the same bundle keeps the same filename one
+ * folder down, so a Quest caller is served `quest/<name>.assetbundle` and asks the cdn for
+ * `/avatar/quest/<name>.assetbundle`.
+ */
+export const QUEST_ASSET_PREFIX = 'quest/'
+
+/** Whether a token's `platform` claim is the Quest's — `PlatformType.Oculus`. */
+export function isQuestPlatform(platform: number | null): boolean {
+	return platform === PlatformType.Oculus
+}
+
+/**
+ * An assetbundle name under {@link QUEST_ASSET_PREFIX}. Only `.assetbundle` names are touched,
+ * and one that already carries the prefix is left alone; null (an absent `UnityAsset2`) is
+ * returned as it came.
+ */
+function questAsset<T extends string | null>(name: T): T | string {
+	if (name === null || !name.endsWith('.assetbundle')) return name
+	return name.startsWith(QUEST_ASSET_PREFIX) ? name : QUEST_ASSET_PREFIX + name
+}
+
+/**
+ * An item as a QUEST caller is served it: every save's `UnityAsset`/`UnityAsset2` pointed at
+ * the Quest build (see {@link QUEST_ASSET_PREFIX}). Per-response, never stored — the row keeps
+ * the bare names, which are what every other platform is served. The hashes are left as
+ * stored. A player-made shirt has no saves and comes back unchanged.
+ */
+export function toQuestCustomAvatarItem(item: CustomAvatarItem): CustomAvatarItem {
+	return {
+		...item,
+		CurrentSaves: item.CurrentSaves.map((save) => ({
+			...save,
+			UnityAsset: questAsset(save.UnityAsset),
+			UnityAsset2: questAsset(save.UnityAsset2),
+		})),
+	}
 }
 
 /**

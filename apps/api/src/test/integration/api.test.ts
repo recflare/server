@@ -213,7 +213,8 @@ function b64url(input: ArrayBuffer | string): string {
 async function bearer(
 	sub = '42',
 	roles?: string[],
-	version?: string
+	version?: string,
+	platform?: number
 ): Promise<Record<string, string>> {
 	const now = Math.floor(Date.now() / 1000)
 	const signingInput = `${b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))}.${b64url(
@@ -222,6 +223,7 @@ async function bearer(
 			exp: now + 3600,
 			...(roles && { role: roles }),
 			...(version && { 'rn.ver': version }),
+			...(platform !== undefined && { platform, 'rn.plat': platform }),
 		})
 	)}`
 	const key = await crypto.subtle.importKey(
@@ -1472,6 +1474,27 @@ describe('public endpoints', () => {
 		const [got] = (await bulk.json()) as Array<{ CurrentSaves: unknown[]; Price: number }>
 		expect(got.CurrentSaves).toHaveLength(2)
 		expect(got.Price).toBe(5000)
+
+		// A Quest caller (the token's `platform` is 1, Oculus) is pointed at the Quest builds of
+		// the same assetbundles, under `quest/`; a Steam caller gets the bare names as stored.
+		const bulkAssets = async (platform: number) => {
+			const res = await exports.default.fetch(`${ORIGIN}/api/customAvatarItems/v1/bulk`, {
+				method: 'POST',
+				headers: {
+					'content-type': 'application/x-www-form-urlencoded',
+					...(await bearer('42', undefined, undefined, platform)),
+				},
+				body: new URLSearchParams([['customAvatarItemIds', wings.CustomAvatarItemId]]),
+			})
+			expect(res.status).toBe(200)
+			const [item] = (await res.json()) as Array<{
+				CurrentSaves: Array<{ UnityAsset: string; UnityAsset2: string | null }>
+			}>
+			return item.CurrentSaves.map((save) => [save.UnityAsset, save.UnityAsset2])
+		}
+		const stored = wings.CurrentSaves.map((save) => [save.UnityAsset, save.UnityAsset2])
+		expect(await bulkAssets(0)).toEqual(stored)
+		expect(await bulkAssets(1)).toEqual(stored.map((names) => names.map((name) => `quest/${name}`)))
 	})
 
 	test('GET /api/customAvatarItems/v2/fromCreator/:id shows unpublished items only to the creator', async () => {

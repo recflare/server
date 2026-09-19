@@ -19,13 +19,15 @@ import {
 	deleteCustomAvatarItem,
 	getCustomAvatarItem,
 	getCustomAvatarItems,
+	isQuestPlatform,
 	listCustomAvatarItemsByCreator,
 	listFeaturedCustomAvatarItems,
 	listHotCustomAvatarItems,
 	searchCustomAvatarItems,
+	toQuestCustomAvatarItem,
 	updateCustomAvatarItem,
 } from '../custom-avatar-items-db'
-import { authedId, unauthorized } from '../http'
+import { authedId, authedPlatform, unauthorized } from '../http'
 import {
 	createInvention,
 	deleteInvention,
@@ -845,6 +847,9 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 				'Ids ride as repeated `customAvatarItemIds` form fields; a comma-separated value ' +
 				'and the same spelling on the query string are both accepted, since the client’s ' +
 				'exact encoding here has not been pinned down.\n\n' +
+				'A caller whose token says it signed in from the Quest (`platform` 1, Oculus) is ' +
+				'served each save’s `UnityAsset`/`UnityAsset2` under `quest/` — the Android build ' +
+				'of the same assetbundle. Every other platform gets the bare filenames as stored.\n\n' +
 				'A batch of more than 100 ids answers an EMPTY array without reading the table: the ' +
 				'client has been seen posting more than a screen could draw, and a miss is already ' +
 				'not an error here.',
@@ -870,8 +875,13 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 			// Unpublished items are held back from everyone but their creator — the same rule
 			// the featured/hot feeds and the creator shelf apply, so an item can't be surfaced
 			// through this route that the feeds hide.
+			const visible = items.filter(
+				(item) => item.Accessibility !== 0 || item.CreatorAccountId === id
+			)
+			// A Quest can't load the PC assetbundles the saves name; its builds sit beside them
+			// under `quest/`, so the names are pointed there for that caller alone.
 			return c.json(
-				items.filter((item) => item.Accessibility !== 0 || item.CreatorAccountId === id)
+				isQuestPlatform(await authedPlatform(c)) ? visible.map(toQuestCustomAvatarItem) : visible
 			)
 		}
 	)
