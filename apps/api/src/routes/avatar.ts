@@ -19,7 +19,7 @@ import {
 	deleteCustomAvatarItem,
 	getCustomAvatarItem,
 	getCustomAvatarItems,
-	isQuestPlatform,
+	isQuestAssetTarget,
 	listCustomAvatarItemsByCreator,
 	listFeaturedCustomAvatarItems,
 	listHotCustomAvatarItems,
@@ -27,7 +27,7 @@ import {
 	toQuestCustomAvatarItem,
 	updateCustomAvatarItem,
 } from '../custom-avatar-items-db'
-import { authedId, authedPlatform, unauthorized } from '../http'
+import { authedId, unauthorized } from '../http'
 import {
 	createInvention,
 	deleteInvention,
@@ -150,6 +150,22 @@ async function bulkCustomAvatarItemIds(c: Context<App>): Promise<string[]> {
 		.flatMap((value) => value.split(','))
 		.map((v) => v.trim())
 		.filter((v) => v !== '')
+}
+
+/**
+ * The `unityAssetTarget` `POST /api/customAvatarItems/v1/bulk` was asked for, read the way
+ * {@link bulkCustomAvatarItemIds} reads the ids and for the same reason: off the query string
+ * (where the GET reads carry it) or out of the form, whatever the casing. `parseBody` caches,
+ * so reading the form a second time costs nothing.
+ */
+async function bulkUnityAssetTarget(c: Context<App>): Promise<string | undefined> {
+	const queried = c.req.query('unityAssetTarget')
+	if (queried !== undefined) return queried
+	const body = await c.req.parseBody({ all: true }).catch(() => ({}) as Record<string, unknown>)
+	const key = Object.keys(body).find((k) => k.toLowerCase() === 'unityassettarget')
+	const posted = key === undefined ? undefined : body[key]
+	const value = Array.isArray(posted) ? posted[0] : posted
+	return typeof value === 'string' ? value : undefined
 }
 
 /**
@@ -697,10 +713,12 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 				'`outfitTypes` values are `RecRoom.Avatars.OutfitType` ordinals; the user-generated-',
 				'content tab sends 105 (`CustomShirt`) alone, the storefront tab a dozen slots.',
 				'`itemTypes` (a separate enum: All -1, None 0, Shirt 1 — not the outfit type),',
-				'`ordering` (0 is `SearchScoreDescending`), `unityAssetTarget` and `unityAssetVersion`',
-				'are accepted and NOT yet acted on — nothing records purchase or wear counts to rank',
-				'by, no per-target asset variants are stored, and custom shirts are the only item type',
-				'there is.',
+				'`ordering` (0 is `SearchScoreDescending`) and `unityAssetVersion` are accepted and NOT',
+				'yet acted on — nothing records purchase or wear counts to rank by, no per-version',
+				'asset variants are stored, and custom shirts are the only item type there is.',
+				'`unityAssetTarget` IS acted on: 2 (Android/Oculus) serves each save’s',
+				'`UnityAsset`/`UnityAsset2` under `quest/`, the Android build of the same assetbundle;',
+				'0 (PC), any other value, and none at all get the bare filenames as stored.',
 				'`includePurchaseInfos` likewise: `PurchaseInfo` is null on every item for now,',
 				'whatever it says.',
 			].join(' '),
@@ -755,6 +773,15 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 						'true: only the Coach’s stock items; false: only player-made items; absent: both',
 					schema: { type: 'boolean' },
 				},
+				{
+					name: 'unityAssetTarget',
+					in: 'query',
+					required: false,
+					description:
+						'The Unity build target the assetbundles are wanted for: 0 PC (Windows), 2 ' +
+						'Android/Oculus — which is served the `quest/` builds',
+					schema: { type: 'integer' },
+				},
 			],
 			responses: { 200: json(CustomAvatarItemList, 'The matching items, newest first') },
 		}),
@@ -780,16 +807,21 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 				return Number.isInteger(n) ? n : undefined
 			}
 
+			const items = await searchCustomAvatarItems(c.env.DB, {
+				searchQuery: c.req.query('searchQuery'),
+				outfitTypes,
+				includeCoachItems,
+				minPrice: int('minPrice'),
+				maxPrice: int('maxPrice'),
+				skip: int('skip'),
+				take: int('take'),
+			})
+			// The same switch the bulk lookup makes: a caller asking for the Quest target is
+			// pointed at the `quest/` builds of the assetbundles the saves name.
 			return c.json(
-				await searchCustomAvatarItems(c.env.DB, {
-					searchQuery: c.req.query('searchQuery'),
-					outfitTypes,
-					includeCoachItems,
-					minPrice: int('minPrice'),
-					maxPrice: int('maxPrice'),
-					skip: int('skip'),
-					take: int('take'),
-				})
+				isQuestAssetTarget(c.req.query('unityAssetTarget'))
+					? items.map(toQuestCustomAvatarItem)
+					: items
 			)
 		}
 	)
@@ -847,9 +879,10 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 				'Ids ride as repeated `customAvatarItemIds` form fields; a comma-separated value ' +
 				'and the same spelling on the query string are both accepted, since the client’s ' +
 				'exact encoding here has not been pinned down.\n\n' +
-				'A caller whose token says it signed in from the Quest (`platform` 1, Oculus) is ' +
-				'served each save’s `UnityAsset`/`UnityAsset2` under `quest/` — the Android build ' +
-				'of the same assetbundle. Every other platform gets the bare filenames as stored.\n\n' +
+				'A caller asking for the Quest build — `unityAssetTarget` 2 (Android/Oculus), on ' +
+				'the query string or in the form — is served each save’s `UnityAsset`/`UnityAsset2` ' +
+				'under `quest/`, the Android build of the same assetbundle. Target 0 (PC), any ' +
+				'other value, and no target at all get the bare filenames as stored.\n\n' +
 				'A batch of more than 100 ids answers an EMPTY array without reading the table: the ' +
 				'client has been seen posting more than a screen could draw, and a miss is already ' +
 				'not an error here.',
@@ -879,9 +912,11 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 				(item) => item.Accessibility !== 0 || item.CreatorAccountId === id
 			)
 			// A Quest can't load the PC assetbundles the saves name; its builds sit beside them
-			// under `quest/`, so the names are pointed there for that caller alone.
+			// under `quest/`, so the names are pointed there for a caller asking for that target.
 			return c.json(
-				isQuestPlatform(await authedPlatform(c)) ? visible.map(toQuestCustomAvatarItem) : visible
+				isQuestAssetTarget(await bulkUnityAssetTarget(c))
+					? visible.map(toQuestCustomAvatarItem)
+					: visible
 			)
 		}
 	)

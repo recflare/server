@@ -220,6 +220,17 @@ inconsistency here without checking the client first.
   empty `CurrentSaves`/`Tags` and null `CustomBadgeMetadata`, never a missing key. The saves
   name their assetbundles and thumbnails by bare filename; storing the record does nothing
   about serving those files.
+- An assetbundle is built PER UNITY TARGET, and the client names the one it wants as
+  `unityAssetTarget` on every custom-avatar-item read (0 PC/Windows, 2 Android/Oculus — the
+  rest unobserved; a query param on the GETs, a FORM field on `POST …/v1/bulk`). The row stores
+  the bare PC names; a caller asking for 2 is served `UnityAsset`/`UnityAsset2` under `quest/`
+  (`toQuestCustomAvatarItem`), fetched from the cdn as `/avatar/quest/<name>.assetbundle`.
+  Every read a Quest renders from has to make the switch — `api` search and bulk, AND `econ`
+  `GET /econ/customAvatarItems/v1/owned`, which the client reads FIRST and renders worn items
+  from: with only `api` switched the Quest kept downloading PC bundles. The load BLANKS each
+  save's `UnityAssetHash`/`UnityAsset2Hash` (`""`, null stays null): the export's are the PC
+  builds' hashes, one stored save serves both targets, and the client refuses a download that
+  fails the hash it was given but skips the check on an empty one.
 - Buying a custom avatar item goes through the ordinary bag (`econ`: `POST /api/items/bulkpurchase`)
   as a line whose `ItemPurchaseMethodId` is `{ Type: 1, Guid: <CustomAvatarItemId> }`, beside
   the `Type: 0, NumberId` catalog lines. It is a SALE between players: the price leaves the buyer

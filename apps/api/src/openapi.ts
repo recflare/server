@@ -879,6 +879,13 @@ export const BulkCustomAvatarItemsRequest = z.object({
 	customAvatarItemIds: z
 		.array(z.string())
 		.describe('The ids to resolve; repeat the field once per id'),
+	unityAssetTarget: z
+		.int()
+		.optional()
+		.describe(
+			'The Unity build target the assetbundles are wanted for: 0 PC (Windows), 2 ' +
+				'Android/Oculus — which is served the `quest/` builds. Read off the query string too'
+		),
 })
 
 /** A paginated custom-avatar-item page, out of the `custom_avatar_item` table. */

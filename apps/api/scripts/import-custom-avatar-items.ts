@@ -13,8 +13,8 @@
  * `just admin cai-load` instead, which runs the same statements straight against a database.
  * The statements come from src/custom-avatar-items-load.ts either way: each record stored as
  * the row's JSON minus `PurchaseInfo`, with `CreatorAccountId` forced to the Coach account (1)
- * and each save's `ThumbnailFileName` put under `avatar/`, an existing id REPLACED, nothing
- * deleted.
+ * and each save's `ThumbnailFileName` put under `avatar/` and its assetbundle hashes blanked,
+ * an existing id REPLACED, nothing deleted.
  *
  * The export's `Price` is mostly 0; run `price-custom-avatar-items.ts` against it first to fill
  * in prices from the storefront dump.

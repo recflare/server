@@ -23,6 +23,8 @@ import { validateAndGetAccountId, validateAndGetPlus, validateAndGetVersion } fr
 
 import {
 	getCustomAvatarItems,
+	isQuestAssetTarget,
+	toQuestCustomAvatarItem,
 	toUgcPurchasable,
 	UGC_ITEM_TYPE_CUSTOM_AVATAR_ITEM,
 } from '../../api/src/custom-avatar-items-db'
@@ -2661,6 +2663,9 @@ const app = new Hono<App>({ strict: false })
 				'`CustomAvatarItem` record out of the `custom_avatar_item` table, oldest first by when',
 				'it became theirs, in the `{ Results, TotalResults }` envelope. No paging is applied',
 				'(the client sends none), so `TotalResults` is the list’s length.',
+				'`unityAssetTarget` 2 (Android/Oculus) serves each save’s `UnityAsset`/`UnityAsset2`',
+				'under `quest/`, the Android build of the same assetbundle — the same switch `api`’s',
+				'search and bulk reads make; 0 (PC), any other value, and none get the names as stored.',
 			].join(' '),
 			security: AUTHED,
 			responses: {
@@ -2671,7 +2676,13 @@ const app = new Hono<App>({ strict: false })
 		async (c) => {
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
-			const Results = await getOwnedCustomAvatarItems(c.env.DB, id)
+			const owned = await getOwnedCustomAvatarItems(c.env.DB, id)
+			// The client renders what the player is WEARING from this list, and it is read before
+			// any `api` lookup — so a Quest served PC names here downloads PC assetbundles however
+			// the search and bulk reads answer.
+			const Results = isQuestAssetTarget(c.req.query('unityAssetTarget'))
+				? owned.map(toQuestCustomAvatarItem)
+				: owned
 			return c.json({ Results, TotalResults: Results.length })
 		}
 	)

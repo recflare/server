@@ -78,8 +78,21 @@ export function prefixSaveThumbnail(name: unknown): unknown {
 }
 
 /**
- * One record as the SQL string literal its row holds: the JSON, minus `PurchaseInfo`, with two
- * fields rewritten.
+ * A save's assetbundle hash as it is stored: BLANK. The export's `UnityAssetHash` /
+ * `UnityAsset2Hash` are the hashes of the PC builds, and one stored save is served to every
+ * build target — a Quest asking with `unityAssetTarget=2` is pointed at the `quest/` build of
+ * the same bundle, whose bytes (and so whose hash) differ. The client checks a download against
+ * a hash it is given and refuses the mismatch, so the Quest rendered nothing until these were
+ * emptied by hand; given `""` it skips the check. A hash that is already null — the
+ * `UnityAsset2Hash` of a save with no second bundle — stays null, so the pair keeps agreeing.
+ */
+export function blankAssetHash(hash: unknown): unknown {
+	return typeof hash === 'string' ? '' : hash
+}
+
+/**
+ * One record as the SQL string literal its row holds: the JSON, minus `PurchaseInfo`, with
+ * three things rewritten.
  *
  * `CreatorAccountId` is overridden to {@link COACH_ACCOUNT_ID} whatever the export said. An
  * imported item is first-party content by definition, and the creator id is what makes it so
@@ -90,22 +103,28 @@ export function prefixSaveThumbnail(name: unknown): unknown {
  * account happened to share the number.
  *
  * Each save's `ThumbnailFileName` is prefixed with {@link SAVE_THUMBNAIL_PREFIX}, which is where
- * this server serves those images from. The rest of the save — the assetbundle names above
- * all — is untouched.
+ * this server serves those images from, and its `UnityAssetHash`/`UnityAsset2Hash` are blanked
+ * (see {@link blankAssetHash}). The rest of the save — the assetbundle names above all — is
+ * untouched.
  */
 export function customAvatarItemRowLiteral(record: CustomAvatarItemExportRecord): string {
 	const { PurchaseInfo: _purchaseInfo, ...stored } = record
 	const saves = Array.isArray(stored.CurrentSaves)
-		? stored.CurrentSaves.map((save: unknown) =>
-				save && typeof save === 'object' && !Array.isArray(save)
-					? {
-							...(save as Record<string, unknown>),
-							ThumbnailFileName: prefixSaveThumbnail(
-								(save as { ThumbnailFileName?: unknown }).ThumbnailFileName
-							),
-						}
-					: save
-			)
+		? stored.CurrentSaves.map((save: unknown) => {
+				if (!save || typeof save !== 'object' || Array.isArray(save)) return save
+				const fields = save as Record<string, unknown>
+				return {
+					...fields,
+					ThumbnailFileName: prefixSaveThumbnail(fields.ThumbnailFileName),
+					// Only where the export carries the key, so a save is never GIVEN a field.
+					...('UnityAssetHash' in fields && {
+						UnityAssetHash: blankAssetHash(fields.UnityAssetHash),
+					}),
+					...('UnityAsset2Hash' in fields && {
+						UnityAsset2Hash: blankAssetHash(fields.UnityAsset2Hash),
+					}),
+				}
+			})
 		: stored.CurrentSaves
 	const row = { ...stored, CreatorAccountId: COACH_ACCOUNT_ID, CurrentSaves: saves }
 	return `'${JSON.stringify(row).replaceAll("'", "''")}'`

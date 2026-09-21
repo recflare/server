@@ -20,6 +20,7 @@ import {
 import {
 	createCustomAvatarItem,
 	SCHEMA_DDL as CUSTOM_AVATAR_ITEM_SCHEMA_DDL,
+	importCustomAvatarItem,
 } from '../../../../api/src/custom-avatar-items-db'
 import { SCHEMA_DDL as INVENTION_SCHEMA_DDL } from '../../../../api/src/inventions-db'
 // The notification-type ids the hub carries, from the worker that owns them — asserting
@@ -588,6 +589,56 @@ describe('econ endpoints', () => {
 			],
 			TotalResults: 4,
 		})
+
+		// A first-party item is rendered from its saves' assetbundles. A caller asking for the
+		// Quest target (`unityAssetTarget=2`, Android/Oculus) is pointed at the `quest/` builds;
+		// target 0 (PC) gets the names as stored.
+		const save = {
+			CustomAvatarItemSaveId: 1,
+			CustomAvatarItemId: '83fe651f-15b3-46a7-8afc-adec32c35568',
+			UnityAssetId: crypto.randomUUID(),
+			BodyType: 2,
+			OutfitType: 100,
+			QAState: 0,
+			CreatedAt: '2024-09-26T21:32:48.523Z',
+			ModifiedAt: '2024-09-26T21:32:48.523Z',
+			Description: null,
+			ThumbnailFileName: 'avatar/f2y1ndzuvm5ke2hjmn4cwfwfl.png',
+			AdditionalConfiguration: '{}',
+			UnityAsset: '3rdxsypmi0bdkxzrt1qmz1dpa.assetbundle',
+			UnityAssetHash: 'hash-a',
+			UnityAsset2: null,
+			UnityAsset2Hash: null,
+		}
+		const wings = await importCustomAvatarItem(env.DB, {
+			...first,
+			CustomAvatarItemId: save.CustomAvatarItemId,
+			RankedEntityId: save.CustomAvatarItemId,
+			CreatorAccountId: 1,
+			Name: 'Skeletal Wings',
+			BaseAvatarItemId: null,
+			BaseAvatarItemColor: null,
+			DesignFilename: null,
+			ThumbnailImageFilename: null,
+			OutfitType: 100,
+			CurrentSaves: [save],
+		})
+		await grantCustomAvatarItem(env.DB, 612, wings.CustomAvatarItemId)
+		const ownedAssets = async (query: string) => {
+			const res = await exports.default.fetch(`${ORIGIN}/econ/customAvatarItems/v1/owned${query}`, {
+				headers: await bearer('612'),
+			})
+			const { Results } = (await res.json()) as {
+				Results: Array<{ CurrentSaves: Array<{ UnityAsset: string; UnityAsset2: string | null }> }>
+			}
+			return Results[0].CurrentSaves.map((s) => [s.UnityAsset, s.UnityAsset2])
+		}
+		expect(await ownedAssets('?skip=0&take=1000&unityAssetTarget=0')).toEqual([
+			[save.UnityAsset, null],
+		])
+		expect(await ownedAssets('?skip=0&take=1000&unityAssetTarget=2&unityAssetVersion=3')).toEqual([
+			[`quest/${save.UnityAsset}`, null],
+		])
 	})
 
 	test('GET /api/objectives/v1/myprogress returns the default progress (no auth)', async () => {

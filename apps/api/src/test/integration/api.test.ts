@@ -44,6 +44,7 @@ import {
 	SCHEMA_DDL as CUSTOM_AVATAR_ITEM_SCHEMA_DDL,
 	importCustomAvatarItem,
 } from '../../custom-avatar-items-db'
+import { customAvatarItemRowLiteral } from '../../custom-avatar-items-load'
 import {
 	countGoing,
 	SCHEMA_DDL as EVENTS_SCHEMA_DDL,
@@ -225,8 +226,7 @@ function b64url(input: ArrayBuffer | string): string {
 async function bearer(
 	sub = '42',
 	roles?: string[],
-	version?: string,
-	platform?: number
+	version?: string
 ): Promise<Record<string, string>> {
 	const now = Math.floor(Date.now() / 1000)
 	const signingInput = `${b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))}.${b64url(
@@ -235,7 +235,6 @@ async function bearer(
 			exp: now + 3600,
 			...(roles && { role: roles }),
 			...(version && { 'rn.ver': version }),
-			...(platform !== undefined && { platform, 'rn.plat': platform }),
 		})
 	)}`
 	const key = await crypto.subtle.importKey(
@@ -1342,6 +1341,56 @@ describe('public endpoints', () => {
 		).toEqual(['Ballroom Shoes', 'Cosy Beanie', 'Room Hat'])
 	})
 
+	test('the first-party load blanks a save’s assetbundle hashes and leaves the names alone', () => {
+		// The export's hashes are the PC builds'. The same stored save is served to a Quest
+		// pointed at the `quest/` build, which fails the client's check against a PC hash — so
+		// the load stores them blank. A null hash (no second bundle) stays null.
+		const literal = customAvatarItemRowLiteral({
+			CustomAvatarItemId: '83fe651f-15b3-46a7-8afc-adec32c35568',
+			CreatorAccountId: 9001,
+			CurrentSaves: [
+				{
+					BodyType: 1,
+					ThumbnailFileName: 'f2y1ndzuvm5ke2hjmn4cwfwfl.png',
+					UnityAsset: '3rdxsypmi0bdkxzrt1qmz1dpa.assetbundle',
+					UnityAssetHash: 'b1946ac92492d2347c6235b4d2611184',
+					UnityAsset2: '5vs37avnijsc98dylvs9pl58v.assetbundle',
+					UnityAsset2Hash: '591785b794601e212b260e25925636fd',
+				},
+				{
+					BodyType: 2,
+					ThumbnailFileName: 'div4cdxc5b7ameui0d5h8ickl.png',
+					UnityAsset: '2azq1ngn5w621qjeb4vxb64j6.assetbundle',
+					UnityAssetHash: '',
+					UnityAsset2: null,
+					UnityAsset2Hash: null,
+				},
+			],
+		})
+		expect(JSON.parse(literal.slice(1, -1))).toEqual({
+			CustomAvatarItemId: '83fe651f-15b3-46a7-8afc-adec32c35568',
+			CreatorAccountId: 1,
+			CurrentSaves: [
+				{
+					BodyType: 1,
+					ThumbnailFileName: 'avatar/f2y1ndzuvm5ke2hjmn4cwfwfl.png',
+					UnityAsset: '3rdxsypmi0bdkxzrt1qmz1dpa.assetbundle',
+					UnityAssetHash: '',
+					UnityAsset2: '5vs37avnijsc98dylvs9pl58v.assetbundle',
+					UnityAsset2Hash: '',
+				},
+				{
+					BodyType: 2,
+					ThumbnailFileName: 'avatar/div4cdxc5b7ameui0d5h8ickl.png',
+					UnityAsset: '2azq1ngn5w621qjeb4vxb64j6.assetbundle',
+					UnityAssetHash: '',
+					UnityAsset2: null,
+					UnityAsset2Hash: null,
+				},
+			],
+		})
+	})
+
 	test('GET /api/customAvatarItems/v1/search serves an imported first-party item as exported', async () => {
 		await env.DB.prepare('DELETE FROM custom_avatar_item').run()
 
@@ -1443,6 +1492,24 @@ describe('public endpoints', () => {
 		)
 		expect(store).toEqual([{ ...wings, PurchaseInfo: null }])
 
+		// The same query from a Quest (`unityAssetTarget=2`, Android/Oculus) serves the same
+		// record with its assetbundles pointed at the `quest/` builds, and nothing else moved.
+		const questStore = await search(
+			'?outfitTypes=100&includePurchaseInfos=True&includeCoachItems=True&ordering=0&skip=0' +
+				'&take=100&unityAssetTarget=2&unityAssetVersion=3'
+		)
+		expect(questStore).toEqual([
+			{
+				...wings,
+				PurchaseInfo: null,
+				CurrentSaves: wings.CurrentSaves.map((save) => ({
+					...save,
+					UnityAsset: `quest/${save.UnityAsset}`,
+					UnityAsset2: `quest/${save.UnityAsset2}`,
+				})),
+			},
+		])
+
 		// Text search matches it by name and by description, and by its id typed whole.
 		expect((await search('?searchQuery=skeletal')).map((i) => i.Name)).toEqual(['Skeletal Wings'])
 		expect((await search('?searchQuery=connection%20point')).map((i) => i.Name)).toEqual([
@@ -1487,16 +1554,17 @@ describe('public endpoints', () => {
 		expect(got.CurrentSaves).toHaveLength(2)
 		expect(got.Price).toBe(5000)
 
-		// A Quest caller (the token's `platform` is 1, Oculus) is pointed at the Quest builds of
-		// the same assetbundles, under `quest/`; a Steam caller gets the bare names as stored.
-		const bulkAssets = async (platform: number) => {
-			const res = await exports.default.fetch(`${ORIGIN}/api/customAvatarItems/v1/bulk`, {
+		// A caller asking for the Quest build (`unityAssetTarget` 2, Android/Oculus) is pointed at
+		// the Quest builds of the same assetbundles, under `quest/` — whether the target rides on
+		// the query string or in the form. Target 0 (PC) and no target get the names as stored.
+		const bulkAssets = async (query: string, form: string[][] = []) => {
+			const res = await exports.default.fetch(`${ORIGIN}/api/customAvatarItems/v1/bulk${query}`, {
 				method: 'POST',
 				headers: {
 					'content-type': 'application/x-www-form-urlencoded',
-					...(await bearer('42', undefined, undefined, platform)),
+					...(await bearer('42')),
 				},
-				body: new URLSearchParams([['customAvatarItemIds', wings.CustomAvatarItemId]]),
+				body: new URLSearchParams([['customAvatarItemIds', wings.CustomAvatarItemId], ...form]),
 			})
 			expect(res.status).toBe(200)
 			const [item] = (await res.json()) as Array<{
@@ -1505,8 +1573,11 @@ describe('public endpoints', () => {
 			return item.CurrentSaves.map((save) => [save.UnityAsset, save.UnityAsset2])
 		}
 		const stored = wings.CurrentSaves.map((save) => [save.UnityAsset, save.UnityAsset2])
-		expect(await bulkAssets(0)).toEqual(stored)
-		expect(await bulkAssets(1)).toEqual(stored.map((names) => names.map((name) => `quest/${name}`)))
+		const quest = stored.map((names) => names.map((name) => `quest/${name}`))
+		expect(await bulkAssets('')).toEqual(stored)
+		expect(await bulkAssets('?unityAssetTarget=0')).toEqual(stored)
+		expect(await bulkAssets('?unityAssetTarget=2')).toEqual(quest)
+		expect(await bulkAssets('', [['unityAssetTarget', '2']])).toEqual(quest)
 	})
 
 	test('GET /api/customAvatarItems/v2/fromCreator/:id shows unpublished items only to the creator', async () => {
