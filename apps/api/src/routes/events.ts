@@ -261,8 +261,12 @@ export const eventRoutes = new Hono<App>({ strict: false })
 			responses: { 200: json(PlayerEventBaseDto.array(), 'The events that have not ended') },
 		}),
 		async (c) => {
-			const skip = Number.parseInt(c.req.query('skip') ?? '', 10) || 0
-			const take = Number.parseInt(c.req.query('take') ?? '', 10) || 50
+			const rawSkip = (c.req.query('skip') ?? '').trim()
+			const parsedSkip = /^\d+$/.test(rawSkip) ? Number(rawSkip) : Number.NaN
+			const skip = Number.isSafeInteger(parsedSkip) ? parsedSkip : 0
+			const rawTake = (c.req.query('take') ?? '').trim()
+			const parsedTake = /^\d+$/.test(rawTake) ? Number(rawTake) : Number.NaN
+			const take = Number.isSafeInteger(parsedTake) && parsedTake > 0 ? parsedTake : 50
 			const events = await searchEvents(c.env.DB, '', skip, take)
 			return c.json(events.map(toEventBase))
 		}
