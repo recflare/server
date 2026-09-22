@@ -864,8 +864,9 @@ describe('auth worker routes', () => {
 		const row = await env.DB.prepare('SELECT data FROM account WHERE account_id = ?1')
 			.bind(77)
 			.first<{ data: string }>()
-		expect(row!.data).toContain('"deviceClass":2')
-		expect(row!.data).not.toContain('2.0')
+		const stored = JSON.parse(row!.data) as { deviceClass?: unknown }
+		expect(stored.deviceClass).toBe(2)
+		expect(Number.isInteger(stored.deviceClass)).toBe(true)
 	})
 
 	// The grant the live client actually logs in with, and the one path whose device
