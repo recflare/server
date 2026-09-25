@@ -382,5 +382,8 @@
 		"CloudRegion": "us",
 		"CrcCheckEnabled": false,
 		"EnableServerTracingAfterDisconnect": false
+	},
+	"RoomKeyConfig": {
+		"MaxKeysPerRoom": 10
 	}
 }

@@ -49,7 +49,8 @@ missing/invalid). `~` = optional auth: served to anyone, personalised for a vali
 | GET      | `/api/gamerewards/v1/pending`                        |      | Pending game rewards (stub `[]`)        |
 | POST     | `/api/gamerewards/v1/request`                        | ✓    | Claim a game reward → 5 XP + gift box   |
 | GET      | `/api/roomkeys/v1/mine`                              |      | The player's room keys (stub `[]`)      |
-| GET      | `/api/roomkeys/v1/room`                              |      | Room keys for a room (stub `[]`)        |
+| GET      | `/api/roomkeys/v1/room`                              |      | The keys a room has listed              |
+| POST     | `/api/roomkeys/v1/create`                            | ✓    | List a key for a room (owner/co-owner)  |
 | POST     | `/api/CampusCard/v1/UpdateAndGetSubscription`        | ~    | Gold year for `developer`s, else `{}`   |
 | GET      | `/openapi.json`                                      |      | Generated OpenAPI 3.1 spec (see below)  |
 

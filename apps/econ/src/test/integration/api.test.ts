@@ -90,6 +90,7 @@ import { INVENTORY_SCHEMA_DDL } from '../../inventory-db'
 import { REWARD_STATUS_SCHEMA_DDL } from '../../reward-db'
 import { ROOM_CONSUMABLE_SCHEMA_DDL, ROOM_INVENTORY_SCHEMA_DDL } from '../../room-consumable-db'
 import { ROOM_BALANCE_SCHEMA_DDL, ROOM_CURRENCY_SCHEMA_DDL } from '../../room-currency-db'
+import { ROOM_KEY_SCHEMA_DDL } from '../../room-key-db'
 
 import type { CatalogLoadRow, CatalogRow, CatalogValue, StoreListing } from '../../catalog-db'
 import type { Env } from '../../context'
@@ -196,6 +197,7 @@ beforeAll(async () => {
 	for (const stmt of ROOM_BALANCE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of ROOM_CONSUMABLE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of ROOM_INVENTORY_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	for (const stmt of ROOM_KEY_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	// Presence (owned by the `match` worker) — a new room currency is pushed to everyone
 	// standing in the room, which is read from here.
 	for (const stmt of PRESENCE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
@@ -1922,10 +1924,201 @@ describe('econ endpoints', () => {
 		})
 	})
 
-	test('GET /api/roomkeys/v1/room returns []', async () => {
-		const res = await exports.default.fetch(`${ORIGIN}/api/roomkeys/v1/room?roomId=1`)
-		expect(res.status).toBe(200)
-		expect(await res.json()).toEqual([])
+	// Room 2511 is seeded as account 1's, with account 2 as co-owner.
+	describe('room keys', () => {
+		type RoomKey = {
+			RoomKeyId: number
+			ReplicationId: string
+			RoomId: number
+			Name: string
+			Description: string
+			Price: number
+			PurchaseCurrencyId: string | null
+			CreatedAt: string
+			ImageName: string | null
+			Type: number
+		}
+
+		const create = async (fields: Record<string, string>, headers?: Record<string, string>) =>
+			exports.default.fetch(`${ORIGIN}/api/roomkeys/v1/create`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...headers },
+				body: new URLSearchParams(fields),
+			})
+
+		const drainFrames = async (): Promise<
+			Array<{
+				accountId: number
+				notificationType: string | number
+				payload: Record<string, unknown>
+			}>
+		> =>
+			(
+				env.RECFLARE_NOTIFICATIONS_HUB.getByName('global') as unknown as {
+					drainFrames(): Promise<
+						Array<{
+							accountId: number
+							notificationType: string | number
+							payload: Record<string, unknown>
+						}>
+					>
+				}
+			).drainFrames()
+
+		// The create's reply, as the live client reads it — NOT the `{ Value, Success, Error,
+		// error_id }` envelope the currency and consumable writes answer in.
+		const envOf = async (res: Response) =>
+			(await res.json()) as {
+				Status: number
+				RoomKey: RoomKey | null
+			}
+		const keyOf = async (res: Response) => (await envOf(res)).RoomKey!
+
+		const keysOf = async (roomId: number) =>
+			(await (
+				await exports.default.fetch(`${ORIGIN}/api/roomkeys/v1/room?roomId=${roomId}`)
+			).json()) as RoomKey[]
+
+		// The body exactly as the client posts it.
+		const body = {
+			Type: 'Key',
+			RoomId: '2511',
+			Name: 'my key',
+			Description: 'testsdfsdfsdf',
+			Price: '50',
+		}
+
+		test('GET /api/roomkeys/v1/room is public and empty for a room with none', async () => {
+			expect(await keysOf(2511)).toEqual([])
+			expect(await keysOf(99999)).toEqual([])
+			const res = await exports.default.fetch(`${ORIGIN}/api/roomkeys/v1/room`)
+			expect(res.status).toBe(200)
+			expect(await res.json()).toEqual([])
+		})
+
+		test('POST create is gated to the room’s creator or a co-owner', async () => {
+			expect((await create(body)).status).toBe(401)
+			expect((await create(body, await bearer('999'))).status).toBe(403)
+
+			for (const bad of [
+				{ ...body, RoomId: '99999' },
+				{ ...body, RoomId: 'nope' },
+				{ ...body, Name: '  ' },
+			]) {
+				const res = await create(bad, await bearer('1'))
+				expect(res.status).toBe(200)
+				expect(await envOf(res)).toEqual({ Status: 1, RoomKey: null })
+			}
+			expect(await keysOf(2511)).toEqual([])
+		})
+
+		test('POST create lists the key and the room read serves it back', async () => {
+			const res = await create(body, await bearer('1'))
+			expect(res.status).toBe(200)
+			const envelope = await envOf(res)
+			expect(Object.keys(envelope)).toEqual(['Status', 'RoomKey'])
+			expect(envelope.Status).toBe(0)
+			const created = envelope.RoomKey!
+			// The key as the live client reads it, member for member and in its order.
+			expect(Object.keys(created)).toEqual([
+				'RoomKeyId',
+				'ReplicationId',
+				'RoomId',
+				'Name',
+				'Description',
+				'Price',
+				'PurchaseCurrencyId',
+				'CreatedAt',
+				'ImageName',
+				'Type',
+			])
+			expect(created).toMatchObject({
+				RoomId: 2511,
+				Name: 'my key',
+				Description: 'testsdfsdfsdf',
+				Price: 50,
+				PurchaseCurrencyId: null,
+				// Null, not '', until a key carries art.
+				ImageName: null,
+				// The posted enum NAME (`Key`) comes back as its ordinal.
+				Type: 0,
+			})
+			// A NUMERIC id, with a GUID beside it.
+			expect(Number.isInteger(created.RoomKeyId)).toBe(true)
+			expect(created.ReplicationId).toMatch(/^[0-9a-f-]{36}$/)
+			expect(new Date(created.CreatedAt).toISOString()).toBe(created.CreatedAt)
+
+			// The body's Type is stored as the name it arrived as.
+			const row = await env.DB.prepare('SELECT key_type FROM room_key WHERE room_key_id = ?1')
+				.bind(created.RoomKeyId)
+				.first<{ key_type: string }>()
+			expect(row?.key_type).toBe('Key')
+
+			expect(await keysOf(2511)).toEqual([created])
+
+			// A co-owner may list one too, and the list is oldest first.
+			const second = await keyOf(await create({ ...body, Name: 'second' }, await bearer('2')))
+			expect(second.RoomKeyId).toBeGreaterThan(created.RoomKeyId)
+			expect((await keysOf(2511)).map((k) => k.Name)).toEqual(['my key', 'second'])
+		})
+
+		test('POST create pushes LocalRoomKeyCreated to the room and the creator', async () => {
+			const now = Math.floor(Date.now() / 1000)
+			const putInRoom = async (accountId: number, roomId: number) =>
+				env.DB.prepare('INSERT OR REPLACE INTO presence (data) VALUES (?1)')
+					.bind(
+						JSON.stringify({
+							accountId,
+							roomInstance: { roomInstanceId: 1000000 + roomId, roomId, subRoomId: roomId },
+							expiresAt: now + 900,
+						})
+					)
+					.run()
+			await putInRoom(320, 2511)
+			await putInRoom(321, 1)
+			await drainFrames()
+
+			const created = await keyOf(await create({ ...body, Name: 'pushed' }, await bearer('1')))
+			const frames = await drainFrames()
+			expect(frames.map((f) => f.accountId).sort((a, b) => a - b)).toEqual([1, 320])
+			expect(frames.every((f) => f.notificationType === NotificationType.LocalRoomKeyCreated)).toBe(
+				true
+			)
+			// The frame IS the create response.
+			expect(frames[0].payload).toEqual(created)
+
+			for (const id of [320, 321]) {
+				await env.DB.prepare('DELETE FROM presence WHERE account_id = ?1').bind(id).run()
+			}
+		})
+
+		test('POST create masks a name players will see, and defaults the rest', async () => {
+			const res = await create({ RoomId: '2511', Name: 'shit key' }, await bearer('1'))
+			const created = await keyOf(res)
+			expect(created.Name).toBe('**** key')
+			expect(created).toMatchObject({ Description: '', Price: 0, Type: 0 })
+			const row = await env.DB.prepare('SELECT key_type FROM room_key WHERE room_key_id = ?1')
+				.bind(created.RoomKeyId)
+				.first<{ key_type: string }>()
+			expect(row?.key_type).toBe('Key')
+			// A negative price is floored at nothing.
+			const free = await keyOf(await create({ ...body, Price: '-5' }, await bearer('1')))
+			expect(free.Price).toBe(0)
+		})
+
+		test('POST create refuses the eleventh key in a room', async () => {
+			// MaxKeysPerRoom is 10 (apps/api/static/api-config-v2.json). Fill up to it…
+			while ((await keysOf(2511)).length < 10) {
+				const res = await create({ ...body, Name: 'filler' }, await bearer('1'))
+				expect((await envOf(res)).Status).toBe(0)
+			}
+			// …and the next is refused, leaving the room at ten.
+			const res = await create({ ...body, Name: 'one too many' }, await bearer('1'))
+			expect(res.status).toBe(200)
+			expect(await envOf(res)).toEqual({ Status: 1, RoomKey: null })
+			expect((await keysOf(2511)).length).toBe(10)
+			await env.DB.prepare('DELETE FROM room_key').run()
+		})
 	})
 
 	test('GET /api/roomconsumables/v1/roomConsumable/room/:id/me returns []', async () => {
@@ -5745,6 +5938,7 @@ describe('econ endpoints', () => {
 			'POST /api/roomcurrencies/v1/createCurrency',
 			'POST /api/roomcurrencies/v1/createPurchaseOffer',
 			'POST /api/roomcurrencies/v1/updateCurrency',
+			'POST /api/roomkeys/v1/create',
 			'POST /api/storefronts/v2/buyItem',
 			'POST /api/storefronts/v3/buyInvention',
 			'POST /api/ugcPurchasables/v1/items/bulk',

@@ -625,6 +625,57 @@ export const CreateRoomCurrencyRequest = z.object({
 })
 
 /**
+ * A room key — a named, priced admission ticket a room lists. The shape is the `RoomKey` the
+ * live client was observed reading out of the create response, member for member and in its
+ * order; the `LocalRoomKeyCreated` frame (the `notify` worker's `LocalRoomKeyPayload`) carries
+ * the same object.
+ *
+ * `RoomKeyId` is a NUMBER, unlike a room currency's or consumable's GUID — the client's model
+ * says so — with the `ReplicationId` GUID beside it. The create body's `Type` arrives as an
+ * enum NAME (`Key`) and is served as the ORDINAL (0). `ImageName` is null, not '', until a key
+ * can carry art.
+ */
+export const RoomKeyDto = z.object({
+	RoomKeyId: z.int().describe('Autoincrement — how the client names this key afterwards'),
+	ReplicationId: z.string().describe('GUID, minted alongside the id'),
+	RoomId: z.int(),
+	Name: z.string(),
+	Description: z.string(),
+	Price: z.int(),
+	PurchaseCurrencyId: z
+		.string()
+		.nullable()
+		.describe('A `room_currency` id, or null — the create body names none'),
+	CreatedAt: z.string().describe('ISO-8601 UTC'),
+	ImageName: z.string().nullable().describe('Null — a key cannot carry art yet'),
+	Type: z.int().describe('The key type’s ordinal: 0 `Key`, the only one seen'),
+})
+
+/**
+ * The envelope `POST /api/roomkeys/v1/create` answers in: `{ Status, RoomKey }`, observed from
+ * the live client — NOT the `{ Value, Success, Error, error_id }` the room-currency and
+ * consumable writes use, though they live in the same worker. `Status` is 0 on success. A
+ * refusal answers a non-zero `Status` with a null `RoomKey`; only the success shape has been
+ * observed, so the refusal code (1) is an assumption.
+ */
+export const RoomKeyEnvelope = z.object({
+	Status: z.int().describe('0 on success; 1 on a refusal (the refusal code is an assumption)'),
+	RoomKey: RoomKeyDto.nullable().describe('The key, or null on a refusal'),
+})
+
+/** `POST /api/roomkeys/v1/create` — form-encoded. */
+export const CreateRoomKeyRequest = z.object({
+	Type: z
+		.string()
+		.optional()
+		.describe('The key type, as an enum NAME. Only `Key` has been seen; defaults to it'),
+	RoomId: z.string().describe('The room the key opens'),
+	Name: z.string().describe('Shown to players; profanity-masked like every typed string'),
+	Description: z.string().optional().describe('Defaults to empty'),
+	Price: z.string().optional().describe('What the key costs; defaults to 0'),
+})
+
+/**
  * One purchase offer on a room currency — a way to BUY that currency, priced in another
  * ("5 SuperTokens for 500 Rec Center Tokens"). The client's own model, member for member and
  * in its order.

@@ -935,6 +935,13 @@ describe('public endpoints', () => {
 		)
 	})
 
+	test('the config carries the room key limit', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/config/v2`)
+		expect(res.status).toBe(200)
+		const config = (await res.json()) as { RoomKeyConfig: { MaxKeysPerRoom: number } }
+		expect(config.RoomKeyConfig).toEqual({ MaxKeysPerRoom: 10 })
+	})
+
 	test('the level rewards match the published reward table', async () => {
 		// Rec Room's published level-reward table, spot-checked at the points where it turns:
 		// consumables early, then clothing at a rising star rating (2★ = 10, 3★ = 20, 4★ = 30,

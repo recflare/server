@@ -405,7 +405,10 @@ export interface RoomCurrencyDeletedPayload {
 	CurrencyId: string
 }
 
-/** `LocalRoomKeyCreated` (120). */
+/**
+ * `LocalRoomKeyCreated` (120) — the same `RoomKey` object the create endpoint answers inside
+ * its `{ Status, RoomKey }` envelope; `econ` sends the one record on both.
+ */
 export interface LocalRoomKeyPayload {
 	RoomKeyId: number
 	ReplicationId: string
@@ -416,7 +419,10 @@ export interface LocalRoomKeyPayload {
 	PurchaseCurrencyId: string | null
 	/** ISO-8601. */
 	CreatedAt: string
-	ImageName: string
+	/** Null until a key carries art. */
+	ImageName: string | null
+	/** The key type's ordinal — 0 `Key`. */
+	Type: number
 }
 
 /** `LocalRoomKeyDeleted` (121). */
