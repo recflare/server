@@ -2055,12 +2055,12 @@ describe('public endpoints', () => {
 		expect(res.status).toBe(400)
 	})
 
-	test('GET /api/progressionEvents/active is an empty list (no auth)', async () => {
-		// The client reads an empty list as "no event running" and skips the event UI; a 404
-		// would stall its load instead.
+	test('GET /api/progressionEvents/active is a bare -1 (no auth)', async () => {
+		// -1 is the reference server's "no active event" value; the client reads it as "no event
+		// running" and skips the event UI. A 404 would stall its load instead.
 		const res = await exports.default.fetch(`${ORIGIN}/api/progressionEvents/active`)
 		expect(res.status).toBe(200)
-		expect(await res.json()).toEqual([])
+		expect(await res.json()).toBe(-1)
 	})
 
 	test('GET /api/rooms/v1/filters returns an object with filter arrays', async () => {

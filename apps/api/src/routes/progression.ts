@@ -16,6 +16,7 @@ import { NotificationType } from '../../../notify/src/notification-types'
 import { authedId, parseFormIds, queryIds, unauthorized } from '../http'
 import {
 	AUTHED,
+	BareInteger,
 	BulkIdsRequest,
 	CheerPlayerRequest,
 	CheerPlayerResponse,
@@ -520,23 +521,26 @@ export const progressionRoutes = new Hono<App>({ strict: false })
 		}
 	)
 
-	// The progression events running right now — the limited-time XP events the client shows
+	// The progression event running right now — the limited-time XP event the client shows
 	// a banner and a progress track for.
 	//
-	// STUB: an empty list, which the client reads as "no event on" and skips the event UI
-	// entirely. That is the honest answer (nothing here runs events) and the safe one: a
-	// fabricated event would draw a track that never fills. No auth — whether an event is
-	// running is the same fact for everybody, and the client asks while loading.
+	// STUB: a bare `-1`, the reference server's "no active event" value (the id of the
+	// active event, or -1 when there is none). The client reads it as "no event on" and
+	// skips the event UI entirely. That is the honest answer (nothing here runs events) and
+	// the safe one: a fabricated event would draw a track that never fills. No auth —
+	// whether an event is running is the same fact for everybody, and the client asks while
+	// loading.
 	.get(
 		'/api/progressionEvents/active',
 		describeRoute({
 			tags: ['Progression'],
-			summary: 'Progression events currently running (stub)',
+			summary: 'Progression event currently running (stub)',
 			description:
-				'The limited-time XP events in progress. Always an empty list — nothing on this ' +
-				'server runs one — which the client reads as “no event” and skips the event UI, ' +
-				'where a 404 would stall the load. No auth: it is the same answer for every player.',
-			responses: { 200: json(JsonArray, 'Empty — no event is running') },
+				'The limited-time XP event in progress, as a bare event id. Always `-1` — the ' +
+				'“no active event” value; nothing on this server runs one — which the client reads ' +
+				'as “no event” and skips the event UI, where a 404 would stall the load. No auth: ' +
+				'it is the same answer for every player.',
+			responses: { 200: json(BareInteger, 'A bare `-1` — no event is running') },
 		}),
-		(c) => c.json([])
+		(c) => c.json(-1)
 	)
