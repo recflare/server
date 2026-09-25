@@ -994,7 +994,7 @@ it('lifts a ban, clearing the expiry and the audit columns but keeping the repor
 		200
 	)
 
-	const lifted = await staffPost(`/api/staff/reports/${report.id}/ban`, 8110, { banned: false })
+	const lifted = await staffPost(`/api/staff/reports/${report.id}/ban`, 8111, { banned: false })
 	expect(lifted.status).toBe(200)
 	const row = (await lifted.json()) as Record<string, unknown>
 	expect(row.banned).toBe(0)
@@ -1006,6 +1006,62 @@ it('lifts a ban, clearing the expiry and the audit columns but keeping the repor
 
 	const bans = (await (await staffGet('/api/staff/bans', 8110)).json()) as Array<{ id: number }>
 	expect(bans.map((b) => b.id)).not.toContain(report.id)
+})
+
+// A lift wipes the ban columns, so without its own signature the row reads exactly like a
+// report nobody acted on — and the next moderator to search the player saw "Ban…" and
+// re-banned someone a colleague had deliberately let back in. The lift signs the row with
+// who and when; the search serves it; a re-ban clears it, since a standing ban is not lifted.
+it('signs a lifted ban with who lifted it, and clears that on a re-ban', async () => {
+	const player = 8240
+	const report = await createReport(env.DB, { reporterPlayerId: 8241, reportedPlayerId: player })
+	expect((await staffPost(`/api/staff/reports/${report.id}/ban`, 8110, { days: 1 })).status).toBe(
+		200
+	)
+	// Untouched until a lift — a standing ban has not been lifted.
+	const banned = (await (await staffGet(`/api/staff/reports/${report.id}`, 8110)).json()) as Record<
+		string,
+		unknown
+	>
+	expect(banned).toMatchObject({ banned: 1, unbanned_by_player_id: null, unbanned_at: null })
+
+	const lifted = (await (
+		await staffPost(`/api/staff/reports/${report.id}/ban`, 8111, { banned: false })
+	).json()) as Record<string, unknown>
+	// Signed by the LIFTING moderator, not the banning one.
+	expect(lifted).toMatchObject({ banned: 0, unbanned_by_player_id: 8111 })
+	expect(lifted.unbanned_at).toEqual(expect.any(String))
+
+	// The search — `/moderation/search?reportedPlayerId=…` — is where the next moderator
+	// meets the row, so it has to carry the signature too.
+	const search = (await (
+		await staffGet(`/api/staff/reports?reportedPlayerId=${player}`, 8110)
+	).json()) as { reports: Array<Record<string, unknown>> }
+	expect(search.reports).toHaveLength(1)
+	expect(search.reports[0]).toMatchObject({
+		id: report.id,
+		banned: 0,
+		unbanned_by_player_id: 8111,
+		unbanned_at: lifted.unbanned_at,
+	})
+	// And the player's own page, which the search links to.
+	const history = (await (await staffGet(`/api/staff/players/${player}`, 8110)).json()) as {
+		activeBan: unknown
+		reports: Array<Record<string, unknown>>
+	}
+	expect(history.activeBan).toBeNull()
+	expect(history.reports[0]).toMatchObject({ unbanned_by_player_id: 8111 })
+
+	// Banning again — knowingly — is a standing ban once more, with no lift on it.
+	const rebanned = (await (
+		await staffPost(`/api/staff/reports/${report.id}/ban`, 8112, { days: 7 })
+	).json()) as Record<string, unknown>
+	expect(rebanned).toMatchObject({
+		banned: 1,
+		banned_by_player_id: 8112,
+		unbanned_by_player_id: null,
+		unbanned_at: null,
+	})
 })
 
 // The report row keeps only the ban's CURRENT state — a lift wipes who banned and when —

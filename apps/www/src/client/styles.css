@@ -1694,6 +1694,20 @@ button[type='submit']:disabled {
 	margin-left: 8px;
 }
 
+/* A lifted ban: the OTHER state that has to be noticed without reading, since the row is
+   otherwise indistinguishable from one nobody acted on — and acting on it again undoes a
+   colleague's decision. Accent rather than red: it is a caution, not an alarm. */
+.badge.mod-lifted {
+	color: var(--accent);
+	border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.mod-lifted-note {
+	border-left: 3px solid var(--accent);
+	padding-left: 12px;
+	margin: 12px 0;
+}
+
 .mod-pager {
 	display: flex;
 	align-items: center;

@@ -42,7 +42,7 @@
 /**
  * Schema DDL (mirror of migrations/0004_report.sql + 0009_report_ban.sql +
  * 0011_report_event.sql + 0016_report_invention.sql + 0017_report_custom_avatar_item.sql +
- * 0020_report_ban_audit.sql + 0025_report_chat_message.sql).
+ * 0020_report_ban_audit.sql + 0025_report_chat_message.sql + 0029_report_ban_lifted.sql).
  *
  * None of `event_id`, `invention_id`, `custom_avatar_item_id` or `chat_message_id` is
  * indexed: each is written on every report of its kind and read by nothing — no query here filters on any of them,
@@ -69,7 +69,9 @@ export const SCHEMA_DDL: string[] = [
 		custom_avatar_item_id TEXT,
 		banned_by_player_id INTEGER,
 		banned_at TEXT,
-		chat_message_id INTEGER
+		chat_message_id INTEGER,
+		unbanned_by_player_id INTEGER,
+		unbanned_at TEXT
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_report_reported ON report (reported_player_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_report_reporter ON report (reporter_player_id)`,
@@ -137,6 +139,16 @@ export interface ReportRow {
 	 * reference.
 	 */
 	chat_message_id: number | null
+	/**
+	 * The moderator who LIFTED the ban that once stood on this row, or NULL when none has
+	 * been lifted — including while one stands: a re-ban clears it, with `unbanned_at`. A
+	 * lift wipes the four ban columns above, so without this pair a lifted ban is
+	 * indistinguishable from a report nobody acted on, and the staff panel offered to ban
+	 * again. Read per row by the panel; nothing filters on it.
+	 */
+	unbanned_by_player_id: number | null
+	/** ISO-8601 UTC instant the ban was lifted; NULL with `unbanned_by_player_id`. */
+	unbanned_at: string | null
 }
 
 /**
@@ -264,6 +276,11 @@ export async function isPlayerBanned(
  * not keep an audit trail saying a ban runs from somewhere, and `banned = 0` with a
  * `banned_at` still set would read as a ban to anything checking the timestamp.
  *
+ * A lift instead SIGNS `unbanned_by_player_id`/`unbanned_at` with the same `bannedBy` and
+ * the same instant, and a re-ban clears those two — a standing ban has not been lifted.
+ * That is what lets the staff panel tell "a colleague let this player back in" from
+ * "nobody has acted on this report", so a second moderator doesn't undo the first.
+ *
  * Returns the updated row, or null when there is no report with that id — so the caller
  * can tell "banned" from "banned nobody" (wrangler's `d1 execute --json` reports no
  * changes count, hence RETURNING).
@@ -274,10 +291,12 @@ export async function banFromReport(
 	options: { banned?: boolean; banExpires?: string | null; bannedBy?: number | null } = {}
 ): Promise<ReportRow | null> {
 	const banned = options.banned ?? true
+	const now = new Date().toISOString()
 	return db
 		.prepare(
 			`UPDATE report
-			 SET banned = ?2, ban_expires = ?3, banned_by_player_id = ?4, banned_at = ?5
+			 SET banned = ?2, ban_expires = ?3, banned_by_player_id = ?4, banned_at = ?5,
+			     unbanned_by_player_id = ?6, unbanned_at = ?7
 			 WHERE id = ?1
 			 RETURNING *`
 		)
@@ -286,7 +305,9 @@ export async function banFromReport(
 			banned ? 1 : 0,
 			banned ? (options.banExpires ?? null) : null,
 			banned ? (options.bannedBy ?? null) : null,
-			banned ? new Date().toISOString() : null
+			banned ? now : null,
+			banned ? null : (options.bannedBy ?? null),
+			banned ? null : now
 		)
 		.first<ReportRow>()
 }

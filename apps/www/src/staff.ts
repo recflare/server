@@ -416,7 +416,11 @@ export async function createReportHandler(c: Context<App>) {
  *
  * `banned: false` lifts it, clearing the expiry and the audit columns and leaving the
  * report itself intact — the panel needs to be able to undo a ban, and a lifted ban has to
- * be distinguishable from an expired one (`banned = 0` versus a past `ban_expires`).
+ * be distinguishable from an expired one (`banned = 0` versus a past `ban_expires`). The
+ * lift is signed onto the row (`unbanned_by_player_id`/`unbanned_at`, by `banFromReport`)
+ * so the tables can say a colleague let the player back in, rather than offering "Ban…"
+ * on a row that looks untouched — which is how a lifted ban got re-applied by the next
+ * moderator to see it.
  *
  * Applying one also EJECTS the player from any instance they are in (see
  * {@link kickBannedPlayer}), best-effort and after the row is committed. The response

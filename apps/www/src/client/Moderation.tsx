@@ -94,6 +94,14 @@ interface ReportRow {
 	banned_by_player_id: number | null
 	banned_at: string | null
 	chat_message_id: number | null
+	/**
+	 * Who lifted the ban that once stood on this row, and when — null until one is lifted,
+	 * and cleared again by a re-ban. A lift wipes the four ban columns, so this pair is the
+	 * only thing on the row that says a colleague decided this player belongs back in the
+	 * game; without it the row reads as untouched and the next moderator bans them again.
+	 */
+	unbanned_by_player_id: number | null
+	unbanned_at: string | null
 }
 
 /** A moderator-issued warning, as the `warning` table stores it. */
@@ -171,18 +179,17 @@ const categoryLabel = (id: number): string => CATEGORY_LABEL[id] ?? `Category ${
 /** How many reports one page of search results holds. */
 const PAGE_SIZE = 25
 
-/** A date as a moderator reads it — local time, to the minute, no seconds. */
+/**
+ * A date as a moderator reads it — ISO 8601 in UTC, to the minute (`2026-09-25T13:04Z`).
+ * Not local time: the moderators are in different countries, and a ban that expires
+ * "01:04 PM" means a different instant to each of them and a different date on either
+ * side of midnight. One unambiguous spelling, the same on every screen.
+ */
 function when(iso: string | null): string {
 	if (iso === null) return '—'
 	const parsed = Date.parse(iso)
 	if (Number.isNaN(parsed)) return iso
-	return new Date(parsed).toLocaleString(undefined, {
-		year: 'numeric',
-		month: 'short',
-		day: 'numeric',
-		hour: '2-digit',
-		minute: '2-digit',
-	})
+	return new Date(parsed).toISOString().slice(0, 16) + 'Z'
 }
 
 /**
@@ -192,6 +199,35 @@ function when(iso: string | null): string {
  */
 const expiryLabel = (report: ReportRow): string =>
 	report.banned !== 1 ? '—' : report.ban_expires === null ? 'Permanent' : when(report.ban_expires)
+
+/**
+ * A report whose ban a moderator LIFTED — as opposed to one nobody acted on, which the row
+ * otherwise looks identical to. A standing ban is never "lifted": a re-ban clears the pair.
+ */
+const banLifted = (report: ReportRow): boolean => report.banned !== 1 && report.unbanned_at !== null
+
+/**
+ * "(lifted) by X" — shown wherever a lifted ban would otherwise pass for a clean report.
+ * It is what stops a second moderator undoing the first one's decision without knowing
+ * there was one: the row says who let the player back in, so the question goes to them
+ * rather than straight back to the ban button. Just the who — when it was lifted is on
+ * the row (`unbanned_at`) but not worth the width in a table cell.
+ */
+function LiftedBan({ report, names }: { report: ReportRow; names: Map<number, PublicAccount> }) {
+	return (
+		<>
+			<span className="badge mod-lifted">lifted</span>{' '}
+			<span className="muted">
+				by{' '}
+				{report.unbanned_by_player_id === null ? (
+					'staff'
+				) : (
+					<PlayerName id={report.unbanned_by_player_id} names={names} />
+				)}
+			</span>
+		</>
+	)
+}
 
 /**
  * What kind of thing a report is against. The four id columns are mutually exclusive and
@@ -206,13 +242,16 @@ function reportKind(report: ReportRow): string {
 	return 'Player'
 }
 
-/** A player as a name plus id — the id always shown, since ids are what the rows carry. */
+/**
+ * A player as `@name`. The id is in the title, not on screen: it costs width in every
+ * cell of every table and staff can look it up when they need it. It IS shown while the
+ * name is still loading or for an account with none, so a row is never nameless.
+ */
 function PlayerName({ id, names }: { id: number; names: Map<number, PublicAccount> }) {
 	const account = names.get(id)
 	return (
-		<span className="mod-player">
-			{account?.username ? `@${account.username}` : 'unknown'}
-			<span className="muted"> #{id}</span>
+		<span className="mod-player" title={`#${id}`}>
+			{account?.username ? `@${account.username}` : <span className="muted">#{id}</span>}
 		</span>
 	)
 }
@@ -673,7 +712,13 @@ function ReportSearch({
 		[revision]
 	)
 	const reports = data?.reports ?? []
-	const names = useNames(reports.flatMap((r) => [r.reported_player_id, r.reporter_player_id]))
+	const names = useNames(
+		reports.flatMap((r) => [
+			r.reported_player_id,
+			r.reporter_player_id,
+			r.unbanned_by_player_id ?? 0,
+		])
+	)
 
 	const submit = (e: React.FormEvent) => {
 		e.preventDefault()
@@ -888,6 +933,8 @@ function ReportTable({
 							<td>
 								{report.banned === 1 ? (
 									<span className="badge mod-banned">{expiryLabel(report)}</span>
+								) : banLifted(report) ? (
+									<LiftedBan report={report} names={names} />
 								) : (
 									<span className="muted">—</span>
 								)}
@@ -897,7 +944,7 @@ function ReportTable({
 									<LiftBanButton report={report} onDone={onChanged} />
 								) : (
 									<button className="linkish" onClick={() => onBan(report)}>
-										Ban…
+										{banLifted(report) ? 'Ban again…' : 'Ban…'}
 									</button>
 								)}
 							</td>
@@ -1056,8 +1103,14 @@ function PlayerHistory({
 	const names = useNames([
 		playerId,
 		...reports.map((r) => r.reporter_player_id),
+		...reports.map((r) => r.unbanned_by_player_id ?? 0),
 		...warnings.map((w) => w.moderator_player_id),
 	])
+	// The most recent lift, if any — it is the thing a moderator about to ban needs to know
+	// first, since the report rows below say "Ban again…" and the reason is up here.
+	const lastLifted = reports
+		.filter(banLifted)
+		.sort((a, b) => (a.unbanned_at! < b.unbanned_at! ? 1 : -1))[0]
 
 	return (
 		<>
@@ -1070,10 +1123,18 @@ function PlayerHistory({
 				{data === null ? (
 					!error && <p className="muted">Loading…</p>
 				) : data.activeBan === null ? (
-					<p className="muted">
-						Not banned. {reports.length} report{reports.length === 1 ? '' : 's'} on file,{' '}
-						{warnings.length} warning{warnings.length === 1 ? '' : 's'} handed down.
-					</p>
+					<>
+						<p className="muted">
+							Not banned. {reports.length} report{reports.length === 1 ? '' : 's'} on file,{' '}
+							{warnings.length} warning{warnings.length === 1 ? '' : 's'} handed down.
+						</p>
+						{lastLifted !== undefined && (
+							<p className="mod-lifted-note">
+								<LiftedBan report={lastLifted} names={names} /> — on report #{lastLifted.id} for{' '}
+								{categoryLabel(lastLifted.report_category)}. Check with them before banning again.
+							</p>
+						)}
+					</>
 				) : (
 					<p className="ok">
 						Banned on report #{data.activeBan.id} for{' '}
@@ -1329,7 +1390,9 @@ function BanDialog({ reportId, navigate }: { reportId: number; navigate: (to: st
 	const { data: report, error: loadError } = useStaffData<ReportRow>(
 		`/api/staff/reports/${reportId}`
 	)
-	const names = useNames(report ? [report.reported_player_id] : [])
+	const names = useNames(
+		report ? [report.reported_player_id, report.unbanned_by_player_id ?? 0] : []
+	)
 
 	if (loadError !== '') {
 		return (
@@ -1378,6 +1441,15 @@ function BanDialog({ reportId, navigate }: { reportId: number; navigate: (to: st
 				On report #{report.id} — {categoryLabel(report.report_category)}
 				{report.details ? `: “${report.details}”` : ''}
 			</p>
+			{/* The one thing this form must not do quietly: a ban on this very report was
+			    lifted on purpose, and applying another undoes a colleague's decision. The
+			    form still works — sometimes a re-ban IS the decision — but not by accident. */}
+			{banLifted(report) && (
+				<p className="mod-lifted-note">
+					<LiftedBan report={report} names={names} />. Banning again overrides that — check with
+					them first unless something new has happened.
+				</p>
+			)}
 
 			<LinkedAccountsPanel playerId={report.reported_player_id} />
 
@@ -1422,7 +1494,7 @@ function BanDialog({ reportId, navigate }: { reportId: number; navigate: (to: st
 				{error && <p className="error">{error}</p>}
 				<div className="mod-filter-actions">
 					<button type="submit" disabled={pending}>
-						{pending ? 'Banning…' : 'Apply ban'}
+						{pending ? 'Banning…' : banLifted(report) ? 'Ban again' : 'Apply ban'}
 					</button>
 					<button
 						type="button"
