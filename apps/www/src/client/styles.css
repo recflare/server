@@ -783,18 +783,18 @@ h2 {
    file input, so a click anywhere on it opens the picker. The hint is always drawn, not
    only on hover — a touch screen has no hover, and nothing else says the picture can be
    changed. */
-.room-hero-media {
+.image-upload-media {
 	display: flex;
 	flex-direction: column;
 	gap: 10px;
 }
 
-.room-hero-media .error,
-.room-hero-media .ok {
+.image-upload-media .error,
+.image-upload-media .ok {
 	margin: 0;
 }
 
-.room-image-upload {
+.image-upload {
 	position: relative;
 	display: block;
 	border-radius: 8px;
@@ -802,15 +802,63 @@ h2 {
 	cursor: pointer;
 }
 
-.room-image-upload[aria-busy='true'] {
+.image-upload[aria-busy='true'] {
 	cursor: progress;
 }
 
-.room-image-upload .room-hero-img {
+.image-upload img {
 	display: block;
 }
 
-.room-image-upload-hint {
+/* The account page's avatar: the public profile's picture at the profile's size, with
+   the upload frame rounded to match so the hint sits as a chord across the bottom. */
+.identity {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 18px;
+}
+
+/* The upload's result: a full row under the avatar and the name, never beside them. It
+   comes before the name in the DOM (the avatar control renders it), so `order` sorts it
+   after; without that the full-width row wraps the name down under it. */
+.identity-status {
+	order: 1;
+	flex-basis: 100%;
+	margin: 0;
+}
+
+.identity-body {
+	min-width: 0;
+}
+
+/* `margin: 0` undoes the form `label` rule's bottom margin, which otherwise lifts the
+   avatar off the name's centre line. */
+.identity-avatar-upload {
+	border-radius: 50%;
+	flex: none;
+	margin: 0;
+	/* The ring is the frame's, not the picture's: the frame clips its contents at the
+	   inside of its border, which keeps the hint bar off the ring. On the picture, the bar
+	   ran over it and read as a bar wider than the face. */
+	border: 3px solid var(--surface-hi);
+}
+
+.identity-avatar {
+	width: 96px;
+	height: 96px;
+	object-fit: cover;
+	background: var(--surface-hi);
+}
+
+/* A shallower bar than the room image's: on a 96px circle the default padding covers a
+   third of the face. */
+.identity-avatar-upload .image-upload-hint {
+	padding: 2px 8px 5px;
+	font-size: 0.7rem;
+}
+
+.image-upload-hint {
 	position: absolute;
 	inset: auto 0 0;
 	padding: 6px 8px;
@@ -821,23 +869,28 @@ h2 {
 	transition: background 120ms;
 }
 
-.room-image-upload:hover .room-image-upload-hint,
-.room-image-upload:focus-within .room-image-upload-hint {
+.image-upload:hover .image-upload-hint,
+.image-upload:focus-within .image-upload-hint {
 	background: rgb(0 0 0 / 0.8);
 }
 
 /* Clipped to nothing rather than `display: none`, which would take it out of the tab
-   order; the ring is drawn on the label instead. */
-.room-image-upload input[type='file'] {
+   order; the ring is drawn on the label instead. Pinned to the frame's corner: left at its
+   static position it lands below the picture, outside the frame's clipped box, and the
+   browser scrolls the frame's content up to bring it into view when a click focuses it. */
+.image-upload input[type='file'] {
 	position: absolute;
+	top: 0;
+	left: 0;
 	width: 1px;
 	height: 1px;
+	margin: 0;
 	overflow: hidden;
 	clip-path: inset(50%);
 	opacity: 0;
 }
 
-.room-image-upload:has(input:focus-visible) {
+.image-upload:has(input:focus-visible) {
 	outline: 2px solid var(--accent);
 	outline-offset: 2px;
 }

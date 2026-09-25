@@ -61,6 +61,8 @@ interface SelfAccount {
 	username: string
 	displayName: string
 	email: string | null
+	/** A key on the `img` worker — `DefaultProfileImage.jpg` until the player sets one. */
+	profileImage: string
 	/**
 	 * Username changes left on the account — each change spends one, and an account
 	 * starts with one. Absent on an older self DTO, which reads as "unknown": the form
@@ -293,6 +295,50 @@ async function setRoomImage(roomId: number, imageName: string): Promise<void> {
 	if (res.Success !== true) {
 		throw new Error(res.Error || 'The rooms worker refused the image.')
 	}
+}
+
+/**
+ * The `SavedImageType` a profile picture is uploaded under. `api` files the object under
+ * `profile/` and, seeing this type, writes it onto the account row as well — so the
+ * upload alone would change the avatar. The game still follows it with the `accounts`
+ * PUT (see `setProfileImage`), and so does this page: that call is the one that pushes
+ * the `AccountUpdate` frame, without which a running client keeps drawing the old face.
+ */
+const SAVED_IMAGE_TYPE_PROFILE = 4
+
+/**
+ * Upload a profile picture the way the game does — `POST /api/images/v4/uploadsaved` on
+ * `api`, NOT `storage`'s `/upload` that the room image uses. The two land in different
+ * buckets: a room image is a plain object `img` serves by key, while a saved image also
+ * gets a row in the `image` table (typed as a profile thumbnail, so it stays out of the
+ * photo feed, which lists share-camera shots only). Returns the key `img` serves it by.
+ */
+async function uploadProfileImage(file: File): Promise<string> {
+	const form = new FormData()
+	form.set('imgMeta', JSON.stringify({ savedImageType: SAVED_IMAGE_TYPE_PROFILE }))
+	form.set('image', file)
+	const { ImageName } = await call<{ ImageName?: string }>(
+		`${where().api}/api/images/v4/uploadsaved`,
+		{ method: 'POST', multipart: form, authed: true }
+	)
+	if (!ImageName) throw new Error('The api worker accepted the picture but returned no name.')
+	return ImageName
+}
+
+/**
+ * Point the account at an already-uploaded picture — `PUT /account/me/profileimage` on
+ * `accounts`, the call the game makes after the upload. Answers the lowercase
+ * `{ success }` envelope, not the room image's PascalCase one, and carries no account:
+ * the page patches `profileImage` onto the one it holds, as it does for a room.
+ */
+async function setProfileImage(imageName: string): Promise<void> {
+	const res = await call<{ success?: boolean }>(`${where().accounts}/account/me/profileimage`, {
+		method: 'PUT',
+		authed: true,
+		form: { imageName },
+		refusal: 'The accounts worker refused the image.',
+	})
+	if (res.success !== true) throw new Error('The accounts worker refused the image.')
 }
 
 /**
@@ -2676,8 +2722,62 @@ function BlobUpload({
 const IMAGE_TYPES = new Set(['image/jpeg', 'image/png'])
 
 /**
- * The room's thumbnail, which is also the control that replaces it: clicking the picture
- * opens the file picker, and the picked file uploads straight away.
+ * A picture that is also the control that replaces it: clicking it opens the file
+ * picker, and the picked file is handed to `onFile`. The room thumbnail and the profile
+ * avatar are both this, with different pictures and different workers behind them.
+ *
+ * Just the picture and its input — the upload itself, and where its result is shown,
+ * belong to the caller: the frame is exactly the picture's size (a circle for the
+ * avatar), so a message can't live inside it without stretching it.
+ */
+function ImageUpload({
+	src,
+	className,
+	imgClassName,
+	hint,
+	pending,
+	onFile,
+}: {
+	src: string
+	/** Goes on the label, which is the clickable frame — the shape (card, circle) is its. */
+	className?: string
+	imgClassName: string
+	/** What the overlay says at rest; while uploading it says so instead. */
+	hint: string
+	pending: boolean
+	onFile: (file: File) => void
+}) {
+	return (
+		// A label, so the whole picture is the file input's click target. The input is
+		// hidden visually rather than with `display: none`, which keeps it in the tab
+		// order — the focus ring is drawn on the label around it.
+		<label className={`image-upload ${className ?? ''}`} aria-busy={pending}>
+			<img className={imgClassName} src={src} alt="" />
+			<span className="image-upload-hint">{pending ? 'Uploading…' : hint}</span>
+			<input
+				type="file"
+				accept="image/jpeg,image/png"
+				disabled={pending}
+				onChange={(e) => {
+					const input = e.target
+					const file = input.files?.[0]
+					// Cleared straight away, so picking the same file again still fires a
+					// change; the File object stays readable after the input lets go of it.
+					input.value = ''
+					if (file) onFile(file)
+				}}
+			/>
+		</label>
+	)
+}
+
+/** Refuse anything but the two image types the server resizes (see IMAGE_TYPES). */
+function requireImage(file: File): void {
+	if (!IMAGE_TYPES.has(file.type)) throw new Error('Choose a JPEG or PNG image.')
+}
+
+/**
+ * The room's thumbnail, as an {@link ImageUpload}, with the upload's result under it.
  *
  * Same two steps as the scene-data upload, with a different `FileType`: the bytes go to
  * `storage` under the Image type, and the key it hands back is put to the room's
@@ -2701,43 +2801,68 @@ function RoomImageUpload({
 	const { pending, error, done, run } = useAction()
 
 	return (
-		<div className="room-hero-media">
-			{/* A label, so the whole picture is the file input's click target. The input is
-			    hidden visually rather than with `display: none`, which keeps it in the tab
-			    order — the focus ring is drawn on the label around it. */}
-			<label className="room-image-upload" aria-busy={pending}>
-				<img className="room-hero-img" src={src} alt="" />
-				<span className="room-image-upload-hint">
-					{pending ? 'Uploading…' : 'Click to upload image'}
-				</span>
-				<input
-					type="file"
-					accept="image/jpeg,image/png"
-					disabled={pending}
-					onChange={(e) => {
-						const input = e.target
-						const file = input.files?.[0]
-						if (!file) return
-						void run(async () => {
-							try {
-								if (!IMAGE_TYPES.has(file.type)) {
-									throw new Error('Choose a JPEG or PNG image.')
-								}
-								const imageName = await uploadToStorage(file, FILE_TYPE_IMAGE)
-								await setRoomImage(roomId, imageName)
-								onImageChange(imageName)
-								return 'Image replaced — it shows in game now.'
-							} finally {
-								// Cleared either way, so picking the same file again still fires a change.
-								input.value = ''
-							}
-						})
-					}}
-				/>
-			</label>
+		<div className="image-upload-media">
+			<ImageUpload
+				src={src}
+				imgClassName="room-hero-img"
+				hint="Click to upload image"
+				pending={pending}
+				onFile={(file) =>
+					void run(async () => {
+						requireImage(file)
+						const imageName = await uploadToStorage(file, FILE_TYPE_IMAGE)
+						await setRoomImage(roomId, imageName)
+						onImageChange(imageName)
+						return 'Image replaced — it shows in game now.'
+					})
+				}
+			/>
 			{error && <p className="error">{error}</p>}
 			{done && <p className="ok">{done}</p>}
 		</div>
+	)
+}
+
+/**
+ * The player's avatar, as an {@link ImageUpload}: the same two calls the game makes when
+ * a player changes their profile picture, uploaded as a saved image of the profile type
+ * and then set on the account. The game's own picker only offers photos taken in game;
+ * this one takes any JPEG or PNG.
+ *
+ * A fragment, laid out by the identity card it sits in: the avatar takes its place beside
+ * the name, and a failure wraps onto a row of its own below both (`identity-status`)
+ * rather than under the avatar, where it would widen the circle to the text's width.
+ * Success says nothing: the new picture appearing is the confirmation.
+ */
+function ProfileImageUpload({
+	account,
+	onChange,
+}: {
+	account: SelfAccount
+	onChange: (a: SelfAccount) => void
+}) {
+	const { pending, error, run } = useAction()
+
+	return (
+		<>
+			<ImageUpload
+				src={`${where().img}/${account.profileImage}?width=256`}
+				className="identity-avatar-upload"
+				imgClassName="identity-avatar"
+				hint="Change"
+				pending={pending}
+				onFile={(file) =>
+					void run(async () => {
+						requireImage(file)
+						const imageName = await uploadProfileImage(file)
+						await setProfileImage(imageName)
+						onChange({ ...account, profileImage: imageName })
+						return ''
+					})
+				}
+			/>
+			{error && <p className="error identity-status">{error}</p>}
+		</>
 	)
 }
 
@@ -3131,10 +3256,16 @@ function Dashboard({
 	return (
 		<>
 			<section className="card identity">
-				<div className="muted">Signed in as</div>
-				<div className="big">{account.displayName || account.username}</div>
-				<div className="handle">
-					@{account.username} · #{account.accountId} · {account.email ?? 'no email set'}
+				{/* The same picture the public profile draws (see PlayerPage), and here the way
+				    to change it. Dashboard only renders once `/account/me` has answered, and
+				    that call went through `where()`, so the img host is known. */}
+				<ProfileImageUpload account={account} onChange={onChange} />
+				<div className="identity-body">
+					<div className="muted">Signed in as</div>
+					<div className="big">{account.displayName || account.username}</div>
+					<div className="handle">
+						@{account.username} · #{account.accountId} · {account.email ?? 'no email set'}
+					</div>
 				</div>
 			</section>
 			<div className="workspace">
