@@ -59,6 +59,14 @@ import type { StoreListing } from '../../../../apps/econ/src/catalog-load'
  *              PNG per item that this server does not have.
  *   gold       a skin whose name carries `(Gold)` sells at `GOLD_SKIN_PRICE`, 100,000 tokens,
  *              subscriber price the same: no discount, no sale.
+ *   context    a drop whose `Context` is `NO_CONTEXT` (-1) gets 0. The dump carries -1 on
+ *              exactly 46 listings — the 22 permanent hair dyes and the 24 dice skins, the
+ *              things the live game sells from a surface of its own rather than the store page
+ *              — and every other listing says 0 or a positive category. Served with -1 the hair
+ *              dyes did not work; swapping those 22 listings for the ones the earlier generated
+ *              store carried (Context 0, ids and prices of its own) fixed them, and -1 is the
+ *              one member that set the dyes apart from the thousands of listings that work.
+ *              See `withStoreContext`.
  *
  * Everything else — `SubscriberDiscountPercent`, `SubscriberPrices`, custom-item listings, the
  * token bundles, the developer-tier items, `AvailableAt` dates — is the store as the game had
@@ -77,6 +85,22 @@ const NEXT_UPDATE = '2226-06-14T00:12:20.1324853Z'
 /** Whether a listing is served without its thumbnail: every skin and every consumable. */
 export const blanksThumbnail = (listing: StoreListing): boolean =>
 	listing.GiftDrop.EquipmentModificationGuid !== '' || listing.GiftDrop.ConsumableItemDesc !== ''
+
+/** The `Context` the dump puts on a drop the store page does not sell: the hair dyes, the dice skins. */
+export const NO_CONTEXT = -1
+
+/** The `Context` every ordinary listing carries — what the generated store gave the hair dyes. */
+const STORE_CONTEXT = 0
+
+/** Whether a listing's drop carries the dump's out-of-store `Context`. */
+export const hasNoContext = (listing: StoreListing): boolean =>
+	listing.GiftDrop.Context === NO_CONTEXT
+
+/** The listing with its drop's `Context` brought in from {@link NO_CONTEXT} to the store's. */
+export const withStoreContext = (listing: StoreListing): StoreListing => ({
+	...listing,
+	GiftDrop: { ...listing.GiftDrop, Context: STORE_CONTEXT },
+})
 
 /** A price list with its sale removed: the list price, nothing on top. */
 const withoutSale = <T extends { StorefrontSaleData: unknown }>(prices: T[] | null): T[] | null =>
@@ -130,6 +154,14 @@ const build = new Command('build')
 			item.SubscriberPrices = [priced]
 		}
 
+		// Out-of-store drops brought onto the store page, see `withStoreContext`.
+		let recontexted = 0
+		for (const [i, item] of items.entries()) {
+			if (!hasNoContext(item)) continue
+			recontexted++
+			items[i] = withStoreContext(item)
+		}
+
 		writeFileSync(
 			STOREFRONT_FILE,
 			`${JSON.stringify({ ...dump, StoreItems: items, NextUpdate: NEXT_UPDATE }, null, '\t')}\n`
@@ -152,7 +184,8 @@ const build = new Command('build')
 				`✓ ${STOREFRONT_FILE}: ${items.length} listings from ${STORE_DUMP} ` +
 					`(${repeats} repeated listing(s) dropped, ${sales} sale(s) removed) ` +
 					`+ ${added} skin(s) from ${SKINS} at rarity ${UNLISTED_SKIN_RARITY}, ` +
-					`${blanked} skin/consumable thumbnail(s) blanked, ${gold} gold skin(s) at ${GOLD_SKIN_PRICE}`
+					`${blanked} skin/consumable thumbnail(s) blanked, ${gold} gold skin(s) at ${GOLD_SKIN_PRICE}, ` +
+					`${recontexted} drop(s) with Context ${NO_CONTEXT} set to ${STORE_CONTEXT}`
 			)
 		)
 		console.log(
@@ -176,8 +209,9 @@ sf3-2025.json is the real 2025 store — ${STORE_DUMP} — with its captured
 sale removed, repeated listings collapsed and a far-future NextUpdate, plus the equipment skins
 the store never listed (${SKINS}) as rarity-${UNLISTED_SKIN_RARITY} listings numbered from
 ${UNLISTED_SKIN_ID_BASE}; every skin's and consumable's ThumbnailImageName is ""; a "(Gold)"
-skin sells at ${GOLD_SKIN_PRICE} tokens with no discount. Ids, items and list prices are
-otherwise the dump's. \`runx catalog
+skin sells at ${GOLD_SKIN_PRICE} tokens with no discount; a drop with Context ${NO_CONTEXT} (the hair
+dyes and the dice skins) is served with Context 0. Ids, items and list prices are otherwise the
+dump's. \`runx catalog
 load\` reads the file this writes and nothing else, so a listing's PurchasableItemId is its
 catalog_id.
 

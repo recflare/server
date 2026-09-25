@@ -149,6 +149,14 @@ export interface CatalogRow {
  *
  * `AvatarItemId` is nullable and `Tooltip` may be null; both are true of the captured data and
  * the client reads them that way. Do not tighten either to keep a projection simple.
+ *
+ * `CreatedAt` and `ThumbnailImage` are OPTIONAL, never null: the capture this record mirrors
+ * carried a date on most rows and simply had no key on the rest — the permanent hair dyes
+ * among them — and never `null`. A row loaded from a store listing has no date at all, and
+ * serving it as `"CreatedAt": null` on every record (as `lockeditems/bulk` did once the
+ * loader moved to the store) broke the dorm mirror's hair dyes: the client resolves locked
+ * hair colours through that route, and a null where it expects a date costs it the whole
+ * response, not the field. Leave the key out, as the capture did.
  */
 export interface CatalogAvatarItem {
 	AvatarItemDesc: string
@@ -160,8 +168,8 @@ export interface CatalogAvatarItem {
 	TagList: string | null
 	AvatarItemId: number | null
 	IsBaseAvatarItem: boolean
-	CreatedAt: string | null
-	ThumbnailImage: string | null
+	CreatedAt?: string
+	ThumbnailImage?: string
 }
 
 /**
@@ -201,8 +209,9 @@ export function toCatalogAvatarItem(row: CatalogRow): CatalogAvatarItem {
 		TagList: row.tag_list,
 		AvatarItemId: row.avatar_item_id,
 		IsBaseAvatarItem: row.is_base_avatar_item === 1,
-		CreatedAt: row.created_at,
-		ThumbnailImage: row.thumbnail_image,
+		// Absent rather than null when the row has none — see the record's note.
+		...(row.created_at !== null ? { CreatedAt: row.created_at } : {}),
+		...(row.thumbnail_image !== null ? { ThumbnailImage: row.thumbnail_image } : {}),
 	}
 }
 
