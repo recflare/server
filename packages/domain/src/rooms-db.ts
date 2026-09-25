@@ -658,12 +658,14 @@ export async function deleteRoomLeaderboard(
 /**
  * Clone an existing room into a new one owned by `accountId`. Copies the source
  * room's content (scene/subrooms/settings), assigning a fresh RoomId, the given
- * name, and the new owner. The clone starts with an empty tag set — the source's
- * tags (including the `base` template tag) do not carry over, so the owner tags the
- * clone from scratch — `IsRRO` is cleared so the client doesn't render a virtual
- * "RRO" tag on it, `IsDeveloperOwned`/`CloningAllowed` are cleared, its `Stats` start
- * at zero, and it starts PRIVATE rather than inheriting the source's visibility. Returns the new room, or null when the source isn't in D1 or disallows
- * cloning.
+ * name, and the new owner. The clone keeps only the source's SYSTEM tags (`Type` 1,
+ * `RoomTagType.auto` — `beta`, `limitsv2`): the client posts those to describe what the
+ * scene needs to run, so a copy of the scene needs them too. Every other tag (the owner's
+ * `Type` 0 tags, the `base` template tag, the server-derived `rro`) is dropped, so the
+ * owner tags the clone from scratch. `IsRRO` is cleared so the client doesn't render a
+ * virtual "RRO" tag on it, `IsDeveloperOwned`/`CloningAllowed` are cleared, its `Stats`
+ * start at zero, and it starts PRIVATE rather than inheriting the source's visibility.
+ * Returns the new room, or null when the source isn't in D1 or disallows cloning.
  */
 export async function cloneRoom(
 	db: D1Database,
@@ -691,14 +693,23 @@ export async function cloneRoom(
 		},
 	]
 
+	// The system tags (`Type` 1: `beta`, `limitsv2`) carry over — the client derives them
+	// from what the scene is built with and the clone is the same scene, so without them
+	// the copy doesn't work. Nothing else does: no owner tags, no `base`, no `rro`, and no
+	// primary-genre flag (an auto tag is never the genre).
+	const sourceTags = Array.isArray(source.Tags) ? (source.Tags as RoomTag[]) : []
+	const systemTags: RoomTag[] = sourceTags
+		.filter((t) => t.Type === RoomTagType.auto)
+		.map((t) => ({ Tag: t.Tag, Type: RoomTagType.auto }))
+
 	const cloned: Room = {
 		...source,
 		RoomId: newRoomId,
 		Name: name,
 		CreatorAccountId: accountId,
 		IsDorm: false,
-		// Start fresh: drop every tag the source carried (including `base`).
-		Tags: [],
+		// Start fresh, except for the system tags the scene needs to run (see below).
+		Tags: systemTags,
 		// A user clone is not a Rec Room Original — clear the inherited flag, or the
 		// client renders a virtual "RRO" tag on the clone.
 		IsRRO: false,
@@ -722,6 +733,8 @@ export async function cloneRoom(
 	// serializeRoom drops the hydrated SubRooms from the blob; the clone's subrooms are
 	// inserted into the subroom table below with fresh globally-unique ids.
 	await db.prepare('INSERT INTO room (data) VALUES (?1)').bind(serializeRoom(cloned)).run()
+	// Tags live in `room_tag`, not the blob: the system tags need their own write.
+	if (systemTags.length > 0) await setRoomTags(db, newRoomId, systemTags)
 	const sourceSubRooms = Array.isArray(source.SubRooms) ? (source.SubRooms as SubRoom[]) : []
 	const clonedSubRooms: SubRoom[] = []
 	for (const sub of sourceSubRooms) {

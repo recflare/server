@@ -1334,6 +1334,14 @@ describe('rooms endpoints', () => {
 			`UPDATE room SET data = json_set(data, '$.IsDeveloperOwned', json('true'),
 				'$.CloningAllowed', json('true'), '$.Stats.VisitorCount', 42) WHERE room_id = 24`
 		).run()
+		// And every kind of tag: an owner tag flagged as the genre (Type 0), the server's
+		// `rro` (Type 2), and the two system tags the client derives (Type 1).
+		await env.DB.batch([
+			env.DB.prepare(
+				`INSERT OR REPLACE INTO room_tag (room_id, tag, type, is_primary_genre)
+				 VALUES (24, 'hangout', 0, 1), (24, 'rro', 2, 0), (24, 'beta', 1, 0), (24, 'limitsv2', 1, 0)`
+			),
+		])
 
 		// Clone MakerRoom (base, RoomId 24) → a fresh room owned by the caller (801).
 		const ok = await post(24, 'MyMakerClone')
@@ -1343,9 +1351,12 @@ describe('rooms endpoints', () => {
 		expect(ok.value!.Name).toBe('MyMakerClone')
 		expect(ok.value!.CreatorAccountId).toBe(801)
 		expect(ok.value!.RoomId).toBeGreaterThan(51)
-		// The clone starts fresh with no tags — none of the source's tags (including
-		// the `base` template tag) carry over.
-		expect(ok.value!.Tags).toEqual([])
+		// Only the system tags (Type 1) carry over — the scene needs them to run. The
+		// owner's tags, the `base` template tag, the derived `rro` and the genre flag don't.
+		expect(ok.value!.Tags).toEqual([
+			{ Tag: 'beta', Type: 1 },
+			{ Tag: 'limitsv2', Type: 1 },
+		])
 		// IsRRO is cleared so the client doesn't render a virtual "RRO" tag on the clone.
 		expect(ok.value!.IsRRO).toBe(false)
 		// Nor is it developer-owned, and the new owner opts it into cloning themselves.
@@ -1375,7 +1386,11 @@ describe('rooms endpoints', () => {
 			Stats: Record<string, number>
 		}
 		expect(fetched.Name).toBe('MyMakerClone')
-		expect(fetched.Tags).toEqual([])
+		// The system tags were written to `room_tag`, so they survive a re-read.
+		expect(fetched.Tags).toEqual([
+			{ Tag: 'beta', Type: 1 },
+			{ Tag: 'limitsv2', Type: 1 },
+		])
 		expect(fetched.IsDeveloperOwned).toBe(false)
 		expect(fetched.CloningAllowed).toBe(false)
 		expect(fetched.Stats.VisitorCount).toBe(0)
