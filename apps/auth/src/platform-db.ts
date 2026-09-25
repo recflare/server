@@ -31,7 +31,8 @@
  * That entitlement is also the one thing a link carries beyond the identity itself: the
  * `role` column (migration 0010) records the Discord roles the claim read, so what a
  * player was granted Plus FOR survives the claim instead of collapsing into a bare
- * `hasPlus`. See {@link PlatformLink.roles}.
+ * `hasPlus`. The `www` worker's daily cron re-reads them through a bot token when one is
+ * configured (apps/www/src/discord-roles.ts). See {@link PlatformLink.roles}.
  */
 
 import { PlatformType } from '@repo/domain/src/enums'
@@ -128,10 +129,12 @@ export interface PlatformLink {
 	 * written — Discord role id snowflakes, kept as strings (one exceeds 2^53). Empty for
 	 * every platform that has no such thing, which is all of them but Discord.
 	 *
-	 * A SNAPSHOT from the claim, not a live read: nothing here can re-read a member's roles
-	 * without their own OAuth token (see apps/www/src/discord.ts, which deliberately holds
-	 * no bot token), so this says what they held when they claimed. Stored as a JSON array
-	 * in the `role` column (migration 0010).
+	 * A SNAPSHOT, not a live read. The benefits claim writes it from the member record the
+	 * player's own OAuth token served, and the `www` worker's daily cron re-reads every
+	 * Discord link through a bot token when the operator has configured one
+	 * (apps/www/src/discord-roles.ts) — so with a bot it trails the guild by at most a day,
+	 * and without one it says what they held when they claimed. Stored as a JSON array in
+	 * the `role` column (migration 0010).
 	 */
 	roles: string[]
 }
@@ -215,16 +218,54 @@ export async function linkPlatformIdentity(
 		.run()
 	if (res.meta.changes > 0) return true
 
-	if (role !== null) {
-		await db
-			.prepare(
-				`UPDATE platform_account SET role = ?4
-				 WHERE account_id = ?1 AND platform = ?2 AND platform_id = ?3`
-			)
-			.bind(accountId, platform, platformId, role)
-			.run()
+	if (roles !== undefined) {
+		await setPlatformLinkRoles(db, accountId, platform, platformId, roles)
 	}
 	return false
+}
+
+/**
+ * Overwrite the roles recorded on an EXISTING link. The daily sweep's write
+ * (apps/www/src/discord-roles.ts), and the second half of {@link linkPlatformIdentity}'s
+ * re-claim. Returns whether a link matched: the sweep reads links and writes them back, so
+ * a false here means the row went away in between, which is worth a log line and nothing
+ * more.
+ */
+export async function setPlatformLinkRoles(
+	db: D1Database,
+	accountId: number,
+	platform: number,
+	platformId: string,
+	roles: readonly string[]
+): Promise<boolean> {
+	if (platformId === '') return false
+	const res = await db
+		.prepare(
+			`UPDATE platform_account SET role = ?4
+			 WHERE account_id = ?1 AND platform = ?2 AND platform_id = ?3`
+		)
+		.bind(accountId, platform, platformId, JSON.stringify([...roles]))
+		.run()
+	return res.meta.changes > 0
+}
+
+/**
+ * Every link on one platform, oldest first — the sweep's read, which walks all of them.
+ *
+ * Unfiltered by {@link CACHED_LOGIN_PLATFORMS} on purpose — its one caller asks about
+ * Discord, the platform that filter exists to exclude. It is not a lookup by identity, so
+ * the privacy argument for the filter (see {@link getLinksForPlatformId}) doesn't apply:
+ * nothing here is reachable from a request.
+ */
+export async function getLinksForPlatform(
+	db: D1Database,
+	platform: number
+): Promise<PlatformLink[]> {
+	const { results } = await db
+		.prepare(`${SELECT_LINK} WHERE platform = ?1 ORDER BY linked_at, account_id`)
+		.bind(platform)
+		.all<LinkRow>()
+	return results.map(toLink)
 }
 
 /**

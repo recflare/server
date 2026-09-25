@@ -100,8 +100,33 @@
 			"binding": "DISCORD_CLIENT_SECRET",
 			"store_id": "local",
 			"secret_name": "DISCORD_CLIENT_SECRET"
+		},
+		// The bot user's token, for the scheduled role refresh (see `triggers` below and
+		// src/discord-roles.ts). Unlike the pair above it is not part of the claim: it lets
+		// the worker re-read a claimed member's roles WITHOUT that member's own OAuth token,
+		// which is the one thing the claim's design cannot do. Add a bot to the same Discord
+		// application (Bot → Reset Token), invite it to the guild with no permissions — reading
+		// a member needs none — and:
+		//
+		//   wrangler secrets-store secret create <store-id> --name DISCORD_BOT_TOKEN \
+		//     --scopes workers --remote
+		//
+		// The binding has to resolve for the deploy to succeed, so an operator who wants no
+		// sweep still creates the secret with any placeholder value: the sweep then logs that
+		// it's off and does nothing, and the claim is unaffected either way.
+		{
+			"binding": "DISCORD_BOT_TOKEN",
+			"store_id": "local",
+			"secret_name": "DISCORD_BOT_TOKEN"
 		}
 	],
+	// The Discord role refresh: once a day, re-reads every claimed member's roles through
+	// the bot token and rewrites `platform_account.role` (src/discord-roles.ts). One
+	// Discord call and one D1 write per link, so a guild with more claimed members than a
+	// cron invocation's subrequest budget (50 free, 1000 paid) is the point to split it up.
+	"triggers": {
+		"crons": ["30 4 * * *"]
+	},
 	// The `auth` worker, reached directly instead of over its public hostname. This is
 	// about the CLIENT IP, not latency: a Worker subrequest to https://auth.<DOMAIN>
 	// re-enters the Cloudflare edge, which overwrites CF-Connecting-IP with Cloudflare's

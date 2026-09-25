@@ -31,6 +31,7 @@ import {
 	revokeToken,
 	SCOPES,
 } from './discord'
+import { refreshDiscordRoles } from './discord-roles'
 import { docsPage, fetchSpec } from './docs'
 import { privacyPage } from './privacy'
 import {
@@ -67,7 +68,7 @@ import {
 } from './upstream'
 
 import type { Context } from 'hono'
-import type { App } from './context'
+import type { App, Env } from './context'
 
 /**
  * www — the website worker. It serves the React SPA (create account, sign in, change
@@ -527,4 +528,15 @@ const app = new Hono<App>()
 		return c.env.ASSETS.fetch(c.req.raw)
 	})
 
-export default app
+export { app }
+
+// The daily cron (wrangler.jsonc `triggers`): refresh every Discord link's role snapshot
+// through the bot token. A no-op, logged once, until the operator configures one — see
+// discord-roles.ts.
+export const scheduled: ExportedHandlerScheduledHandler<Env> = (_controller, env, ctx) => {
+	ctx.waitUntil(refreshDiscordRoles(env))
+}
+
+// A Worker only runs `scheduled` when it's on the default export, so www takes the object
+// form the runtime requires (as `match` does for its presence sweep).
+export default { fetch: app.fetch, scheduled } satisfies ExportedHandler<Env>

@@ -134,6 +134,12 @@ IGNORE`, so `linkedAt` keeps the first claim's time — so the page is safe to
 reload. Nothing revokes Plus: losing the role later leaves the flag set, so it
 records "held the role once", not "holds it today".
 
+The link also records the member's **roles** (`platform_account.role`, a JSON array of
+role ids). The claim writes them from the member record it read; on their own they'd be
+a snapshot from claim time, because the claim revokes the player's token the moment it's
+done and holds nothing that could ask again. The optional **role refresh** is what keeps
+them current — see below.
+
 Four settings configure it, and **all four** are required or the claim stays
 closed (`/api/config` reports `benefitsEnabled: false`, so the SPA hides the tab,
 and `/api/benefits/claim` returns 403). A half-configured app is
@@ -199,6 +205,54 @@ for byte: `www` derives the redirect URI from the incoming request's own origin
 (never from the request body, which would turn the client secret into a redemption
 oracle for someone else's app), so add `http://localhost:5173/claim` too if you
 want the flow to work under `pnpm turbo dev`.
+
+### Discord role refresh (cron)
+
+A daily cron on `www` (`triggers.crons` in `wrangler.jsonc`, 04:30 UTC) re-reads every
+claimed member's roles through a **bot token** and rewrites `platform_account.role` — so
+the table says what a member holds now, not what they held the day they claimed. It is
+the one credential the claim deliberately lacks, and it is optional: without it the cron
+logs `discord role sweep: off` once a day and nothing changes.
+
+It touches **only the role snapshot**. `hasPlus` is never revoked or granted by the
+sweep: a member who left the guild is recorded as holding no roles and keeps their
+Plus, exactly as `runx admin grant-plus` accounts (which have no link at all) do. Read
+the roles and the flag together to decide what to do about a lapsed supporter.
+
+To turn it on:
+
+1. On the same Discord application, open **Bot** and create the bot user; **Reset
+   Token** and copy it. No privileged intents and no permissions are needed — reading
+   one member's record only requires the bot to be in the guild.
+2. Invite the bot to your server (**OAuth2 → URL Generator**, scope `bot`, no
+   permissions) and accept.
+3. Store the token beside the other Discord credentials:
+
+   ```sh
+   printf '<bot token>' |
+     wrangler secrets-store secret create <store-id> --name DISCORD_BOT_TOKEN --scopes workers --remote
+   ```
+
+4. Redeploy `www`.
+
+**The binding must exist for the deploy to succeed** — as with `META_APP_SECRET` on
+`auth`, an operator who doesn't want the sweep still creates `DISCORD_BOT_TOKEN` with
+any placeholder value. With a placeholder the sweep gets a 401 on its first call, logs
+`discord role sweep: stopping, discord refused the bot token (401)` and writes
+nothing; with no Discord links in the table it never calls Discord at all.
+
+Each run walks **every** Discord link, one Discord call and one D1 write per link, in
+one cron invocation. A Worker invocation has a fixed budget of both (50 subrequests on
+the free plan, 1000 on paid), so that is the ceiling on claimed members before the run
+would need splitting up.
+
+A run **stops without writing** when Discord refuses the token (401), the bot may not
+read members (403), or the bot is not in the guild (404 `Unknown Guild`) — a bot that
+hasn't been invited yet must not blank every snapshot as "left". A member who has
+genuinely left (404 `Unknown Member`) is written as holding no roles. Transient errors
+skip that one link and leave its snapshot for the next run, and the sweep honors
+Discord's rate-limit headers between calls. `wrangler tail www` shows a summary line per
+run: `discord role sweep: refreshed N of M links, …`.
 
 ## Development
 

@@ -15,8 +15,14 @@ import type { Env } from './context'
  *
  * Roles come from `GET /users/@me/guilds/{guild}/member`, which needs no bot: the
  * `guilds.members.read` scope lets the TOKEN'S OWNER read their own membership. That is
- * the whole reason this shape was chosen over a bot token — nothing here has to be in
- * the guild, and the worker holds no credential that could read anybody else's roles.
+ * why the CLAIM takes this shape — nothing here has to be in the guild, and the claim
+ * holds no credential that could read anybody else's roles.
+ *
+ * The one thing that CAN is the optional bot token behind the scheduled role refresh
+ * (discord-roles.ts): with it the worker re-reads every claimed member's roles on a
+ * cron; without it the claim's own reading is all `platform_account.role` ever holds.
+ * The claim never uses the bot token — the two paths share only the API base and the
+ * guild id.
  *
  * The four settings (client id, client secret, guild, one or more roles) are the switch,
  * exactly as the Turnstile keypair is for signup: with any of them missing the claim is CLOSED
@@ -25,7 +31,7 @@ import type { Env } from './context'
  */
 
 /** Discord's API, pinned to v10 — the version the endpoints below are documented at. */
-const API_BASE = 'https://discord.com/api/v10'
+export const API_BASE = 'https://discord.com/api/v10'
 
 /**
  * Where the browser is sent to consent. Deliberately NOT under `/api/v10`: the authorize
@@ -132,9 +138,9 @@ export async function discordConfig(env: Env): Promise<DiscordConfig | null> {
  * declared in wrangler.jsonc so it's always on `env`; what varies is whether the store
  * holds the secret — a missing one throws rather than resolving empty. Mirrors
  * `turnstile.ts`'s reader, and for the same reason: a store this worker can't read must
- * close the feature, not 500 the homepage.
+ * close the feature, not 500 the homepage. Shared with the role sweep's bot token read.
  */
-async function readSecret(secret: SecretsStoreSecret, name: string): Promise<string> {
+export async function readSecret(secret: SecretsStoreSecret, name: string): Promise<string> {
 	try {
 		return (await secret.get()) ?? ''
 	} catch (err) {

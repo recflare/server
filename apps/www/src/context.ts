@@ -125,6 +125,12 @@ export type Env = SharedHonoEnv & {
 	 * all closes the claim, exactly as an unset one does.
 	 */
 	DISCORD_BENEFITS_ROLE_IDS?: string
+	/**
+	 * The bot user's token for the scheduled role refresh (discord-roles.ts). Optional in
+	 * effect: the binding must exist for the deploy, but a placeholder value just leaves the
+	 * sweep off. The claim never reads it.
+	 */
+	DISCORD_BOT_TOKEN: SecretsStoreSecret
 }
 
 /** Variables can be extended */
