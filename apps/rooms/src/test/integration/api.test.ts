@@ -2537,6 +2537,60 @@ describe('rooms endpoints', () => {
 			.run()
 	})
 
+	it('GET/PUT /rooms/:id/playerdata/me stores and serves the caller’s per-room data', async () => {
+		const get = async (path: string, sub?: string) =>
+			SELF.fetch(`${ORIGIN}${path}`, { headers: sub ? await bearer(sub) : {} })
+		const rowsOf = async (roomId: number) =>
+			(
+				await env.DB.prepare(
+					'SELECT player_id, data FROM playerdata WHERE room_id = ?1 ORDER BY player_id'
+				)
+					.bind(roomId)
+					.all()
+			).results
+
+		// The real client body, verbatim: a base64 blob the server stores without decoding.
+		const blob = 'CAVKGhoYChIKEPpVnzZ50iJLpI8BPCdUjjoaAhAAUggKAAoACgAKAA=='
+
+		// No token → 401 on both: the data is the caller's own.
+		expect((await get('/rooms/2/playerdata/me')).status).toBe(401)
+		expect((await putForm('/rooms/2/playerdata/me', { data: blob })).status).toBe(401)
+		// Unknown room → 404 on the write; the read serves an empty blob (a 404 would stall
+		// the room load).
+		expect((await putForm('/rooms/99999/playerdata/me', { data: blob }, '205')).status).toBe(404)
+		expect(await (await get('/rooms/99999/playerdata/me', '205')).json()).toEqual({ Data: '' })
+
+		// Nothing saved yet → empty `Data`.
+		expect(await (await get('/rooms/2/playerdata/me', '205')).json()).toEqual({ Data: '' })
+
+		// Any player may save to any room — 205 owns nothing here. The reply carries what
+		// was stored, and the GET reads it back verbatim.
+		const put = await putForm('/rooms/2/playerdata/me', { data: blob }, '205')
+		expect(put.status).toBe(200)
+		expect(await put.json()).toEqual({ Data: blob })
+		expect(await (await get('/rooms/2/playerdata/me', '205')).json()).toEqual({ Data: blob })
+		expect(await rowsOf(2)).toEqual([{ player_id: 205, data: blob }])
+
+		// A re-save overwrites the one row rather than appending.
+		expect(await (await putForm('/rooms/2/playerdata/me', { data: 'CAA=' }, '205')).json()).toEqual(
+			{ Data: 'CAA=' }
+		)
+		expect(await rowsOf(2)).toEqual([{ player_id: 205, data: 'CAA=' }])
+
+		// Keyed per (room, player): another player and another room are their own rows,
+		// and neither reads the other's.
+		expect((await putForm('/rooms/2/playerdata/me', { data: blob }, '1')).status).toBe(200)
+		expect((await putForm('/rooms/3/playerdata/me', { data: blob }, '205')).status).toBe(200)
+		expect(await rowsOf(2)).toEqual([
+			{ player_id: 1, data: blob },
+			{ player_id: 205, data: 'CAA=' },
+		])
+		expect(await (await get('/rooms/3/playerdata/me', '205')).json()).toEqual({ Data: blob })
+		expect(await (await get('/rooms/3/playerdata/me', '1')).json()).toEqual({ Data: '' })
+
+		await env.DB.prepare('DELETE FROM playerdata WHERE room_id IN (2, 3)').run()
+	})
+
 	it('POST/DELETE /rooms/:id/leaderboards/:lid configures and removes a room’s leaderboard slots', async () => {
 		// RecCenter (room 2) is owned by account 1, with account 2 as co-owner.
 		const del = async (path: string, sub?: string) =>
@@ -5392,6 +5446,7 @@ describe('rooms endpoints', () => {
 			'PUT /rooms/{roomId}/loadscreen',
 			'PUT /rooms/{roomId}/max_player_calculation_mode',
 			'PUT /rooms/{roomId}/name',
+			'PUT /rooms/{roomId}/playerdata/me',
 			'PUT /rooms/{roomId}/restrictions',
 			'PUT /rooms/{roomId}/roles/{accountId}',
 			'PUT /rooms/{roomId}/roles/{accountId}/invite',

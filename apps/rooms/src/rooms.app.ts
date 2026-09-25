@@ -29,6 +29,7 @@ import {
 	getHotRooms,
 	getInteraction,
 	getOrCreateDormRoom,
+	getPlayerData,
 	getPlayerIdsInRoom,
 	getPresence,
 	getPublicRoomsByCreator,
@@ -61,6 +62,7 @@ import {
 	roomRoles,
 	saveSubRoomData,
 	searchRooms,
+	setPlayerData,
 	setRoomDescription,
 	setRoomImage,
 	setRoomLeaderboard,
@@ -125,6 +127,7 @@ import {
 	pageParams,
 	PhotonAccessTokenDto,
 	PlayerDataDto,
+	PlayerDataRequest,
 	playerIdParam,
 	PublishSaveRequest,
 	PublishStateConfigsEnvelope,
@@ -4165,21 +4168,75 @@ const app = new Hono<App>()
 		}
 	)
 
-	// The caller's per-room player data. Stub → empty blob (client reads `Data`).
+	// The caller's per-room player data — the blob they last saved through the PUT below,
+	// or an empty one, which the client reads as "no saved data". Auth-gated (401): the
+	// answer is the caller's own.
 	.get(
 		'/rooms/:roomId{[0-9]+}/playerdata/me',
 		describeRoute({
 			tags: ['Rooms'],
 			summary: 'The caller’s per-room player data',
 			description: [
-				'Per-room save data for the calling player. Nothing stores any yet, so this is a stub',
-				'serving an empty blob — which the client reads as “no saved data”. No auth: there’s',
-				'no caller-specific state to protect until something writes here.',
+				'The blob the calling player last saved for this room through',
+				'`PUT /rooms/{roomId}/playerdata/me`, verbatim, as `Data`. A player who has never',
+				'saved any — or an unknown room — gets an EMPTY `Data`, which the client reads as',
+				'“no saved data”; a 404 here would stall the room load.',
 			].join(' '),
+			security: AUTHED,
 			parameters: [roomIdParam],
-			responses: { 200: json(PlayerDataDto, 'An empty data blob') },
+			responses: {
+				200: json(PlayerDataDto, 'The caller’s saved blob, or an empty one'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
 		}),
-		(c) => c.json({ Data: '' })
+		async (c) => {
+			const accountId = await authedAccountId(c)
+			if (accountId === null) return unauthorized(c)
+			const roomId = Number.parseInt(c.req.param('roomId'), 10)
+			return c.json({ Data: (await getPlayerData(c.env.DB, roomId, accountId)) ?? '' })
+		}
+	)
+
+	// Save the caller's per-room player data (form field `data`, a base64 blob the client
+	// builds and the server never decodes). Auth-gated (401). One row per (room, player) —
+	// a re-save overwrites, so the table holds only the latest. Answers the same bare
+	// `{ Data }` the GET serves, carrying what was stored.
+	.put(
+		'/rooms/:roomId{[0-9]+}/playerdata/me',
+		describeRoute({
+			tags: ['Rooms'],
+			summary: 'Save the caller’s per-room player data',
+			description: [
+				'Stores the `data` form field — a base64 blob the client builds; the server neither',
+				'decodes nor validates it — as the calling player’s data for this room, in the',
+				'`playerdata` table. One row per (room, player): a re-save overwrites the blob in',
+				'place, so only the latest is kept. Any caller may save to any room; nothing here is',
+				'owner-gated, since the data is the caller’s own. An unknown room is a 404.',
+				'',
+				'Answers the same bare `{ Data }` the GET serves, carrying what was stored. That',
+				'shape is an ASSUMPTION — what the client does with this response has not been',
+				'observed; it has only been seen to read the GET.',
+			].join('\n'),
+			security: AUTHED,
+			parameters: [roomIdParam],
+			requestBody: form(PlayerDataRequest, 'The blob to store'),
+			responses: {
+				200: json(PlayerDataDto, 'The stored blob'),
+				401: UNAUTHORIZED_RESPONSE,
+				404: { description: 'No such room (empty body)' },
+			},
+		}),
+		async (c) => {
+			const accountId = await authedAccountId(c)
+			if (accountId === null) return unauthorized(c)
+
+			const roomId = Number.parseInt(c.req.param('roomId'), 10)
+			if (!(await getRoomById(c.env.DB, roomId))) return c.body(null, 404)
+
+			const body = (await c.req.parseBody().catch(() => ({}))) as Record<string, unknown>
+			const data = typeof body.data === 'string' ? body.data : ''
+			return c.json({ Data: await setPlayerData(c.env.DB, roomId, accountId, data) })
+		}
 	)
 
 	// A room's XP settings — whether players earn experience there and how much of it counts
@@ -4218,8 +4275,8 @@ const app = new Hono<App>()
 			description: [
 				'Per-room experience/progression for the calling player. Nothing tracks any yet, so',
 				'this is an empty list — which the client reads as “no progress in this room”, where',
-				'a 404 would stall the room load. No auth, matching `playerdata/me`: the answer is',
-				'the same for every caller until something writes here.',
+				'a 404 would stall the room load. No auth: the answer is the same for every caller',
+				'until something writes here.',
 			].join(' '),
 			parameters: [roomIdParam],
 			responses: { 200: json(RoomExperiencePlayer, 'An empty list') },

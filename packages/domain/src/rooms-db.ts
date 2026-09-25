@@ -143,6 +143,16 @@ export const ROOM_SCHEMA_DDL: string[] = [
 		sort_ascending INTEGER NOT NULL DEFAULT 0,
 		PRIMARY KEY (room_id, leaderboard_id)
 	)`,
+	// Per-room, per-player variable data (migrations/0020_playerdata.sql) — what the client
+	// saves through `PUT /rooms/:id/playerdata/me` and reads back from the GET. One row per
+	// (room, player); `data` is the posted blob verbatim (a base64 string the server never
+	// decodes), and a re-save overwrites it, so only each player's latest is kept.
+	`CREATE TABLE IF NOT EXISTS playerdata (
+		room_id INTEGER NOT NULL,
+		player_id INTEGER NOT NULL,
+		data TEXT NOT NULL,
+		PRIMARY KEY (room_id, player_id)
+	)`,
 ]
 
 /**
@@ -653,6 +663,45 @@ export async function deleteRoomLeaderboard(
 		.bind(roomId, leaderboardId)
 		.first<RoomLeaderboardRow>()
 	return row ? toRoomLeaderboard(row) : null
+}
+
+/**
+ * A player's saved data for one room — the blob the client posted, verbatim. Null when
+ * the player has never saved anything there.
+ */
+export async function getPlayerData(
+	db: D1Database,
+	roomId: number,
+	playerId: number
+): Promise<string | null> {
+	const row = await db
+		.prepare('SELECT data FROM playerdata WHERE room_id = ?1 AND player_id = ?2')
+		.bind(roomId, playerId)
+		.first<{ data: string }>()
+	return row ? row.data : null
+}
+
+/**
+ * Store a player's data for one room, returning what was stored. One row per (room,
+ * player): a re-save overwrites the blob in place rather than keeping history, so the
+ * call is idempotent.
+ */
+export async function setPlayerData(
+	db: D1Database,
+	roomId: number,
+	playerId: number,
+	data: string
+): Promise<string> {
+	const row = await db
+		.prepare(
+			`INSERT INTO playerdata (room_id, player_id, data) VALUES (?1, ?2, ?3)
+			 ON CONFLICT(room_id, player_id) DO UPDATE SET data = ?3
+			 RETURNING data`
+		)
+		.bind(roomId, playerId, data)
+		.first<{ data: string }>()
+	// RETURNING always yields the upserted row.
+	return row!.data
 }
 
 /**
@@ -2599,6 +2648,8 @@ export async function deleteRoom(db: D1Database, roomId: number): Promise<void> 
 			)
 			.bind(roomId),
 		db.prepare('DELETE FROM subroom WHERE room_id = ?1').bind(roomId),
+		// Each player's saved data for the room: keyed by room, meaningless without it.
+		db.prepare('DELETE FROM playerdata WHERE room_id = ?1').bind(roomId),
 	])
 }
 

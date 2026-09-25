@@ -982,9 +982,18 @@ export const PhotonAccessTokenDto = z.object({
 		.describe('The caller’s current instance, from presence; null when they’re in none'),
 })
 
-/** `GET /rooms/{roomId}/playerdata/me` — per-room player data. Nothing stores any yet. */
+/**
+ * `GET`/`PUT /rooms/{roomId}/playerdata/me` — the caller's per-room player data, as a
+ * bare one-key object. `Data` is the blob the client last posted, verbatim (a base64
+ * string the server never decodes); empty when the player has never saved any.
+ */
 export const PlayerDataDto = z.object({
-	Data: z.string().describe('Always empty — no per-room player data is stored'),
+	Data: z.string().describe('The saved blob as posted; empty when nothing is saved'),
+})
+
+/** `PUT /rooms/{roomId}/playerdata/me` — the form body the client saves its data with. */
+export const PlayerDataRequest = z.object({
+	data: z.string().describe('The blob to store, verbatim (the client posts base64)'),
 })
 
 /**
