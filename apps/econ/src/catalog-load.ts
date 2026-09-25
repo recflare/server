@@ -186,7 +186,7 @@ export const UNLISTED_SKIN_RARITY = 50
  * What a GOLD skin costs — any skin whose name carries `(Gold)`, thirteen of them, all from the
  * capture. A prestige price, and the same for a subscriber: no discount, no sale.
  */
-export const GOLD_SKIN_PRICE = 100_000
+export const GOLD_SKIN_PRICE = 1_000_000
 
 /** Whether a listing is a gold skin — a skin whose name says `(Gold)`. */
 export const isGoldSkin = (listing: StoreListing): boolean =>

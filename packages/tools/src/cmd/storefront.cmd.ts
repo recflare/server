@@ -57,7 +57,7 @@ import type { StoreListing } from '../../../../apps/econ/src/catalog-load'
  *   thumbnails every skin listing — the game's own 99 and the appended ones alike — and every
  *              consumable listing has its `ThumbnailImageName` set to `""`. The dump names a
  *              PNG per item that this server does not have.
- *   gold       a skin whose name carries `(Gold)` sells at `GOLD_SKIN_PRICE`, 100,000 tokens,
+ *   gold       a skin whose name carries `(Gold)` sells at `GOLD_SKIN_PRICE`, 1,000,000 tokens,
  *              subscriber price the same: no discount, no sale.
  *   context    a drop whose `Context` is `NO_CONTEXT` (-1) gets 0. The dump carries -1 on
  *              exactly 46 listings — the 22 permanent hair dyes and the 24 dice skins, the

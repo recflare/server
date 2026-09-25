@@ -2846,7 +2846,7 @@ describe('econ endpoints', () => {
 		expect(skinsJson.every((sk) => soldGuids.includes(sk.ModificationGuid))).toBe(true)
 		expect(soldSkins.every((i) => i.GiftDrop.ThumbnailImageName === '')).toBe(true)
 		expect(soldSkins.length).toBeGreaterThan(unlisted.length)
-		// A "(Gold)" skin — thirteen, all from the capture — is a prestige item: 100,000 tokens,
+		// A "(Gold)" skin — thirteen, all from the capture — is a prestige item: 1,000,000 tokens,
 		// the same for a subscriber, no sale. A "(Gold)" AVATAR item is priced as the dump has it.
 		const goldSkins = soldSkins.filter((i) => i.GiftDrop.FriendlyName.includes('(Gold)'))
 		expect(goldSkins.length).toBeGreaterThan(10)
