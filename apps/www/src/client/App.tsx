@@ -1263,6 +1263,97 @@ function GiftMessageField({ value, onChange }: { value: string; onChange: (v: st
 	)
 }
 
+interface AvatarItemSearchResult {
+	CustomAvatarItemId: string
+	Name: string
+	Price: number
+}
+
+function ItemSearchField({ onSelect }: { onSelect: (id: string) => void }) {
+	const [query, setQuery] = useState('')
+	const [results, setResults] = useState<AvatarItemSearchResult[]>([])
+	const [open, setOpen] = useState(false)
+	const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+	const ref = useRef<HTMLDivElement>(null)
+
+	useEffect(() => {
+		if (timer.current) clearTimeout(timer.current)
+
+		const trimmed = query.trim()
+		if (!trimmed) {
+			setResults([])
+			setOpen(false)
+			return
+		}
+
+		timer.current = setTimeout(() => {
+			void call<AvatarItemSearchResult[]>(
+				`${where().api}/api/customAvatarItems/v1/search?searchQuery=${encodeURIComponent(trimmed)}&take=8`,
+				{ authed: true },
+			)
+				.then((res) => {
+					setResults(res)
+					setOpen(true)
+				})
+				.catch(() => {
+					setResults([])
+					setOpen(false)
+				})
+		}, 250)
+
+		return () => {
+			if (timer.current) clearTimeout(timer.current)
+		}
+	}, [query])
+
+	useEffect(() => {
+		const handleClick = (e: MouseEvent) => {
+			if (ref.current && !ref.current.contains(e.target as Node)) {
+				setOpen(false)
+			}
+		}
+
+		document.addEventListener('mousedown', handleClick)
+		return () => document.removeEventListener('mousedown', handleClick)
+	}, [])
+
+	return (
+		<div ref={ref}>
+			<label>
+				Search custom avatar items
+				<input
+					type="text"
+					value={query}
+					placeholder="Search by item name"
+					autoComplete="off"
+					onChange={(e) => {
+						setQuery(e.target.value)
+						setOpen(true)
+					}}
+				/>
+			</label>
+			{open && results.length > 0 && (
+				<div className="staff-gift">
+					{results.map((r) => (
+						<button
+							key={r.CustomAvatarItemId}
+							type="button"
+							onClick={() => {
+								onSelect(r.CustomAvatarItemId)
+								setQuery('')
+								setResults([])
+								setOpen(false)
+							}}
+						>
+							{r.Name} — {r.Price.toLocaleString()} tokens
+						</button>
+					))}
+				</div>
+			)}
+		</div>
+	)
+}
+
 function StaffPlayerActions({ account, navigate }: { account: PublicAccount; navigate: Navigate }) {
 	const [tokens, setTokens] = useState('')
 	// One message for every box sent from this card; it stays put between sends.
@@ -1371,6 +1462,8 @@ function StaffPlayerActions({ account, navigate }: { account: PublicAccount; nav
 						{xpGift.error && <p className="error">{xpGift.error}</p>}
 						{xpGift.done && <p className="ok">{xpGift.done}</p>}
 					</form>
+
+					<ItemSearchField onSelect={setItemId} />
 
 					<form
 						onSubmit={(e) => {
