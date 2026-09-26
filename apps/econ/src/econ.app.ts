@@ -67,6 +67,7 @@ import {
 	getConsumables,
 	grantConsumable,
 } from './consumables-db'
+import { grantDiscordRoleGifts } from './discord-role-gift'
 import { getEquipment, grantEquipment, setEquipmentFavorited } from './equipment-db'
 import {
 	getOwnedCustomAvatarItems,
@@ -177,7 +178,7 @@ import type {
 	WeeklyChallengeRotation,
 } from './challenge-rotation'
 import type { ConsumeResult } from './consumables-db'
-import type { App } from './context'
+import type { App, Env } from './context'
 import type { Equipment } from './equipment-db'
 import type { AvatarItem } from './inventory-db'
 import type { RoomConsumable } from './room-consumable-db'
@@ -5905,4 +5906,16 @@ app.get(
 	)
 )
 
-export default app
+export { app }
+
+// The cron (wrangler.jsonc `triggers`, which sets how often): box every Discord supporter
+// the tokens their role is mapped to in DISCORD_ROLE_TOKENS. A no-op, logged once, until the
+// operator maps a role — see discord-role-gift.ts. The signup grant is seeded before the credit,
+// as every other faucet here does, so it reads the same knob.
+export const scheduled: ExportedHandlerScheduledHandler<Env> = (_controller, env, ctx) => {
+	ctx.waitUntil(grantDiscordRoleGifts(env, intVar(env.STARTING_TOKENS, DEFAULT_STARTING_TOKENS)))
+}
+
+// A Worker only runs `scheduled` when it's on the default export, so econ takes the object
+// form the runtime requires (as `www` does for its role sweep and `match` for presence).
+export default { fetch: app.fetch, scheduled } satisfies ExportedHandler<Env>

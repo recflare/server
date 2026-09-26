@@ -48,6 +48,14 @@
 			}
 		]
 	},
+	// The Discord supporter gift (src/discord-role-gift.ts): every account holding a role
+	// mapped in DISCORD_ROLE_TOKENS is boxed that role's tokens EACH TIME this fires, so this
+	// line is the cadence — weekly as shipped; `0 5 * * *` makes it daily. Monday 05:00 UTC
+	// is half an hour after `www`'s daily role sweep (04:30), so it pays against roles
+	// refreshed that morning. A no-op, logged, until the var maps a role.
+	"triggers": {
+		"crons": ["0 5 * * 1"]
+	},
 	"upload_source_maps": true,
 	"observability": {
 		"enabled": false
@@ -55,7 +63,8 @@
 	// The signup token grant (STARTING_TOKENS) is deliberately NOT set here. It's injected
 	// at deploy time from the gitignored .env (RECFLARE_STARTING_TOKENS, see .env.example),
 	// so tuning it never means editing a versioned file. Unset — the default — falls back
-	// to DEFAULT_STARTING_TOKENS in src/balance-db.ts.
+	// to DEFAULT_STARTING_TOKENS in src/balance-db.ts. DISCORD_ROLE_TOKENS (the supporter
+	// gift's role map) arrives the same way; unset leaves the cron off.
 	"vars": {
 		"ENVIRONMENT": "development", // overridden during deployment
 		"SENTRY_RELEASE": "unknown" // overridden during deployment

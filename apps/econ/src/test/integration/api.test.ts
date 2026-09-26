@@ -1,11 +1,16 @@
-import { adminSecretsStore, env } from 'cloudflare:test'
+import {
+	adminSecretsStore,
+	createExecutionContext,
+	createScheduledController,
+	env,
+	waitOnExecutionContext,
+} from 'cloudflare:test'
 import { exports } from 'cloudflare:workers'
 import { beforeAll, describe, expect, test } from 'vitest'
 
-import '../../econ.app'
-
 import {
 	getOwnedInventionIds,
+	getPendingGifts,
 	getProgression,
 	INVENTORY_INVENTION_SCHEMA_DDL,
 	OUTFIT_SCHEMA_DDL,
@@ -14,6 +19,7 @@ import {
 	RECEIVED_GIFT_SCHEMA_DDL,
 	ROOM_SCHEMA_DDL,
 } from '@repo/domain'
+import { PlatformType } from '@repo/domain/src/enums'
 
 // The `invention` table belongs to the `api` worker; buyInvention reads it, so its DDL
 // is built here too (see the same cross-worker import in econ.app.ts).
@@ -23,6 +29,9 @@ import {
 	importCustomAvatarItem,
 } from '../../../../api/src/custom-avatar-items-db'
 import { SCHEMA_DDL as INVENTION_SCHEMA_DDL } from '../../../../api/src/inventions-db'
+// The Discord link table (owned by `auth`, kept current by `www`) is what the weekly
+// supporter gift reads its roles from.
+import { linkPlatformIdentity, PLATFORM_SCHEMA_DDL } from '../../../../auth/src/platform-db'
 // The notification-type ids the hub carries, from the worker that owns them — asserting
 // against the enum rather than a copied number is what keeps these frames honest.
 import { NotificationType } from '../../../../notify/src/notification-types'
@@ -80,6 +89,12 @@ import { CHALLENGE_GIFT_SCHEMA_DDL, CHALLENGE_STATUS_SCHEMA_DDL } from '../../ch
 // since rolled over.
 import { buildRotation, rotationIndex, withWeeklyGift } from '../../challenge-rotation'
 import { CONSUMABLE_SCHEMA_DDL, grantConsumable } from '../../consumables-db'
+import {
+	DISCORD_ROLE_GIFT_MESSAGE,
+	grantDiscordRoleGifts,
+	parseRoleTokens,
+} from '../../discord-role-gift'
+import { scheduled } from '../../econ.app'
 import { EQUIPMENT_SCHEMA_DDL, grantEquipment } from '../../equipment-db'
 import {
 	grantCustomAvatarItem,
@@ -198,6 +213,9 @@ beforeAll(async () => {
 	for (const stmt of ROOM_CONSUMABLE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of ROOM_INVENTORY_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of ROOM_KEY_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	// The platform link table (owned by `auth`) — the Discord supporter gift reads the roles
+	// `www` records on each Discord link.
+	for (const stmt of PLATFORM_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	// Presence (owned by the `match` worker) — a new room currency is pushed to everyone
 	// standing in the room, which is read from here.
 	for (const stmt of PRESENCE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
@@ -6603,5 +6621,198 @@ describe('plus token reload', () => {
 		expect(() => plusReloadSql(0, 500)).toThrow('positive integer')
 		expect(() => plusReloadSql(1.5, 500)).toThrow('positive integer')
 		expect(() => plusReloadSql(100, -1)).toThrow('non-negative integer')
+	})
+})
+
+// ---- Discord supporter gift ----------------------------------------------------------------
+
+// The cron: every account whose Discord link holds a role mapped in DISCORD_ROLE_TOKENS is
+// boxed its best role's tokens, every time it fires. Driven through `grantDiscordRoleGifts`
+// with the var set on a copy of the bindings.
+describe('discord role gift', () => {
+	const ROLE_A = '1077000000000000001'
+	const ROLE_B = '1077000000000000002'
+	const UNMAPPED = '1077000000000000009'
+	const MAP = `${ROLE_A}=2500,${ROLE_B}=10000`
+
+	const giftEnv = (map: string | undefined): Env => ({ ...env, DISCORD_ROLE_TOKENS: map }) as Env
+
+	const drainFrames = async (): Promise<
+		Array<{ accountId: number; notificationType: number; payload: Record<string, unknown> }>
+	> =>
+		(
+			env.RECFLARE_NOTIFICATIONS_HUB.getByName('global') as unknown as {
+				drainFrames(): Promise<
+					Array<{ accountId: number; notificationType: number; payload: Record<string, unknown> }>
+				>
+			}
+		).drainFrames()
+
+	/**
+	 * The run reads EVERY Discord link, and the table is shared across this file, so each
+	 * test starts from only its own rows.
+	 */
+	const onlyDiscordLinks = async (
+		links: Array<[accountId: number, userId: string, roles: string[]]>
+	) => {
+		await env.DB.prepare('DELETE FROM platform_account WHERE platform = ?1')
+			.bind(PlatformType.Discord)
+			.run()
+		for (const [accountId, userId, roles] of links) {
+			await linkPlatformIdentity(env.DB, accountId, PlatformType.Discord, userId, roles)
+		}
+	}
+
+	const tokens = (accountId: number) =>
+		getBalance(env.DB, accountId, CurrencyType.RecCenterTokens, DEFAULT_STARTING_TOKENS)
+
+	test('parses the role map, keeping the last amount for a repeated role and skipping bad entries', () => {
+		expect(parseRoleTokens(MAP)).toEqual({
+			roles: [
+				{ roleId: ROLE_A, tokens: 2500 },
+				{ roleId: ROLE_B, tokens: 10000 },
+			],
+			rejected: [],
+		})
+		// Whitespace and commas both separate; a role named twice keeps its LAST amount.
+		expect(parseRoleTokens(` ${ROLE_A}=1, ${ROLE_B}=2\n${ROLE_A}=3 `).roles).toEqual([
+			{ roleId: ROLE_A, tokens: 3 },
+			{ roleId: ROLE_B, tokens: 2 },
+		])
+		// A role's NAME, a zero, a negative, a fraction and a bare id are each one rejected
+		// entry, and the good ones beside them still parse.
+		expect(
+			parseRoleTokens(`supporter=100,${ROLE_A}=0,${ROLE_B}=-5,1=1.5,${UNMAPPED},${ROLE_A}=250`)
+		).toEqual({
+			roles: [{ roleId: ROLE_A, tokens: 250 }],
+			rejected: ['supporter=100', `${ROLE_A}=0`, `${ROLE_B}=-5`, '1=1.5', UNMAPPED],
+		})
+		expect(parseRoleTokens(undefined)).toEqual({ roles: [], rejected: [] })
+		expect(parseRoleTokens('')).toEqual({ roles: [], rejected: [] })
+	})
+
+	test('does nothing until a role is mapped', async () => {
+		await onlyDiscordLinks([[9301, '900000000000000301', [ROLE_A]]])
+		await drainFrames()
+		await expect(
+			grantDiscordRoleGifts(giftEnv(undefined), DEFAULT_STARTING_TOKENS)
+		).resolves.toMatchObject({ skipped: true, granted: 0 })
+		// A map with nothing valid in it is off too, not a run that pays nobody.
+		await expect(
+			grantDiscordRoleGifts(giftEnv('supporter=100'), DEFAULT_STARTING_TOKENS)
+		).resolves.toMatchObject({ skipped: true, granted: 0 })
+		expect(await tokens(9301)).toBe(DEFAULT_STARTING_TOKENS)
+		expect(await getPendingGifts(env.DB, 9301)).toEqual([])
+		expect(await drainFrames()).toEqual([])
+	})
+
+	// The deployed test config maps no role, so the real handler takes the "off" path: pinned
+	// so a deploy without the var is a logged no-op and not a scheduled error.
+	test('runs from the scheduled handler and stays off without the var', async () => {
+		await onlyDiscordLinks([[9301, '900000000000000301', [ROLE_A]]])
+		const ctx = createExecutionContext()
+		await scheduled(createScheduledController(), env, ctx)
+		await waitOnExecutionContext(ctx)
+		expect(await tokens(9301)).toBe(DEFAULT_STARTING_TOKENS)
+		expect(await getPendingGifts(env.DB, 9301)).toEqual([])
+	})
+
+	test('boxes each holder of a mapped role its best role’s tokens, one box per account', async () => {
+		await onlyDiscordLinks([
+			[9311, '900000000000000311', [ROLE_A]],
+			[9312, '900000000000000312', [ROLE_B, UNMAPPED]],
+			[9313, '900000000000000313', [ROLE_A, ROLE_B]],
+			[9314, '900000000000000314', [UNMAPPED]],
+			[9315, '900000000000000315', []],
+		])
+		// A Steam link on a paid account is not a Discord link and carries no roles.
+		await linkPlatformIdentity(env.DB, 9311, PlatformType.Steam, '76561190000009311')
+		await drainFrames()
+
+		const summary = await grantDiscordRoleGifts(giftEnv(MAP), DEFAULT_STARTING_TOKENS)
+		expect(summary).toEqual({
+			skipped: false,
+			roles: 2,
+			links: 5,
+			granted: 3,
+			tokens: 2500 + 10000 + 10000,
+			failed: 0,
+		})
+
+		// The balance is the signup grant PLUS the gift: the grant is seeded first, so a
+		// never-touched balance doesn't start from the gift alone. Two mapped roles pay the
+		// HIGHER one, not both.
+		expect(await tokens(9311)).toBe(DEFAULT_STARTING_TOKENS + 2500)
+		expect(await tokens(9312)).toBe(DEFAULT_STARTING_TOKENS + 10000)
+		expect(await tokens(9313)).toBe(DEFAULT_STARTING_TOKENS + 10000)
+		expect(await tokens(9314)).toBe(DEFAULT_STARTING_TOKENS)
+		expect(await tokens(9315)).toBe(DEFAULT_STARTING_TOKENS)
+
+		// One box: from the Coach, tokens and nothing else, `AvatarItemType` NULL so the
+		// client doesn't go looking for an avatar item.
+		const boxes = await getPendingGifts(env.DB, 9313)
+		expect(boxes).toHaveLength(1)
+		expect(boxes[0]).toMatchObject({
+			FromPlayerId: 1,
+			GiftContext: 0,
+			CurrencyType: CurrencyType.RecCenterTokens,
+			Currency: 10000,
+			AvatarItemDesc: '',
+			AvatarItemType: null,
+			ConsumableItemDesc: '',
+			EquipmentModificationGuid: '',
+			Xp: 0,
+			Message: DISCORD_ROLE_GIFT_MESSAGE,
+		})
+		expect(await getPendingGifts(env.DB, 9314)).toEqual([])
+
+		// Per box: the balance frame first — the RESULTING total into the -2 bucket, keyed
+		// `Platform` — then the box's announcement carrying the same amount the box does.
+		const frames = await drainFrames()
+		expect(frames.filter((f) => f.accountId === 9311)).toEqual([
+			{
+				accountId: 9311,
+				notificationType: NotificationType.StorefrontBalanceUpdate,
+				payload: {
+					Balance: DEFAULT_STARTING_TOKENS + 2500,
+					CurrencyType: CurrencyType.RecCenterTokens,
+					Platform: -2,
+				},
+			},
+			{
+				accountId: 9311,
+				notificationType: NotificationType.GiftPackageReceivedImmediate,
+				payload: expect.objectContaining({
+					Id: (await getPendingGifts(env.DB, 9311))[0]!.Id,
+					FromPlayerId: 1,
+					Currency: 2500,
+					CurrencyType: CurrencyType.RecCenterTokens,
+					AvatarItemType: null,
+					GiftContext: 0,
+					Message: DISCORD_ROLE_GIFT_MESSAGE,
+					BalanceType: -2,
+				}),
+			},
+		])
+		expect(frames.map((f) => f.accountId)).toEqual([9311, 9311, 9312, 9312, 9313, 9313])
+	})
+
+	test('every run pays again — the schedule is the cadence — and a lapsed role is not paid', async () => {
+		await onlyDiscordLinks([
+			[9321, '900000000000000321', [ROLE_A]],
+			[9322, '900000000000000322', [ROLE_A]],
+		])
+		await grantDiscordRoleGifts(giftEnv(MAP), DEFAULT_STARTING_TOKENS)
+		// www's sweep found 9322 no longer holds the role; 9323 claimed in between.
+		await linkPlatformIdentity(env.DB, 9322, PlatformType.Discord, '900000000000000322', [])
+		await linkPlatformIdentity(env.DB, 9323, PlatformType.Discord, '900000000000000323', [ROLE_B])
+
+		const summary = await grantDiscordRoleGifts(giftEnv(MAP), DEFAULT_STARTING_TOKENS)
+		expect(summary).toMatchObject({ granted: 2, tokens: 2500 + 10000 })
+		expect(await tokens(9321)).toBe(DEFAULT_STARTING_TOKENS + 5000)
+		expect(await tokens(9322)).toBe(DEFAULT_STARTING_TOKENS + 2500)
+		expect(await tokens(9323)).toBe(DEFAULT_STARTING_TOKENS + 10000)
+		expect(await getPendingGifts(env.DB, 9321)).toHaveLength(2)
+		expect(await getPendingGifts(env.DB, 9322)).toHaveLength(1)
 	})
 })

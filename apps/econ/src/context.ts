@@ -24,6 +24,17 @@ export type Env = SharedHonoEnv & {
 	 * read it through `intVar`, never as a bare number.
 	 */
 	STARTING_TOKENS?: string | number
+	/**
+	 * The Discord supporter gift (see discord-role-gift.ts): Discord ROLE ids mapped to the
+	 * RecCenterTokens a holder is boxed each time the cron fires, `<roleId>=<tokens>` pairs
+	 * separated by commas, e.g. `928457923857943795=2500,2938479238479234=10000`. Role ids
+	 * are snowflakes — all digits, never a role's name — kept as strings because one
+	 * exceeds 2^53. One box per account per run: a holder of several mapped roles is paid
+	 * the HIGHEST amount. Optional: unset, or parsing to no roles, leaves the cron off.
+	 * Roles are read from `platform_account.role`, the snapshot `www`'s claim and daily
+	 * sweep maintain, so this only ever pays players who have claimed on the website.
+	 */
+	DISCORD_ROLE_TOKENS?: string
 }
 
 /** Variables can be extended */
