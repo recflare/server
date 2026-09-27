@@ -2,7 +2,12 @@ import { Hono } from 'hono'
 import { describeRoute, openAPIRouteHandler } from 'hono-openapi'
 import { useWorkersLogger } from 'workers-tagged-logger'
 
-import { createRoomComment, DEFAULT_COMMENT_COUNT, getRoomComments } from '@repo/domain'
+import {
+	createRoomComment,
+	DEFAULT_COMMENT_COUNT,
+	getRoomComments,
+	withDatabase,
+} from '@repo/domain'
 import { withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
 import { validateAndGetAccountId } from '@repo/jwt'
 
@@ -17,7 +22,7 @@ import {
 } from './openapi'
 
 import type { Context } from 'hono'
-import type { App } from './context'
+import type { App, Env } from './context'
 
 /**
  * Room Comments Worker. Serves the notes a player pins in a room's scene — a message, a
@@ -257,4 +262,4 @@ app.get(
 	)
 )
 
-export default app
+export default withDatabase<Env>(app)

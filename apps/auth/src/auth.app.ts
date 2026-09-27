@@ -36,6 +36,7 @@ import {
 	takeRateLimit,
 	updateAccount,
 	verifyPassword,
+	withDatabase,
 	writeAuditLog,
 } from '@repo/domain'
 import {
@@ -2568,4 +2569,4 @@ app.get(
 	)
 )
 
-export default app
+export default withDatabase<Env>(app)

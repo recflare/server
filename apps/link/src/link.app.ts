@@ -1,12 +1,13 @@
 import { Hono } from 'hono'
 import { useWorkersLogger } from 'workers-tagged-logger'
 
+import { withDatabase } from '@repo/domain'
 import { withNotFound, withOnError } from '@repo/hono-helpers'
 import { validateAndGetAccountId } from '@repo/jwt'
 
 import { createLink, getLink } from './link-db'
 
-import type { App } from './context'
+import type { App, Env } from './context'
 
 /**
  * The longest a link may live, in hours: ten years. The client asks for at most a year
@@ -84,4 +85,4 @@ const app = new Hono<App>()
 		})
 	})
 
-export default app
+export default withDatabase<Env>(app)

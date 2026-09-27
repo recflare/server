@@ -17,6 +17,7 @@
 	},
 	"dependencies": {
 		"@cf-wasm/photon": "^0.3.6",
+		"@repo/domain": "workspace:*",
 		"@repo/hono-helpers": "workspace:*",
 		"@standard-community/standard-json": "0.3.5",
 		"@standard-community/standard-openapi": "0.2.9",
