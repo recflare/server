@@ -46,6 +46,13 @@ fi
 # RECFLARE_D1 comes from the gitignored root .env, or from CI secrets, which win over it.
 recflare_load_env
 
+# A libSQL server (Turso) configured in .env takes the remote migrations instead of D1: the
+# same files, the same per-worker migrations table, applied by `runx libsql migrate` from
+# packages/tools. The D1 database is not touched. `--local` above never comes here.
+if [ -n "${RECFLARE_LIBSQL_DB_URL:-}" ]; then
+	exec runx libsql migrate
+fi
+
 DB_ID=${RECFLARE_D1:-}
 if [ -z "$DB_ID" ]; then
 	echo "error: RECFLARE_D1 is not set — add the recflare D1 id to .env (see .env.example)" >&2

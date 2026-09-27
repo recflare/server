@@ -10,6 +10,7 @@ import { checkCmd } from '../cmd/check.cmd'
 import { ciCmd } from '../cmd/ci.cmd'
 import { devCmd } from '../cmd/dev.cmd'
 import { fixCmd } from '../cmd/fix.cmd'
+import { libsqlCmd } from '../cmd/libsql.cmd'
 import { shfmtCmd } from '../cmd/shfmt.cmd'
 import { storefrontCmd } from '../cmd/storefront.cmd'
 import { updateCmd } from '../cmd/update.cmd'
@@ -25,6 +26,7 @@ program
 	.addCommand(catalogCmd)
 	.addCommand(storefrontCmd)
 	.addCommand(fixCmd)
+	.addCommand(libsqlCmd)
 	.addCommand(buildCmd)
 	.addCommand(checkCmd)
 	.addCommand(devCmd)

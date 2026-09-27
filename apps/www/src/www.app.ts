@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { useWorkersLogger } from 'workers-tagged-logger'
 
+import { withDatabase } from '@repo/domain'
 import { getAccount, updateAccount } from '@repo/domain/src/accounts-db'
 import { PlatformType } from '@repo/domain/src/enums'
 import { countOnlinePlayers } from '@repo/domain/src/presence-db'
@@ -539,4 +540,4 @@ export const scheduled: ExportedHandlerScheduledHandler<Env> = (_controller, env
 
 // A Worker only runs `scheduled` when it's on the default export, so www takes the object
 // form the runtime requires (as `match` does for its presence sweep).
-export default { fetch: app.fetch, scheduled } satisfies ExportedHandler<Env>
+export default withDatabase<Env>({ fetch: app.fetch, scheduled })

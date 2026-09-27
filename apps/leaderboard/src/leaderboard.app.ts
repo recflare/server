@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { describeRoute, openAPIRouteHandler } from 'hono-openapi'
 import { useWorkersLogger } from 'workers-tagged-logger'
 
+import { withDatabase } from '@repo/domain'
 import { logger, withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
 import { validateAndGetAccountId } from '@repo/jwt'
 
@@ -14,7 +15,6 @@ import {
 	NO_SCORE,
 	UNRANKED,
 } from './leaderboard-db'
-
 import {
 	CheckAndSetStatBody,
 	CheckAndSetStatResponse,
@@ -27,7 +27,7 @@ import {
 	PlayerRank,
 } from './openapi'
 
-import type { App } from './context'
+import type { App, Env } from './context'
 import type { Board } from './leaderboard-db'
 
 /**
@@ -73,7 +73,8 @@ function board(body: BoardBody): Board {
 	return {
 		roomId: int(body.RoomId, 0),
 		statChannel: int(body.StatChannel, 0),
-		...(int(body.FilterType, 0) === FilterType.Friends && playerId !== 0 && { friendsOf: playerId }),
+		...(int(body.FilterType, 0) === FilterType.Friends &&
+			playerId !== 0 && { friendsOf: playerId }),
 	}
 }
 
@@ -353,4 +354,4 @@ app.get(
 	)
 )
 
-export default app
+export default withDatabase<Env>(app)

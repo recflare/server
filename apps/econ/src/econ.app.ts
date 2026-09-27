@@ -17,6 +17,7 @@ import {
 	levelsReached,
 	ownsInvention,
 	setOutfit,
+	withDatabase,
 } from '@repo/domain'
 import { intVar, logger, withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
 import { validateAndGetAccountId, validateAndGetPlus, validateAndGetVersion } from '@repo/jwt'
@@ -5918,4 +5919,4 @@ export const scheduled: ExportedHandlerScheduledHandler<Env> = (_controller, env
 
 // A Worker only runs `scheduled` when it's on the default export, so econ takes the object
 // form the runtime requires (as `www` does for its role sweep and `match` for presence).
-export default { fetch: app.fetch, scheduled } satisfies ExportedHandler<Env>
+export default withDatabase<Env>({ fetch: app.fetch, scheduled })

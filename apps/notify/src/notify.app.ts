@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { useWorkersLogger } from 'workers-tagged-logger'
 
-import { createNotification, writeAuditLog } from '@repo/domain'
+import { createNotification, withDatabase, writeAuditLog } from '@repo/domain'
 import { logger, withDefaultCors, withNotFound, withOnError } from '@repo/hono-helpers'
 import { validateAndGetAccountId, validateAndGetRoles } from '@repo/jwt'
 
@@ -13,7 +13,7 @@ import {
 } from './notifications-hub'
 
 import type { Context, MiddlewareHandler } from 'hono'
-import type { App } from './context'
+import type { App, Env } from './context'
 
 /**
  * Maps a SignalR hub at `/hub/v1`. The hub itself — WebSocket transport, the
@@ -371,4 +371,4 @@ const app = new Hono<App>()
 	})
 
 export { NotificationsHub }
-export default app
+export default withDatabase<Env>(app)

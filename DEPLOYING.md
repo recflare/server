@@ -147,6 +147,42 @@ just migrate                 # migrate every worker that owns migrations
 just migrate -F rooms        # or scope to one worker
 ```
 
+### Using Turso instead of D1
+
+The workers can run on a [Turso](https://turso.tech) (libSQL) database instead of D1,
+with nothing else changing: same schema, same migrations, same workers. D1 stays the
+default and stays bound, so this is a switch, not a migration of the code. The
+switch is two lines in `.env`:
+
+```bash
+turso db create recflare
+turso db show recflare --url          # -> RECFLARE_LIBSQL_DB_URL=libsql://...
+turso db tokens create recflare       # -> RECFLARE_LIBSQL_DB_AUTH_TOKEN=...
+```
+
+With both set, `just migrate` applies the workers' migrations to that database (with
+the same per-worker history tables wrangler keeps on D1), `just deploy` hands every
+worker the URL as a var and the token as an encrypted worker secret, and the
+`--remote` operator commands (`just admin`, `just catalog`) act on it. Local dev and
+the tests keep using the local D1 regardless.
+
+To carry an existing D1 database across, export it and load the dump before the
+first `just migrate` — the dump includes the migration history, so nothing is
+re-applied:
+
+```bash
+wrangler d1 export recflare --remote --output recflare.sql   # from any D1-backed app dir
+turso db shell recflare < recflare.sql
+```
+
+To go back to D1, unset (or comment out) the two lines and run `just deploy`. The
+token secret is left on the workers and ignored without a URL; remove it with
+`wrangler secret delete LIBSQL_DB_AUTH_TOKEN` per worker if you want it gone.
+
+> ⚠️ The URL is one switch for the whole deployment. Deploy every worker after
+> changing it: a worker left on the old database would be reading and writing
+> different data from the rest.
+
 ### R2 and Durable Objects
 
 You only have to create the buckets:

@@ -11,6 +11,7 @@ import {
 	getAccountsByIds,
 	searchAccounts,
 	updateAccount,
+	withDatabase,
 } from '@repo/domain'
 import {
 	logger,
@@ -55,7 +56,7 @@ import { resolveWhitelistedEmoji, WHITELISTED_EMOJIS } from './whitelisted-emoji
 import type { Context } from 'hono'
 import type { DescribeRouteOptions } from 'hono-openapi'
 import type { Account } from '@repo/domain'
-import type { App } from './context'
+import type { App, Env } from './context'
 
 /**
  * Account reads/writes are backed by the shared `accounts` table in D1 (schema
@@ -856,4 +857,4 @@ app.get(
 	)
 )
 
-export default app
+export default withDatabase<Env>(app)

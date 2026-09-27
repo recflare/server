@@ -20,6 +20,14 @@ export type SharedHonoEnv = {
 	 * Useful for logs, Sentry, etc.
 	 */
 	SENTRY_RELEASE: string
+	/**
+	 * A libSQL server (Turso) to use INSTEAD of the D1 binding, e.g. `libsql://<db>-<org>.turso.io`.
+	 * Set by `just deploy` from `RECFLARE_LIBSQL_DB_URL`; unset means D1. Read only by
+	 * `withDatabase` in @repo/domain, which swaps `DB` for the matching adapter.
+	 */
+	LIBSQL_DB_URL?: string
+	/** That server's auth token — a worker SECRET `just deploy` sets, never a var. */
+	LIBSQL_DB_AUTH_TOKEN?: string
 }
 /** Global Hono variables */
 export type SharedHonoVariables = {

@@ -1,6 +1,10 @@
 import 'zx/globals'
 
+import { createClient } from '@libsql/client/web'
+
 import { getRepoRoot } from './path'
+
+import type { Client, ResultSet } from '@libsql/client/web'
 
 /**
  * Shared plumbing for talking to the one `recflare` D1 database from a CLI.
@@ -13,6 +17,11 @@ import { getRepoRoot } from './path'
  * needs the real D1 id, because the committed `wrangler.jsonc` files all carry the literal
  * placeholder `"local"` as their `database_id`. Splicing the real id into a gitignored
  * generated config is the same thing `run-wrangler-migrate` does at deploy time.
+ *
+ * With a libSQL server (Turso) configured — RECFLARE_LIBSQL_DB_URL in .env, see .env.example —
+ * `--remote` means THAT database, reached directly through `@libsql/client` rather than through
+ * wrangler, so an operator's `runx admin --remote` acts on the database the deployed workers
+ * are actually using. `--local` is the local D1 either way.
  */
 
 /** The one shared database every D1-backed worker binds. */
@@ -112,6 +121,10 @@ export async function execSql<Row = Record<string, unknown>>(
 	remote: boolean,
 	worker = 'auth'
 ): Promise<D1ExecResult<Row>> {
+	if (remote) {
+		const target = await readLibsqlTarget()
+		if (target) return libsqlResult<Row>(await libsqlClient(target).execute(sql))
+	}
 	const stdout = await runD1(worker, ['--command', sql, '--json'], remote)
 	// wrangler --json prints a one-element array of results to stdout.
 	const start = stdout.indexOf('[')
@@ -130,5 +143,59 @@ export async function execSql<Row = Record<string, unknown>>(
  * which is megabytes of nothing. The human-readable output is returned for the caller.
  */
 export async function execSqlFile(file: string, remote: boolean, worker = 'auth'): Promise<string> {
+	if (remote) {
+		const target = await readLibsqlTarget()
+		if (target) {
+			// One script in one request. Fine for the loads this is used for; a file too large for
+			// the server's request limit would have to be split by statement first.
+			await libsqlClient(target).executeMultiple(await fs.readFile(file, 'utf8'))
+			return `applied ${path.basename(file)} to ${new URL(target.url).host}`
+		}
+	}
 	return await runD1(worker, ['--file', file], remote)
+}
+
+/** Where `--remote` goes when the deployment runs on libSQL instead of D1. */
+export interface LibsqlTarget {
+	url: string
+	authToken?: string
+}
+
+/**
+ * The libSQL target from RECFLARE_LIBSQL_DB_URL / RECFLARE_LIBSQL_DB_AUTH_TOKEN, or undefined
+ * when the deployment is on D1 (the URL unset). Same precedence as every other setting:
+ * process environment first, then the root .env.
+ */
+export async function readLibsqlTarget(): Promise<LibsqlTarget | undefined> {
+	const url = await readRootEnv('RECFLARE_LIBSQL_DB_URL')
+	if (!url) return undefined
+	return { url, authToken: await readRootEnv('RECFLARE_LIBSQL_DB_AUTH_TOKEN') }
+}
+
+let libsql: { url: string; client: Client } | undefined
+
+/**
+ * A client for the target, made once per process. The web build of the client is used on
+ * purpose: it speaks Hrana over HTTP with nothing native to install, and a CLI only ever
+ * talks to a remote server.
+ */
+export function libsqlClient(target: LibsqlTarget): Client {
+	if (libsql?.url !== target.url) {
+		console.error(chalk.magenta(`→ libSQL ${new URL(target.url).host}`))
+		libsql = {
+			url: target.url,
+			client: createClient({ url: target.url, authToken: target.authToken }),
+		}
+	}
+	return libsql.client
+}
+
+/** The client's rows as the plain objects wrangler's `--json` output gives. */
+function libsqlResult<Row>(rs: ResultSet): D1ExecResult<Row> {
+	const results = rs.rows.map((row) => {
+		const out: Record<string, unknown> = {}
+		rs.columns.forEach((column, i) => (out[column] = row[i]))
+		return out as Row
+	})
+	return { results, success: true, meta: { changes: rs.rowsAffected } }
 }

@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { describeRoute, openAPIRouteHandler } from 'hono-openapi'
 import { useWorkersLogger } from 'workers-tagged-logger'
 
+import { withDatabase } from '@repo/domain'
 import { withCleanSpec, withDefaultCors, withNotFound, withOnError } from '@repo/hono-helpers'
 
 import { accountRoutes } from './routes/account'
@@ -16,7 +17,7 @@ import { progressionRoutes } from './routes/progression'
 import { roomRoutes } from './routes/rooms'
 import { socialRoutes } from './routes/social'
 
-import type { App } from './context'
+import type { App, Env } from './context'
 
 /**
  * The Game API surface. Endpoints that would be backed by a database or on-disk
@@ -105,4 +106,4 @@ app.get(
 	)
 )
 
-export default app
+export default withDatabase<Env>(app)

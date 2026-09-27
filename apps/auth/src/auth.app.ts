@@ -21,6 +21,7 @@ import {
 	subRoomDataBlob,
 	updateAccount,
 	verifyPassword,
+	withDatabase,
 	writeAuditLog,
 } from '@repo/domain'
 import {
@@ -65,7 +66,7 @@ import { verifySteamTicket } from './steam-ticket'
 
 import type { Context } from 'hono'
 import type { Account } from '@repo/domain'
-import type { App } from './context'
+import type { App, Env } from './context'
 import type { PlatformLink } from './platform-db'
 
 /** OAuth scopes granted by `/connect/token`. */
@@ -1351,4 +1352,4 @@ app.get(
 	)
 )
 
-export default app
+export default withDatabase<Env>(app)

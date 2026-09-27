@@ -181,6 +181,20 @@ fi
 # both a deploy and a local dev server.
 EXTRA_VARS=$(recflare_vars)
 
+# Using a libSQL server (Turso) instead of D1: RECFLARE_LIBSQL_DB_URL reaches the worker as the
+# LIBSQL_DB_URL var and switches `withDatabase` (@repo/domain) over; the D1 binding stays in
+# place, unused, so pointing back at D1 is unsetting the URL and redeploying. The token is NOT
+# a var — it is put as an encrypted worker secret after the deploy (secrets survive a deploy,
+# vars are replaced wholesale). Both come from .env; see .env.example.
+LIBSQL_VARS=""
+if [ -n "${RECFLARE_LIBSQL_DB_URL:-}" ]; then
+	if [ -z "${RECFLARE_LIBSQL_DB_AUTH_TOKEN:-}" ]; then
+		echo "error: RECFLARE_LIBSQL_DB_URL is set but RECFLARE_LIBSQL_DB_AUTH_TOKEN is not — add the database's auth token to .env (see .env.example)" >&2
+		exit 1
+	fi
+	LIBSQL_VARS="--var LIBSQL_DB_URL:$RECFLARE_LIBSQL_DB_URL"
+fi
+
 # Vite-built configs set no_bundle (vite already bundled and minified), which is
 # incompatible with --minify. Only pass --minify when wrangler does the bundling.
 # Keyed on IS_VITE, not on $CONFIG: the splicing above may have swapped $CONFIG for
@@ -199,6 +213,14 @@ wrangler deploy \
 	--var DOMAIN:"$DOMAIN" \
 	--var SUBDOMAINS:"$SUBDOMAINS_JSON" \
 	$EXTRA_VARS \
+	$LIBSQL_VARS \
 	--domain "$HOST" \
 	$MINIFY \
 	"$@"
+
+# The token, once the worker exists (a first deploy has nothing to attach a secret to). On the
+# very first switch to libSQL this leaves a few seconds in which the new code has a URL and no
+# token; every later deploy finds the secret already there.
+if [ -n "${RECFLARE_LIBSQL_DB_URL:-}" ]; then
+	printf '%s' "$RECFLARE_LIBSQL_DB_AUTH_TOKEN" | wrangler secret put LIBSQL_DB_AUTH_TOKEN --config "$CONFIG"
+fi

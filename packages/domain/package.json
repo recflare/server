@@ -7,14 +7,17 @@
 	"main": "src/index.ts",
 	"scripts": {
 		"check:lint": "run-oxlint",
-		"check:types": "run-tsc"
+		"check:types": "run-tsc",
+		"test": "run-vitest"
+	},
+	"dependencies": {
+		"@libsql/client": "0.18.0",
+		"isemail": "^3.2.0"
 	},
 	"devDependencies": {
 		"@cloudflare/workers-types": "4.20260630.1",
 		"@repo/tools": "workspace:*",
-		"@repo/typescript-config": "workspace:*"
-	},
-	"dependencies": {
-		"isemail": "^3.2.0"
+		"@repo/typescript-config": "workspace:*",
+		"vitest": "4.1.9"
 	}
 }

@@ -3,6 +3,7 @@ import { Hono } from 'hono'
 import { describeRoute, openAPIRouteHandler } from 'hono-openapi'
 import { useWorkersLogger } from 'workers-tagged-logger'
 
+import { withDatabase } from '@repo/domain'
 import { withCleanSpec, withNotFound, withOnError, writeContentRange } from '@repo/hono-helpers'
 
 import { imageBytes, json, ServiceStatus } from './openapi'
@@ -562,4 +563,4 @@ app.get(
 	}
 )
 
-export default app
+export default withDatabase<Env>(app)

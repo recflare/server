@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { describeRoute, openAPIRouteHandler } from 'hono-openapi'
 import { useWorkersLogger } from 'workers-tagged-logger'
 
+import { withDatabase } from '@repo/domain'
 import { logger, withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
 import { validateAndGetAccountId } from '@repo/jwt'
 
@@ -40,9 +41,9 @@ import {
 	ChatThreadType,
 	createThread,
 	getOrCreateThreadWithMembers,
+	getPartyThreadForPlayer,
 	getThreadForPlayer,
 	getThreadMemberIds,
-	getPartyThreadForPlayer,
 	getThreadMeta,
 	getThreadsForPlayer,
 	isThreadMember,
@@ -1557,4 +1558,4 @@ app.get(
 	)
 )
 
-export default app
+export default withDatabase<Env>(app)

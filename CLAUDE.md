@@ -37,6 +37,10 @@
 - Syncpack ensures dependency version consistency
 - Turborepo enables parallel task execution and caching
 - Workers configured via `wrangler.jsonc` with environment variables
+- The shared `recflare` database is D1 by default, or a libSQL server (Turso) when
+  `LIBSQL_DB_URL` is set: `withDatabase` (`packages/domain/src/libsql-db.ts`) wraps each
+  worker's default export and swaps `env.DB` for an adapter with the D1 API, so query code
+  only ever sees `D1Database`. Migrations and `runx` tooling follow the same switch.
 - Each worker has `context.ts` for typed environment bindings
 - Integration tests in `src/test/integration/`
 - Workers use `nodejs_compat` compatibility flag

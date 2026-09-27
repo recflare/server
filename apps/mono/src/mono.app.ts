@@ -20,6 +20,8 @@
  * Cloudflare allows only one static-assets binding per Worker. Resolve that (serve
  * their static trees from R2, or keep those three as their own Workers) before adding.
  */
+import { withDatabase } from '@repo/domain'
+
 import accounts from '../../accounts/src/accounts.app'
 import api from '../../api/src/api.app'
 import auth from '../../auth/src/auth.app'
@@ -46,23 +48,33 @@ type Mounted = {
 }
 
 /**
+ * Mount an app on this worker's Env. Each app declares only the bindings it reads, and
+ * this Env is the union of them, so the app's narrower Env is not checked against this one
+ * here — as it never was through Hono's `fetch`, which accepts any env. `withDatabase`
+ * (@repo/domain) types a wrapped app's `fetch` by its own Env, which is what needs the cast.
+ */
+const mount = (app: {
+	fetch(request: Request, env: never, ctx: ExecutionContext): Response | Promise<Response>
+}): Mounted => app as Mounted
+
+/**
  * Subdomain -> mounted app. Keys must match the `<sub>` in `<sub>.<domain>` from the
  * `ns` service-discovery document so production host-based routing lines up.
  */
 const services = {
-	accounts,
-	api,
-	auth,
-	cdn,
-	chat,
-	clubs,
-	commerce,
-	match,
-	notify,
-	ns,
-	playersettings,
-	rooms,
-	storage,
+	accounts: mount(accounts),
+	api: mount(api),
+	auth: mount(auth),
+	cdn: mount(cdn),
+	chat: mount(chat),
+	clubs: mount(clubs),
+	commerce: mount(commerce),
+	match: mount(match),
+	notify: mount(notify),
+	ns: mount(ns),
+	playersettings: mount(playersettings),
+	rooms: mount(rooms),
+	storage: mount(storage),
 } satisfies Record<string, Mounted>
 
 type ServiceName = keyof typeof services
@@ -90,7 +102,7 @@ function resolve(request: Request): { name: ServiceName; request: Request } | un
 	return undefined
 }
 
-export default {
+export default withDatabase<Env>({
 	fetch(request: Request, env: Env, ctx: ExecutionContext): Response | Promise<Response> {
 		const resolved = resolve(request)
 		if (resolved === undefined) {
@@ -117,4 +129,4 @@ export default {
 		matchScheduled(controller, env, ctx)
 		roomsScheduled(controller, env, ctx)
 	},
-} satisfies ExportedHandler<Env>
+})

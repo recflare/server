@@ -36,6 +36,7 @@ import {
 	setMemberType,
 	subscribeToClub,
 	updateClub,
+	withDatabase,
 } from '@repo/domain'
 import { intVar, logger, withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
 import { validateAndGetAccountId } from '@repo/jwt'
@@ -76,7 +77,7 @@ import {
 } from './openapi'
 
 import type { Context } from 'hono'
-import type { App } from './context'
+import type { App, Env } from './context'
 
 /**
  * Clubs Worker. Hosts the club endpoints the game client calls on the `clubs` host:
@@ -1706,4 +1707,4 @@ app.get(
 	)
 )
 
-export default app
+export default withDatabase<Env>(app)
