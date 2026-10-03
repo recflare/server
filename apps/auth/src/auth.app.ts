@@ -12,6 +12,7 @@ import {
 	getAccountByUsername,
 	getAccountsByIds,
 	getPasswordHash,
+	hasStudioBetaAccess,
 	getRoomById,
 	hashPassword,
 	RoomInstanceType,
@@ -38,11 +39,16 @@ import { generateToken, TOKEN_TTL_SECONDS, validateAndGetAccountId } from '@repo
 // The account-wide ban lives on a `report` row, whose table the api worker owns; its db
 // module is plain D1 queries with no runtime deps, so it imports cleanly here.
 import { banEvasionMatch, resolveBan } from '../../api/src/bans-db'
+import { buildEndpoints } from '../../ns/src/endpoints'
 import { verifyMetaNonce } from './meta-nonce'
 import {
 	CachedLogin,
 	ChangePasswordRequest,
 	ChangePasswordResponse,
+	DeviceAuthorizationRequest,
+	DeviceAuthorizationResponse,
+	DeviceDecisionRequest,
+	DeviceDecisionResponse,
 	FakeCachedLogin,
 	form,
 	json,
@@ -64,10 +70,18 @@ import {
 } from './platform-db'
 import { consumeRefreshToken, issueRefreshToken } from './refresh-db'
 import { verifySteamTicket } from './steam-ticket'
+import {
+	approveDeviceGrant,
+	beginDeviceGrant,
+	denyDeviceGrant,
+	DEVICE_CODE_GRANT,
+	pollDeviceGrant,
+	studioClientMatches,
+} from './studio-device'
 
 import type { Context } from 'hono'
 import type { Account } from '@repo/domain'
-import type { App } from './context'
+import type { App, Env } from './context'
 import type { PlatformLink } from './platform-db'
 
 /** OAuth scopes granted by `/connect/token`. */
@@ -278,18 +292,32 @@ async function roleFilterAnswer(c: Context<App>, role: 'developer' | 'moderator'
  * (gameClient) are added by generateToken. `screenshare` rides on EVERY token — the
  * client gates the screen-share feature on it and nothing grants it per-account, so it
  * is unconditional (even with no account resolved). The rest are the operator-granted
- * extras, plus `junior` off the account's own `isJunior` flag. Order is stable so
- * tokens are deterministic.
+ * extras, plus `junior` off the account's own `isJunior` flag.
+ *
+ * `betastudio` is not an account flag and developer does not imply it. RecFlare Studio
+ * treats that exact claim as Full access, which is what lets the editor upload. It is
+ * added only when `studioBeta` is set, from the `studio_beta_access` whitelist. Order
+ * is stable so tokens are deterministic: screenshare, developer, moderator, junior,
+ * then betastudio.
  */
 function accountRoles(
-	account: Pick<Account, 'isDeveloper' | 'isModerator' | 'isJunior'> | null
+	account: Pick<Account, 'isDeveloper' | 'isModerator' | 'isJunior'> | null,
+	studioBeta = false
 ): string[] {
 	const roles = ['screenshare']
-	if (!account) return roles
-	if (account.isDeveloper) roles.push('developer')
-	if (account.isModerator) roles.push('moderator')
-	if (account.isJunior) roles.push('junior')
+	if (account) {
+		if (account.isDeveloper) roles.push('developer')
+		if (account.isModerator) roles.push('moderator')
+		if (account.isJunior) roles.push('junior')
+	}
+	if (studioBeta) roles.push('betastudio')
 	return roles
+}
+
+/** Whether this account is on the studio upload whitelist. A bad id is simply not. */
+async function studioBetaFor(db: D1Database, accountId: number): Promise<boolean> {
+	if (!Number.isInteger(accountId) || accountId <= 0) return false
+	return hasStudioBetaAccess(db, accountId)
 }
 
 /**
@@ -312,6 +340,124 @@ function accountPrivileges(account: Pick<Account, 'isJunior'> | null): string[] 
  */
 function accountPlatform(account: Pick<Account, 'platform'>): number {
 	return account.platform ?? 0
+}
+
+/**
+ * The browser page Studio opens lives on WWW, not on this worker. `ns` is what
+ * told the editor where WWW is, so the URI has to be built from the same domain
+ * and the same subdomain override or the tab opens on a host the player doesn't have.
+ */
+function studioVerificationUri(env: Env, userCode: string): { uri: string; complete: string } {
+	const www = buildEndpoints(env.DOMAIN, env.SUBDOMAINS).WWW
+	const uri = `${www}/device`
+	return { uri, complete: `${uri}?user_code=${encodeURIComponent(userCode)}` }
+}
+
+function oauthError(
+	c: Context<App>,
+	error: string,
+	error_description: string,
+	status: 400 | 500 = 400
+) {
+	return c.json({ error, error_description }, status)
+}
+
+/**
+ * Issue the same token body every other grant returns, for an account that has
+ * already been authenticated — here, because the player approved a Studio code
+ * on the website. Studio reads `expires_in` as seconds (`TimeSpan.FromSeconds`).
+ */
+async function issueSession(c: Context<App>, accountId: number, grantType: string) {
+	const clientIp = c.req.header('cf-connecting-ip') ?? ''
+	const ban = await resolveBan(c.env.DB, accountId, {
+		identity: { ip: clientIp },
+		arms: banEvasionMatch(c.env.BAN_EVASION_MATCH),
+	})
+	if (ban) {
+		logger.info('token issued to a blocked account', {
+			accountId,
+			grantType,
+			via: ban.via,
+			bannedAccountId: ban.bannedAccountId,
+			reportId: ban.ban.id,
+		})
+	}
+
+	const jwtSecret = await c.env.JWT_SECRET.get()
+	if (jwtSecret === '') {
+		logger.error('refusing to issue token: JWT_SECRET is empty')
+		return oauthError(c, 'server_error', 'token signing is not configured', 500)
+	}
+
+	const roleAccount = await getAccount(c.env.DB, accountId)
+	if (!roleAccount) return oauthError(c, 'invalid_grant', 'account no longer exists')
+
+	const accessToken = await generateToken(
+		String(accountId),
+		roleAccount.platformId ?? '',
+		accountPlatform(roleAccount),
+		jwtSecret,
+		accountRoles(roleAccount, await studioBetaFor(c.env.DB, accountId)),
+		accountPrivileges(roleAccount),
+		GAME_VERSION,
+		roleAccount.hasPlus === true
+	)
+	const refreshToken = await issueRefreshToken(c.env.DB, accountId)
+	await setLastLoginTime(c.env.DB, accountId, new Date().toISOString())
+	await setLoginContext(c.env.DB, accountId, { ip: clientIp })
+
+	const staffRoles = (['developer', 'moderator'] as const).filter((role) =>
+		holdsRole(roleAccount, role)
+	)
+	if (staffRoles.length > 0) {
+		try {
+			await writeAuditLog(c.env.DB, {
+				playerId: accountId,
+				action: 'staff_login',
+				data: {
+					ip: clientIp,
+					roles: staffRoles,
+					grantType,
+					username: roleAccount.username ?? null,
+					deviceId: '',
+					deviceClass: 0,
+					version: null,
+				},
+			})
+		} catch (err) {
+			logger.error('could not write a staff_login audit log row', {
+				accountId,
+				grantType,
+				error: err instanceof Error ? err.message : String(err),
+			})
+		}
+	}
+
+	return c.json({
+		access_token: accessToken,
+		expires_in: TOKEN_TTL_SECONDS,
+		token_type: 'Bearer',
+		refresh_token: refreshToken,
+		scope: TOKEN_SCOPE,
+		key: '8oQ+e+WQaOBPbEcakhqs3dwZZdOmmyDUmJSD9u4AHMY=',
+	})
+}
+
+async function decideDeviceCode(
+	c: Context<App>,
+	decide: typeof approveDeviceGrant
+) {
+	const id = await authedId(c)
+	if (id === null) return c.body(null, 401)
+	const body = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>)
+	const userCode = typeof body.user_code === 'string' ? body.user_code : ''
+	const result = await decide(c.env.DB, userCode, id)
+	if (result.kind === 'ok') return c.json({ ok: true as const })
+	if (result.kind === 'expired')
+		return oauthError(c, 'expired_token', 'that code has expired. Start the login in Studio again.')
+	if (result.kind === 'used')
+		return oauthError(c, 'invalid_grant', 'that code was already used.')
+	return oauthError(c, 'invalid_grant', 'that code was not found.')
 }
 
 /**
@@ -620,6 +766,83 @@ const app = new Hono<App>()
 		}
 	)
 
+	// Studio editor device login. The POST the editor makes is
+	// `https://auth.<domain>/connect/deviceauthorization` — Auth is service enum 0,
+	// and the path is the literal `connect/deviceauthorization`. The browser half
+	// of the handshake is the verification_uri, which points at WWW `/device`.
+	.post(
+		'/connect/deviceauthorization',
+		describeRoute({
+			tags: ['Token'],
+			summary: 'Start a Rec Room Studio device login',
+			description: [
+				'RFC 8628 device authorization, called by Rec Room Studio (not the game).',
+				'The editor POSTs `client_id=recroom.studio` and its embedded client secret',
+				'to the Auth host. The response `verification_uri` is the website (`WWW /device`);',
+				'`verification_uri_complete` is that page with `?user_code=` and is what Studio',
+				'opens in the browser. Studio then polls `POST /connect/token` with',
+				'`grant_type=urn:ietf:params:oauth:grant-type:device_code`.',
+			].join(' '),
+			requestBody: form(DeviceAuthorizationRequest, '`client_id` and `client_secret`'),
+			responses: {
+				200: json(DeviceAuthorizationResponse, 'Codes and the WWW page to open'),
+				400: json(OAuthError, 'client_id or client_secret was not the Studio editor'),
+			},
+		}),
+		async (c) => {
+			const body = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>)
+			if (!studioClientMatches(body)) {
+				return oauthError(c, 'invalid_client', 'unknown studio client')
+			}
+			const grant = await beginDeviceGrant(c.env.DB)
+			const { uri, complete } = studioVerificationUri(c.env, grant.userCode)
+			return c.json({
+				device_code: grant.deviceCode,
+				user_code: grant.userCode,
+				verification_uri: uri,
+				verification_uri_complete: complete,
+				expires_in: grant.expiresIn,
+				interval: grant.interval,
+			})
+		}
+	)
+
+	.post(
+		'/connect/device/approve',
+		describeRoute({
+			tags: ['Token'],
+			summary: 'Approve a Studio device code',
+			description:
+				'Called by the website (`WWW /device`) with the signed-in player’s bearer token and the `user_code` Studio is showing. The editor’s next poll of `/connect/token` then receives that account’s token.',
+			security: [{ bearerAuth: [] }],
+			requestBody: form(DeviceDecisionRequest, 'The user_code from the editor'),
+			responses: {
+				200: json(DeviceDecisionResponse, 'The code is approved'),
+				400: json(OAuthError, 'Unknown, expired, or already used code'),
+				401: { description: 'Missing or invalid bearer token (empty body)' },
+			},
+		}),
+		(c) => decideDeviceCode(c, approveDeviceGrant)
+	)
+
+	.post(
+		'/connect/device/deny',
+		describeRoute({
+			tags: ['Token'],
+			summary: 'Deny a Studio device code',
+			description:
+				'Same caller as approve. Studio’s next poll fails with `access_denied` instead of signing in.',
+			security: [{ bearerAuth: [] }],
+			requestBody: form(DeviceDecisionRequest, 'The user_code from the editor'),
+			responses: {
+				200: json(DeviceDecisionResponse, 'The code is denied'),
+				400: json(OAuthError, 'Unknown, expired, or already used code'),
+				401: { description: 'Missing or invalid bearer token (empty body)' },
+			},
+		}),
+		(c) => decideDeviceCode(c, denyDeviceGrant)
+	)
+
 	// OAuth token endpoint — accepts a form-urlencoded body and issues a JWT.
 	.post(
 		'/connect/token',
@@ -678,7 +901,10 @@ const app = new Hono<App>()
 				'**Roles.** The token embeds a `role` claim from the account, so developer/moderator',
 				'powers refresh on every login and every refresh grant. `junior` rides along for an',
 				'account flagged `isJunior`, and `screenshare` is on every token — it is a feature',
-				'gate the client reads, not a privilege anyone is granted. A junior also carries',
+				'gate the client reads, not a privilege anyone is granted. `betastudio` is stamped',
+				'only for accounts on the `studio_beta_access` whitelist (staff manage it on the',
+				'website). RecFlare Studio treats that claim as permission to upload; `developer`',
+				'does not confer it. A junior also carries',
 				'the `rn.privilege` CLAIM (`BanVChat`, `BanRmChat`) — scope-shaped name, but the',
 				'client reads it as a claim beside `role`, and it is absent for everyone else.',
 				'',
@@ -731,6 +957,28 @@ const app = new Hono<App>()
 			// form body.
 			const body = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>)
 			const grantType = typeof body.grant_type === 'string' ? body.grant_type : ''
+			// Studio's poll. Handled before the password fallback, which would otherwise
+			// treat this grant_type as a username/password login and 400 it.
+			if (grantType === DEVICE_CODE_GRANT) {
+				if (!studioClientMatches(body)) {
+					return oauthError(c, 'invalid_client', 'unknown studio client')
+				}
+				const deviceCode = typeof body.device_code === 'string' ? body.device_code : ''
+				const polled = await pollDeviceGrant(c.env.DB, deviceCode)
+				if (polled.kind === 'pending') {
+					return oauthError(c, 'authorization_pending', 'the player has not approved this login yet')
+				}
+				if (polled.kind === 'denied') {
+					return oauthError(c, 'access_denied', 'the player denied this login')
+				}
+				if (polled.kind === 'expired') {
+					return oauthError(c, 'expired_token', 'the device code expired')
+				}
+				if (polled.kind !== 'approved') {
+					return oauthError(c, 'invalid_grant', 'unknown device code')
+				}
+				return issueSession(c, polled.accountId, DEVICE_CODE_GRANT)
+			}
 			// `platform`/`platform_id` come from the body for a fresh login; a refresh
 			// grant overrides them below with what was stored when the token was issued.
 			let platformId = typeof body.platform_id === 'string' ? body.platform_id : ''
@@ -1165,7 +1413,7 @@ const app = new Hono<App>()
 				platformId,
 				platform,
 				jwtSecret,
-				accountRoles(roleAccount),
+				accountRoles(roleAccount, await studioBetaFor(c.env.DB, Number(accountId))),
 				accountPrivileges(roleAccount),
 				version,
 				// Rec Room Plus, off the same account read as the roles above — `econ` decides the

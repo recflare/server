@@ -239,6 +239,35 @@ export async function getPlayerIdsInRoom(
 }
 
 /**
+ * Everyone standing in one subroom of a room right now, across every live instance of
+ * that subroom. The narrower cut of {@link getPlayerIdsInRoom}: a room has several
+ * subrooms, and a player in a different subroom of the same room is not here.
+ *
+ * `subRoomId` is not its own column — presence indexes the room and the instance — so
+ * the subroom is read out of the instance blob. Unexpired presence only, lobby
+ * (null-instance) rows excluded, ordered by account id.
+ */
+export async function getPlayerIdsInRoomSubRoom(
+	db: D1Database,
+	roomId: number,
+	subRoomId: number,
+	now = nowSeconds()
+): Promise<number[]> {
+	const { results } = await db
+		.prepare(
+			`SELECT DISTINCT account_id AS accountId FROM presence
+			 WHERE room_id = ?1
+			   AND expires_at > ?2
+			   AND room_instance_id IS NOT NULL
+			   AND CAST(json_extract(data, '$.roomInstance.subRoomId') AS INTEGER) = ?3
+			 ORDER BY account_id`
+		)
+		.bind(roomId, now, subRoomId)
+		.all<{ accountId: number }>()
+	return results.map((r) => r.accountId)
+}
+
+/**
  * Everyone online right now, anywhere — the same population {@link countOnlinePlayers}
  * counts, as ids. Unexpired presence only, one row per account, lobby (null-instance)
  * presence included: a player sat in a menu is as online as one in a room, and a gift to

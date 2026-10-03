@@ -32,6 +32,17 @@
 		"directory": "./static",
 		"run_worker_first": true
 	},
+	// Shared `recflare` DB, read so `/unityasset/:filename` can resolve a Studio
+	// bundle's public filename to the R2 key the studio worker stored. Studio owns
+	// the migration (`apps/studio/migrations`); this binding deliberately has no
+	// migrations_dir, so deploying cdn does not try to create those tables.
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "recflare",
+			"database_id": "local"
+		}
+	],
 	// CDN binaries (signature blobs + room build data) are stored as R2 objects
 	// and streamed back by key. Keys are prefixed `sigs/` and `room/`.
 	"r2_buckets": [

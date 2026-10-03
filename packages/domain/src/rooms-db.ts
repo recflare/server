@@ -20,6 +20,13 @@
 import { bindPlaceholders, chunkForBinds, MAX_BOUND_PARAMS } from './d1-binds'
 import { Accessibility, Role } from './enums'
 import { countPlayersByRoom } from './presence-db'
+import {
+	bakedStudioUnityAssets,
+	isMissingStudioAssetTable,
+	listStudioUnityAssetFiles,
+} from './studio-unity-assets'
+
+import type { StudioUnityAssetFile } from './studio-unity-assets'
 
 /** Schema DDL (mirror of the head migration schema, sans the seed INSERT). */
 export const ROOM_SCHEMA_DDL: string[] = [
@@ -302,6 +309,31 @@ export async function canManageRoomById(
 	)
 	if (!room) return null
 	return canManageRoom(room, accountId)
+}
+
+/**
+ * Account ids that co-own a room: its creator, and every `Roles` entry at Creator or
+ * CoOwner. Null when the room does not exist. A pending invite is not a co-owner yet
+ * (`Role` stays None until they accept), and Host / Moderator are not in this set —
+ * the same ownership set as {@link canManageRoom}. Ordered by account id.
+ *
+ * Reads the blob only, like {@link canManageRoomById}.
+ */
+export async function getRoomCoOwnerIds(db: D1Database, roomId: number): Promise<number[] | null> {
+	const room = parseOne(
+		await db
+			.prepare(`SELECT ${ROOM_COLUMNS} FROM room WHERE room_id = ?1`)
+			.bind(roomId)
+			.first<RoomRow>()
+	)
+	if (!room) return null
+	const ids = new Set<number>()
+	const creator = Number(room.CreatorAccountId)
+	if (Number.isSafeInteger(creator) && creator > 0) ids.add(creator)
+	for (const role of roomRoles(room)) {
+		if (role.AccountId > 0 && MANAGE_ROLES.has(role.Role)) ids.add(role.AccountId)
+	}
+	return [...ids].sort((a, b) => a - b)
 }
 
 /**
@@ -845,6 +877,47 @@ export async function setRoomImage(
 }
 
 /**
+ * Stamp `BecameRRStudioRoomAt` the first time a Rec Room Studio build is stored for
+ * this room. A room that already carries a timestamp keeps it: a later local build
+ * is another cloud build, not a new moment of becoming a Studio room. A missing key
+ * and a JSON null both count as unset (`json_type` is not `text`).
+ */
+export async function markRoomAsRecRoomStudio(
+	db: D1Database,
+	roomId: number,
+	at: string
+): Promise<void> {
+	await db
+		.prepare(
+			`UPDATE room SET data = json_set(data, '$.BecameRRStudioRoomAt', ?2)
+			 WHERE room_id = ?1 AND json_type(data, '$.BecameRRStudioRoomAt') IS NOT 'text'`
+		)
+		.bind(roomId, at)
+		.run()
+}
+
+/**
+ * Point one existing subroom save at a baked Unity asset, in place. Local Studio
+ * builds attach to the save the room is already published from; they do not append
+ * a new save row. Returns false when that save id is not this subroom's.
+ */
+export async function setSubRoomSaveUnityAssetId(
+	db: D1Database,
+	subRoomId: number,
+	saveId: number,
+	unityAssetId: string
+): Promise<boolean> {
+	const result = await db
+		.prepare(
+			`UPDATE subroom_save SET data = json_set(data, '$.UnityAssetId', ?3)
+			 WHERE sub_room_data_save_id = ?1 AND sub_room_id = ?2`
+		)
+		.bind(saveId, subRoomId, unityAssetId)
+		.run()
+	return (result.meta.changes ?? 0) > 0
+}
+
+/**
  * Merge a set of top-level fields into a room's JSON blob and write it back. Used by
  * the room-settings mutations whose values include booleans (cloning, platform
  * restrictions) — rewriting the whole blob preserves proper JSON booleans, whereas a
@@ -1367,10 +1440,12 @@ interface BuildSaveInput {
 
 /**
  * Build a `SubRoomDataSave` in the shape the client parses — the reference's `MapSave`
- * projection. The four array fields are always empty (we neither resolve nor record
- * referenced Unity assets) but must be PRESENT, and `UnityAssetId` is emitted only when
- * the save actually carried one, exactly as the reference does. There is deliberately no
- * `DataBlobHash`: it is commented out of the reference DTO and absent from its output.
+ * projection. The array fields start empty and must be PRESENT. `UnitySubAssets` is
+ * filled in on read when this save's `UnityAssetId` has stored Studio bundles (see
+ * {@link attachStudioUnityAssets}); referenced assets stay empty. `UnityAssetId` is
+ * emitted only when the save actually carried one, exactly as the reference does.
+ * There is deliberately no `DataBlobHash` of our own: the caller stores the hash the
+ * client sent, and a save that carried none keeps it null.
  *
  * `SavedOnPlatform`/`SavedOnDeviceClass` are 0 — the reference fills them from the saving
  * player's live platform/device, which the save request doesn't carry and we don't track.
@@ -2134,6 +2209,52 @@ async function attachCurrentSaves(
 		const id = rows[i]!.current_save_id
 		sub.CurrentSave = id == null ? null : (byId.get(id) ?? null)
 	})
+	const saves = subs
+		.map((sub) => sub.CurrentSave)
+		.filter((save): save is SubRoomDataSave => typeof save === 'object' && save !== null)
+	await attachStudioUnityAssets(db, saves)
+}
+
+/**
+ * Fill `UnitySubAssets` on saves that point at a stored Studio build. Maker-pen
+ * saves have no `UnityAssetId` and are left untouched, including their empty
+ * arrays. A missing studio table is the same answer: the scene blob still loads,
+ * and the bundle list stays empty until the migration exists.
+ *
+ * Only main bundles are listed. Stripped bundles stay in the bucket.
+ */
+export async function attachStudioUnityAssets(
+	db: D1Database,
+	saves: SubRoomDataSave[]
+): Promise<void> {
+	const ids = [
+		...new Set(
+			saves
+				.map((save) => save.UnityAssetId)
+				.filter((id): id is string => typeof id === 'string' && id !== '')
+		),
+	]
+	if (ids.length === 0) return
+	let files: StudioUnityAssetFile[]
+	try {
+		files = await listStudioUnityAssetFiles(db, ids)
+	} catch (err) {
+		if (isMissingStudioAssetTable(err)) return
+		throw err
+	}
+	const byAsset = new Map<string, StudioUnityAssetFile[]>()
+	for (const file of files) {
+		const list = byAsset.get(file.unityAssetId) ?? []
+		list.push(file)
+		byAsset.set(file.unityAssetId, list)
+	}
+	for (const save of saves) {
+		const id = save.UnityAssetId
+		if (typeof id !== 'string') continue
+		const baked = bakedStudioUnityAssets(byAsset.get(id) ?? [])
+		if (baked.length === 0) continue
+		save.UnitySubAssets = baked
+	}
 }
 
 // ---- Room tags ------------------------------------------------------------
@@ -2560,7 +2681,9 @@ export async function getSubRoomSaves(
 		)
 		.bind(subRoomId)
 		.all<SubRoomSaveRow>()
-	return results.map(parseSubRoomSaveRow)
+	const saves = results.map(parseSubRoomSaveRow)
+	await attachStudioUnityAssets(db, saves)
+	return saves
 }
 
 /**
@@ -2579,7 +2702,10 @@ export async function getSubRoomSaveById(
 		)
 		.bind(saveId, subRoomId)
 		.first<SubRoomSaveRow>()
-	return row ? parseSubRoomSaveRow(row) : null
+	if (!row) return null
+	const save = parseSubRoomSaveRow(row)
+	await attachStudioUnityAssets(db, [save])
+	return save
 }
 
 // ---- Subroom permissions --------------------------------------------------

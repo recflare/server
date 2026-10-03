@@ -57,6 +57,10 @@
 	// constants in src/auth.app.ts.
 	"vars": {
 		"ENVIRONMENT": "development", // overridden during deployment
-		"SENTRY_RELEASE": "unknown" // overridden during deployment
+		"SENTRY_RELEASE": "unknown", // overridden during deployment
+		// Overridden at deploy time, same as `ns`. The device-login response builds
+		// the browser URL from these (`https://www.<DOMAIN>/device`).
+		"DOMAIN": "rec.example.com",
+		"SUBDOMAINS": "{}"
 	}
 }

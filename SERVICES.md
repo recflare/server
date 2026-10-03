@@ -25,10 +25,10 @@ apex/`ns` host and isn't listed within it. Each implemented worker has its own
 | Accounts              | `accounts`              | `accounts`              | Player accounts & profile reads/writes (D1)                           |
 | AI                    | `ai`                    | `ai`                    | Game AI access check (always refuses — no model runs here)            |
 | API                   | `api`                   | `api`                   | Core Game API — config, social, avatar, rooms, image uploads (D1, R2) |
-| Auth                  | `auth`                  | `auth`                  | OAuth token issuance (`/connect/token`); (D1)                         |
+| Auth                  | `auth`                  | `auth`                  | OAuth tokens, plus Studio device login (`POST /connect/deviceauthorization`, device-code grant on `/connect/token`); (D1) |
 | BugReporting          | `bugreporting`          | —                       | Not yet implemented                                                   |
 | Cards                 | `cards`                 | `cards`                 | Stub — deploys and answers, no card endpoints yet                     |
-| CDN                   | `cdn`                   | `cdn`                   | Binary CDN — room data (R2)                                           |
+| CDN                   | `cdn`                   | `cdn`                   | Binary CDN — room data, and Studio room bundles at `/unityasset/{filename}` (R2, D1 lookup). The editor's `studiocdn` host is this same app on a combined deploy |
 | Chat                  | `chat`                  | `chat`                  | Player chat service (not in room)                                     |
 | Clubs                 | `clubs`                 | `clubs`                 | Clubs, not yet implemented                                            |
 | CMS                   | `cms`                   | —                       | Not yet implemented                                                   |
@@ -54,7 +54,7 @@ apex/`ns` host and isn't listed within it. Each implemented worker has its own
 | Storage               | `storage`               | —                       | Room uploader                                                         |
 | Strings               | `strings`               | —                       | Not yet implemented                                                   |
 | StringsCDN            | `strings-cdn`           | —                       | Not yet implemented                                                   |
-| Studio                | `studio`                | —                       | Not yet implemented                                                   |
+| Studio                | `studio`                | `studio`                | `GET /cloud-builds/for-room` lists that room's cloud builds. `POST /cloud-builds/from-editor` stores a locally built Windows and Android asset-bundle pair as a finished cloud build on the latest save, and sets `BecameRRStudioRoomAt` the first time. The game loads those bundles from **Rooms** (`CurrentSave.UnitySubAssets`, `GET …/unityasset`) and **CDN** `/unityasset/{filename}`. `GET /collaboration/owners-in-room` lists co-owners whose presence is in that room and subroom. Device login stays on **Auth**; `GET /account/me` stays on **Accounts**; the approval page is **WWW** `/device` |
 | Thorn                 | `thorn`                 | —                       | Not yet implemented                                                   |
 | Videos                | `videos`                | —                       | Not yet implemented                                                   |
-| WWW                   | `www`                   | —                       | Website/Panel                                                         |
+| WWW                   | `www`                   | `www`                   | Website, including the Studio sign-in page at `/device`              |

@@ -184,8 +184,14 @@ export const SubRoomDataSaveResponseDto = z.object({
 	subRoomDataSaveId: z.int(),
 	subRoomId: z.int(),
 	unityAssetId: z.string().nullable().describe('Null unless the save carried one'),
-	unityAsset: z.string().nullable().describe('Always null — we resolve no baked assets'),
-	unityAssetHash: z.string().nullable().describe('Always null — we resolve no baked assets'),
+	unityAsset: z
+		.string()
+		.nullable()
+		.describe('Windows baked-bundle filename when this save has a Studio build; otherwise null'),
+	unityAssetHash: z
+		.string()
+		.nullable()
+		.describe('Base64 SHA-256 of `unityAsset` when that file is set; otherwise null'),
 	dataBlob: z.string(),
 	dataBlobHash: z.string().nullable().describe('Echoed from the request’s `SubRoomData.Hash`'),
 	savedByAccountId: z.int().nullable(),
@@ -204,11 +210,22 @@ export const SubRoomDataSaveResponseDto = z.object({
  * scene-data blob to download. This is the ONLY place the loader looks for it, so a
  * subroom whose `CurrentSave` is missing loads no saved content at all.
  *
- * The array fields are always empty here: we neither resolve nor record referenced Unity
- * assets. They are still emitted because the client's parser expects them present.
+ * `UnitySubAssets` is empty for a maker-pen save. A Rec Room Studio build fills it
+ * with one main bundle per platform. Referenced assets stay empty. The arrays are
+ * always emitted because the client's parser expects them present.
  */
+export const UnitySubAssetDto = z.object({
+	UnityAssetId: z.string(),
+	Target: z.int().describe('0 Windows, 2 Android/Quest — the game’s `unityAssetTarget`'),
+	Version: z.int(),
+	Filename: z.string().describe('Downloaded from the CDN at `/unityasset/{Filename}`'),
+	Hash: z.string().describe('Base64 SHA-256 of the bundle'),
+})
+
 export const SubRoomDataSaveDto = z.object({
-	UnitySubAssets: z.array(z.unknown()).describe('Always empty'),
+	UnitySubAssets: z
+		.array(UnitySubAssetDto)
+		.describe('Main Studio bundles for this save; empty for a maker-pen save'),
 	ReferencedUnityAssets: z.array(z.unknown()).describe('Always empty'),
 	SubRoomDataSaveId: z.int().describe('Numbered from 1, incremented on every save'),
 	SubRoomId: z.int().describe('The owning subroom — re-pointed when a subroom is cloned'),
@@ -940,6 +957,26 @@ export const SubRoomSavesNoUnityAssetsPage = z.object({
 	Results: z.array(SubRoomDataSaveNoUnityAssetsDto).describe('The page of saves, newest first'),
 	TotalResults: z.int().describe('The whole history’s size, not the page’s'),
 	TotalCount: z.int().describe('Same value as `TotalResults` — the two references disagree'),
+})
+
+/**
+ * `GET /rooms/{roomId}/subrooms/{subRoomId}/unityasset` — the editor's unity-asset
+ * document, camelCase. `bakedUnityAssets` are the main bundles; `filename`/`hash`
+ * name the Windows one. Bytes live on the CDN.
+ */
+export const BakedUnityAssetDto = z.object({
+	unityAssetId: z.string(),
+	target: z.int().describe('0 Windows, 2 Android/Quest'),
+	version: z.int(),
+	filename: z.string(),
+})
+
+export const UnityAssetWithSourceDto = z.object({
+	unityAssetId: z.string(),
+	createdByAccountId: z.int(),
+	bakedUnityAssets: z.array(BakedUnityAssetDto),
+	filename: z.string().describe('The Windows main bundle'),
+	hash: z.string().describe('Base64 SHA-256 of `filename`'),
 })
 
 // ---- Session ---------------------------------------------------------------

@@ -1226,6 +1226,26 @@ button[type='submit']:disabled {
 	color: var(--ok);
 }
 
+/* The studio whitelist: a name on the left, Remove on the right. */
+.studio-access-list {
+	list-style: none;
+	margin: 16px 0 0;
+	padding: 0;
+}
+
+.studio-access-row {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: 12px;
+	padding: 10px 0;
+	border-top: 1px solid var(--line);
+}
+
+.studio-access-row button {
+	flex: none;
+}
+
 /* ---- Stats ---------------------------------------------------------------- */
 
 /*

@@ -10003,6 +10003,8 @@ describe('player events', () => {
 		expect((await putForm(path, { name: 'n'.repeat(64) })).status).toBe(200)
 	})
 
+	// One create, fourteen gated calls, and a read. The default 5s budget is what
+	// this crossed on CI; the checks themselves are the same creator gate as above.
 	test('the single-field edits are creator-only, like the whole-event update', async () => {
 		const event = await create({ RoomId: 5, Name: 'Guarded' })
 		const id = event.PlayerEventId
@@ -10023,7 +10025,7 @@ describe('player events', () => {
 
 		// Nothing moved.
 		expect(await (await get(`/api/playerevents/v1/${id}`)).json()).toEqual(asRecord(event, null))
-	})
+	}, 20_000)
 })
 
 describe('openapi', () => {

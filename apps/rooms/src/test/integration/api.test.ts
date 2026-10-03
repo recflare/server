@@ -19,8 +19,11 @@ import {
 	PRESENCE_SCHEMA_DDL,
 	ROOM_INSTANCE_SCHEMA_DDL,
 	ROOM_INVITE_SCHEMA_DDL,
+	publicStudioBundleFilename,
 	ROOM_SCHEMA_DDL,
 	seedRoomWithSubRooms,
+	sha256HexToBase64,
+	STUDIO_UNITY_ASSET_SCHEMA_DDL,
 	SUBROOM_SCHEMA_DDL,
 } from '@repo/domain'
 
@@ -5519,6 +5522,7 @@ describe('rooms endpoints', () => {
 			'GET /rooms/{roomId}/subrooms/{subRoomId}/saves',
 			'GET /rooms/{roomId}/subrooms/{subRoomId}/saves/no_unity_assets',
 			'GET /rooms/{roomId}/subrooms/{subRoomId}/saves/{saveId}',
+			'GET /rooms/{roomId}/subrooms/{subRoomId}/unityasset',
 			'GET /roomserver/rooms/createdby/me',
 			'GET /showcase/{playerId}',
 			'POST /rooms/bulk',
@@ -5556,6 +5560,235 @@ describe('rooms endpoints', () => {
 		for (const ops of Object.values(spec.paths)) {
 			for (const op of Object.values(ops)) expect(op.summary).toBeTruthy()
 		}
+	})
+})
+
+// A Rec Room Studio build is a unity asset on the save. The game loads the scene from
+// `CurrentSave.DataBlob` and the bundles from `UnitySubAssets`. Maker-pen saves stay
+// empty arrays, and a missing studio table must not fail the room read.
+describe('studio room bundles', () => {
+	const ASSET = '11111111-2222-4333-8444-555555555555'
+	const WIN_HEX = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+	const ANDROID_HEX = 'ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb'
+	const winName = publicStudioBundleFilename(ASSET, 'windows', 'main')
+	const androidName = publicStudioBundleFilename(ASSET, 'android', 'main')
+	const winHash = sha256HexToBase64(WIN_HEX)
+	const androidHash = sha256HexToBase64(ANDROID_HEX)
+
+	const save = (unityAssetId?: string) => ({
+		UnitySubAssets: [],
+		ReferencedUnityAssets: [],
+		DataBlob: 'studio-scene-blob',
+		DataBlobHash: null,
+		ReferencedUnityAssetIds: [],
+		PersistenceVersion: 1,
+		OMVersion: 0,
+		UgcSubVersion: 0,
+		SavedByAccountId: 7,
+		SavedOnPlatform: 0,
+		SavedOnDeviceClass: 0,
+		Description: '',
+		Tags: [],
+		ModerationState: 0,
+		CreatedAt: '2026-10-03T00:00:00.000Z',
+		...(unityAssetId ? { UnityAssetId: unityAssetId } : {}),
+	})
+
+	async function reset() {
+		await env.DB.prepare('DROP TABLE IF EXISTS studio_unity_asset_file').run()
+		await env.DB.prepare('DROP TABLE IF EXISTS studio_cloud_build').run()
+		await env.DB.prepare('DELETE FROM subroom_save WHERE sub_room_id IN (99011, 99021)').run()
+		await env.DB.prepare('DELETE FROM subroom WHERE room_id IN (9901, 9902)').run()
+		await env.DB.prepare('DELETE FROM room WHERE room_id IN (9901, 9902)').run()
+		await seedRoomWithSubRooms(env.DB, {
+			RoomId: 9901,
+			Name: 'StudioLoadRoom',
+			CreatorAccountId: 1,
+			Accessibility: 1,
+			IsDorm: false,
+			SubRooms: [
+				{
+					SubRoomId: 99011,
+					Name: 'Main',
+					UnitySceneId: '76d98498-60a1-430c-ab76-b54a29b7a163',
+					MaxPlayers: 20,
+					Accessibility: 1,
+					CurrentSave: save(ASSET),
+				},
+			],
+		})
+		await seedRoomWithSubRooms(env.DB, {
+			RoomId: 9902,
+			Name: 'MakerPenRoom',
+			CreatorAccountId: 1,
+			Accessibility: 1,
+			IsDorm: false,
+			SubRooms: [
+				{
+					SubRoomId: 99021,
+					Name: 'Sandbox',
+					UnitySceneId: '76d98498-60a1-430c-ab76-b54a29b7a163',
+					MaxPlayers: 20,
+					Accessibility: 1,
+					CurrentSave: save(),
+				},
+			],
+		})
+	}
+
+	async function storeFiles() {
+		for (const sql of STUDIO_UNITY_ASSET_SCHEMA_DDL) await env.DB.prepare(sql).run()
+		await env.DB
+			.prepare(
+				`INSERT INTO studio_cloud_build
+				 (cloud_build_id, room_id, sub_room_id, sub_room_data_save_id, unity_asset_id,
+				  created_by_account_id, started_at, completed_at, error)
+				 VALUES ('build-1', 9901, 99011, 0, ?1, 42, '2026-10-03T00:00:00.000Z',
+				         '2026-10-03T00:00:00.000Z', NULL)`
+			)
+			.bind(ASSET)
+			.run()
+		const insert = async (
+			platform: string,
+			kind: string,
+			filename: string,
+			sha256: string
+		) => {
+			await env.DB
+				.prepare(
+					`INSERT INTO studio_unity_asset_file
+					 (unity_asset_id, platform, kind, filename, sha256, byte_length, r2_key)
+					 VALUES (?1, ?2, ?3, ?4, ?5, 4, ?6)`
+				)
+				.bind(ASSET, platform, kind, filename, sha256, `studio-room-bundles/${filename}`)
+				.run()
+		}
+		await insert('windows', 'main', winName, WIN_HEX)
+		await insert('android', 'main', androidName, ANDROID_HEX)
+		await insert(
+			'windows',
+			'stripped',
+			publicStudioBundleFilename(ASSET, 'windows', 'stripped'),
+			WIN_HEX
+		)
+	}
+
+	it('loads baked bundles onto the room and serves the unity asset', async () => {
+		await reset()
+
+		const before = (await (await SELF.fetch(`${ORIGIN}/rooms/9901`)).json()) as {
+			SubRooms: Array<{ CurrentSave: { UnitySubAssets: unknown[] } }>
+		}
+		expect(before.SubRooms[0]!.CurrentSave.UnitySubAssets).toEqual([])
+
+		await storeFiles()
+
+		type Baked = { Target: number; Filename: string; Hash: string; Version: number }
+		const loaded = (await (await SELF.fetch(`${ORIGIN}/rooms/9901`)).json()) as {
+			SubRooms: Array<{
+				CurrentSave: {
+					UnitySubAssets: Baked[]
+					ReferencedUnityAssets: unknown[]
+					SubRoomDataSaveId: number
+				}
+			}>
+		}
+		const current = loaded.SubRooms[0]!.CurrentSave
+		expect(current.ReferencedUnityAssets).toEqual([])
+		expect(current.UnitySubAssets).toEqual([
+			{
+				UnityAssetId: ASSET,
+				Target: 0,
+				Version: 1,
+				Filename: winName,
+				Hash: winHash,
+			},
+			{
+				UnityAssetId: ASSET,
+				Target: 2,
+				Version: 1,
+				Filename: androidName,
+				Hash: androidHash,
+			},
+		])
+
+		const quest = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/9901?unityAssetTarget=2`)
+		).json()) as typeof loaded
+		expect(quest.SubRooms[0]!.CurrentSave.UnitySubAssets.map((asset) => asset.Target)).toEqual([2])
+
+		const pc = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/9901?unityAssetTarget=0`)
+		).json()) as typeof loaded
+		expect(pc.SubRooms[0]!.CurrentSave.UnitySubAssets.map((asset) => asset.Filename)).toEqual([
+			winName,
+		])
+
+		const maker = (await (await SELF.fetch(`${ORIGIN}/rooms/9902`)).json()) as typeof loaded
+		expect(maker.SubRooms[0]!.CurrentSave.UnitySubAssets).toEqual([])
+
+		const meta = await SELF.fetch(
+			`${ORIGIN}/rooms/9901/subrooms/99011/unityasset?unityAssetId=${ASSET}`
+		)
+		expect(meta.status).toBe(200)
+		expect(await meta.json()).toEqual({
+			unityAssetId: ASSET,
+			createdByAccountId: 42,
+			bakedUnityAssets: [
+				{ unityAssetId: ASSET, target: 0, version: 1, filename: winName },
+				{ unityAssetId: ASSET, target: 2, version: 1, filename: androidName },
+			],
+			filename: winName,
+			hash: winHash,
+		})
+		expect(
+			(await SELF.fetch(`${ORIGIN}/rooms/9901/subrooms/99011/unityasset`)).status
+		).toBe(404)
+		expect(
+			(
+				await SELF.fetch(
+					`${ORIGIN}/rooms/9901/subrooms/99011/unityasset?unityAssetId=00000000-0000-4000-8000-000000000000`
+				)
+			).status
+		).toBe(404)
+		expect(
+			(
+				await SELF.fetch(
+					`${ORIGIN}/rooms/9902/subrooms/99021/unityasset?unityAssetId=${ASSET}`
+				)
+			).status
+		).toBe(404)
+
+		const detail = await SELF.fetch(
+			`${ORIGIN}/rooms/9901/subrooms/99011/saves/${current.SubRoomDataSaveId}`,
+			{ headers: await bearer('1') }
+		)
+		expect(detail.status).toBe(200)
+		expect(await detail.json()).toMatchObject({ unityAsset: winName, unityAssetHash: winHash })
+
+		const questDetail = await SELF.fetch(
+			`${ORIGIN}/rooms/9901/subrooms/99011/saves/${current.SubRoomDataSaveId}?unityAssetTarget=2`,
+			{ headers: await bearer('1') }
+		)
+		expect(await questDetail.json()).toMatchObject({
+			unityAsset: androidName,
+			unityAssetHash: androidHash,
+		})
+
+		const light = await SELF.fetch(
+			`${ORIGIN}/rooms/9901/subrooms/99011/saves/no_unity_assets`,
+			{ headers: await bearer('1') }
+		)
+		const page = (await light.json()) as { Results: Array<Record<string, unknown>> }
+		expect(page.Results[0]).not.toHaveProperty('UnitySubAssets')
+		expect(page.Results[0]).not.toHaveProperty('ReferencedUnityAssets')
+
+		const makerDetailId = maker.SubRooms[0]!.CurrentSave.SubRoomDataSaveId
+		const makerDetail = await SELF.fetch(
+			`${ORIGIN}/rooms/9902/subrooms/99021/saves/${makerDetailId}`,
+			{ headers: await bearer('1') }
+		)
+		expect(await makerDetail.json()).toMatchObject({ unityAsset: null, unityAssetHash: null })
 	})
 })
 

@@ -6,6 +6,15 @@ import {
 	Accessibility,
 	answerRoomRoleInvite,
 	applyRoomTagEdit,
+	Accessibility,
+	answerRoomRoleInvite,
+	applyRoomTagEdit,
+	areFriends,
+	attachStudioUnityAssets,
+	autocompleteRoomSearch,
+	banPlayerFromRoom,
+	canManageRoom,
+
 	autocompleteRoomSearch,
 	banPlayerFromRoom,
 	canManageRoom,
@@ -41,12 +50,15 @@ import {
 	getRoomsByCreator,
 	getRoomsByIds,
 	getSimilarRooms,
+	getSubRoom,
 	getSubRoomPermissions,
+	getStudioUnityAsset,
 	getSubRoomSaveById,
 	getSubRoomSaves,
 	getTrendingRooms,
 	getVisitedRooms,
 	inviteRoomRole,
+	isMissingStudioAssetTable,
 	isPlayerBannedFromRoom,
 	isRoomOwner,
 	MessageType,
@@ -69,6 +81,9 @@ import {
 	setRoomName,
 	setRoomRole,
 	setSubRoomPermissions,
+	sha256HexToBase64,
+	STUDIO_ASSET_VERSION,
+	studioAssetTarget,
 	toggleCheer,
 	toggleFavorite,
 	transferRoomOwnership,
@@ -155,6 +170,7 @@ import {
 	SubRoomAccessibilityRequest,
 	SubRoomDataSaveResponseDto,
 	subRoomIdParam,
+	UnityAssetWithSourceDto,
 	SubRoomPermissionsRequest,
 	SubRoomSavesNoUnityAssetsPage,
 	SubRoomSavesPage,
@@ -793,17 +809,20 @@ function roomResult(
  * versions, no moderation state, no asset arrays; but `unityAsset`/`unityAssetHash`
  * that `CurrentSave` never shows). Don't unify the two without checking the client.
  *
- * `unityAsset`/`unityAssetHash` are always null: we resolve no baked Unity assets.
+ * `unityAsset`/`unityAssetHash` name one baked main bundle when this save has a Studio
+ * build attached, and stay null for a maker-pen save. `target` null prefers Windows (0).
+ * A caller that named a target gets that platform or null, never the other one.
  */
-function toSaveResponse(save: Record<string, unknown>) {
+function toSaveResponse(save: Record<string, unknown>, target: number | null = null) {
 	const str = (v: unknown) => (typeof v === 'string' ? v : null)
 	const num = (v: unknown) => (typeof v === 'number' ? v : null)
+	const baked = pickBakedBundle(save, target)
 	return {
 		subRoomDataSaveId: num(save.SubRoomDataSaveId),
 		subRoomId: num(save.SubRoomId),
 		unityAssetId: str(save.UnityAssetId),
-		unityAsset: null,
-		unityAssetHash: null,
+		unityAsset: baked?.filename ?? null,
+		unityAssetHash: baked?.hash ?? null,
 		dataBlob: str(save.DataBlob) ?? '',
 		dataBlobHash: str(save.DataBlobHash),
 		savedByAccountId: num(save.SavedByAccountId),
@@ -811,6 +830,54 @@ function toSaveResponse(save: Record<string, unknown>) {
 		savedOnDeviceClass: num(save.SavedOnDeviceClass) ?? 0,
 		description: str(save.Description),
 		createdAt: str(save.CreatedAt) ?? '',
+	}
+}
+
+/** The `unityAssetTarget` query, or null when the caller did not name an integer. */
+function unityAssetTargetQuery(c: Context<App>): number | null {
+	const raw = c.req.query('unityAssetTarget')
+	if (raw === undefined || raw === '') return null
+	const target = Number(raw)
+	return Number.isInteger(target) ? target : null
+}
+
+/** One main bundle off a save: Windows when `target` is null, else that target only. */
+function pickBakedBundle(
+	save: Record<string, unknown>,
+	target: number | null
+): { filename: string; hash: string | null } | null {
+	if (!Array.isArray(save.UnitySubAssets)) return null
+	const rows = save.UnitySubAssets.filter(
+		(item): item is { Target?: unknown; Filename?: unknown; Hash?: unknown } =>
+			typeof item === 'object' && item !== null
+	)
+	const chosen =
+		target === null
+			? (rows.find((row) => row.Target === 0) ?? rows[0])
+			: rows.find((row) => row.Target === target)
+	if (!chosen || typeof chosen.Filename !== 'string' || chosen.Filename === '') return null
+	const hash = typeof chosen.Hash === 'string' && chosen.Hash !== '' ? chosen.Hash : null
+	return { filename: chosen.Filename, hash }
+}
+
+/** Drop baked bundles whose `Target` is not the one the caller asked for. */
+function keepUnityAssetTarget(save: Record<string, unknown>, target: number) {
+	if (!Array.isArray(save.UnitySubAssets)) return
+	save.UnitySubAssets = save.UnitySubAssets.filter((item) => {
+		if (typeof item !== 'object' || item === null) return false
+		return (item as { Target?: unknown }).Target === target
+	})
+}
+
+/** Narrow every subroom's current save to `target`. No-op when the caller named none. */
+function filterRoomUnityAssets(room: Record<string, unknown>, target: number | null) {
+	if (target === null || !Array.isArray(room.SubRooms)) return
+	for (const sub of room.SubRooms) {
+		if (typeof sub !== 'object' || sub === null) continue
+		const save = (sub as { CurrentSave?: unknown }).CurrentSave
+		if (typeof save === 'object' && save !== null) {
+			keepUnityAssetTarget(save as Record<string, unknown>, target)
+		}
 	}
 }
 
@@ -3385,7 +3452,8 @@ const app = new Hono<App>()
 				'The room-history / “restore a save” list, newest first. Every room save appends a',
 				'row rather than overwriting, so this is the subroom’s full history; it is empty',
 				'only when the subroom has never been saved.',
-				'`unityAssetTarget`/`unityAssetVersion` are accepted and ignored.',
+				'An integer `unityAssetTarget` keeps only `UnitySubAssets` for that target',
+				'(0 Windows, 2 Android/Quest). `unityAssetVersion` is accepted and ignored.',
 				'',
 				'The list includes STAGED saves that were never published, so it is not public:',
 				'the room’s creator may read it, and so may anyone standing IN the room (their live',
@@ -3400,7 +3468,10 @@ const app = new Hono<App>()
 			parameters: [
 				roomIdParam,
 				subRoomIdParam,
-				stringQuery('unityAssetTarget', 'Accepted and ignored'),
+				stringQuery(
+					'unityAssetTarget',
+					'When an integer, `UnitySubAssets` on each row keeps only that target (0 Windows, 2 Android/Quest)'
+				),
 				stringQuery('unityAssetVersion', 'Accepted and ignored'),
 				stringQuery('skip', 'How many saves to skip (default 0)'),
 				stringQuery('take', 'How many saves to return (default all)'),
@@ -3429,6 +3500,10 @@ const app = new Hono<App>()
 			const take = Number.parseInt(c.req.query('take') ?? '', 10)
 			const from = Number.isNaN(skip) || skip < 0 ? 0 : skip
 			const page = saves.slice(from, Number.isNaN(take) || take < 0 ? undefined : from + take)
+			const target = unityAssetTargetQuery(c)
+			if (target !== null) {
+				for (const save of page) keepUnityAssetTarget(save, target)
+			}
 
 			return c.json({ Results: page, TotalResults: saves.length, TotalCount: saves.length })
 		}
@@ -3546,7 +3621,79 @@ const app = new Hono<App>()
 			if (!(await canReadSaves(c, room, roomId, accountId))) return c.body(null, 403)
 
 			const save = await getSubRoomSaveById(c.env.DB, subRoomId, saveId)
-			return save ? c.json(toSaveResponse(save)) : c.notFound()
+			return save ? c.json(toSaveResponse(save, unityAssetTargetQuery(c))) : c.notFound()
+		}
+	)
+
+	// Metadata for the unity asset on one of this subroom's saves. The editor calls
+	// this after a build; the game reads the same bundles from `CurrentSave` and then
+	// downloads `filename` from the CDN. Bare object, no envelope, no auth — the room
+	// document already names the files.
+	.get(
+		'/rooms/:roomId{[0-9]+}/subrooms/:subRoomId{[0-9]+}/unityasset',
+		describeRoute({
+			tags: ['Subrooms'],
+			summary: 'The unity asset attached to a subroom save',
+			description: [
+				'The baked Windows and Android bundles stored for `unityAssetId`, when that id is',
+				'on a save of this subroom. A bare object: `unityAssetId`, `createdByAccountId`,',
+				'`bakedUnityAssets` (one entry per main bundle), plus `filename` and `hash` for the',
+				'Windows bundle. Bytes are `GET /unityasset/{filename}` on the CDN.',
+				'',
+				'`target` is 0 for Windows and 2 for Android/Quest. Stripped bundles are stored and',
+				'not listed. An unknown room, subroom, or asset is a 404. No auth: `GET /rooms/{id}`',
+				'already includes the same filenames on `CurrentSave`.',
+			].join(' '),
+			parameters: [
+				roomIdParam,
+				subRoomIdParam,
+				stringQuery('unityAssetId', 'The save’s `UnityAssetId`'),
+			],
+			responses: {
+				200: json(UnityAssetWithSourceDto, 'The unity asset and its baked bundles'),
+				404: { description: 'No such room, subroom, or asset on that subroom' },
+			},
+		}),
+		async (c) => {
+			const roomId = Number.parseInt(c.req.param('roomId'), 10)
+			const subRoomId = Number.parseInt(c.req.param('subRoomId'), 10)
+			const unityAssetId = c.req.query('unityAssetId') ?? ''
+			if (unityAssetId === '') return c.notFound()
+
+			const sub = await getSubRoom(c.env.DB, roomId, subRoomId)
+			if (!sub) return c.notFound()
+			const saves = await getSubRoomSaves(c.env.DB, subRoomId)
+			const save = saves.find((row) => row.UnityAssetId === unityAssetId)
+			if (!save) return c.notFound()
+
+			let asset
+			try {
+				asset = await getStudioUnityAsset(c.env.DB, unityAssetId)
+			} catch (err) {
+				if (isMissingStudioAssetTable(err)) return c.notFound()
+				throw err
+			}
+			if (!asset) return c.notFound()
+
+			const mains = asset.files
+				.filter((file) => file.kind === 'main')
+				.sort((a, b) => studioAssetTarget(a.platform) - studioAssetTarget(b.platform))
+			const source = mains.find((file) => file.platform === 'windows') ?? mains[0]
+			if (!source) return c.notFound()
+
+			const savedBy = typeof save.SavedByAccountId === 'number' ? save.SavedByAccountId : 0
+			return c.json({
+				unityAssetId: asset.unityAssetId,
+				createdByAccountId: asset.createdByAccountId || savedBy,
+				bakedUnityAssets: mains.map((file) => ({
+					unityAssetId: file.unityAssetId,
+					target: studioAssetTarget(file.platform),
+					version: STUDIO_ASSET_VERSION,
+					filename: file.filename,
+				})),
+				filename: source.filename,
+				hash: sha256HexToBase64(source.sha256),
+			})
 		}
 	)
 
@@ -3637,6 +3784,7 @@ const app = new Hono<App>()
 			// `value` carries BOTH the updated room and the save just created — and `error`
 			// is null here, not the empty string the other room envelopes use.
 			await pushRoomUpdate(c, accountId, result.room)
+			await attachStudioUnityAssets(c.env.DB, [result.save])
 			return c.json({
 				success: true,
 				error: null,
@@ -4293,8 +4441,9 @@ const app = new Hono<App>()
 		(c) => c.json([])
 	)
 
-	// Single room by id. 404 when the room isn't in D1. Ignores the
-	// include/unityAsset* query params.
+	// Single room by id. 404 when the room isn't in D1. A Studio save's
+	// `CurrentSave.UnitySubAssets` lists the baked bundles; `unityAssetTarget`
+	// narrows that list to the platform the caller asked for.
 	.get(
 		'/rooms/:roomId{[0-9]+}',
 		describeRoute({
@@ -4302,20 +4451,29 @@ const app = new Hono<App>()
 			summary: 'A room by id',
 			description: [
 				'The room as stored, with its `SubRooms` re-attached. Unlike `GET /rooms?id=`, an',
-				'unknown room here is a 404, not `{}`. The `include`/`unityAsset*` query params the',
-				'client sends are accepted and ignored.',
+				'unknown room here is a 404, not `{}`. A save that has a Rec Room Studio build',
+				'lists its main bundles on `CurrentSave.UnitySubAssets` (`Target` 0 Windows, 2',
+				'Android/Quest, `Filename` downloaded from the CDN at `/unityasset/{filename}`).',
+				'A maker-pen save keeps those arrays empty. An integer `unityAssetTarget` leaves',
+				'only the matching target, so a PC client is not also handed the Android bundle.',
+				'`include` and `unityAssetVersion` are accepted and ignored.',
 			].join(' '),
 			parameters: [
 				roomIdParam,
 				stringQuery('include', 'Accepted and ignored'),
-				stringQuery('unityAssetTarget', 'Accepted and ignored'),
+				stringQuery(
+					'unityAssetTarget',
+					'When an integer, each current save’s `UnitySubAssets` keeps only that target (0 Windows, 2 Android/Quest)'
+				),
 				stringQuery('unityAssetVersion', 'Accepted and ignored'),
 			],
 			responses: { 200: json(RoomDto, 'The room'), 404: { description: 'No such room' } },
 		}),
 		async (c) => {
 			const room = await getRoomById(c.env.DB, Number.parseInt(c.req.param('roomId'), 10))
-			return room ? c.json(room) : c.notFound()
+			if (!room) return c.notFound()
+			filterRoomUnityAssets(room, unityAssetTargetQuery(c))
+			return c.json(room)
 		}
 	)
 

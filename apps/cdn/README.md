@@ -17,11 +17,17 @@ its path.
 Objects are keyed by prefix — `sigs/` (anti-cheat signatures), `room/` (saved room
 scenes, and room images by their bare `ImageName`), `invention/` (invention data), `data/`
 (generic client uploads), `avatar/` (custom avatar item assetbundles) — and served as `application/octet-stream`; the worker never interprets what it hands back.
+`/unityasset/{filename}` is the exception: a Rec Room Studio room bundle is stored under
+`studio-room-bundles/`, and the route looks the filename up in `studio_unity_asset_file`
+(the studio worker owns that table) before streaming the same way. `HEAD` on that path is
+200 when exactly one bundle has the name.
 Reads are unauthenticated: a caller needs the exact key, which only comes from an
 authenticated call to another worker.
 
 This worker only reads. Uploads go through `storage`, which writes the same bucket, and
-images are served by `img`.
+images are served by `img`. Studio room bundles are uploaded by the `studio` worker into
+the same bucket. The worker binds the shared D1 database to resolve those filenames and
+does not migrate it.
 
 ## API documentation
 

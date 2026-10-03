@@ -33,6 +33,10 @@ Upstream hosts are derived from the shared base domain (`auth.<DOMAIN>`,
 | POST   | `/api/email`    | accounts `POST /account/me/email`                        |
 | POST   | `/api/password` | auth `POST /account/me/changepassword`                   |
 
+`/device` is a client-side page, not a BFF route. Rec Room Studio opens it (from
+the `verification_uri` auth returns) so a signed-in player can approve the
+editor's device code. The page calls auth `POST /connect/device/approve` itself.
+
 On signup/login the access token returned by `auth` is stored in an httpOnly
 `rf_token` cookie; the other routes read it and forward it as a Bearer token.
 

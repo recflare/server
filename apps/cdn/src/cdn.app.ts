@@ -353,6 +353,105 @@ const app = new Hono<App>()
 		(c) => serveAsset(c, `avatar/${c.req.param('asset')}`)
 	)
 
+	// Rec Room Studio room bundles. The filename is the one a room save or
+	// `GET …/unityasset` advertises. The bytes live under the key the studio upload
+	// wrote (`studio-room-bundles/…`), which is not the URL, so this looks the name
+	// up. Reads stay unauthenticated, same as `/avatar/` and `/room/`. HEAD is the
+	// editor's "already uploaded?" check: 200 exists, 404 does not.
+	.get(
+		'/unityasset/:filename{.+}',
+		describeRoute({
+			tags: ['Assets'],
+			summary: 'Serve a Rec Room Studio room bundle',
+			description: [
+				'Streams the Studio asset bundle stored for `filename`. The name comes from a',
+				'room save’s `UnitySubAssets` (or from `GET /rooms/{roomId}/subrooms/{subRoomId}/unityasset`',
+				'on the rooms worker). The object itself lives at the R2 key the studio upload',
+				'recorded, so this route looks the filename up rather than using it as the key.',
+				'',
+				'A filename that matches more than one stored bundle is a 404, so two rooms that',
+				'uploaded the same basename cannot be served as each other. A missing studio table',
+				'is the same 404. The worker does not interpret the bytes.',
+			].join(' '),
+			parameters: [
+				keyParam('filename', 'The bundle filename from the room save.', true),
+				...CONDITIONAL_HEADERS,
+			],
+			responses: assetResponses('The asset bundle'),
+		}),
+		(c) => serveUnityAsset(c)
+	)
+	.on(
+		'HEAD',
+		'/unityasset/:filename{.+}',
+		describeRoute({
+			tags: ['Assets'],
+			summary: 'Check that a Rec Room Studio room bundle exists',
+			description: [
+				'200 when `filename` names exactly one stored Studio bundle, 404 otherwise. The',
+				'Studio editor treats this HEAD as “already uploaded?” before it downloads the bytes',
+				'with GET. No body.',
+			].join(' '),
+			parameters: [keyParam('filename', 'The bundle filename from the room save.', true)],
+			responses: {
+				200: { description: 'The bundle exists (no body)' },
+				400: { description: 'The filename contains `..` (no body)' },
+				404: { description: 'No single stored bundle has this filename' },
+			},
+		}),
+		async (c) => {
+			const name = c.req.param('filename')
+			if (name.includes('..')) return c.body(null, 400)
+			const key = await unityAssetR2Key(c, name)
+			if (!key) return c.notFound()
+			const head = await c.env.CDN_ASSETS.head(key)
+			if (!head) return c.notFound()
+			const headers = new Headers()
+			head.writeHttpMetadata(headers)
+			// workerd omits Content-Length on a null body when Content-Type is set.
+			// The editor only checks this status. The length is the R2 object size.
+			headers.delete('content-type')
+			headers.delete('content-encoding')
+			headers.set('etag', head.httpEtag)
+			headers.set('accept-ranges', 'bytes')
+			headers.set('cache-control', CACHE_CONTROL)
+			headers.set('content-length', String(head.size))
+			return new Response(null, { status: 200, headers, encodeBody: 'manual' })
+		}
+	)
+
+/**
+ * The R2 key for a Studio bundle filename. Null when the name is unknown, ambiguous,
+ * or the studio tables have not been migrated yet.
+ */
+async function unityAssetR2Key(c: Context<App>, filename: string): Promise<string | null> {
+	try {
+		// Same lookup as `@repo/domain` `findStudioUnityAssetByFilename`. Inlined so this
+		// worker does not take a dependency on the domain package. More than one row is a
+		// miss: two rooms must not be served each other's bundle.
+		const { results } = await c.env.DB.prepare(
+			`SELECT r2_key FROM studio_unity_asset_file WHERE filename = ?1`
+		)
+			.bind(filename)
+			.all<{ r2_key: string }>()
+		if (results.length !== 1) return null
+		return results[0]!.r2_key
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err)
+		if (message.toLowerCase().includes('no such table')) return null
+		throw err
+	}
+}
+
+/** GET `/unityasset/:filename` — the bytes, with the same range handling as other blobs. */
+async function serveUnityAsset(c: Context<App>) {
+	const name = c.req.param('filename')
+	if (name.includes('..')) return c.body(null, 400)
+	const key = await unityAssetR2Key(c, name)
+	if (!key) return c.notFound()
+	return serveAsset(c, key)
+}
+
 // The generated spec. Documentation only — no request is validated against it (see
 // openapi.ts). `hide: true` keeps this route out of its own output.
 app.get(
@@ -376,7 +475,9 @@ app.get(
 						'served as',
 						'`application/octet-stream`; the worker never interprets what it hands back. Reads',
 						'are unauthenticated — a caller needs the exact key, which only comes from an',
-						'authenticated call to another worker.',
+						'authenticated call to another worker. `/unityasset/{filename}` is a Studio room',
+						'bundle: the filename is looked up in `studio_unity_asset_file` and the stored R2',
+						'key is streamed. `HEAD` on that path is 200 when exactly one bundle has the name.',
 						'',
 						'This worker only READS. Uploads go through the `storage` worker, which writes the',
 						'same bucket, and images are served by `img` rather than from here.',

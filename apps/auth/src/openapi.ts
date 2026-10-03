@@ -105,7 +105,16 @@ export const FakeCachedLogin = CachedLogin.extend({
 
 /** OAuth-shaped error body. Always HTTP 400 except `server_error` (500). */
 export const OAuthError = z.object({
-	error: z.enum(['invalid_grant', 'invalid_request', 'server_error']),
+	error: z.enum([
+		'invalid_grant',
+		'invalid_request',
+		'invalid_client',
+		'server_error',
+		// RFC 8628. Studio polls until it sees something other than authorization_pending.
+		'authorization_pending',
+		'expired_token',
+		'access_denied',
+	]),
 	error_description: z.string(),
 })
 
@@ -128,8 +137,17 @@ export const TokenResponse = z.object({
  */
 export const TokenRequest = z.object({
 	grant_type: z
-		.enum(['create_account', 'cached_login', 'refresh_token', 'password'])
-		.describe('Anything unrecognised (including absent) is treated as a password grant'),
+		.enum([
+			'create_account',
+			'cached_login',
+			'refresh_token',
+			'password',
+			'urn:ietf:params:oauth:grant-type:device_code',
+		])
+		.describe(
+			'Anything unrecognised (including absent) is treated as a password grant, except the ' +
+				'Studio device-code URN, which polls a code from POST /connect/deviceauthorization'
+		),
 	account_id: z.string().optional().describe('Numeric account id, as a string'),
 	username: z
 		.string()
@@ -156,6 +174,15 @@ export const TokenRequest = z.object({
 				'Meta: `{"Nonce":…,"AppId":…,"Source":…}`'
 		),
 	refresh_token: z.string().optional().describe('Required on a refresh_token grant'),
+	client_id: z.string().optional().describe('Studio device grant: `recroom.studio`'),
+	client_secret: z
+		.string()
+		.optional()
+		.describe('Studio device grant: the secret embedded in the editor'),
+	device_code: z
+		.string()
+		.optional()
+		.describe('Studio device-code grant: the device_code from /connect/deviceauthorization'),
 	device_id: z
 		.string()
 		.optional()
@@ -169,6 +196,33 @@ export const TokenRequest = z.object({
 				'read back by `match` when it writes presence, so a player reports the build they ' +
 				'are running. Absent (or empty) falls back to the server’s GAME_VERSION'
 		),
+})
+
+/** `POST /connect/deviceauthorization` form body. Studio's editor sends exactly these two. */
+export const DeviceAuthorizationRequest = z.object({
+	client_id: z.string().describe('`recroom.studio`'),
+	client_secret: z.string().describe('The secret compiled into Rec Room Studio'),
+})
+
+/** RFC 8628 response. Property names match Studio's `DeviceAuthorizationResponse`. */
+export const DeviceAuthorizationResponse = z.object({
+	device_code: z.string(),
+	user_code: z.string().describe('Shown in the editor; also on verification_uri_complete'),
+	verification_uri: z.string().describe('WWW `/device`, without the code'),
+	verification_uri_complete: z
+		.string()
+		.describe('The URL Studio opens in the browser, `verification_uri?user_code=`'),
+	expires_in: z.int().describe('Seconds until the code dies. Studio treats this as seconds'),
+	interval: z.int().describe('Seconds Studio waits between polls'),
+})
+
+/** `POST /connect/device/approve` and `/connect/device/deny` form body. */
+export const DeviceDecisionRequest = z.object({
+	user_code: z.string().describe('The code Studio is showing, spaces and hyphens ignored'),
+})
+
+export const DeviceDecisionResponse = z.object({
+	ok: z.literal(true),
 })
 
 /** `POST /account/me/changepassword` form body. */

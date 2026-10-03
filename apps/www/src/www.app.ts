@@ -60,6 +60,12 @@ import {
 	searchReportsHandler,
 	topReportedHandler,
 } from './staff'
+import {
+	grantStudioAccessHandler,
+	listStudioAccessHandler,
+	revokeStudioAccessHandler,
+	studioAccessStatusHandler,
+} from './studio-access'
 import { passwordSignupOpen, turnstileKeys, verifyTurnstile } from './turnstile'
 import {
 	accountsBase,
@@ -525,6 +531,11 @@ const app = new Hono<App>()
 		return c.json({ hasPlus: true, discordUsername: membership.username, tokensAwarded })
 	})
 
+	// Whether the signed-in account is on the studio upload whitelist. The page
+	// Studio opens (`/settings/recroomstudio`) asks this; it does not list anyone
+	// else. Staff manage the list on the routes below.
+	.get('/api/studio-access', studioAccessStatusHandler)
+
 	// ---- Staff moderation panel ---------------------------------------------
 	// The endpoints behind `/moderation` in the SPA. They live here rather than on `api`
 	// (which owns the `report` table) because they are a recflare addition with no
@@ -565,6 +576,11 @@ const app = new Hono<App>()
 	.post('/api/staff/players/:id/grant-plus', requireDeveloper, grantPlusHandler)
 	.post('/api/staff/players/:id/username-changes', addUsernameChangeHandler)
 	.post('/api/staff/players/:id/clear-password', clearPasswordHandler)
+	// RecFlare Studio upload access. The same staff gate as moderation: a moderator
+	// decides who can upload, and the role lands on the player's next token.
+	.get('/api/staff/studio-access', listStudioAccessHandler)
+	.post('/api/staff/studio-access', grantStudioAccessHandler)
+	.delete('/api/staff/studio-access/:id', revokeStudioAccessHandler)
 
 	// ---- Privacy policy -----------------------------------------------------
 	// Server-rendered rather than a SPA route so the page has real text without

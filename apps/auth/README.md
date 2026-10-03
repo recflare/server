@@ -10,7 +10,10 @@ authenticates players and issues the JWTs every other worker verifies.
 | GET    | `/eac/challenge`                           | EAC handshake; a constant, JSON-quoted, as text        |
 | GET    | `/cachedlogin/forplatformid/:platform/:id` | Accounts linked to a platform id, for the login screen |
 | POST   | `/cachedlogin/forplatformids`              | Bulk cached-login lookup (friends resolution)          |
-| POST   | `/connect/token`                           | OAuth token endpoint; issues a JWT + refresh token     |
+| POST   | `/connect/deviceauthorization`             | Studio device login: mint a user code and point the browser at WWW `/device` |
+| POST   | `/connect/device/approve`                  | Website approves that code for the signed-in account  |
+| POST   | `/connect/device/deny`                     | Website refuses it                                     |
+| POST   | `/connect/token`                           | OAuth token endpoint; issues a JWT + refresh token. Studio polls this with the device-code grant |
 | POST   | `/account/me/changepassword`               | Change the caller's password (auth-gated)              |
 | GET    | `/role/developer/:id`                      | Developer role lookup; a bare JSON boolean             |
 | GET    | `/role/moderator/:id`                      | Moderator role lookup; a bare JSON boolean             |
@@ -45,6 +48,10 @@ route without documenting it fails rather than silently shipping an incomplete s
   identity `platform_auth` proves.
 - **`refresh_token`** — redeems a stored single-use refresh token, rotating it.
   30-day TTL; platform and platform id come from what was stored at issue time.
+- **`urn:ietf:params:oauth:grant-type:device_code`** — Rec Room Studio polling a
+  code from `POST /connect/deviceauthorization`. While the player has not approved
+  it on the website, the response is HTTP 400 `authorization_pending`. Studio
+  treats `expires_in` on the token as seconds.
 - **`password`** — the fallback for any unrecognised or absent `grant_type`. Identifies
   the account by `username` or numeric `account_id` and requires the matching password
   (PBKDF2-SHA256, `salt:hash`). An account with no stored hash cannot be logged into at
@@ -54,6 +61,12 @@ route without documenting it fails rather than silently shipping an incomplete s
 Access tokens live for 1 hour (`TOKEN_TTL_SECONDS` in `@repo/jwt`) and carry a `role`
 claim, so developer/moderator powers refresh on every login and every refresh grant.
 Grant those flags with `runx admin grant-developer` / `grant-moderator`.
+
+`betastudio` is a separate claim. RecFlare Studio treats it as permission to upload,
+and developer does not include it. It is stamped only for accounts on
+`studio_beta_access`. Staff add and remove people at `/settings/recroomstudio` on
+the website. A player already signed into Studio keeps the old token until the next
+sign-in or refresh.
 
 ### Verifiable platforms: Steam and Meta
 
@@ -124,7 +137,7 @@ small private server, or when a shared network is being locked out.
 
 | Binding              | Type          | Notes                                                                                           |
 | -------------------- | ------------- | ----------------------------------------------------------------------------------------------- |
-| `DB`                 | D1            | Shared `recflare` database; this worker owns `account`, `refresh_tokens` and `platform_account` |
+| `DB`                 | D1            | Shared `recflare` database. Owns `account`, `refresh_tokens`, `platform_account`, `studio_beta_access` |
 | `JWT_SECRET`         | Secrets Store | Shared HS256 signing key                                                                        |
 | `META_APP_SECRET`    | Secrets Store | Meta app secret; only used to validate a login nonce                                            |
 | `MAX_ACCOUNTS_PER_*` | vars          | Optional signup caps; read via `intVar`                                                         |

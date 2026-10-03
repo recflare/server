@@ -286,6 +286,51 @@ describe('cdn endpoints', () => {
 		expect(res.status).toBe(404)
 	})
 
+	test('GET and HEAD /unityasset/:filename stream one stored studio bundle', async () => {
+		await env.DB.prepare('DROP TABLE IF EXISTS studio_unity_asset_file').run()
+		const absent = await exports.default.fetch(`${ORIGIN}/unityasset/not-stored.assetbundle`)
+		expect(absent.status).toBe(404)
+
+		await env.DB.prepare(
+			`CREATE TABLE IF NOT EXISTS studio_unity_asset_file (
+				unity_asset_id TEXT NOT NULL,
+				platform TEXT NOT NULL,
+				kind TEXT NOT NULL,
+				filename TEXT NOT NULL,
+				sha256 TEXT NOT NULL,
+				byte_length INTEGER NOT NULL,
+				r2_key TEXT NOT NULL,
+				PRIMARY KEY (unity_asset_id, platform, kind)
+			)`
+		).run()
+		const filename = 'abc111.windows.main.assetbundle'
+		const key = `studio-room-bundles/asset-a/windows/main/${filename}`
+		const insert = (unityAssetId: string, r2Key: string) =>
+			env.DB.prepare(
+				`INSERT INTO studio_unity_asset_file
+				 (unity_asset_id, platform, kind, filename, sha256, byte_length, r2_key)
+				 VALUES (?1, 'windows', 'main', ?2, 'ab', 4, ?3)`
+			).bind(unityAssetId, filename, r2Key)
+		await insert('asset-a', key).run()
+		await env.CDN_ASSETS.put(key, new Uint8Array([1, 2, 3, 4]))
+
+		const res = await exports.default.fetch(`${ORIGIN}/unityasset/${filename}`)
+		expect(res.status).toBe(200)
+		expect(res.headers.get('content-type')).toBe('application/octet-stream')
+		expect(new Uint8Array(await res.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3, 4]))
+
+		const head = await exports.default.fetch(`${ORIGIN}/unityasset/${filename}`, { method: 'HEAD' })
+		expect(head.status).toBe(200)
+		expect(head.headers.get('content-length')).toBe('4')
+		expect(await head.arrayBuffer()).toEqual(new ArrayBuffer(0))
+
+		expect((await exports.default.fetch(`${ORIGIN}/unityasset/other.assetbundle`)).status).toBe(404)
+		expect((await exports.default.fetch(`${ORIGIN}/unityasset/a..b`)).status).toBe(400)
+
+		await insert('asset-b', `studio-room-bundles/asset-b/windows/main/${filename}`).run()
+		expect((await exports.default.fetch(`${ORIGIN}/unityasset/${filename}`)).status).toBe(404)
+	})
+
 	test('GET /openapi.json documents every route', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/openapi.json`)
 		expect(res.status).toBe(200)
@@ -315,6 +360,8 @@ describe('cdn endpoints', () => {
 			'GET /invention/{dataBlob}',
 			'GET /room/{dataBlob}',
 			'GET /sigs/{sigName}',
+			'GET /unityasset/{filename}',
+			'HEAD /unityasset/{filename}',
 		])
 
 		// Every operation carries a summary — a path present but undescribed is not

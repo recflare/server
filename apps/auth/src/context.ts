@@ -49,6 +49,17 @@ export type Env = SharedHonoEnv & {
 	 * Read through `banEvasionMatch`; the `match` worker reads the same knob.
 	 */
 	BAN_EVASION_MATCH?: string
+	/**
+	 * Base domain, e.g. `recflare.net`. Injected for every worker at deploy time
+	 * (`--var DOMAIN`). Studio's device-login response points the browser at
+	 * `www.<domain>/device`, so auth has to know the same domain `ns` advertises.
+	 */
+	DOMAIN: string
+	/**
+	 * The same `SUBDOMAINS` JSON `ns` applies. A `www` override has to move the
+	 * verification URI with the host the editor was told WWW lives on.
+	 */
+	SUBDOMAINS: string
 }
 
 /** Variables can be extended */

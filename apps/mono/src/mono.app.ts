@@ -54,6 +54,9 @@ const services = {
 	api,
 	auth,
 	cdn,
+	// The Studio editor downloads bundle bytes from a hardcoded studiocdn host.
+	// Those bytes are this CDN app; the game reaches the same routes on `cdn`.
+	studiocdn: cdn,
 	chat,
 	clubs,
 	commerce,
