@@ -23,7 +23,6 @@ These are the instructions for deploying the RecFlare infrastructure to Cloudfla
   well, we'll cross that bridge when we get to it.
   - D1 (a SQLite-compatible distributed database)
   - R2 (service like S3 for mass file hosting)
-  - KV (service to distributed offer key/value stores)
   - Durable Objects (for a notifications hub)
 
 ## Do I have to use Cloudflare?
@@ -34,12 +33,12 @@ AWS, Vercel, Netlify, Fly.io, a plain Node/Bun server, and so on.
 
 Long answer: the catch is everything _around_ the code. RecFlare leans on Cloudflare for the
 deployment (Wrangler) and infrastructure layer — custom-domain routing per service, plus the
-storage bindings (D1, KV, R2, Durable Objects) the workers use. On another
+storage bindings (D1, R2, Durable Objects) the workers use. On another
 provider you'll need to provide equivalents (per-service routing, databases,
 object storage, a pub/sub or WebSocket layer) and wire up the deployment yourself.
 
-So for example if you wanted to run on Vercel, you'd have to swap out KV for Redis, which are very similar
-services but would require small code changes.
+So for example if you wanted to run on Vercel, you'd have to swap out D1 for another SQLite-compatible
+database (Turso, say) and R2 for S3, which are very similar services but would require small code changes.
 
 ## Prerequisites
 
@@ -107,12 +106,15 @@ nothing in version control needs editing. Authenticate wrangler first
 
 ```bash
 wrangler d1 create recflare
-wrangler kv namespace create RECFLARE_MATCH_PRESENCE
-wrangler kv namespace create RECFLARE_PLAYER_SETTINGS
 wrangler secrets-store store create recflare --scopes workers
 ```
 
-Take the IDs output from the commands and put them into `.env`. (or with CI: `RECFLARE_KV='{"RECFLARE_MATCH_PRESENCE":"<id>","RECFLARE_PLAYER_SETTINGS":"<id>"}'`)
+Take the IDs output from the commands and put them into `.env` (`RECFLARE_D1` and
+`RECFLARE_SECRETS_STORE`; in CI, export the same names as secrets).
+
+> Upgrading a deployment from before player settings moved into D1? They were in a
+> `RECFLARE_PLAYER_SETTINGS` KV namespace; copy it across with
+> `just settings-import-kv --remote` between `just migrate` and `just deploy` (see CLI.md).
 
 The secrets store holds the shared `JWT_SECRET` HS256 signing key — every worker
 binds it so tokens signed by `auth` verify everywhere. Record its id in `.env` as
