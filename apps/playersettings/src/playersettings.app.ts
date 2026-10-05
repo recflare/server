@@ -2,7 +2,12 @@ import { Hono } from 'hono'
 import { describeRoute, openAPIRouteHandler } from 'hono-openapi'
 import { useWorkersLogger } from 'workers-tagged-logger'
 
-import { mergePlayerSettings } from '@repo/domain'
+import {
+	mergePlayerSettings,
+	putPlayerSettingsIfChanged,
+	readPlayerSettings,
+	writePlayerSettings,
+} from '@repo/domain'
 import { withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
 import { validateAndGetAccountId } from '@repo/jwt'
 
@@ -25,9 +30,11 @@ import type { App } from './context'
 
 /**
  * Player Settings Worker. Serves the small key/value settings bag the game client reads
- * on load and writes back as the player toggles options. Backed by a per-player KV map
- * (`player:{id}`); a player with nothing stored is seeded with the reference defaults on
- * their first read.
+ * on load and writes back as the player toggles options. Backed by one row per player in
+ * the `player_settings` table on the shared D1 — the whole map as a JSON object, read and
+ * written through `@repo/domain`'s player-settings-db, which `api`, `match` and `chat` also
+ * merge their own keys into. A player with nothing stored is seeded with the reference
+ * defaults on their first read.
  *
  * Every `/playersettings` route is auth-gated on the Bearer JWT issued by the `auth` worker.
  */
@@ -147,7 +154,7 @@ const app = new Hono<App>()
 	)
 
 	// The authenticated player's settings as `{ PlayerId, Key, Value }`. Reads
-	// the per-player KV map; seeds (and persists) the defaults on first read.
+	// the player's row; seeds (and persists) the defaults on first read.
 	.get(
 		'/playersettings',
 		describeRoute({
@@ -155,7 +162,7 @@ const app = new Hono<App>()
 			summary: 'The player’s settings',
 			description: [
 				'The authenticated player’s settings as `{ PlayerId, Key, Value }` entries, read from',
-				'their KV map. A player with nothing stored is seeded with the reference defaults',
+				'their stored map. A player with nothing stored is seeded with the reference defaults',
 				'(Recroom.OOBE, TUTORIAL_COMPLETE_MASK, FIRST_TIME_IN_FLAGS), which are persisted on',
 				'that first read.',
 			].join(' '),
@@ -169,34 +176,33 @@ const app = new Hono<App>()
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
 
-			const kvKey = `player:${id}`
-			let stored = await c.env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(kvKey, 'json')
+			let stored = await readPlayerSettings(c.env.DB, id)
 			if (!stored || Object.keys(stored).length === 0) {
 				stored = Object.fromEntries(DEFAULT_SETTINGS.map((s) => [s.Key, s.Value]))
-				await c.env.RECFLARE_PLAYER_SETTINGS.put(kvKey, JSON.stringify(stored))
+				await writePlayerSettings(c.env.DB, id, stored)
 			}
 
 			return c.json(Object.entries(stored).map(([Key, Value]) => ({ PlayerId: id, Key, Value })))
 		}
 	)
 
-	// Upsert player settings into KV, keyed by the authenticated player id.
+	// Upsert player settings into the player's row, keyed by the authenticated player id.
 	// A full replace would overwrite the player's entire set; we merge so individual key PUTs
 	// (e.g. `key=PlayerSessionCount&value=1`) don't wipe the rest. The client re-posts values
 	// it already has at every login and menu change, so a PUT that changes nothing is a
-	// read only — KV writes are what cost money here.
+	// read only — the row is written only when a value changed.
 	.put(
 		'/playersettings',
 		describeRoute({
 			tags: ['Player Settings'],
 			summary: 'Write the player’s settings',
 			description: [
-				'Upserts the posted setting(s) into the caller’s KV map. The write MERGES: a single',
+				'Upserts the posted setting(s) into the caller’s settings map. The write MERGES: a single',
 				'key PUT (`key=PlayerSessionCount&value=1`, which is what the client sends) leaves the',
 				'player’s other settings alone. A JSON body is also accepted, as one object or an',
 				'array, in either `key`/`value` or `Key`/`Value` casing; entries with an empty key are',
 				'dropped. An unparseable or empty body is a no-op 200, not a 400, and so is a PUT whose',
-				'values are already stored — nothing is written to KV. Empty body on success.',
+				'values are already stored — nothing is written. Empty body on success.',
 			].join(' '),
 			security: AUTHED,
 			requestBody: formOrJson(SettingFormWrite, SettingJsonWrite, 'The setting(s) to write'),
@@ -215,7 +221,7 @@ const app = new Hono<App>()
 			const patch: Record<string, string> = {}
 			for (const { key, value } of incoming) patch[key] = value
 
-			await mergePlayerSettings(c.env.RECFLARE_PLAYER_SETTINGS, id, patch)
+			await mergePlayerSettings(c.env.DB, id, patch)
 			return c.body(null, 200)
 		}
 	)
@@ -229,7 +235,7 @@ const app = new Hono<App>()
 			tags: ['Player Settings'],
 			summary: 'Delete a player setting',
 			description: [
-				'Removes the named setting(s) from the caller’s KV map. The client sends a bare',
+				'Removes the named setting(s) from the caller’s settings map. The client sends a bare',
 				'form-urlencoded `key=PlayerShoppingBagId` (no `value`); a JSON body — a string, a',
 				'`{ key }` object, or an array of either — and a `?key=` query param are also read.',
 				'Deleting a key that isn’t stored, or sending nothing to delete, is a no-op 200, not a',
@@ -252,22 +258,13 @@ const app = new Hono<App>()
 			const keys = await parseDeleteKeys(c)
 			if (keys.length === 0) return c.body(null, 200)
 
-			const kvKey = `player:${id}`
-			const existing = await c.env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(
-				kvKey,
-				'json'
-			)
+			const existing = await readPlayerSettings(c.env.DB, id)
 			if (!existing) return c.body(null, 200)
 
 			const remaining = { ...existing }
-			let removed = false
-			for (const key of keys) {
-				if (key in remaining) {
-					delete remaining[key]
-					removed = true
-				}
-			}
-			if (removed) await c.env.RECFLARE_PLAYER_SETTINGS.put(kvKey, JSON.stringify(remaining))
+			for (const key of keys) delete remaining[key]
+			// Nothing stored was named: no write.
+			await putPlayerSettingsIfChanged(c.env.DB, id, existing, remaining)
 
 			return c.body(null, 200)
 		}
@@ -287,8 +284,8 @@ app.get(
 					description: [
 						'The player key/value settings bag for recflare, a private-server reimplementation of',
 						'the Rec Room backend. The client reads these on load and writes them back as the',
-						'player toggles options; they are stored in a per-player KV map, seeded with the',
-						'reference defaults on a player’s first read.',
+						'player toggles options; they are stored as one JSON row per player on the shared',
+						'D1, seeded with the reference defaults on a player’s first read.',
 					].join('\n'),
 				},
 				servers: [{ url: 'https://playersettings.recflare.net', description: 'Production' }],

@@ -3,6 +3,8 @@ import { beforeAll, describe, expect, it } from 'vitest'
 
 import '../../playersettings.app'
 
+import { PLAYER_SETTINGS_SCHEMA_DDL, readPlayerSettings } from '@repo/domain'
+
 import type { Env } from '../../context'
 
 declare module 'cloudflare:test' {
@@ -14,7 +16,32 @@ const ORIGIN = 'https://example.com'
 beforeAll(async () => {
 	// Seed the shared JWT signing key into the local Secrets Store so .get() resolves.
 	await adminSecretsStore(env.JWT_SECRET).create('test-signing-key')
+	// The player_settings table this worker owns (mirror of migrations/0001).
+	for (const stmt of PLAYER_SETTINGS_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 })
+
+/** The player's stored map, as the worker reads it. */
+const stored = (playerId: number) => readPlayerSettings(env.DB, playerId)
+
+/**
+ * The row's `data` exactly as stored. The "nothing was written" tests seed it with whitespace
+ * the worker's own JSON.stringify never produces: if that survives a request, no write happened.
+ */
+async function rawData(playerId: number): Promise<string | null> {
+	const row = await env.DB.prepare('SELECT data FROM player_settings WHERE account_id = ?1')
+		.bind(playerId)
+		.first<{ data: string }>()
+	return row?.data ?? null
+}
+
+async function seedRaw(playerId: number, data: string): Promise<void> {
+	await env.DB.prepare(
+		`INSERT INTO player_settings (account_id, data) VALUES (?1, ?2)
+		 ON CONFLICT (account_id) DO UPDATE SET data = excluded.data`
+	)
+		.bind(playerId, data)
+		.run()
+}
 
 // Mint a token the way the `auth` worker does, signing with the shared test key seeded into the JWT_SECRET store.
 const TEST_SECRET = 'test-signing-key'
@@ -85,12 +112,9 @@ describe('playersettings endpoints', () => {
 		expect(settings.find((s) => s.Key === 'Recroom.OOBE')?.Value).toBe('77')
 		expect(settings.find((s) => s.Key === 'TUTORIAL_COMPLETE_MASK')?.Value).toBe('11')
 
-		// Defaults were persisted to KV.
-		const stored = await env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(
-			'player:100',
-			'json'
-		)
-		expect(stored?.['Recroom.OOBE']).toBe('77')
+		// Defaults were persisted.
+		const map = await stored(100)
+		expect(map?.['Recroom.OOBE']).toBe('77')
 	})
 
 	it('GET /playersettings reflects a value written by PUT', async () => {
@@ -109,18 +133,15 @@ describe('playersettings endpoints', () => {
 		expect(res.status).toBe(401)
 	})
 
-	it('PUT /playersettings persists the form key/value into KV', async () => {
+	it('PUT /playersettings persists the form key/value', async () => {
 		const res = await SELF.fetch(
 			`${ORIGIN}/playersettings`,
 			putForm({ key: 'PlayerSessionCount', value: '1' }, await bearer('7'))
 		)
 		expect(res.status).toBe(200)
 
-		const stored = await env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(
-			'player:7',
-			'json'
-		)
-		expect(stored).toEqual({ PlayerSessionCount: '1' })
+		const map = await stored(7)
+		expect(map).toEqual({ PlayerSessionCount: '1' })
 	})
 
 	it('PUT /playersettings merges instead of replacing', async () => {
@@ -133,33 +154,30 @@ describe('playersettings endpoints', () => {
 			putForm({ key: 'B', value: '2' }, await bearer('8'))
 		)
 
-		const stored = await env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(
-			'player:8',
-			'json'
-		)
-		expect(stored).toEqual({ A: '1', B: '2' })
+		const map = await stored(8)
+		expect(map).toEqual({ A: '1', B: '2' })
 	})
 
-	// KV writes are the cost here, and the client re-posts settings it already has at every
-	// login. The raw value is seeded with whitespace the worker's own JSON.stringify would
-	// never produce: if it survives the PUT, nothing was written.
-	it('PUT /playersettings does not write KV when the value is already stored', async () => {
+	// The client re-posts settings it already has at every login, and a write costs more
+	// than a read. The raw value is seeded with whitespace the worker's own JSON.stringify
+	// would never produce: if it survives the PUT, nothing was written.
+	it('PUT /playersettings does not write when the value is already stored', async () => {
 		const padded = '{ "PlayerSessionCount": "5", "Recroom.OOBE": "77" }'
-		await env.RECFLARE_PLAYER_SETTINGS.put('player:10', padded)
+		await seedRaw(10, padded)
 
 		const same = await SELF.fetch(
 			`${ORIGIN}/playersettings`,
 			putForm({ key: 'PlayerSessionCount', value: '5' }, await bearer('10'))
 		)
 		expect(same.status).toBe(200)
-		expect(await env.RECFLARE_PLAYER_SETTINGS.get('player:10', 'text')).toBe(padded)
+		expect(await rawData(10)).toBe(padded)
 
 		// A real change is still written — and compacted, which is how we know.
 		await SELF.fetch(
 			`${ORIGIN}/playersettings`,
 			putForm({ key: 'PlayerSessionCount', value: '6' }, await bearer('10'))
 		)
-		expect(await env.RECFLARE_PLAYER_SETTINGS.get('player:10', 'text')).toBe(
+		expect(await rawData(10)).toBe(
 			JSON.stringify({ PlayerSessionCount: '6', 'Recroom.OOBE': '77' })
 		)
 	})
@@ -193,11 +211,8 @@ describe('playersettings endpoints', () => {
 		)
 		expect(res.status).toBe(200)
 
-		const stored = await env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(
-			'player:20',
-			'json'
-		)
-		expect(stored).toEqual({ PlayerSessionCount: '3' })
+		const map = await stored(20)
+		expect(map).toEqual({ PlayerSessionCount: '3' })
 	})
 
 	it('DELETE /playersettings reads a body with no content-type', async () => {
@@ -213,11 +228,8 @@ describe('playersettings endpoints', () => {
 		})
 		expect(res.status).toBe(200)
 
-		const stored = await env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(
-			'player:21',
-			'json'
-		)
-		expect(stored).toEqual({})
+		const map = await stored(21)
+		expect(map).toEqual({})
 	})
 
 	it('DELETE /playersettings 200s for an unknown key and an empty body', async () => {
@@ -236,11 +248,8 @@ describe('playersettings endpoints', () => {
 		expect(empty.status).toBe(200)
 
 		// Neither call touched the stored map.
-		const stored = await env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(
-			'player:22',
-			'json'
-		)
-		expect(stored).toEqual({ A: '1' })
+		const map = await stored(22)
+		expect(map).toEqual({ A: '1' })
 	})
 
 	it('GET /openapi.json documents every route', async () => {
