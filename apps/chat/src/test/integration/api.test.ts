@@ -3,6 +3,8 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 import '../../chat.app'
 
+import { deletePlayerSettings, PLAYER_SETTINGS_SCHEMA_DDL, readPlayerSettings } from '@repo/domain'
+
 import { NotificationType } from '../../../../notify/src/notification-types'
 import {
 	ChatModerationState,
@@ -15,11 +17,11 @@ import {
 	addThreadMember,
 	ChatThreadType,
 	createThread,
-	joinedChatContents,
 	findThreadWithMembers,
 	getThreadForPlayer,
 	getThreadsForPlayer,
 	isThreadMember,
+	joinedChatContents,
 	leftChatContents,
 	markThreadRead,
 	postMessage,
@@ -66,11 +68,31 @@ async function bearer(sub: number): Promise<Record<string, string>> {
 	return { Authorization: `Bearer ${signingInput}.${b64url(sig)}` }
 }
 
+/** Seed a player's `player_settings` row with raw JSON text — what the KV value used to be. */
+const seedSettings = (playerId: number, data: string) =>
+	env.DB.prepare(
+		`INSERT INTO player_settings (account_id, data) VALUES (?1, ?2)
+		 ON CONFLICT (account_id) DO UPDATE SET data = excluded.data`
+	)
+		.bind(playerId, data)
+		.run()
+
+/** The row's `data` exactly as stored — a seeded value surviving a request means no write happened. */
+const rawSettings = async (playerId: number) =>
+	(
+		await env.DB.prepare('SELECT data FROM player_settings WHERE account_id = ?1')
+			.bind(playerId)
+			.first<{ data: string }>()
+	)?.data ?? null
+
 beforeAll(async () => {
 	// Seed the shared JWT signing key into the local Secrets Store so .get() resolves.
 	await adminSecretsStore(env.JWT_SECRET).create(TEST_SECRET)
 	for (const stmt of SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of THREAD_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	// Player settings (owned by the playersettings worker) — chat privacy and LatestPartyChat
+	// are keys in that per-player map.
+	for (const stmt of PLAYER_SETTINGS_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 })
 
 describe('chat endpoints', () => {
@@ -401,12 +423,7 @@ describe('GET /settings/partyinvite', () => {
 // player setting — as the BARE thread, where the POST wraps the same projection.
 describe('GET /thread/party', () => {
 	async function settings(playerId: number): Promise<Record<string, string>> {
-		return (
-			(await env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(
-				`player:${playerId}`,
-				'json'
-			)) ?? {}
-		)
+		return (await readPlayerSettings(env.DB, playerId)) ?? {}
 	}
 
 	it('answers the party named by LatestPartyChat, bare — no ChatResult wrapper', async () => {
@@ -438,10 +455,7 @@ describe('GET /thread/party', () => {
 
 	it('POST records the thread id in the caller’s LatestPartyChat setting', async () => {
 		const caller = 883202
-		await env.RECFLARE_PLAYER_SETTINGS.put(
-			`player:${caller}`,
-			JSON.stringify({ OobeState: 'Complete' })
-		)
+		await seedSettings(caller, JSON.stringify({ OobeState: 'Complete' }))
 		const created = await SELF.fetch(`${ORIGIN}/thread/party`, {
 			method: 'POST',
 			headers: await bearer(caller),
@@ -515,10 +529,7 @@ describe('GET /thread/party', () => {
 			headers: await bearer(host),
 		})
 		const { ChatThread } = (await created.json()) as { ChatThread: { ChatThreadId: number } }
-		await env.RECFLARE_PLAYER_SETTINGS.put(
-			`player:${guest}`,
-			JSON.stringify({ LatestPartyChat: String(ChatThread.ChatThreadId) })
-		)
+		await seedSettings(guest, JSON.stringify({ LatestPartyChat: String(ChatThread.ChatThreadId) }))
 		expect(await isThreadMember(env.DB, ChatThread.ChatThreadId, guest)).toBe(false)
 
 		const res = await SELF.fetch(`${ORIGIN}/thread/party`, { headers: await bearer(guest) })
@@ -573,7 +584,7 @@ describe('GET /thread/party', () => {
 			headers: await bearer(caller),
 		})
 		const { ChatThread } = (await created.json()) as { ChatThread: { ChatThreadId: number } }
-		await env.RECFLARE_PLAYER_SETTINGS.delete(`player:${caller}`)
+		await deletePlayerSettings(env.DB, caller)
 
 		const res = await SELF.fetch(`${ORIGIN}/thread/party`, { headers: await bearer(caller) })
 		expect(((await res.json()) as { ChatThreadId: number }).ChatThreadId).toBe(
@@ -614,8 +625,8 @@ describe('GET /thread/party', () => {
 		})
 		const own = (await mine.json()) as { ChatThread: { ChatThreadId: number } }
 		const theirs = (await other.json()) as { ChatThread: { ChatThreadId: number } }
-		await env.RECFLARE_PLAYER_SETTINGS.put(
-			`player:${caller}`,
+		await seedSettings(
+			caller,
 			JSON.stringify({ LatestPartyChat: String(theirs.ChatThread.ChatThreadId) })
 		)
 
@@ -642,8 +653,8 @@ describe('GET /thread/party', () => {
 		})
 		const { ChatThread } = (await created.json()) as { ChatThread: { ChatThreadId: number } }
 		await openedMinutesAgo(ChatThread.ChatThreadId, 61)
-		await env.RECFLARE_PLAYER_SETTINGS.put(
-			`player:${latecomer}`,
+		await seedSettings(
+			latecomer,
 			JSON.stringify({ LatestPartyChat: String(ChatThread.ChatThreadId) })
 		)
 
@@ -662,10 +673,7 @@ describe('GET /thread/party', () => {
 		})
 		const { ChatThread } = (await created.json()) as { ChatThread: { ChatThreadId: number } }
 		await openedMinutesAgo(ChatThread.ChatThreadId, 59)
-		await env.RECFLARE_PLAYER_SETTINGS.put(
-			`player:${guest}`,
-			JSON.stringify({ LatestPartyChat: String(ChatThread.ChatThreadId) })
-		)
+		await seedSettings(guest, JSON.stringify({ LatestPartyChat: String(ChatThread.ChatThreadId) }))
 
 		const res = await SELF.fetch(`${ORIGIN}/thread/party`, { headers: await bearer(guest) })
 		expect(((await res.json()) as { PlayerIds: number[] }).PlayerIds).toEqual([host, guest])
@@ -699,8 +707,8 @@ describe('GET /thread/party', () => {
 		await env.DB.prepare('UPDATE message_thread SET created_at = ?2 WHERE chat_thread_id = ?1')
 			.bind(ChatThread.ChatThreadId, 'not-a-timestamp')
 			.run()
-		await env.RECFLARE_PLAYER_SETTINGS.put(
-			`player:${stranger}`,
+		await seedSettings(
+			stranger,
 			JSON.stringify({ LatestPartyChat: String(ChatThread.ChatThreadId) })
 		)
 
@@ -714,10 +722,7 @@ describe('GET /thread/party', () => {
 		// put the caller in it.
 		const caller = 883207
 		const dm = await createThread(env.DB, [883208, 883213])
-		await env.RECFLARE_PLAYER_SETTINGS.put(
-			`player:${caller}`,
-			JSON.stringify({ LatestPartyChat: String(dm) })
-		)
+		await seedSettings(caller, JSON.stringify({ LatestPartyChat: String(dm) }))
 		const res = await SELF.fetch(`${ORIGIN}/thread/party`, { headers: await bearer(caller) })
 		expect(await res.json()).toEqual({})
 		expect(await isThreadMember(env.DB, dm, caller)).toBe(false)
@@ -725,10 +730,7 @@ describe('GET /thread/party', () => {
 
 	it('answers {} when the setting names a thread that doesn’t exist', async () => {
 		const caller = 883214
-		await env.RECFLARE_PLAYER_SETTINGS.put(
-			`player:${caller}`,
-			JSON.stringify({ LatestPartyChat: '99999' })
-		)
+		await seedSettings(caller, JSON.stringify({ LatestPartyChat: '99999' }))
 		const res = await SELF.fetch(`${ORIGIN}/thread/party`, { headers: await bearer(caller) })
 		expect(await res.json()).toEqual({})
 		expect(await isThreadMember(env.DB, 99999, caller)).toBe(false)
@@ -736,10 +738,7 @@ describe('GET /thread/party', () => {
 
 	it('answers {} for an unparseable stored id', async () => {
 		const caller = 883209
-		await env.RECFLARE_PLAYER_SETTINGS.put(
-			`player:${caller}`,
-			JSON.stringify({ LatestPartyChat: 'not-an-id' })
-		)
+		await seedSettings(caller, JSON.stringify({ LatestPartyChat: 'not-an-id' }))
 		const res = await SELF.fetch(`${ORIGIN}/thread/party`, { headers: await bearer(caller) })
 		expect(await res.json()).toEqual({})
 	})
@@ -854,8 +853,8 @@ describe('GET /thread/chatPrivacySetting', () => {
 	})
 
 	it('reads the stored settings out of the player settings map', async () => {
-		await env.RECFLARE_PLAYER_SETTINGS.put(
-			'player:886003',
+		await seedSettings(
+			886003,
 			JSON.stringify({
 				directMessagePrivacySetting: 'Favorites',
 				groupChatPrivacySetting: 'NoOne',
@@ -872,10 +871,7 @@ describe('GET /thread/chatPrivacySetting', () => {
 	})
 
 	it('falls back to Friends for a stored value it can’t parse', async () => {
-		await env.RECFLARE_PLAYER_SETTINGS.put(
-			'player:886004',
-			JSON.stringify({ directMessagePrivacySetting: 'Nobody at all' })
-		)
+		await seedSettings(886004, JSON.stringify({ directMessagePrivacySetting: 'Nobody at all' }))
 		const res = await SELF.fetch(`${ORIGIN}/thread/chatPrivacySetting`, {
 			headers: await bearer(886004),
 		})
@@ -909,8 +905,7 @@ describe('PUT /thread/chatPrivacySetting', () => {
 		})
 	}
 
-	const settings = async (playerId: number) =>
-		env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(`player:${playerId}`, 'json')
+	const settings = async (playerId: number) => readPlayerSettings(env.DB, playerId)
 
 	it('stores the DM setting and answers the resulting settings', async () => {
 		const res = await put(887001, { directMessagePrivacySetting: 'Favorites' })
@@ -945,10 +940,7 @@ describe('PUT /thread/chatPrivacySetting', () => {
 	})
 
 	it('merges, leaving the player’s other settings untouched', async () => {
-		await env.RECFLARE_PLAYER_SETTINGS.put(
-			'player:887004',
-			JSON.stringify({ 'Recroom.OOBE': '77' })
-		)
+		await seedSettings(887004, JSON.stringify({ 'Recroom.OOBE': '77' }))
 		await put(887004, { directMessagePrivacySetting: 'Favorites' })
 		expect(await settings(887004)).toEqual({
 			'Recroom.OOBE': '77',
@@ -959,12 +951,12 @@ describe('PUT /thread/chatPrivacySetting', () => {
 	// Re-posting the stored value writes nothing to KV — writes are the cost, and the client
 	// posts these freely. The raw value is seeded with whitespace JSON.stringify never
 	// produces; surviving the PUT untouched means no write happened.
-	it('does not write KV when the value is already stored', async () => {
+	it('does not write when the value is already stored', async () => {
 		const padded = '{ "Recroom.OOBE": "77", "directMessagePrivacySetting": "Favorites" }'
-		await env.RECFLARE_PLAYER_SETTINGS.put('player:887010', padded)
+		await seedSettings(887010, padded)
 		const res = await put(887010, { directMessagePrivacySetting: 'Favorites' })
 		expect(await res.json()).toMatchObject({ directMessagePrivacySetting: 1 })
-		expect(await env.RECFLARE_PLAYER_SETTINGS.get('player:887010', 'text')).toBe(padded)
+		expect(await rawSettings(887010)).toBe(padded)
 	})
 
 	it('accepts the enum by ordinal too, and is case-insensitive about the name', async () => {
@@ -1565,10 +1557,7 @@ describe('ChatMessageReceived push', () => {
 			headers: await bearer(host),
 		})
 		const { ChatThread } = (await created.json()) as { ChatThread: { ChatThreadId: number } }
-		await env.RECFLARE_PLAYER_SETTINGS.put(
-			`player:${guest}`,
-			JSON.stringify({ LatestPartyChat: String(ChatThread.ChatThreadId) })
-		)
+		await seedSettings(guest, JSON.stringify({ LatestPartyChat: String(ChatThread.ChatThreadId) }))
 		await hub.getByName('global').takeSent()
 
 		await SELF.fetch(`${ORIGIN}/thread/party`, { headers: await bearer(guest) })
@@ -1592,10 +1581,7 @@ describe('ChatMessageReceived push', () => {
 			headers: await bearer(host),
 		})
 		const { ChatThread } = (await created.json()) as { ChatThread: { ChatThreadId: number } }
-		await env.RECFLARE_PLAYER_SETTINGS.put(
-			`player:${guest}`,
-			JSON.stringify({ LatestPartyChat: String(ChatThread.ChatThreadId) })
-		)
+		await seedSettings(guest, JSON.stringify({ LatestPartyChat: String(ChatThread.ChatThreadId) }))
 
 		await SELF.fetch(`${ORIGIN}/thread/party`, { headers: await bearer(guest) })
 		await hub.getByName('global').takeSent()

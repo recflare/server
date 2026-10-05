@@ -119,11 +119,10 @@ substitutes the same as asking by id.
 
 ## Bindings
 
-| Binding                    | Type          | Notes                                                        |
-| -------------------------- | ------------- | ------------------------------------------------------------ |
-| `DB`                       | D1            | Shared `recflare` database — rooms, room instances, presence |
-| `JWT_SECRET`               | Secrets Store | Shared HS256 signing key (see the `auth` README)             |
-| `RECFLARE_PLAYER_SETTINGS` | KV            | The `playersettings` map — `/player/avoidjuniors`            |
+| Binding      | Type          | Notes                                                                         |
+| ------------ | ------------- | ----------------------------------------------------------------------------- |
+| `DB`         | D1            | Shared `recflare` database — rooms, room instances, presence, player settings |
+| `JWT_SECRET` | Secrets Store | Shared HS256 signing key (see the `auth` README)                              |
 
 The `presence` and `room_instance` tables are owned/migrated by the `rooms` worker. This
 worker owns one table of its own, `room_invite` (`migrations/0001_room_invite.sql`, applied
@@ -133,9 +132,10 @@ invite the `RoomInviteId` the response carries. Its `created_at` is epoch second
 `rooms` worker's cron deletes rows older than `ROOM_INVITE_TTL_SECONDS` (5 minutes), and a
 redeem that misses the row answers `RoomInviteExpired`.
 
-The settings KV is owned by the `playersettings` worker; this worker touches exactly one
-key in it, the "avoid juniors" preference, and its write merges (as that worker's own PUT
-does) so the rest of the player's settings survive.
+The `player_settings` table (one JSON map per player) is owned by the `playersettings`
+worker; this worker touches exactly one key in it, the "avoid juniors" preference
+(`/player/avoidjuniors`), and its write merges (as that worker's own PUT does) so the rest
+of the player's settings survive.
 
 ## Known gaps
 

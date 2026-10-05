@@ -7,7 +7,9 @@
 	// Shared `recflare` DB (created manually with `wrangler d1 create recflare`; the
 	// "local" placeholder is spliced out at deploy time). The `chat` worker owns the
 	// `message` table (schema/migration here); its own migrations_table keeps history
-	// separate from the other workers' migrations on the shared database.
+	// separate from the other workers' migrations on the shared database. Chat keeps its
+	// two chat-privacy settings in `player_settings` (owned by the `playersettings` worker)
+	// rather than in a table of its own, so they sit with the player's other toggles.
 	"d1_databases": [
 		{
 			"binding": "DB",
@@ -15,16 +17,6 @@
 			"database_id": "local",
 			"migrations_dir": "migrations",
 			"migrations_table": "d1_migrations_chat"
-		}
-	],
-	// Per-player settings KV, owned by the `playersettings` worker. Chat keeps the two
-	// chat-privacy settings in it rather than in a table of its own, so they sit with the
-	// player's other toggles. The "local" id placeholder is replaced with the real id from
-	// RECFLARE_KV at deploy time.
-	"kv_namespaces": [
-		{
-			"binding": "RECFLARE_PLAYER_SETTINGS",
-			"id": "local"
 		}
 	],
 	"logpush": false,

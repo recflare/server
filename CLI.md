@@ -133,6 +133,30 @@ script names every item the storefront doesn't list. The
 committed `2025-1-cai.json` is already priced. Rarity isn't carried over, since the record
 has no field for it.
 
+### `settings-import-kv` — copy the old player-settings KV namespace into D1
+
+```sh
+bun runx admin settings-import-kv --dry-run --remote    # count what the namespace holds
+bun runx admin settings-import-kv --remote
+bun runx admin settings-import-kv --remote --namespace-id <id> --overwrite
+just settings-import-kv --remote                        # the same, as a recipe
+```
+
+Player settings used to live in a Workers KV namespace (`RECFLARE_PLAYER_SETTINGS`, one
+`player:<id>` key per player holding their map as JSON); they now live in the
+`player_settings` table on the shared D1, one JSON row per player. This copies the namespace
+across for a deployment that predates the move. The namespace id comes from
+`RECFLARE_PLAYER_SETTINGS` in `RECFLARE_KV` in `.env` (which the deploys used to read it from)
+or from `--namespace-id`.
+
+Upgrade in this order: `just migrate -F playersettings` (creates the table), then this
+import, then `just deploy`. The import MERGES: a row that already exists keeps every key it
+has and gains the ones only KV knew, so running it after the cut-over — or again — never
+undoes something a player has toggled since. `--overwrite` makes the KV value win instead.
+Nothing is deleted on either side. Keys that aren't a `player:<id>` holding a JSON object of
+strings are reported and skipped. Once it has run, the namespace (and the `RECFLARE_KV` line)
+can be deleted.
+
 ### `lookup` — print an account
 
 ```sh
@@ -147,7 +171,7 @@ the account has a password, the developer role, and the moderator role.
 
 ### Selecting an account
 
-Every command except `reload-plus` and `cai-load` targets exactly one account, by **either**:
+Every command except `reload-plus`, `cai-load` and `settings-import-kv` targets exactly one account, by **either**:
 
 - `--account <id>` — numeric account id
 - `--username <name>` — username (case-insensitive)

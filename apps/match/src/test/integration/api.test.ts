@@ -14,7 +14,9 @@ import {
 	EMPTY_INSTANCE_GRACE_SECONDS,
 	GAME_VERSION,
 	getRoomInstance,
+	PLAYER_SETTINGS_SCHEMA_DDL,
 	PRESENCE_SCHEMA_DDL,
+	readPlayerSettings,
 	ROOM_INSTANCE_SCHEMA_DDL,
 	ROOM_INVITE_SCHEMA_DDL,
 	ROOM_SCHEMA_DDL,
@@ -135,6 +137,23 @@ const TEST_ROOMS = [
 	},
 ]
 
+/** Seed a player's `player_settings` row with raw JSON text — what the KV value used to be. */
+const seedSettings = (playerId: number, data: string) =>
+	env.DB.prepare(
+		`INSERT INTO player_settings (account_id, data) VALUES (?1, ?2)
+		 ON CONFLICT (account_id) DO UPDATE SET data = excluded.data`
+	)
+		.bind(playerId, data)
+		.run()
+
+/** The row's `data` exactly as stored — a seeded value surviving a request means no write happened. */
+const rawSettings = async (playerId: number) =>
+	(
+		await env.DB.prepare('SELECT data FROM player_settings WHERE account_id = ?1')
+			.bind(playerId)
+			.first<{ data: string }>()
+	)?.data ?? null
+
 beforeAll(async () => {
 	// Seed the shared JWT signing key into the local Secrets Store so .get() resolves.
 	await adminSecretsStore(env.JWT_SECRET).create('test-signing-key')
@@ -152,6 +171,8 @@ beforeAll(async () => {
 	for (const stmt of ROOM_INVITE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	// Stats (owned by this worker) — the presence cron samples the online count into it.
 	for (const stmt of STAT_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	// Player settings (owned by the playersettings worker) — /player/avoidjuniors is one key.
+	for (const stmt of PLAYER_SETTINGS_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 
 	// Accounts table (owned by the auth worker) — dorm creation reads the username
 	// to name the room. Seed the players the dorm tests authenticate as.
@@ -536,11 +557,11 @@ describe('public endpoints', () => {
 		expect(players[0]).toMatchObject({ playerId: 1, isOnline: true, appVersion: GAME_VERSION })
 	})
 
-	// The "avoid juniors" preference lives in the playersettings KV map, not in presence.
+	// The "avoid juniors" preference lives in the playersettings map, not in presence.
 	// The body is a BARE boolean — the client reads the whole body as the value.
 	describe('GET /player/avoidjuniors', () => {
 		const settings = async (playerId: number, map: Record<string, string>) =>
-			env.RECFLARE_PLAYER_SETTINGS.put(`player:${playerId}`, JSON.stringify(map))
+			seedSettings(playerId, JSON.stringify(map))
 
 		const read = async (playerId: number) => {
 			const res = await exports.default.fetch(`${ORIGIN}/player/avoidjuniors`, {
@@ -585,8 +606,7 @@ describe('public endpoints', () => {
 	})
 
 	describe('PUT /player/avoidjuniors', () => {
-		const stored = async (playerId: number) =>
-			env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(`player:${playerId}`, 'json')
+		const stored = async (playerId: number) => readPlayerSettings(env.DB, playerId)
 
 		const write = async (playerId: number, body: string) => {
 			const res = await exports.default.fetch(`${ORIGIN}/player/avoidjuniors`, {
@@ -619,8 +639,8 @@ describe('public endpoints', () => {
 
 		// The map holds every setting the player has, so the write must not replace it.
 		test('merges into the player’s other settings', async () => {
-			await env.RECFLARE_PLAYER_SETTINGS.put(
-				'player:3201',
+			await seedSettings(
+				3201,
 				JSON.stringify({ 'Recroom.OOBE': '77', TUTORIAL_COMPLETE_MASK: '11' })
 			)
 			await write(3201, 'avoidJuniors=True')
@@ -634,24 +654,21 @@ describe('public endpoints', () => {
 		// Whichever spelling the player's map already carries is the one overwritten —
 		// two keys for one preference would make the read depend on their order.
 		test('overwrites an existing key rather than adding a second one', async () => {
-			await env.RECFLARE_PLAYER_SETTINGS.put(
-				'player:3202',
-				JSON.stringify({ AVOID_JUNIORS: 'True' })
-			)
+			await seedSettings(3202, JSON.stringify({ AVOID_JUNIORS: 'True' }))
 			expect(await write(3202, 'avoidJuniors=False')).toBe(false)
 			expect(await stored(3202)).toEqual({ AVOID_JUNIORS: 'False' })
 		})
 
-		// Re-posting the stored value writes nothing to KV — writes are the cost, and the
+		// Re-posting the stored value writes nothing — writes are the cost, and the
 		// client posts this freely. The raw value is seeded with whitespace JSON.stringify
 		// never produces; surviving the PUT untouched means no write happened. Holds across
 		// the loose key match too: `AVOID_JUNIORS: 'True'` already says what `avoidJuniors=True`
 		// asks for.
-		test('does not write KV when the value is already stored', async () => {
+		test('does not write when the value is already stored', async () => {
 			const padded = '{ "Recroom.OOBE": "77", "AVOID_JUNIORS": "True" }'
-			await env.RECFLARE_PLAYER_SETTINGS.put('player:3205', padded)
+			await seedSettings(3205, padded)
 			expect(await write(3205, 'avoidJuniors=True')).toBe(true)
-			expect(await env.RECFLARE_PLAYER_SETTINGS.get('player:3205', 'text')).toBe(padded)
+			expect(await rawSettings(3205)).toBe(padded)
 
 			expect(await write(3205, 'avoidJuniors=False')).toBe(false)
 			expect(await stored(3205)).toEqual({ 'Recroom.OOBE': '77', AVOID_JUNIORS: 'False' })

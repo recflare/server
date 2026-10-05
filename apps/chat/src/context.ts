@@ -9,13 +9,13 @@ export type Env = SharedHonoEnv & {
 	// with `await env.JWT_SECRET.get()`; all workers bind the same store so tokens
 	// signed by `auth` verify here.
 	JWT_SECRET: SecretsStoreSecret
-	/** Shared `recflare` D1 — this worker owns the `message` and thread tables. */
-	DB: D1Database
 	/**
-	 * Per-player settings KV, owned by the `playersettings` worker. Holds the caller's
-	 * chat privacy settings (`/thread/chatPrivacySetting`) alongside their other toggles.
+	 * Shared `recflare` D1 — this worker owns the `message` and thread tables. The
+	 * caller's chat privacy settings (`/thread/chatPrivacySetting`) and `LatestPartyChat`
+	 * live in `player_settings` (owned by the `playersettings` worker), alongside their
+	 * other toggles.
 	 */
-	RECFLARE_PLAYER_SETTINGS: KVNamespace
+	DB: D1Database
 	/** The `notify` worker's NotificationsHub DO — pushes ChatMessageReceived to members. */
 	RECFLARE_NOTIFICATIONS_HUB: DurableObjectNamespace<NotificationsHub>
 }

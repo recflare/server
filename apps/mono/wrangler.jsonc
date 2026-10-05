@@ -32,13 +32,6 @@
 			"bucket_name": "recflare-cdn"
 		}
 	],
-	// Per-player settings KV (playersettings). "local" id replaced at deploy.
-	"kv_namespaces": [
-		{
-			"binding": "RECFLARE_PLAYER_SETTINGS",
-			"id": "local"
-		}
-	],
 	// Notifications hub. The class ships IN this worker (re-exported from notify), so it
 	// is bound locally (no script_name) and migrated here.
 	"durable_objects": {
