@@ -53,9 +53,18 @@ const UPLOAD_SUBFOLDER: Record<number, string> = {
 	6: 'room',
 }
 
+/** Parse a posted FileType only when the complete value is a decimal integer. */
+function parseFileType(fileType: string): number | undefined {
+	const value = fileType.trim()
+	if (!/^\d+$/.test(value)) return undefined
+	const parsed = Number(value)
+	return Number.isSafeInteger(parsed) ? parsed : undefined
+}
+
 /** Resolve the storage subfolder for a posted FileType, or `undefined` when unknown. */
 function subfolderForFileType(fileType: string): string | undefined {
-	return UPLOAD_SUBFOLDER[Number.parseInt(fileType, 10)]
+	const parsed = parseFileType(fileType)
+	return parsed === undefined ? undefined : UPLOAD_SUBFOLDER[parsed]
 }
 
 /**
@@ -82,7 +91,8 @@ function maxUploadBytes(value: unknown): number {
 }
 
 function extensionForFileType(fileType: string): string {
-	return UPLOAD_EXTENSION[Number.parseInt(fileType, 10)] ?? ''
+	const parsed = parseFileType(fileType)
+	return parsed === undefined ? '' : (UPLOAD_EXTENSION[parsed] ?? '')
 }
 
 /** Read a text form field by any of its accepted names, matched case-insensitively. */
