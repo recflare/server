@@ -134,3 +134,12 @@ reload-plus *args:
 [no-cd]
 cai-load *args:
   bun runx admin cai-load "$@"
+
+# Copy the old RECFLARE_PLAYER_SETTINGS KV namespace into the player_settings D1 table (one-time
+# upgrade for deployments that predate the move). Merges; existing rows keep what they have.
+# Defaults to --local; pass --remote for production, --dry-run to only count. See CLI.md.
+[group('4. utility')]
+[positional-arguments]
+[no-cd]
+settings-import-kv *args:
+  bun runx admin settings-import-kv "$@"

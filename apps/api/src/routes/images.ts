@@ -98,12 +98,12 @@ const OWN_VIEW_NOTE =
  */
 const PHOTO_TAGGING_DEFAULT = 0
 
-/** The player's settings map, or null when they have none / KV is unreachable. */
+/** The player's settings map, or null when they have none / the database is unreachable. */
 async function getPlayerSettings(
 	env: App['Bindings'],
 	accountId: number
 ): Promise<Record<string, string> | null> {
-	return readPlayerSettings(env.RECFLARE_PLAYER_SETTINGS, accountId).catch(() => null)
+	return readPlayerSettings(env.DB, accountId).catch(() => null)
 }
 
 /** The caller's stored photo-tagging preference, or the default when they have none. */
@@ -120,14 +120,14 @@ async function readPhotoTaggingSetting(env: App['Bindings'], accountId: number):
  * The write MERGES, as the `playersettings` worker's own PUT does: the map holds every
  * setting the player has (OOBE state, tutorial mask, …), so storing this one on its own
  * would wipe the rest. Re-posting the value already stored writes nothing — the client
- * does that freely, and KV writes are the cost.
+ * does that freely, and writes are the cost.
  */
 async function writePhotoTaggingSetting(
 	env: App['Bindings'],
 	accountId: number,
 	setting: number
 ): Promise<void> {
-	await mergePlayerSettings(env.RECFLARE_PLAYER_SETTINGS, accountId, {
+	await mergePlayerSettings(env.DB, accountId, {
 		[PHOTO_TAGGING_KEY]: String(setting),
 	})
 }

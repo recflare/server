@@ -421,12 +421,12 @@ function parseSettingBool(value: unknown): boolean | undefined {
 	}
 }
 
-/** The player's settings map from the KV the `playersettings` worker owns. */
+/** The player's settings map from the `player_settings` table the `playersettings` worker owns. */
 async function getPlayerSettings(
 	env: Env,
 	accountId: number
 ): Promise<Record<string, string> | null> {
-	return readPlayerSettings(env.RECFLARE_PLAYER_SETTINGS, accountId).catch(() => null)
+	return readPlayerSettings(env.DB, accountId).catch(() => null)
 }
 
 /**
@@ -449,14 +449,14 @@ async function readAvoidJuniors(env: Env, accountId: number): Promise<boolean> {
  * every setting the player has (OOBE state, tutorial mask, …), so storing this one on its
  * own would wipe the rest. The key is whichever spelling the map already carries, which is
  * why this doesn't go through `mergePlayerSettings` — but like it, re-posting the stored
- * value writes nothing. A KV read failure throws (a 500) rather than reading as an empty
+ * value writes nothing. A read failure throws (a 500) rather than reading as an empty
  * map, which would store this one key over everything the player had.
  */
 async function writeAvoidJuniors(env: Env, accountId: number, value: boolean): Promise<void> {
-	const stored = await readPlayerSettings(env.RECFLARE_PLAYER_SETTINGS, accountId)
+	const stored = await readPlayerSettings(env.DB, accountId)
 	const merged: Record<string, string> = { ...stored }
 	merged[findAvoidJuniorsKey(merged) ?? AVOID_JUNIORS_KEY] = value ? 'True' : 'False'
-	await putPlayerSettingsIfChanged(env.RECFLARE_PLAYER_SETTINGS, accountId, stored, merged)
+	await putPlayerSettingsIfChanged(env.DB, accountId, stored, merged)
 }
 
 /**

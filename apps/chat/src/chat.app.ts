@@ -41,9 +41,9 @@ import {
 	ChatThreadType,
 	createThread,
 	getOrCreateThreadWithMembers,
+	getPartyThreadForPlayer,
 	getThreadForPlayer,
 	getThreadMemberIds,
-	getPartyThreadForPlayer,
 	getThreadMeta,
 	getThreadsForPlayer,
 	isThreadMember,
@@ -197,12 +197,12 @@ function parseChatPrivacy(value: string | undefined): ChatPrivacyValue | undefin
 		: undefined
 }
 
-/** The player's settings map from the KV the `playersettings` worker owns. */
+/** The player's settings map from the `player_settings` table the `playersettings` worker owns. */
 async function getPlayerSettings(
 	env: Env,
 	accountId: number
 ): Promise<Record<string, string> | null> {
-	return readPlayerSettings(env.RECFLARE_PLAYER_SETTINGS, accountId).catch(() => null)
+	return readPlayerSettings(env.DB, accountId).catch(() => null)
 }
 
 /**
@@ -257,7 +257,7 @@ async function mergePlayerSettings(
 	accountId: number,
 	patch: Record<string, string>
 ): Promise<void> {
-	await mergeStoredPlayerSettings(env.RECFLARE_PLAYER_SETTINGS, accountId, patch)
+	await mergeStoredPlayerSettings(env.DB, accountId, patch)
 }
 
 /**

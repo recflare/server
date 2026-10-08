@@ -17,9 +17,11 @@ import {
 	MessageType,
 	NOTIFICATION_SCHEMA_DDL,
 	OUTFIT_SCHEMA_DDL,
+	PLAYER_SETTINGS_SCHEMA_DDL,
 	PRESENCE_SCHEMA_DDL,
 	PRESENCE_TTL_SECONDS,
 	PROGRESSION_SCHEMA_DDL,
+	readPlayerSettings,
 	RELATIONSHIP_SCHEMA_DDL,
 	ROOM_INSTANCE_SCHEMA_DDL,
 	ROOM_SCHEMA_DDL,
@@ -131,6 +133,23 @@ const TEST_ROOMS = [
 	},
 ]
 
+/** Seed a player's `player_settings` row with raw JSON text — what the KV value used to be. */
+const seedSettings = (playerId: number, data: string) =>
+	env.DB.prepare(
+		`INSERT INTO player_settings (account_id, data) VALUES (?1, ?2)
+		 ON CONFLICT (account_id) DO UPDATE SET data = excluded.data`
+	)
+		.bind(playerId, data)
+		.run()
+
+/** The row's `data` exactly as stored — a seeded value surviving a request means no write happened. */
+const rawSettings = async (playerId: number) =>
+	(
+		await env.DB.prepare('SELECT data FROM player_settings WHERE account_id = ?1')
+			.bind(playerId)
+			.first<{ data: string }>()
+	)?.data ?? null
+
 beforeAll(async () => {
 	// Seed the shared JWT signing key into the local Secrets Store so .get() resolves.
 	await adminSecretsStore(env.JWT_SECRET).create('test-signing-key')
@@ -173,6 +192,10 @@ beforeAll(async () => {
 
 	// Outfit table (owned by the econ worker) — /outfits/me reads and writes slot 0.
 	for (const stmt of OUTFIT_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+
+	// Player settings (owned by the playersettings worker) — the photo-tagging preference
+	// is one key in that per-player map.
+	for (const stmt of PLAYER_SETTINGS_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 
 	// Inventions table (owned by the api worker) — invention save/mine use it.
 	for (const stmt of INVENTIONS_SCHEMA_DDL) await env.DB.prepare(stmt).run()
@@ -6904,32 +6927,30 @@ describe('images', () => {
 		expect(await (await read('710')).text()).toBe('2')
 
 		// It's stored under `playerPhotoTaggingSetting` in the player's settings bag...
-		const stored = await env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>(
-			'player:710',
-			'json'
-		)
+		const stored = await readPlayerSettings(env.DB, 710)
 		expect(stored?.playerPhotoTaggingSetting).toBe('2')
 
 		// ...and the write MERGES: the player's other settings survive it.
-		await env.RECFLARE_PLAYER_SETTINGS.put(
-			'player:711',
+		await seedSettings(
+			711,
 			JSON.stringify({ 'Recroom.OOBE': '77', playerPhotoTaggingSetting: '1' })
 		)
 		expect(await (await read('711')).text()).toBe('1')
 		await write('711', { Setting: 0 })
-		expect(
-			await env.RECFLARE_PLAYER_SETTINGS.get<Record<string, string>>('player:711', 'json')
-		).toEqual({ 'Recroom.OOBE': '77', playerPhotoTaggingSetting: '0' })
+		expect(await readPlayerSettings(env.DB, 711)).toEqual({
+			'Recroom.OOBE': '77',
+			playerPhotoTaggingSetting: '0',
+		})
 
 		// The setting is per-player.
 		expect(await (await read('710')).text()).toBe('2')
 
-		// Re-posting the stored value writes nothing to KV: the raw value is seeded with
+		// Re-posting the stored value writes nothing: the raw value is seeded with
 		// whitespace JSON.stringify never produces, and it survives the PUT untouched.
 		const padded = '{ "Recroom.OOBE": "77", "playerPhotoTaggingSetting": "1" }'
-		await env.RECFLARE_PLAYER_SETTINGS.put('player:712', padded)
+		await seedSettings(712, padded)
 		expect(await (await write('712', { Setting: 1 })).text()).toBe('1')
-		expect(await env.RECFLARE_PLAYER_SETTINGS.get('player:712', 'text')).toBe(padded)
+		expect(await rawSettings(712)).toBe(padded)
 
 		// A body with no readable Setting leaves the stored value alone rather than writing 0
 		// — and answers what the player still has.
