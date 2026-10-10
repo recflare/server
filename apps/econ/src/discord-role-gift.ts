@@ -205,9 +205,13 @@ export interface RoleGiftSummary {
  * `startingTokens` is the signup grant to seed before the credit — the credit upserts the
  * balance row, so a never-touched balance would otherwise start from this gift instead of
  * the grant plus this gift.
+ *
+ * Takes the {@link RoleGiftEnv} pick, not econ's whole `Env`: `www`'s staff panel runs this
+ * same function on a button (`POST /api/staff/discord-roles/supporter-gift`) with its own
+ * bindings, and the three it reads are declared on both workers.
  */
 export async function grantDiscordRoleGifts(
-	env: Env,
+	env: RoleGiftEnv,
 	startingTokens: number
 ): Promise<RoleGiftSummary> {
 	const summary: RoleGiftSummary = {

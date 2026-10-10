@@ -614,6 +614,10 @@ role that role's RecCenterTokens in a gift box, every time it fires. The map is 
   account links its Discord, so a new supporter gets one box now rather than after the next
   run. `www` decides "first" from the link table; this module keeps no ledger either way, and
   the cron pays that account again on its next run like everyone else.
+- **A whole run can be paid by hand.** `www`'s staff panel ("Bonus reward!", developer-only,
+  `POST /api/staff/discord-roles/supporter-gift`) calls `grantDiscordRoleGifts` with its own
+  bindings — the same map, audience and box as the cron — and answers with the run's summary.
+  No ledger here either: it pays everyone again on top of the schedule, which is the point.
 
 One D1 read for the links, then a handful of writes and two hub calls per box, sequentially.
 A cron invocation has a fixed subrequest budget (50 free, 1000 paid); a community whose

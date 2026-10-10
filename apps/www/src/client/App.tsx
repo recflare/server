@@ -1606,7 +1606,8 @@ function halloweenActive(): boolean {
 }
 
 /** The sprite, 23x25 native pixels, drawn at 3x with hard edges. */
-const PUMPKIN_SRC = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABcAAAAZCAYAAADaILXQAAAFD0lEQVR42pWVX2xcxRXGf2fu3Lu7jh0bO3FsnMQ2idP8gZoIGkootZsIGrUlVEVCTVW1qVREUPtSiTckYgQPqEIg1FZU6gtP8EJVAaZpIqE4UtrQOCSIkj+YVgRsp3E2mzisnb27OzOnD+uuE2yJZJ7u6J755jvf+eYc4SbX7qHBbNyjpe5VS5k4Nw3VZj4evcrFiWn+9fZxuTbW3Cw43WcxBMBCNYtYRYwiujDU3ijmwK++rWv7G7BSpLdrGf8Zv8TY+54kCuQ/v4IsckZuBPg7Twzq2ntq1IwXjvzlCz4cPv6VZxcN2LttTfXh9phKLPxtMmVnW7BqAiPnU2aipTzUFnjzonMiFhFn9747vihO9P+PoW29Dz7Yt3LD/sdl3dRl/9NmLRu1GJPzpqfFk2SV6ZIhGwlrVoBP1MQO0xQrQ/1N76/qXL7u4KeXxxbV3Jjwuveu1USGH98XOH44EIopu+7PECJBXGBmVpFKhr71JfqAD0cTVMGY5G1MukAJC/DM9l597IEmVsRTAJz4u2XrG+cxQGnPHuyOP6L797AxOYh1KdGmnYAhHPsrrjrLlq05dNTCtm71Jd82dGTiUh3cKDV7ac2ZAUP60moEB6ffQvfvQeucQt3Bd+3eAZlb+OCV1+n/Zpl3hpsAP8/86QdW6VM/tEjlCmWf8sizGcaiHB9thYQZgg+sfngYMPxuR46VpkS/exMRRQWE5bWL1fD9LsuhcV/Yu707febdz3I29gapBMg0467maG5pI3JlitaSAZaEIk1tHbXqNyxBowTT4IjK0zW72Qoyl7GmJdTPu8SC4dg/Krw6GrhcbeUDrYIY7v+th4uTnHxuaT3NR157j0CVvoN3cvo303PyBPRLjz3MSWiDwMvvrQACEpRg5v6oQVs3sfHFgEpg7NzxufRhbPIE0ZNw+NG1xDbHvnxA/+mR+kVz4Af9p/G31vjq5NkGyppjszpOYFFVQBERfmkNfvVmHIqo4e5cBBiy4RIVyhiRmhnUAG6+cY2M4FzSMNyQc9XWlgoiwi0mkAhkgO4AagUTZVkeWZZloSnyeHzNTdfIMeWgHMmBGbtkX12o5w+ceWj5ra7Y1j4LQK8qwZfRNGVbDgKWINCei+kVT1+Yt6XB4VGEwNEZoZKaXS8cOPWjBV1RCKAWpMLPlrYg1at4CWzf/DkXTt7K16qeFhNxVCI6br/Avrwl+Dw/6Grl5zMrWNbXQFquwpGJhf1cTJYnt16ou8BVpxm8q7bvvCPPW50T/L6rQMcd+TmPQ5rt4RezLdz7aCNrtwi5ZlMYeGKgdF0v2NR/W8FFcatUS/ykI8POzhasVf787/N8rzNi31TKRyu7KSyJicXw30/ykFiCEZbd1k6aFvn6fRmSOEsZ5ZPDbl4Wn2QxCmQa0VCiWrlMKjE+00g5MlQyEaXY4GyEw+EaDZFP8FJG1WGTLGhMpeJAPS5yNeYb7t543ZA6fexUPaP139ioEULcnqGtu5mKKOu3eFDDn84eihiiXt7BXw/o4HdXYnIlxicK12uuaHotMMCZ0VMSVClPpRTOzlL4rMjYUaGnq5nHewb8Y68O1ImpKucu5BmfrNXkpgb0lUK+oz3X1IRa1MiCoSwnTay2dEmI+fio1jRXleFIwYupLgZqggwDJMXkKhtwEEhLji+uKEhdFUZGRtztu3YeMBI1Znzxxgb0tWtw92BWGyitu8dzZlQxCof+cHhRnP8B5aopRAfi2ZcAAAAASUVORK5CYII='
+const PUMPKIN_SRC =
+	'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABcAAAAZCAYAAADaILXQAAAFD0lEQVR42pWVX2xcxRXGf2fu3Lu7jh0bO3FsnMQ2idP8gZoIGkootZsIGrUlVEVCTVW1qVREUPtSiTckYgQPqEIg1FZU6gtP8EJVAaZpIqE4UtrQOCSIkj+YVgRsp3E2mzisnb27OzOnD+uuE2yJZJ7u6J755jvf+eYc4SbX7qHBbNyjpe5VS5k4Nw3VZj4evcrFiWn+9fZxuTbW3Cw43WcxBMBCNYtYRYwiujDU3ijmwK++rWv7G7BSpLdrGf8Zv8TY+54kCuQ/v4IsckZuBPg7Twzq2ntq1IwXjvzlCz4cPv6VZxcN2LttTfXh9phKLPxtMmVnW7BqAiPnU2aipTzUFnjzonMiFhFn9747vihO9P+PoW29Dz7Yt3LD/sdl3dRl/9NmLRu1GJPzpqfFk2SV6ZIhGwlrVoBP1MQO0xQrQ/1N76/qXL7u4KeXxxbV3Jjwuveu1USGH98XOH44EIopu+7PECJBXGBmVpFKhr71JfqAD0cTVMGY5G1MukAJC/DM9l597IEmVsRTAJz4u2XrG+cxQGnPHuyOP6L797AxOYh1KdGmnYAhHPsrrjrLlq05dNTCtm71Jd82dGTiUh3cKDV7ac2ZAUP60moEB6ffQvfvQeucQt3Bd+3eAZlb+OCV1+n/Zpl3hpsAP8/86QdW6VM/tEjlCmWf8sizGcaiHB9thYQZgg+sfngYMPxuR46VpkS/exMRRQWE5bWL1fD9LsuhcV/Yu707febdz3I29gapBMg0467maG5pI3JlitaSAZaEIk1tHbXqNyxBowTT4IjK0zW72Qoyl7GmJdTPu8SC4dg/Krw6GrhcbeUDrYIY7v+th4uTnHxuaT3NR157j0CVvoN3cvo303PyBPRLjz3MSWiDwMvvrQACEpRg5v6oQVs3sfHFgEpg7NzxufRhbPIE0ZNw+NG1xDbHvnxA/+mR+kVz4Af9p/G31vjq5NkGyppjszpOYFFVQBERfmkNfvVmHIqo4e5cBBiy4RIVyhiRmhnUAG6+cY2M4FzSMNyQc9XWlgoiwi0mkAhkgO4AagUTZVkeWZZloSnyeHzNTdfIMeWgHMmBGbtkX12o5w+ceWj5ra7Y1j4LQK8qwZfRNGVbDgKWINCei+kVT1+Yt6XB4VGEwNEZoZKaXS8cOPWjBV1RCKAWpMLPlrYg1at4CWzf/DkXTt7K16qeFhNxVCI6br/Avrwl+Dw/6Grl5zMrWNbXQFquwpGJhf1cTJYnt16ou8BVpxm8q7bvvCPPW50T/L6rQMcd+TmPQ5rt4RezLdz7aCNrtwi5ZlMYeGKgdF0v2NR/W8FFcatUS/ykI8POzhasVf787/N8rzNi31TKRyu7KSyJicXw30/ykFiCEZbd1k6aFvn6fRmSOEsZ5ZPDbl4Wn2QxCmQa0VCiWrlMKjE+00g5MlQyEaXY4GyEw+EaDZFP8FJG1WGTLGhMpeJAPS5yNeYb7t543ZA6fexUPaP139ioEULcnqGtu5mKKOu3eFDDn84eihiiXt7BXw/o4HdXYnIlxicK12uuaHotMMCZ0VMSVClPpRTOzlL4rMjYUaGnq5nHewb8Y68O1ImpKucu5BmfrNXkpgb0lUK+oz3X1IRa1MiCoSwnTay2dEmI+fio1jRXleFIwYupLgZqggwDJMXkKhtwEEhLji+uKEhdFUZGRtztu3YeMBI1Znzxxgb0tWtw92BWGyitu8dzZlQxCof+cHhRnP8B5aopRAfi2ZcAAAAASUVORK5CYII='
 const PUMPKIN_SCALE = 3
 const PUMPKIN_W = 23 * PUMPKIN_SCALE
 const PUMPKIN_H = 25 * PUMPKIN_SCALE
@@ -1842,8 +1843,12 @@ function HalloweenOverlay() {
 			<style>{HALLOWEEN_CSS}</style>
 			{!off && (
 				<div className="rf-halloween" aria-hidden="true">
-					<span className="rf-halloween-web" style={{ left: 0 }}>🕸️</span>
-					<span className="rf-halloween-web" style={{ right: 0, transform: 'scaleX(-1)' }}>🕸️</span>
+					<span className="rf-halloween-web" style={{ left: 0 }}>
+						🕸️
+					</span>
+					<span className="rf-halloween-web" style={{ right: 0, transform: 'scaleX(-1)' }}>
+						🕸️
+					</span>
 					<LilPumpkin />
 					{HALLOWEEN_SPRITES.map((emoji, i) => (
 						<span
@@ -3728,6 +3733,7 @@ function Dashboard({
 							<>
 								<TokenDropForm />
 								<RoleTokenDropForm />
+								<SupporterBonusCard />
 								<DiscordRoleSyncCard />
 							</>
 						),
@@ -4199,6 +4205,88 @@ function RoleTokenDropForm() {
 					{pending ? 'Sending…' : 'Send to everyone with the role'}
 				</button>
 			</form>
+		</section>
+	)
+}
+
+/** What one run of the supporter gift did — econ's `RoleGiftSummary`, as the route answers. */
+interface RoleGiftSummary {
+	skipped: boolean
+	roles: number
+	links: number
+	granted: number
+	tokens: number
+	failed: number
+}
+
+/**
+ * Developer-only: pay econ's scheduled supporter gift again, right now — a bonus round. Every
+ * player whose linked Discord holds a role in the server's role→tokens map is boxed that
+ * role's tokens, exactly as the weekly cron does it; the amounts and the box message are the
+ * server's, not typed here, which is what tells this apart from the role drop above.
+ *
+ * The gift keeps no ledger, so pressing this pays everyone again on top of whatever the
+ * schedule paid — that is the point, and why the button asks first. A `skipped` run means
+ * no role is mapped on the server, shown as the error it is; a run that went through is
+ * summed up in a sentence.
+ */
+function SupporterBonusCard() {
+	const [confirming, setConfirming] = useState(false)
+	const { pending, error, done, run } = useAction()
+
+	return (
+		<section className="card">
+			<h2>Bonus reward</h2>
+			<p className="muted">
+				Run the scheduled supporter reward again now. Everyone whose linked Discord holds a rewarded
+				role gets their role&apos;s tokens in a gift box, online or not, using the amounts and
+				message the server is configured with. It pays on top of the scheduled run, every time it is
+				pressed.
+			</p>
+			{error && <p className="error">{error}</p>}
+			{done && <p className="ok">{done}</p>}
+			{confirming ? (
+				<>
+					<button
+						type="button"
+						disabled={pending}
+						onClick={() =>
+							void run(async () => {
+								const s = await call<RoleGiftSummary>('/api/staff/discord-roles/supporter-gift', {
+									authed: true,
+									method: 'POST',
+								})
+								setConfirming(false)
+								if (s.skipped) {
+									throw new Error(
+										'The supporter reward is off: no Discord role is mapped to tokens on the server.'
+									)
+								}
+								const parts = [
+									`Sent ${s.granted} gift box${s.granted === 1 ? '' : 'es'} for ${s.tokens.toLocaleString()} tokens`,
+									`${s.roles} rewarded role${s.roles === 1 ? '' : 's'} over ${s.links} linked Discord${s.links === 1 ? '' : 's'}`,
+								]
+								if (s.failed > 0) parts.push(`${s.failed} failed — see the worker log`)
+								return `${parts.join(', ')}.`
+							})
+						}
+					>
+						{pending ? 'Sending…' : 'Confirm: pay every supporter again'}
+					</button>
+					<button
+						type="button"
+						className="linkish"
+						disabled={pending}
+						onClick={() => setConfirming(false)}
+					>
+						Cancel
+					</button>
+				</>
+			) : (
+				<button type="button" onClick={() => setConfirming(true)}>
+					Bonus reward!
+				</button>
+			)}
 		</section>
 	)
 }

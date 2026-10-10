@@ -877,7 +877,8 @@ it('refuses every staff endpoint without a token, and without a staff role', asy
 		'/api/staff/rooms/1/gift-tokens',
 		'/api/staff/online/gift-tokens',
 		'/api/staff/discord-roles/1/gift-tokens',
-		'/api/staff/discord-roles/sync'
+		'/api/staff/discord-roles/sync',
+		'/api/staff/discord-roles/supporter-gift'
 	)
 	for (const path of writes) {
 		expect((await SELF.fetch(`https://example.com${path}`, { method: 'POST' })).status).toBe(401)
@@ -888,10 +889,14 @@ it('refuses every staff endpoint without a token, and without a staff role', asy
 		expect(res.status).toBe(403)
 	}
 
-	// The gifts, the Plus grant and the role sweep are narrower: a moderator is staff, but
-	// not a developer.
+	// The gifts, the Plus grant, the role sweep and the supporter gift are narrower: a
+	// moderator is staff, but not a developer.
 	for (const path of writes.filter(
-		(p) => p.includes('/gift-') || p.includes('/grant-plus') || p.endsWith('/sync')
+		(p) =>
+			p.includes('/gift-') ||
+			p.includes('/grant-plus') ||
+			p.endsWith('/sync') ||
+			p.endsWith('/supporter-gift')
 	)) {
 		expect((await staffPost(path, 8101, { amount: 1 })).status).toBe(403)
 	}
@@ -2659,6 +2664,41 @@ it('runs the sweep on demand for a developer and answers with the summary', asyn
 	).first<{ player_id: number; data: string }>()
 	expect(row?.player_id).toBe(8110)
 	expect(JSON.parse(row?.data ?? '{}')).toMatchObject({ skipped: true })
+})
+
+// The supporter gift on a button: econ's cron run (`grantDiscordRoleGifts`, covered in econ's
+// own tests) with www's bindings, answered with its summary and written to the audit log.
+// The test bindings map no role, so the run is a `skipped` one and pays nothing — which is
+// also what the panel must be able to tell the developer.
+it('runs the supporter gift on demand for a developer and answers with the summary', async () => {
+	await onlyDiscordLinks([[9100, '900000000000000100', [ROLE_A]]])
+	const before = await getBalance(
+		env.DB,
+		9100,
+		CurrencyType.RecCenterTokens,
+		DEFAULT_STARTING_TOKENS
+	)
+
+	const res = await devPost('/api/staff/discord-roles/supporter-gift', 8110, {})
+	expect(res.status).toBe(200)
+	expect(await res.json()).toEqual({
+		skipped: true,
+		roles: 0,
+		links: 0,
+		granted: 0,
+		tokens: 0,
+		failed: 0,
+	})
+	expect(
+		await getBalance(env.DB, 9100, CurrencyType.RecCenterTokens, DEFAULT_STARTING_TOKENS)
+	).toBe(before)
+
+	const row = await env.DB.prepare(
+		`SELECT player_id, data FROM audit_log WHERE action = 'run_discord_role_gift'
+		 ORDER BY audit_log_id DESC LIMIT 1`
+	).first<{ player_id: number; data: string }>()
+	expect(row?.player_id).toBe(8110)
+	expect(JSON.parse(row?.data ?? '{}')).toMatchObject({ skipped: true, granted: 0 })
 })
 
 it('re-reads every discord link and writes the roles back', async () => {

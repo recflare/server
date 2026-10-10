@@ -55,6 +55,7 @@ import {
 	toCatalogSkin,
 } from '../../econ/src/catalog-db'
 import { countConsumable, grantConsumable } from '../../econ/src/consumables-db'
+import { grantDiscordRoleGifts } from '../../econ/src/discord-role-gift'
 import { getEquipment, grantEquipment } from '../../econ/src/equipment-db'
 import { grantCustomAvatarItem, ownedCustomAvatarItemIds } from '../../econ/src/inventory-custom-db'
 // The notification ids and the kick frame's recovered shape, owned by `notify`. Both are
@@ -1129,6 +1130,29 @@ export async function syncDiscordRolesHandler(c: Context<App>) {
 	const summary = await refreshDiscordRoles(c.env)
 	await recordPlayerAudit(c, 'sync_discord_roles', { ...summary })
 	logger.info('staff ran the discord role sweep', { moderatorId: staffId(c), ...summary })
+	return c.json(summary)
+}
+
+/**
+ * Run econ's supporter gift NOW — the weekly cron (econ's discord-role-gift.ts) on a button,
+ * a bonus round for a developer who wants every supporter paid again today. Same function,
+ * same map (`DISCORD_ROLE_TOKENS`), same box: every account whose Discord link holds a mapped
+ * role is boxed its best role's tokens, online or not. The role drop above is the same
+ * audience with an operator's amount and message; this one pays what the map says and
+ * says so on the box.
+ *
+ * It pays everyone it finds, every time — the gift keeps no ledger, and that module is
+ * explicit that a hand run is an extra gift on purpose. So the panel asks before sending,
+ * and the run is on the audit log with how many boxes and tokens went out.
+ *
+ * Always a 200 with the run's summary, as the sweep's sync is: a `skipped` run (no role
+ * mapped) is the gift reporting on its configuration, and the panel shows the reason.
+ */
+export async function runDiscordRoleGiftHandler(c: Context<App>) {
+	const startingTokens = intVar(c.env.STARTING_TOKENS, DEFAULT_STARTING_TOKENS)
+	const summary = await grantDiscordRoleGifts(c.env, startingTokens)
+	await recordPlayerAudit(c, 'run_discord_role_gift', { ...summary })
+	logger.info('staff ran the discord supporter gift', { moderatorId: staffId(c), ...summary })
 	return c.json(summary)
 }
 

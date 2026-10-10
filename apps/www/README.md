@@ -278,6 +278,15 @@ leaving a silent log line on a worker with observability off. Use it after chang
 bot token or inviting the bot, or when the role drop needs this morning's roles. The run
 is written to `audit_log` as `sync_discord_roles` against the developer who pressed it.
 
+A developer can also pay `econ`'s scheduled supporter gift again, now, with
+`POST /api/staff/discord-roles/supporter-gift` (developer role required, empty body) — the
+"Bonus reward!" card on the account page's Token drop tab. It runs econ's
+`grantDiscordRoleGifts` with www's own bindings: every account whose Discord link holds a
+role mapped in `DISCORD_ROLE_TOKENS` is boxed that role's tokens, exactly as the cron does,
+and the response is the run's summary — `{ skipped, roles, links, granted, tokens, failed }`.
+The gift keeps no ledger, so each press pays everyone again on top of the schedule (the panel
+asks first). The run is written to `audit_log` as `run_discord_role_gift`.
+
 ## Development
 
 ### Run in dev mode
