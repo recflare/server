@@ -44,6 +44,7 @@ These game builds are supported:
 | ------------- | --------------------- | --------------------------------------------------------------------------------------- |
 | `20230414`    | `7859140924515540835` | **Default**, official — the 2023 build the rest of the stack targets                    |
 | `20250718.01` | `1151455856673601091` | **Beta**, official — use the [patch-2025](https://github.com/recflare/patch-2025) patch |
+| `20260323.14` |                       | Alpha                                                                                   |
 | `20250424.01` |                       | Alpha                                                                                   |
 | `20231207`    |                       | Alpha                                                                                   |
 | `20230616`    |                       | Alpha                                                                                   |

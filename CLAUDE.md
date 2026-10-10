@@ -51,7 +51,7 @@ Supported client builds live in `SUPPORTED_GAME_VERSIONS`
 - `20230414` — default, official. Manifest `7859140924515540835` (2023).
 - `20250718.01` — beta, official. Manifest `1151455856673601091`; reaches this server via
   the [patch-2025](https://github.com/recflare/patch-2025) patch.
-- `20250424.01`, `20231207`, `20230616` — alpha.
+- `20260323.14`, `20250424.01`, `20231207`, `20230616` — alpha.
 
 Builds are date-stamped (`YYYYMMDD[.NN]`) so they order as plain strings; several
 surfaces gate on "newer than `20230414`" (econ storefront catalog, `api` event tags,

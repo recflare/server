@@ -54,6 +54,7 @@ export const SUPPORTED_GAME_VERSIONS: string[] = [
 	'20230616', // alpha
 	'20231207', // alpha
 	'20250424.01', // alpha
+	'20260323.14', // alpha
 ]
 
 /** Whether a client-supplied build (the version check's `?v=`) is one we serve. */
