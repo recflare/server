@@ -123,12 +123,16 @@ inconsistency here without checking the client first.
   `UnityAsset`/`UnityAssetHash`, and there is no `Tags`. Three shapes of one save; keep
   them straight.
 - The save reads (`rooms`: `…/saves`, `…/saves/no_unity_assets` and `…/saves/:saveId`) are
-  auth-gated and readable by the room's creator, a CO-OWNER, or anyone whose live `presence`
-  row puts them in that room. They list unpublished staged saves, so they aren't public; but
-  a co-owner opens the save history from the room's settings without being in the room
-  (creator-only showed them the buttons and a list that 403'd), and a visitor resolves which
-  version an instance is running from this list, so managers-only locks them out of loading
-  the room. The presence grant expires with the presence row.
+  auth-gated and readable by the room's creator, a CO-OWNER, anyone whose live `presence`
+  row puts them in that room, or STAFF (a `developer`/`moderator` token). They list
+  unpublished staged saves, so they aren't public; but a co-owner opens the save history from
+  the room's settings without being in the room (creator-only showed them the buttons and a
+  list that 403'd), and a visitor resolves which version an instance is running from this
+  list, so managers-only locks them out of loading the room. The presence grant expires with
+  the presence row. The client reads `…/saves/no_unity_assets` BEFORE it matchmakes a private
+  instance, when the caller has no presence in the room yet, so presence alone cannot let a
+  non-owner create one: a developer creating a private instance of a room they hold no role
+  on was 403'd there until staff were let through.
 - A room save writes ONLY to the subroom and its save row — never to the room. Everything
   the body carries describes that one revision: `Description` is the save comment shown in
   `…/saves`, and `PersistenceVersion`/`InventionUsage` describe the scene just saved (the

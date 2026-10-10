@@ -443,8 +443,14 @@ async function handlePhotonAccessToken(c: Context<App>) {
  * lasts only as long as the player is actually there (rows carry an absolute expiry and
  * expired ones don't read back).
  *
- * The presence read only happens for someone who doesn't manage the room, so the owner's
- * and a co-owner's path stays one query.
+ * And so may staff — a token carrying the `developer` / `moderator` role — in any room,
+ * like the other room-admin surfaces here. They are not in the room yet when this is
+ * read: the client asks for the save list BEFORE it matchmakes a private instance (to
+ * resolve which version to load), so there is no presence to grant on, and a developer
+ * who runs none of a room's roles was refused a private instance of it with a 403.
+ *
+ * The presence read only happens for someone who neither manages the room nor is staff,
+ * so the owner's and a co-owner's path stays one query, and staff's stays none.
  */
 async function canReadSaves(
 	c: Context<App>,
@@ -453,6 +459,7 @@ async function canReadSaves(
 	accountId: number
 ): Promise<boolean> {
 	if (canManageRoom(room, accountId)) return true
+	if (await isStaff(c)) return true
 	const instance = (await getPresence<PresenceView>(c.env.DB, accountId))?.roomInstance
 	return instance?.roomId === roomId
 }
@@ -3668,7 +3675,7 @@ const app = new Hono<App>()
 	// A subroom's saved-data versions — the room-history / "restore a save" list. Every
 	// save is its own `subroom_save` row (nothing is overwritten), so this is real
 	// history, newest first, paged by skip/take. Auth-gated (401), and readable by the
-	// room's creator, a co-owner, or anyone whose presence puts them in the room (see
+	// room's creator, a co-owner, anyone whose presence puts them in the room, or staff (see
 	// `canReadSaves`).
 	.get(
 		'/rooms/:roomId{[0-9]+}/subrooms/:subRoomId{[0-9]+}/saves',
@@ -3684,7 +3691,8 @@ const app = new Hono<App>()
 				'',
 				'The list includes STAGED saves that were never published, so it is not public:',
 				'the room’s creator or a co-owner may read it, and so may anyone standing IN the room',
-				'(their live presence says so). Anyone else is a 403. It is what the client reads to resolve',
+				'(their live presence says so) and anyone whose token carries the `developer` /',
+				'`moderator` role. Anyone else is a 403. It is what the client reads to resolve',
 				'“load the latest or the published version?” on entering a private instance — a',
 				'visitor who cannot read it cannot load what the instance is running.',
 				'',
@@ -3757,8 +3765,9 @@ const app = new Hono<App>()
 				'paged wrapper, with no `{ success, error, value }` envelope around it.',
 				'',
 				'Gated exactly like `…/saves`, and for the same reason: the list includes STAGED',
-				'saves that were never published, so it is the room’s creator, a co-owner, or anyone',
-				'whose live presence puts them in the room, and anyone else is a 403.',
+				'saves that were never published, so it is the room’s creator, a co-owner, anyone',
+				'whose live presence puts them in the room, or staff (a `developer` / `moderator`',
+				'token), and anyone else is a 403.',
 				'',
 				'`TotalResults` and `TotalCount` carry the same number — the client’s paged DTO and',
 				'the reference disagree on the name, so both are emitted.',
@@ -3826,9 +3835,9 @@ const app = new Hono<App>()
 				'cannot read another’s save by guessing an id: a save that belongs elsewhere is a',
 				'404, same as an unknown one.',
 				'',
-				'Gated like the list it details — the room’s creator, a co-owner, or anyone whose',
-				'presence puts them in the room. A save id resolves whether or not it was ever published, so this',
-				'reads unpublished work.',
+				'Gated like the list it details — the room’s creator, a co-owner, anyone whose',
+				'presence puts them in the room, or staff (a `developer` / `moderator` token). A save id',
+				'resolves whether or not it was ever published, so this reads unpublished work.',
 			].join(' '),
 			security: AUTHED,
 			parameters: [

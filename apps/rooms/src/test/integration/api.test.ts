@@ -5782,6 +5782,15 @@ describe('rooms endpoints', () => {
 		expect((await get(light, '999')).status).toBe(200)
 		await clearPresence(999)
 		expect((await get(light, '999')).status).toBe(403)
+
+		// Staff read it from anywhere: the client asks for this list BEFORE it matchmakes a
+		// private instance, so a developer with no role on the room and no presence in it
+		// would otherwise be refused the instance.
+		const staff = async (roles: string[]) =>
+			SELF.fetch(`${ORIGIN}${light}`, { headers: await bearer('999', roles) })
+		expect((await staff(['gameClient', 'developer'])).status).toBe(200)
+		expect((await staff(['gameClient', 'moderator'])).status).toBe(200)
+		expect((await staff(['gameClient'])).status).toBe(403)
 	})
 
 	it('GET /rooms/:id/subrooms/:sid/saves/:saveId is the detail behind a history row', async () => {
