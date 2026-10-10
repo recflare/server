@@ -1,0 +1,16 @@
+-- The flag SEARCH filters on, as an indexed column — the search-side twin of
+-- `exclude_from_lists` (0014).
+--
+-- Generated from packages/domain/src/rooms-db.ts (ROOM_SCHEMA_DDL) — keep in sync.
+--
+-- `ExcludeFromLists` keeps a room out of the browse and discovery feeds; `ExcludeFromSearch`
+-- keeps it out of `/rooms/search` and the search box's suggestions. They are independent:
+-- a room may opt out of the feeds and still be findable by name, or the other way round.
+-- Until now nothing read `ExcludeFromSearch` at all, so an opted-out room was served by
+-- every search that matched it.
+--
+-- VIRTUAL like `exclude_from_lists`, so the blob stays the only copy and no backfill is
+-- needed. It is not added to `idx_room_public`: that partial index already narrows a search
+-- to the public, non-dorm rooms, and this term is then checked against the handful of rows
+-- it fetched — see SEARCHABLE_WHERE.
+ALTER TABLE room ADD COLUMN exclude_from_search INTEGER GENERATED ALWAYS AS (json_extract(data, '$.ExcludeFromSearch')) VIRTUAL;

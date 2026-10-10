@@ -273,10 +273,23 @@ beforeAll(async () => {
 			SubRooms: [],
 		} as Record<string, unknown>)
 	}
-	// Non-public and a dorm: neither belongs in a discovery row.
+	// Non-public, a dorm, and a public room OPTED OUT of lists: none belongs in a discovery
+	// row. Room 9 is built to lead every row it is wrongly let into — newest of all, tagged
+	// `quest`, and (in the hot test) occupied — so a feed that forgets `ExcludeFromLists`
+	// fails loudly rather than by luck of ordering.
 	for (const room of [
 		{ RoomId: 5, Name: 'SecretRoom', CreatorAccountId: 500, Accessibility: 0, IsDorm: false },
 		{ RoomId: 6, Name: '@Dorm', CreatorAccountId: 502, Accessibility: 1, IsDorm: true },
+		{
+			RoomId: 9,
+			Name: 'OptedOut',
+			CreatorAccountId: 505,
+			Accessibility: 1,
+			IsDorm: false,
+			ExcludeFromLists: true,
+			CreatedAt: '2026-04-01T00:00:00Z',
+			Tags: [{ Tag: 'quest', Type: 0 }],
+		},
 	]) {
 		await seedRoomWithSubRooms(env.DB, { ...room, SubRooms: [] } as Record<string, unknown>)
 	}
@@ -1201,6 +1214,9 @@ it('serves the live hot-room ranking for /algorithmiclists/HotList', async () =>
 	await putInRoom(904, 2)
 	await putInRoom(905, 2)
 	await putInRoom(906, 2)
+	// Room 9 is as busy as the leader and opted out of lists: it must not place.
+	await putInRoom(907, 9)
+	await putInRoom(908, 9)
 
 	const res = await SELF.fetch(`${ORIGIN}/algorithmiclists/HotList?type=1`)
 	expect(res.status).toBe(200)
@@ -1220,9 +1236,11 @@ it('serves the live hot-room ranking for /algorithmiclists/HotList', async () =>
 	// the Coach, whose stock rooms the hot row leaves out — a "Hot" row full of Rec Center
 	// is a row about the server rather than about what players are doing.
 	expect(ids).not.toContain('2')
-	// The private room and the dorm are not in it either.
+	// The private room and the dorm are not in it either, nor the public room whose
+	// `ExcludeFromLists` is set — busy as it is.
 	expect(ids).not.toContain('5')
 	expect(ids).not.toContain('6')
+	expect(ids).not.toContain('9')
 
 	// The row key is matched case-insensitively — it reaches us from a curated page's
 	// ItemIds, whose casing is the reference's.
@@ -1264,7 +1282,7 @@ it('orders /algorithmiclists/new by creation time', async () => {
 })
 
 it.each(['recentlyupdated', 'new'])(
-	'leaves stock, private and dorm rooms out of %s',
+	'leaves stock, private, dorm and list-excluded rooms out of %s',
 	async (list) => {
 		const ids = await rowIds(list)
 		// Room 2 is the Coach's — this server's stock rooms, which a row about what players have
@@ -1273,6 +1291,9 @@ it.each(['recentlyupdated', 'new'])(
 		// Not public, and a dorm.
 		expect(ids).not.toContain('5')
 		expect(ids).not.toContain('6')
+		// Public and player-made, but `ExcludeFromLists` — and the newest room seeded, so it
+		// would head `new` if the flag were ignored.
+		expect(ids).not.toContain('9')
 	}
 )
 
@@ -1338,6 +1359,8 @@ it('answers recentlyvisited empty for a caller with no history and no token', as
 it('serves the rooms tagged `quest` for /algorithmiclists/quests_algoendpoint', async () => {
 	const ids = await rowIds('quests_algoendpoint')
 	// Ordering is the hot feed's (live players, then engagement), so assert membership.
+	// Room 9 carries the tag too and is absent: a category row asks what a room is about,
+	// but `ExcludeFromLists` still keeps it out of every row.
 	expect([...ids].sort()).toEqual(['2', '3'])
 
 	// Room 2 is the COACH's and belongs here all the same. Every quest-tagged room this

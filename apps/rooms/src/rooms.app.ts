@@ -1179,8 +1179,9 @@ const app = new Hono<App>()
 	)
 
 	// Room search: `query` is space/`+`-separated terms — `#tag` matches room tags,
-	// plain terms match the name. Public, non-dorm rooms only. Paginated via
-	// skip/take. Returns `{ Results, TotalResults }`.
+	// plain terms match the name. Public, non-dorm rooms not opted out of search
+	// (`ExcludeFromSearch`) only — `ExcludeFromLists` is the feeds' flag and does not hide
+	// a room here. Paginated via skip/take. Returns `{ Results, TotalResults }`.
 	//
 	// `#community` is the one tag term that isn't a tag lookup: it is the browse chip's
 	// pseudo-tag reaching search, and means rooms a PLAYER made rather than the seeded
@@ -1192,7 +1193,9 @@ const app = new Hono<App>()
 			summary: 'Search rooms',
 			description: [
 				'Full room search. `query` is space- or `+`-separated terms: a `#tag` term matches the',
-				'room’s tags, a plain term matches its name. Public, non-dorm rooms only.',
+				'room’s tags, a plain term matches its name. Public, non-dorm rooms only, and never one',
+				'whose `ExcludeFromSearch` is set; `ExcludeFromLists` hides a room from the feeds, not',
+				'from here.',
 				'`#community` is a pseudo-tag no room carries — it narrows to rooms a player made',
 				'(anything the system Coach account didn’t create), like `/rooms/hot?tag=community`.',
 			].join(' '),
@@ -1218,8 +1221,9 @@ const app = new Hono<App>()
 	//
 	// Every suggestion is something `/rooms/search` will actually find, so submitting one
 	// can't come back empty: they're drawn from room names (what a plain search term
-	// matches) and room tags (what a `#tag` term matches), over the same public, non-dorm
-	// rooms search considers. Tags come back with their `#` for that reason.
+	// matches) and room tags (what a `#tag` term matches), over the same public, non-dorm,
+	// searchable rooms search considers — a room opted out of search is not suggested
+	// either. Tags come back with their `#` for that reason.
 	//
 	// `searchSessionId` is the client's own correlation id for a typing session — it ties
 	// the keystrokes and the eventual search together in the reference's analytics. Nothing
@@ -1231,8 +1235,9 @@ const app = new Hono<App>()
 			summary: 'Search suggestions for the search box',
 			description: [
 				'Type-ahead suggestions as a bare array of strings — not rooms, not an envelope.',
-				'Drawn from room names and room tags over the public, non-dorm rooms `/rooms/search`',
-				'searches, so every suggestion is one that finds something when submitted; a tag',
+				'Drawn from room names and room tags over the public, non-dorm, searchable rooms',
+				'`/rooms/search` searches, so every suggestion is one that finds something when',
+				'submitted and a room opted out of search is never suggested; a tag',
 				'suggestion carries its `#` so it searches by tag. A `query` starting with `#`',
 				'suggests tags only. Matches that START with the query come first, then ones that',
 				'merely contain it, alphabetically within each — the same query always suggests the',

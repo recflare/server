@@ -1204,7 +1204,7 @@ describe('rooms endpoints', () => {
 			IsDorm: false,
 			SubRooms: [],
 		})
-		// Same room, opted out.
+		// Same room, opted out of the feeds.
 		await seed({
 			RoomId: 30802,
 			Name: 'OptedOut',
@@ -1212,6 +1212,16 @@ describe('rooms endpoints', () => {
 			Accessibility: 1,
 			IsDorm: false,
 			ExcludeFromLists: true,
+			SubRooms: [],
+		})
+		// And one opted out of SEARCH instead — the other flag, which the feeds ignore.
+		await seed({
+			RoomId: 30803,
+			Name: 'Unsearchable',
+			CreatorAccountId: 830,
+			Accessibility: 1,
+			IsDorm: false,
+			ExcludeFromSearch: true,
 			SubRooms: [],
 		})
 
@@ -1224,13 +1234,22 @@ describe('rooms endpoints', () => {
 		for (const feed of ['/rooms/hot?take=200', '/rooms/recommendations?take=200']) {
 			expect(await namesIn(feed)).toContain('NoExcludeKey')
 			expect(await namesIn(feed)).not.toContain('OptedOut')
+			// `ExcludeFromSearch` is search's flag, not the feeds': the room still lists.
+			expect(await namesIn(feed)).toContain('Unsearchable')
 		}
 
-		// SEARCH is the wider filter (PUBLIC_WHERE): a room can opt out of the browse feeds
-		// and still be findable by name, so this must not have narrowed with the feeds.
+		// SEARCH is its own filter (SEARCHABLE_WHERE): a room can opt out of the browse feeds
+		// and still be findable by name, so this must not have narrowed with the feeds…
 		expect(await namesIn('/rooms/search?query=optedout')).toContain('OptedOut')
+		// …while a room opted out of SEARCH is not found, by name or by the missing key's
+		// opposite — and the suggestion box, which draws from the same rooms, never offers it.
+		expect(await namesIn('/rooms/search?query=unsearchable')).toEqual([])
+		expect(await namesIn('/rooms/search?query=noexcludekey')).toContain('NoExcludeKey')
+		expect(
+			await (await SELF.fetch(`${ORIGIN}/rooms/autocomplete_search?query=unsearch&take=10`)).json()
+		).toEqual([])
 
-		await env.DB.prepare('DELETE FROM room WHERE room_id IN (30801, 30802)').run()
+		await env.DB.prepare('DELETE FROM room WHERE room_id IN (30801, 30802, 30803)').run()
 	})
 
 	// Served only to the client builds that render it — the 2023 client's other room
