@@ -1798,6 +1798,81 @@ describe('rooms endpoints', () => {
 		})
 	})
 
+	it('PUT /rooms/:id/exclude is the staff listing toggle — both flags, together, staff only', async () => {
+		// A public room its owner lists. Not a game endpoint: the real service set these two
+		// flags from an admin tool, so the website's room page calls this with a staff token.
+		await env.DB.prepare('INSERT INTO room (data) VALUES (?1)')
+			.bind(
+				JSON.stringify({
+					RoomId: 9502,
+					Name: 'Delisted',
+					CreatorAccountId: 1,
+					IsDorm: false,
+					Accessibility: 1,
+					ImageName: '',
+					SubRooms: [],
+				})
+			)
+			.run()
+		const put = async (excluded: string, headers: Record<string, string>) =>
+			SELF.fetch(`${ORIGIN}/rooms/9502/exclude`, {
+				method: 'PUT',
+				headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded' },
+				body: `excluded=${excluded}`,
+			})
+		const flags = async () => {
+			const row = await env.DB.prepare('SELECT data FROM room WHERE room_id = 9502').first<{
+				data: string
+			}>()
+			const room = JSON.parse(row!.data) as Record<string, unknown>
+			return { lists: room.ExcludeFromLists, search: room.ExcludeFromSearch }
+		}
+
+		// No token is a 401; the OWNER is refused like any other player — this is moderation,
+		// not a room setting they have.
+		expect((await put('true', {})).status).toBe(401)
+		expect((await put('true', await bearer('1', ['gameClient']))).status).toBe(403)
+		expect(await flags()).toEqual({ lists: undefined, search: undefined })
+
+		const staff = await bearer('999', ['gameClient', 'moderator'])
+		const hidden = await put('true', staff)
+		expect(hidden.status).toBe(200)
+		expect(await hidden.json()).toMatchObject({
+			success: true,
+			error: '',
+			value: { RoomId: 9502, ExcludeFromLists: true, ExcludeFromSearch: true },
+		})
+		// Proper JSON booleans, not 1/0 — the virtual columns and the feeds read them as such.
+		expect(await flags()).toEqual({ lists: true, search: true })
+
+		// Hidden means hidden from search too, not just the feeds.
+		const search = await SELF.fetch(`${ORIGIN}/rooms/search?query=Delisted`)
+		const found = ((await search.json()) as { Results: Array<{ RoomId: number }> }).Results
+		expect(found.find((r) => r.RoomId === 9502)).toBeUndefined()
+
+		// And it flips back, both at once.
+		expect(await (await put('false', staff)).json()).toMatchObject({
+			success: true,
+			value: { ExcludeFromLists: false, ExcludeFromSearch: false },
+		})
+		expect(await flags()).toEqual({ lists: false, search: false })
+
+		// Anything but true/false is a rejection in the envelope, and writes nothing.
+		expect(await (await put('maybe', staff)).json()).toMatchObject({ success: false })
+		expect(await flags()).toEqual({ lists: false, search: false })
+
+		// Each staff write is audited against the moderator, with what it did.
+		const { results: audit } = await env.DB.prepare(
+			'SELECT player_id, data FROM audit_log WHERE action = ?1 ORDER BY audit_log_id'
+		)
+			.bind('room_exclude')
+			.all<{ player_id: number; data: string }>()
+		expect(audit.map((row) => ({ by: row.player_id, ...JSON.parse(row.data) }))).toEqual([
+			{ by: 999, roomId: 9502, name: 'Delisted', creatorAccountId: 1, excluded: true },
+			{ by: 999, roomId: 9502, name: 'Delisted', creatorAccountId: 1, excluded: false },
+		])
+	})
+
 	it('PUT /rooms/:id/roles/:accountId grants a helper role outright, but never co-owner', async () => {
 		type Role = {
 			AccountId: number
@@ -5999,6 +6074,7 @@ describe('rooms endpoints', () => {
 			'PUT /rooms/{roomId}/cloning',
 			'PUT /rooms/{roomId}/creator',
 			'PUT /rooms/{roomId}/description',
+			'PUT /rooms/{roomId}/exclude',
 			'PUT /rooms/{roomId}/image',
 			'PUT /rooms/{roomId}/interactionby/me/cheer',
 			'PUT /rooms/{roomId}/interactionby/me/favorite',

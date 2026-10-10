@@ -113,6 +113,7 @@ import {
 	CuratedPlaylists,
 	DescriptionRequest,
 	DormRoomId,
+	ExcludeRequest,
 	ExperienceIncrementRequest,
 	ExperienceRequest,
 	FeaturedRoomGroupDto,
@@ -3579,6 +3580,91 @@ const app = new Hono<App>()
 		}
 	)
 
+	// Hide a room from the feeds and from search, or list it again — the staff listing
+	// toggle on the website's room page. NOT a game endpoint: the real service set
+	// `ExcludeFromLists` / `ExcludeFromSearch` from an admin tool, and the client has no
+	// screen for either, so this is recflare's own and is staff-only — the owner has
+	// `Accessibility` for hiding their own room. The two flags are independent in the reads
+	// (see LISTABLE_WHERE / SEARCHABLE_WHERE) but are set TOGETHER here: a room moderation
+	// pulls from the listings is meant to be unfindable, not merely un-browsable.
+	.put(
+		'/rooms/:roomId{[0-9]+}/exclude',
+		describeRoute({
+			tags: ['Custom', 'Room settings'],
+			summary: 'Hide a room from the listings and search (staff)',
+			description: [
+				'Sets `ExcludeFromLists` AND `ExcludeFromSearch` together to the posted `excluded`.',
+				'Staff only — a token carrying the `developer` / `moderator` role; the room’s owner',
+				'is refused (403) like anyone else, since this is a moderation action rather than a',
+				'room setting. The room stays reachable by link and by matchmake; it simply stops',
+				'appearing in the browse feeds, search and autocomplete. Not an endpoint the game',
+				'client calls — the website’s room page uses it. Written to the audit log.',
+			].join(' '),
+			security: AUTHED,
+			parameters: [roomIdParam],
+			requestBody: form(ExcludeRequest, 'Whether the room is hidden'),
+			responses: {
+				200: json(RoomEnvelope, 'The updated room, or a rejection with `success: false`'),
+				401: UNAUTHORIZED_RESPONSE,
+				403: FORBIDDEN_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const accountId = await authedAccountId(c)
+			if (accountId === null) return unauthorized(c)
+			if (!(await isStaff(c))) return c.body(null, 403)
+
+			const body = (await c.req.parseBody().catch(() => ({}))) as Record<string, unknown>
+			const excluded =
+				body.excluded === 'true' || body.excluded === '1'
+					? true
+					: body.excluded === 'false' || body.excluded === '0'
+						? false
+						: null
+			if (excluded === null) {
+				return roomEnvelope(c, null, 'You must provide a valid excluded!')
+			}
+
+			const roomId = Number.parseInt(c.req.param('roomId'), 10)
+			const room = await getRoomById(c.env.DB, roomId)
+			if (!room) return roomEnvelope(c, null, 'This room does not exist!')
+
+			const updated = await updateRoomFields(c.env.DB, roomId, room, {
+				ExcludeFromLists: excluded,
+				ExcludeFromSearch: excluded,
+			})
+
+			// Always a staff action on somebody's room, so always audited — the owner can't
+			// get here. Written after the fact and caught, like the takedown's row: a failed
+			// insert must not report a change that has already happened as refused.
+			try {
+				await writeAuditLog(c.env.DB, {
+					playerId: accountId,
+					action: 'room_exclude',
+					data: {
+						roomId,
+						name: room.Name,
+						creatorAccountId: room.CreatorAccountId,
+						excluded,
+					},
+				})
+			} catch (err) {
+				logger.error('could not write an audit log row', {
+					action: 'room_exclude',
+					playerId: accountId,
+					roomId,
+					error: err instanceof Error ? err.message : String(err),
+				})
+			}
+
+			// The owner's client, if it's open, re-renders the room from this.
+			if (typeof room.CreatorAccountId === 'number') {
+				await pushRoomUpdate(c, room.CreatorAccountId, updated)
+			}
+			return roomEnvelope(c, updated)
+		}
+	)
+
 	// A subroom's saved-data versions — the room-history / "restore a save" list. Every
 	// save is its own `subroom_save` row (nothing is overwritten), so this is real
 	// history, newest first, paged by skip/take. Auth-gated (401), and readable by the
@@ -4934,6 +5020,16 @@ app.get(
 					].join('\n'),
 				},
 				servers: [{ url: 'https://rooms.recflare.net', description: 'Production' }],
+				tags: [
+					{
+						name: 'Custom',
+						description: [
+							'Endpoints the game client never calls. Everything else here reimplements a',
+							'call the Rec Room client makes; these are recflare’s own additions, used by the',
+							'website (`www`) for things the real service did from an admin tool.',
+						].join(' '),
+					},
+				],
 				components: {
 					securitySchemes: {
 						bearerAuth: {

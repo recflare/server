@@ -135,6 +135,13 @@ interface OwnedRoom {
 	MaxPlayers: number
 	/** False blocks `POST /rooms/{id}/clone` — nobody can take a copy of the room. */
 	CloningAllowed: boolean
+	/**
+	 * The staff listing flags: out of the browse feeds, and out of search. Set together
+	 * through the website (`PUT /rooms/{id}/exclude`); absent on a room nobody has touched,
+	 * which reads as listed.
+	 */
+	ExcludeFromLists?: boolean
+	ExcludeFromSearch?: boolean
 	SupportsScreens: boolean
 	SupportsWalkVR: boolean
 	SupportsTeleportVR: boolean
@@ -1001,6 +1008,23 @@ async function deleteRoom(roomId: number): Promise<void> {
 		{ method: 'DELETE', authed: true }
 	)
 	if (!result.Success) throw new Error(result.Error || 'The room couldn’t be deleted.')
+}
+
+/**
+ * Hide a room from the feeds and search, or list it again — the staff toggle. Not a game
+ * endpoint (the real service set these flags from an admin tool), so it is recflare's own
+ * on `rooms`, staff-only: the owner is refused like anyone else. Both flags move together.
+ * Answers the lowercase `{ success, error, value }` envelope with the updated room.
+ */
+async function setRoomExcluded(roomId: number, excluded: boolean): Promise<OwnedRoom> {
+	const result = await call<{ success: boolean; error: string; value: OwnedRoom | null }>(
+		`${where().rooms}/rooms/${roomId}/exclude`,
+		{ method: 'PUT', authed: true, form: { excluded: String(excluded) } }
+	)
+	if (!result.success || result.value === null) {
+		throw new Error(result.error || 'The room’s listing couldn’t be changed.')
+	}
+	return result.value
 }
 
 /** The `/u/<username>` path, or null for any other path. */
@@ -2600,6 +2624,7 @@ function RoomPage({
 					room={room}
 					navigate={navigate}
 					onTakenDown={() => setTakenDown(room.Name)}
+					onRoomChange={setRoom}
 				/>
 			) : (
 				<p className="muted">
@@ -2621,10 +2646,13 @@ function PublicRoomView({
 	room,
 	navigate,
 	onTakenDown,
+	onRoomChange,
 }: {
 	room: OwnedRoom
 	navigate: Navigate
 	onTakenDown: () => void
+	/** A staff edit answers with the updated room; the page re-renders from it. */
+	onRoomChange: (room: OwnedRoom) => void
 }) {
 	const [creator, setCreator] = useState<{ username: string; displayName: string } | null>(null)
 	const [photos, setPhotos] = useState<PublicPhoto[] | null>(null)
@@ -2699,10 +2727,11 @@ function PublicRoomView({
 			</section>
 
 			{/* Staff only, and cosmetic: hidden for everyone else, but `rooms` checks the token's
-			    role itself on the DELETE. */}
+			    role itself on the DELETE and the listing PUT. */}
 			{isAdmin() && (
 				<>
 					{isDeveloper() && <StaffRoomTokens room={room} />}
+					<StaffListing room={room} onRoomChange={onRoomChange} />
 					<StaffTakedown room={room} onTakenDown={onTakenDown} />
 				</>
 			)}
@@ -2782,6 +2811,61 @@ function StaffRoomTokens({ room }: { room: OwnedRoom }) {
 				{error && <p className="error">{error}</p>}
 				{done && <p className="ok">{done}</p>}
 			</form>
+		</section>
+	)
+}
+
+/**
+ * The staff listing toggle: one checkbox that sets `ExcludeFromLists` and `ExcludeFromSearch`
+ * together, so a room moderation pulls is gone from the feeds AND unfindable by name, not one
+ * without the other. The lighter hand next to the takedown — the room, its saves and its
+ * link all survive, it just stops being advertised. Writes on change; the room on screen is
+ * swapped for the one the worker answers with, so the box reflects what was stored.
+ */
+function StaffListing({
+	room,
+	onRoomChange,
+}: {
+	room: OwnedRoom
+	onRoomChange: (room: OwnedRoom) => void
+}) {
+	const { pending, error, done, run } = useAction()
+	const hidden = room.ExcludeFromLists === true && room.ExcludeFromSearch === true
+
+	return (
+		<section className="card">
+			<h2>Listing</h2>
+			<label className="check">
+				<input
+					type="checkbox"
+					checked={hidden}
+					disabled={pending}
+					onChange={(e) => {
+						const excluded = e.target.checked
+						void run(async () => {
+							const updated = await setRoomExcluded(room.RoomId, excluded)
+							// Only the flags are taken: the envelope's room is the stored record,
+							// without the live counters the public lookup folds in.
+							onRoomChange({
+								...room,
+								ExcludeFromLists: updated.ExcludeFromLists === true,
+								ExcludeFromSearch: updated.ExcludeFromSearch === true,
+							})
+							return excluded
+								? `^${room.Name} is hidden from the listings and search.`
+								: `^${room.Name} is listed again.`
+						})
+					}}
+				/>
+				Hide from listings and search
+			</label>
+			<p className="hint">
+				Keeps the room out of every browse feed, search and autocomplete. It stays reachable by link
+				and by invite, and its creator keeps everything. Sets both the lists and search exclusions
+				at once.
+			</p>
+			{error && <p className="error">{error}</p>}
+			{done && <p className="ok">{done}</p>}
 		</section>
 	)
 }

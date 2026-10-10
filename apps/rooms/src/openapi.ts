@@ -813,6 +813,20 @@ export const AccessibilityRequest = z.object({
 })
 
 /**
+ * `PUT /rooms/{roomId}/exclude` — the staff listing toggle. Not a game endpoint: the real
+ * service set `ExcludeFromLists` / `ExcludeFromSearch` from an admin tool the client never
+ * had a screen for, so this is recflare's own, called from the website's room page.
+ */
+export const ExcludeRequest = z.object({
+	excluded: z
+		.string()
+		.describe(
+			'`true` hides the room from every browse feed AND from search; `false` lists it again. ' +
+				'Both flags are always set together.'
+		),
+})
+
+/**
  * `PUT /rooms/{roomId}/subrooms/{subRoomId}/accessibility`. Unlike the room-level route
  * above, the client sends the enum NAME here (`accessibility=Private`), so both the name
  * and the number are accepted.
