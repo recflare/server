@@ -1017,14 +1017,19 @@ export const OutfitsBulkRequest = z.object({
 /**
  * `POST /outfits/bulk` — the worn outfit of each account asked for, keyed by account id.
  *
- * The key is the id as a STRING (a JSON object key always is) and the value is the same
- * stored outfit `GET /outfits/me` serves. An account with nothing saved is ABSENT from the
- * map rather than present with a null — a map expresses "no outfit" by not carrying the key.
+ * The key is the id as a STRING (a JSON object key always is) and the value is the stored
+ * outfit `GET /outfits/me` serves, less any selection naming an item the wearer does not own
+ * (see `restrictOutfitToOwned` in @repo/domain) — this is what other players dress them
+ * from. An account with nothing saved is ABSENT from the map rather than present with a
+ * null — a map expresses "no outfit" by not carrying the key.
  */
 export const OutfitsBulkResponse = z.object({
 	OutfitsByAccountId: z
 		.record(z.string(), StoredOutfit)
-		.describe('Keyed by account id as a string. Accounts with no saved outfit are omitted'),
+		.describe(
+			'Keyed by account id as a string. Accounts with no saved outfit are omitted. ' +
+				'Selections naming items the wearer does not own are stripped'
+		),
 })
 
 /**

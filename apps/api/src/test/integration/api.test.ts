@@ -24,6 +24,7 @@ import {
 	ROOM_INSTANCE_SCHEMA_DDL,
 	ROOM_SCHEMA_DDL,
 	seedRoomWithSubRooms,
+	setOutfit,
 	SUBROOM_SCHEMA_DDL,
 	SUPPORTED_GAME_VERSIONS,
 } from '@repo/domain'
@@ -38,6 +39,11 @@ import {
 	SYSTEM_SENDER_ID,
 	THREAD_SCHEMA_DDL,
 } from '../../../../chat/src/thread-db'
+import {
+	grantCustomAvatarItem,
+	INVENTORY_CUSTOM_SCHEMA_DDL,
+} from '../../../../econ/src/inventory-custom-db'
+import { grantItem, INVENTORY_SCHEMA_DDL } from '../../../../econ/src/inventory-db'
 import priceCapSql from '../../../migrations/0032_custom_avatar_item_price_cap.sql?raw'
 import inventionPriceCapSql from '../../../migrations/0033_invention_price_cap.sql?raw'
 import { banEvasionMatch, resolveBan } from '../../bans-db'
@@ -173,6 +179,10 @@ beforeAll(async () => {
 
 	// Outfit table (owned by the econ worker) — /outfits/me reads and writes slot 0.
 	for (const stmt of OUTFIT_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	// Bought items and bought custom items (owned by the econ worker) — /outfits/bulk strips
+	// what a wearer doesn't own.
+	for (const stmt of INVENTORY_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	for (const stmt of INVENTORY_CUSTOM_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 
 	// Inventions table (owned by the api worker) — invention save/mine use it.
 	for (const stmt of INVENTIONS_SCHEMA_DDL) await env.DB.prepare(stmt).run()
@@ -2055,6 +2065,172 @@ describe('public endpoints', () => {
 			body: 'not json',
 		})
 		expect(bad.status).toBe(400)
+	})
+
+	test('POST /outfits/bulk strips the selections a wearer does not own', async () => {
+		const bulk = async (ids: number[]) => {
+			const res = await exports.default.fetch(`${ORIGIN}/outfits/bulk`, {
+				method: 'POST',
+				headers: { ...(await bearer('42')), 'content-type': 'application/json' },
+				body: JSON.stringify({ AccountIds: ids, UnityAssetTarget: null, UnityAssetVersion: null }),
+			})
+			expect(res.status).toBe(200)
+			return ((await res.json()) as { OutfitsByAccountId: Record<string, unknown> })
+				.OutfitsByAccountId
+		}
+		const save = async (sub: string, outfit: unknown) => {
+			const res = await exports.default.fetch(`${ORIGIN}/outfits/me`, {
+				method: 'PUT',
+				headers: { ...(await bearer(sub)), 'content-type': 'application/json' },
+				body: JSON.stringify(outfit),
+			})
+			expect(res.status).toBe(200)
+		}
+
+		// Base assets: one from the free default catalog, the base item custom shirts are built
+		// on, one account 301 BOUGHT (in a colour — the inventory key is the whole descriptor),
+		// and one nobody owns.
+		const free = '5cd08cfb-c729-4c30-96d9-6a99bb934d91'
+		const base = 'c5d70cb4-71dd-4fe4-b719-34fe2073c611'
+		const bought = 'aaaaaaaa-1111-4222-8333-444444444444'
+		const unowned = 'bbbbbbbb-1111-4222-8333-444444444444'
+		await grantItem(env.DB, 301, {
+			AvatarItemType: 0,
+			AvatarItemDesc: `${bought},51ef8d39-2b94-4f9e-9620-07b6b0a913a5,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,`,
+			PlatformMask: -1,
+			FriendlyName: 'Bought Hat',
+			Tooltip: '',
+			Rarity: 1,
+		})
+		// Custom items: one 301 made, one they bought from 999, one of 999's they never bought.
+		const custom = async (customAvatarItemId: string, creatorAccountId: number) =>
+			createCustomAvatarItem(env.DB, {
+				customAvatarItemId,
+				creatorAccountId,
+				name: customAvatarItemId,
+				description: '',
+				price: 0,
+				baseAvatarItemId: 2184,
+				baseAvatarItemColor: '#F55C1A',
+				accessibility: 1,
+				designFilename: 'd.png',
+				thumbnailImageFilename: 't.png',
+			})
+		const made = (await custom('cccccccc-1111-4222-8333-444444444444', 301)).CustomAvatarItemId
+		const boughtCustom = (await custom('dddddddd-1111-4222-8333-444444444444', 999))
+			.CustomAvatarItemId
+		const unownedCustom = (await custom('eeeeeeee-1111-4222-8333-444444444444', 999))
+			.CustomAvatarItemId
+		await grantCustomAvatarItem(env.DB, 301, boughtCustom)
+
+		const selection = (PrefabGuid: string, BodyPart: number, customId?: string) => ({
+			PrefabGuid,
+			CombinationGuid: '',
+			BodyPart,
+			...(customId === undefined
+				? {}
+				: {
+						UgcOutfitData: {
+							BaseAvatarItemColor: { r: 0, g: 0, b: 0, a: 0 },
+							CustomAvatarItemId: customId,
+						},
+					}),
+		})
+		// Guid case is not identity — the client is not consistent about it — so the bought
+		// base rides upper-cased in the v2 list.
+		const v2 = {
+			selections: [
+				selection(free, 1),
+				selection(bought.toUpperCase(), 0),
+				selection(unowned, 2),
+				selection(base, 3, made),
+				selection(base, 4, boughtCustom.toUpperCase()),
+				selection(base, 5, unownedCustom),
+			],
+		}
+		// Only the header of `CustomizationSettings` has been observed; whatever selections it
+		// carries are found wherever they sit, by the same rule.
+		const settings = {
+			AvatarVersion: 2,
+			AvatarBodyType: 0,
+			Body: { Items: [selection(free, 1), selection(unowned, 2)] },
+		}
+		const envelope = (
+			SelectionsV1: string,
+			SelectionsV2: string,
+			CustomizationSettings: string
+		) => ({
+			DataVersion: 2,
+			LegacyData: {
+				SelectionsV1,
+				SelectionsV2,
+				FaceFeatures: '{"ver":7}',
+				SkinColor: 'skin',
+				HairColor: 'hair',
+			},
+			CustomizationSettings,
+			Selections: [],
+			Slot: 0,
+			Name: '',
+			Accessibility: 1,
+			ThumbnailFileName: null,
+		})
+		const saved = envelope(
+			`${free},,1;${bought},51ef8d39-2b94-4f9e-9620-07b6b0a913a5,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,,0;${unowned},,2;${base},,3`,
+			JSON.stringify(v2),
+			JSON.stringify(settings)
+		)
+		await save('301', saved)
+
+		// Account 303 wears only free things: served byte-for-byte as saved.
+		const allFree = envelope(
+			`${free},,1;${base},,0`,
+			JSON.stringify({ selections: [selection(free, 1)] }),
+			JSON.stringify({ AvatarVersion: 2, AvatarBodyType: 0 })
+		)
+		await save('303', allFree)
+
+		// Account 302 saved through econ's flat shape (`/api/avatar/v3/saved/set`), which lands
+		// in the same table: the flat fields are stripped the same way.
+		const flat = {
+			Slot: 0,
+			PreviewImageName: null,
+			OutfitSelections: `${free},,1;${unowned},,0`,
+			OutfitSelectionsV2: JSON.stringify({
+				selections: [selection(free, 1), selection(unowned, 0)],
+			}),
+			FaceFeatures: '{"ver":6}',
+			SkinColor: 'skin',
+			HairColor: 'hair',
+			CustomAvatarItems: [{ CustomAvatarItemId: unownedCustom }],
+		}
+		await setOutfit(env.DB, 302, flat)
+
+		const outfits = await bulk([301, 302, 303])
+
+		// 301: the unowned base is gone from every form, the unbought custom item too; the
+		// free, bought (either case), made and bought-custom selections stay. The documents
+		// are re-encoded only because something was removed from them.
+		expect(outfits['301']).toEqual(
+			envelope(
+				`${free},,1;${bought},51ef8d39-2b94-4f9e-9620-07b6b0a913a5,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,,0;${base},,3`,
+				JSON.stringify({ selections: v2.selections.filter((_, i) => i !== 2 && i !== 5) }),
+				JSON.stringify({ ...settings, Body: { Items: [selection(free, 1)] } })
+			)
+		)
+		expect(outfits['302']).toEqual({
+			...flat,
+			OutfitSelections: `${free},,1`,
+			OutfitSelectionsV2: JSON.stringify({ selections: [selection(free, 1)] }),
+			CustomAvatarItems: [],
+		})
+		expect(outfits['303']).toEqual(allFree)
+
+		// The owner's own read is untouched: what they saved is what they get back.
+		const mine = await exports.default.fetch(`${ORIGIN}/outfits/me`, {
+			headers: await bearer('301'),
+		})
+		expect(await mine.json()).toEqual(saved)
 	})
 
 	test('PUT /outfits/me 400s on an unparseable body', async () => {

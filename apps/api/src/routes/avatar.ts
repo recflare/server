@@ -6,14 +6,22 @@ import {
 	getOutfit,
 	getOutfits,
 	getOutfitsByAccounts,
+	getOwnedOutfitItemsByAccounts,
 	inventionDescriptionRejection,
 	inventionLongDescriptionRejection,
 	inventionNameRejection,
 	inventionTagRejection,
 	MAX_BULK_OUTFIT_ACCOUNTS,
+	outfitItemBase,
+	restrictOutfitToOwned,
 	setOutfit,
 } from '@repo/domain'
 
+// The free catalog, as the econ worker bundles it: what `GET /api/avatar/v4/items` hands
+// every player before their purchases, and the base items custom clothing is built on.
+// Read here so the bulk outfit read knows which worn items need no purchase.
+import defaultAvatarItems from '../../../econ/static/default-avatar-items.json'
+import defaultBaseAvatarItems from '../../../econ/static/default-base-avatar-items.json'
 import {
 	createCustomAvatarItem,
 	deleteCustomAvatarItem,
@@ -133,6 +141,19 @@ import type { InventionTag, SavedInvention } from '../inventions-db'
  * client doing something other than filling a screen.
  */
 const BULK_CUSTOM_AVATAR_ITEM_CAP = 100
+
+/**
+ * The base assets every player may wear without buying anything: the default catalog econ
+ * hands everyone (`GET /api/avatar/v4/items` prepends purchases to it) and the base items
+ * custom clothing is built on. Folded into each wearer's owned set when `POST /outfits/bulk`
+ * strips unowned selections — see `restrictOutfitToOwned` for why ownership is decided on
+ * the base asset.
+ */
+const FREE_ITEM_BASES: ReadonlySet<string> = new Set(
+	[...defaultAvatarItems, ...defaultBaseAvatarItems].map((item) =>
+		outfitItemBase(item.AvatarItemDesc)
+	)
+)
 
 /**
  * The ids `POST /api/customAvatarItems/v1/bulk` was asked to resolve. They ride as repeated
@@ -1092,6 +1113,11 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 	// id, and a list would make it match up the order itself. An account with nothing saved is
 	// left out of the map — see `getOutfitsByAccounts`.
 	//
+	// This is how OTHER players see an outfit, so it is served with the selections the wearer
+	// does not own stripped: nothing on the save path checks ownership, and an edited save
+	// would otherwise dress a player in items they never bought for the whole room to see.
+	// The owner's own `GET /outfits/me` stays verbatim.
+	//
 	// `UnityAssetTarget` / `UnityAssetVersion` name the baked-asset build the client would
 	// like the outfits for. Nothing here bakes assets, so both are accepted and ignored.
 	.post(
@@ -1103,8 +1129,12 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 				'The worn outfit (slot 0) of each account in `AccountIds`, keyed by account id — the ' +
 				'call the client makes to dress a room full of players in one request.\n\n' +
 				'A MAP rather than a list: the client looks each player up by id. The key is the id ' +
-				'as a string, and the value is the same stored outfit `GET /outfits/me` serves, ' +
-				'handed back exactly as it was saved. An account with nothing saved in slot 0 is ' +
+				'as a string, and the value is the stored outfit `GET /outfits/me` serves, LESS any ' +
+				'selection naming an item the wearer does not own: a base asset that is neither in ' +
+				'the free default catalog nor on any item they bought, or a custom item they ' +
+				'neither bought nor made. The save path checks nothing, and this read is what ' +
+				'everyone else dresses the player from. An outfit that loses nothing is served ' +
+				'exactly as saved. An account with nothing saved in slot 0 is ' +
 				'ABSENT from the map rather than carrying a null — a map says “no outfit” by not ' +
 				'having the key, and inventing one for a player who has never saved would dress them ' +
 				'in something they never chose.\n\n' +
@@ -1141,8 +1171,21 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 			}
 
 			const outfits = await getOutfitsByAccounts(c.env.DB, accountIds, CURRENT_OUTFIT_SLOT)
+			// What each wearer may wear, read for the accounts that HAVE an outfit: a selection
+			// naming an item the wearer never bought is dropped before anyone else dresses them
+			// in it. The free catalog counts as owned; see `restrictOutfitToOwned`.
+			const owned = await getOwnedOutfitItemsByAccounts(
+				c.env.DB,
+				[...outfits.keys()],
+				FREE_ITEM_BASES
+			)
 			const OutfitsByAccountId: Record<string, unknown> = {}
-			for (const [accountId, outfit] of outfits) OutfitsByAccountId[String(accountId)] = outfit
+			for (const [accountId, outfit] of outfits) {
+				const wearable = owned.get(accountId)
+				OutfitsByAccountId[String(accountId)] = wearable
+					? restrictOutfitToOwned(outfit, wearable)
+					: outfit
+			}
 			return c.json({ OutfitsByAccountId })
 		}
 	)

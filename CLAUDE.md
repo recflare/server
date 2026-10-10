@@ -287,6 +287,19 @@ inconsistency here without checking the client first.
   other implementations set it at all, it names the start of a voice-chat timeout. Other
   implementations with timed bans keep their set-time private and serve the remainder on
   every read; `banned_at` here is the staff panel's audit trail, not the client's.
+- An outfit is served to OTHER players (`api`: `POST /outfits/bulk`) with the selections the
+  wearer does not own stripped (`restrictOutfitToOwned` in `@repo/domain`); the owner's
+  `GET /outfits/me` stays verbatim. Nothing on the save path checks ownership. A legacy
+  selection entry (`SelectionsV1`/`OutfitSelections`, `;`-delimited) is
+  `<AvatarItemDesc>,<extra>,<bodyPart>` with the descriptor's empty trailing fields dropped,
+  which is why `5cd08cfb-…,,1` and `40528de7-…,51ef8d39-…,0b2395e1-…,,0` are both one entry;
+  a v2 selection (`SelectionsV2`/`OutfitSelectionsV2`, JSON-in-a-string) names the item as
+  `PrefabGuid` and a custom shirt as `UgcOutfitData.CustomAvatarItemId`. Ownership is decided
+  on the BASE ASSET (first descriptor field, which is `PrefabGuid`) — not the colour — because
+  the v2 forms carry no colour and the forms must agree; the free default catalog and the
+  custom-clothing base items count as owned. `CustomizationSettings` has only been observed
+  as its header (`AvatarVersion`, `AvatarBodyType`); any v2-shaped selections inside it are
+  stripped wherever they sit. A document is re-encoded only when something was removed.
 - Accessibility is sent as the `RoomAccessibility` enum NAME on
   `rooms` `PUT /rooms/:id/subrooms/:sid/accessibility` (`accessibility=Private`), not the
   ordinal the room-level `/rooms/:id/accessibility` takes. The enum has five members
