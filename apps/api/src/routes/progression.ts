@@ -13,7 +13,7 @@ import { logger } from '@repo/hono-helpers'
 // The notification-type ids the hub carries (owned by the `notify` worker). Imported as a
 // value — the enum has no runtime dependencies.
 import { NotificationType } from '../../../notify/src/notification-types'
-import { authedId, parseFormIds, queryIds, unauthorized } from '../http'
+import { authedId, authedRoles, parseFormIds, queryIds, unauthorized } from '../http'
 import {
 	AUTHED,
 	BareInteger,
@@ -450,9 +450,22 @@ export const progressionRoutes = new Hono<App>({ strict: false })
 
 			const body = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>)
 			const category = asInt(formField(body, c, 'CheerCategory'))
-			if (category === null || !(category === CheerCategory.None || isCheerCategory(category))) {
+			if (
+				category === null ||
+				!(
+					category === CheerCategory.None ||
+					category === CheerCategory.RecRoomDeveloper ||
+					isCheerCategory(category)
+				)
+			) {
 				return cheerResult(c, 'CheerCategory is not a cheer category')
 			}
+			// Employee is a selectable staff badge, not a cheer that players can give.
+			if (
+				category === CheerCategory.RecRoomDeveloper &&
+				!(await authedRoles(c))?.includes('developer')
+			)
+				return cheerResult(c, 'Developer access is required for the employee badge')
 
 			const reputation = await setSelectedCheer(c.env.DB, id, category)
 			await pushReputation(c, id, reputationFrame(reputation))

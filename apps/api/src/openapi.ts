@@ -342,7 +342,7 @@ export const SetSelectedCheerRequest = z.object({
 	CheerCategory: z
 		.string()
 		.describe(
-			'The category to pin: 0 General, 10 Helpful, 20 Sportmanship, 30 GreatHost, 40 Creative; -1 unpins'
+			'The category to pin: 0 General, 10 Helpful, 20 Sportmanship, 30 GreatHost, 40 Creative; 9000 employee (developer only); -1 unpins'
 		),
 })
 

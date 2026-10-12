@@ -323,8 +323,23 @@ describe('public endpoints', () => {
 	}
 	const KEY_2025_ONLY = 'Avatars.AdvancedFaceCustomizationEnabled'
 
+	test('GET /api/gameconfigs/v1/all enables only the 2026 Roomie companion', async () => {
+		for (const version of ['20260323.14', '20250718.01']) {
+			const res = await exports.default.fetch(`${ORIGIN}/api/gameconfigs/v1/all`, {
+				headers: await bearer('42', undefined, version),
+			})
+			expect(res.status).toBe(200)
+			const entries = (await res.json()) as Array<{ Key: string; Value: string }>
+			const configs = Object.fromEntries(entries.map((entry) => [entry.Key, entry.Value]))
+			expect(configs['RoomieAI.System.Enabled']).toBe(version === '20260323.14' ? 'true' : 'False')
+			expect(configs['RoomieAI.SupportNoAIMode']).toBe('true')
+			expect(configs['RoomieAI.SupportLowEnergyMode']).toBe('true')
+			expect(entries.filter((entry) => entry.Key === 'RoomieAI.System.Enabled')).toHaveLength(1)
+		}
+	})
+
 	test('GET /api/gameconfigs/v1/all serves the 2025 catalog to a newer build', async () => {
-		for (const version of ['20250718.01', '20250424.01', '20231207']) {
+		for (const version of ['20260323.14', '20250718.01', '20250424.01', '20231207']) {
 			expect(await gameConfigKeys(version), version).toContain(KEY_2025_ONLY)
 		}
 	})
@@ -701,6 +716,21 @@ describe('public endpoints', () => {
 		).toBe(401)
 	})
 
+	test('employee badge is selectable only by a verified developer and remains a pin, not a giveable cheer', async () => {
+		const pin = async (roles: string[]) =>
+			exports.default.fetch(`${ORIGIN}/api/PlayerCheer/v1/SetSelectedCheer`, {
+				method: 'POST',
+				headers: await bearer('7145', roles),
+				body: new URLSearchParams({ CheerCategory: '9000' }),
+			})
+		expect(await (await pin(['gameClient'])).json()).toMatchObject({ Success: false })
+		expect((await getReputation(env.DB, 7145)).SelectedCheer).toBe(0)
+		expect(await (await pin(['developer'])).json()).toMatchObject({ Success: true })
+		expect((await getReputation(env.DB, 7145)).SelectedCheer).toBe(9000)
+		expect(
+			await (await cheer({ PlayerIdTo: '7146', CheerCategory: '9000' }, '7145')).json()
+		).toMatchObject({ Success: false })
+	})
 	test('cheering needs a token', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/api/PlayerCheer/v1/create`, {
 			method: 'POST',

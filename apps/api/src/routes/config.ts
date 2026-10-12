@@ -21,6 +21,17 @@ import {
 
 import type { App } from '../context'
 
+// The fingerprinted 2026 client has local low/no-energy activities. Enable its
+// Roomie system and both fallback gates together; the AI Worker supplies zero
+// energy and refuses realtime credentials. Keep the archived catalogs unchanged.
+const roomieCompanionConfigs = gameConfigsV1All2025.map((entry) =>
+	['RoomieAI.System.Enabled', 'RoomieAI.SupportNoAIMode', 'RoomieAI.SupportLowEnergyMode'].includes(
+		entry.Key
+	)
+		? { ...entry, Value: 'true' }
+		: entry
+)
+
 // ---- Config / version ------------------------------------------------------
 export const configRoutes = new Hono<App>({ strict: false })
 	.get(
@@ -153,7 +164,8 @@ export const configRoutes = new Hono<App>({ strict: false })
 			tags: ['Config'],
 			summary: 'Per-game configuration',
 			description:
-				'An opaque static catalog of per-game settings, served verbatim. There are two: a ' +
+				'An opaque catalog of per-game settings. 20260323.14 enables Roomie and its ' +
+				'low/no-energy companion gates over the archived 2025 catalog. Otherwise, a ' +
 				'build NEWER than `20230414` gets the 2025 catalog, which carries keys the older one ' +
 				'never had; that build and anything older get the 2023 catalog. Builds are ' +
 				'date-stamped, so they compare as strings. The build is read from the token’s ' +
@@ -164,6 +176,7 @@ export const configRoutes = new Hono<App>({ strict: false })
 		}),
 		async (c) => {
 			const version = await validateAndGetVersion(c.req.raw, await c.env.JWT_SECRET.get())
+			if (version === '20260323.14') return c.json(roomieCompanionConfigs)
 			const newerThanTarget = version !== null && version > GAME_VERSION
 			return c.json(newerThanTarget ? gameConfigsV1All2025 : gameConfigsV1All)
 		}

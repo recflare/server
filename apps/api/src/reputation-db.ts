@@ -61,6 +61,7 @@ export enum CheerCategory {
 	Sportmanship = 20,
 	GreatHost = 30,
 	Creative = 40,
+	RecRoomDeveloper = 9000,
 }
 
 /**
