@@ -25,10 +25,10 @@ function b64url(input: ArrayBuffer | string): string {
 	return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
-async function bearer(sub = '42'): Promise<Record<string, string>> {
+async function bearer(sub = '42', version?: string): Promise<Record<string, string>> {
 	const now = Math.floor(Date.now() / 1000)
 	const signingInput = `${b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))}.${b64url(
-		JSON.stringify({ sub, exp: now + 3600 })
+		JSON.stringify({ sub, exp: now + 3600, 'rn.ver': version })
 	)}`
 	const key = await crypto.subtle.importKey(
 		'raw',
@@ -45,6 +45,14 @@ it('response with hello world', async () => {
 	const res = await SELF.fetch(ORIGIN)
 	expect(res.status).toBe(200)
 	expect(await res.text()).toMatchInlineSnapshot(`"hello, world!"`)
+})
+
+it('2026 CRM configuration uses the captured result envelope', async () => {
+	const res = await SELF.fetch(`${ORIGIN}/crm/me/config/v3`, {
+		headers: await bearer('42', '20260323.14'),
+	})
+	expect(res.status).toBe(200)
+	expect(await res.json()).toEqual({ Value: null, Success: true, Error: null, error_id: null })
 })
 
 it('reports that a player receives gameplay invites', async () => {

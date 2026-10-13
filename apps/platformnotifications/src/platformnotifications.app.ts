@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { useWorkersLogger } from 'workers-tagged-logger'
 
 import { withNotFound, withOnError } from '@repo/hono-helpers'
-import { validateAndGetAccountId } from '@repo/jwt'
+import { validateAndGetAccountId, validateAndGetVersion } from '@repo/jwt'
 
 import type { Context } from 'hono'
 import type { App } from './context'
@@ -111,6 +111,11 @@ const app = new Hono<App>()
 		const accountId = await authedId(c)
 		if (accountId === null) return unauthorized(c)
 
+		const version = await validateAndGetVersion(c.req.raw, await c.env.JWT_SECRET.get())
+		if (version && version >= '20260323') {
+			// Captured CrmAssignmentDTO result formatter: these field names are exact.
+			return c.json({ Value: null, Success: true, Error: null, error_id: null })
+		}
 		return c.json({})
 	})
 
