@@ -49,7 +49,7 @@ it('acknowledges an unreadable body on both event paths', async () => {
 it('serves an empty sampling configuration', async () => {
 	const res = await SELF.fetch(`${ORIGIN}/sampling?sessionId=e9a899ce-ce46-447d-bb22-11e82ed68f8d`)
 	expect(res.status).toBe(200)
-	expect(await res.json()).toEqual({})
+	expect(await res.json()).toEqual([])
 })
 
 // The client always sends `sessionId`, but nothing here reads it, so a missing one must
@@ -57,5 +57,5 @@ it('serves an empty sampling configuration', async () => {
 it('serves the sampling configuration without a sessionId', async () => {
 	const res = await SELF.fetch(`${ORIGIN}/sampling`)
 	expect(res.status).toBe(200)
-	expect(await res.json()).toEqual({})
+	expect(await res.json()).toEqual([])
 })

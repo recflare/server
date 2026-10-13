@@ -48,12 +48,9 @@ const app = new Hono<App>()
 		return c.json([])
 	})
 
-	// Sampling configuration, asked for once per session (`?sessionId=<guid>`). An empty
-	// object carries no per-event overrides, which the client reads as "sample everything
-	// at the built-in default rates". Since the events are discarded anyway, the rate it
-	// picks makes no difference here.
+	// GetSamplingEvents decodes a list. No sampling overrides are configured.
 	.get('/sampling', async (c) => {
-		return c.json({})
+		return c.json([])
 	})
 
 export default app
