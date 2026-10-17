@@ -1,0 +1,19 @@
+{
+	"name": "gamelogs",
+	"version": "0.1.0",
+	"private": true,
+	"sideEffects": false,
+	"type": "module",
+	"scripts": {
+		"build:wrangler": "run-wrangler-build",
+		"deploy": "run-wrangler-deploy",
+		"dev": "run-wrangler-dev"
+	},
+	"dependencies": {
+		"bugreporting": "workspace:*"
+	},
+	"devDependencies": {
+		"@repo/tools": "workspace:*",
+		"wrangler": "4.128.0"
+	}
+}
