@@ -10,6 +10,7 @@ import {
 import { withNotFound, withOnError } from '@repo/hono-helpers'
 import { validateAndGetAccountId, validateAndGetRoles } from '@repo/jwt'
 
+import cloudBuilds from './cloud-builds'
 import { getUserBuildCount, listCloudBuilds, storeLocalCloudBuild } from './local-builds'
 import { parseMultipart } from './multipart'
 
@@ -160,10 +161,14 @@ const app = new Hono<App>()
 
 	.onError(withOnError())
 	.notFound(withNotFound())
+	.route('/', cloudBuilds)
 
 	.get('/', async (c) => {
 		return c.text('hello, world!')
 	})
+	// There is no circuit recommendation corpus on a fresh deployment. An empty
+	// list is the SDK's supported no-recommendations state, not a failed lookup.
+	.get('/commonQuery/rrstudio/chiprecommendations', (c) => c.json([]))
 
 	// The editor lists a room's cloud builds with
 	// GET /cloud-builds/for-room?roomId=&subRoomId=&skip=&take= on this host.
@@ -182,16 +187,13 @@ const app = new Hono<App>()
 	// Local Windows + Android bundles from the editor button under Upload.
 	.post('/cloud-builds/from-editor', (c) => postLocalCloudBuild(c))
 
-	// Studio asks how often it may request cloud builds. Stubbed: this server
-	// never queues a real cloud build (every build is local, see from-editor),
-	// so the numbers are permissive placeholders. The field names are an
-	// ASSUMPTION — what the editor reads from this response has not been
-	// observed; adjust once it has.
+	// CloudBuildRateLimitConfigDTO reads these three fields directly (no Result
+	// envelope). Missing MaxBuildsPerInterval becomes zero and blocks the first build.
 	.get('/cloud-builds/get-rate-limit-config', (c) =>
 		c.json({
-			maxBuildsPerHour: 100,
-			maxConcurrentBuilds: 10,
-			cooldownSeconds: 0,
+			buildThrottleIntervalHours: 1,
+			warnAfterBuildsPerInterval: 90,
+			maxBuildsPerInterval: 100,
 		})
 	)
 

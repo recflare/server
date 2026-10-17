@@ -31,6 +31,7 @@ const RS = '\u001e'
 interface SocketState {
 	connectionId: string
 	handshakeDone: boolean
+	channels?: string[]
 	/** The player this socket belongs to, from the token validated at connect. */
 	playerId?: number
 }
@@ -356,6 +357,38 @@ export class NotificationsHub extends DurableObject<Env> {
 
 	private handleInvocation(ws: WebSocket, connectionId: string, msg: HubMessage): void {
 		switch (msg.target) {
+			case 'SubscribeTo':
+			case 'UnsubscribeFrom': {
+				const argument = msg.arguments?.[0] as
+					{ Channels?: unknown; channels?: unknown } | undefined
+				const channels = argument?.Channels ?? argument?.channels
+				if (
+					!Array.isArray(channels) ||
+					channels.length > 128 ||
+					channels.some(
+						(channel) => typeof channel !== 'string' || !channel.length || channel.length > 256
+					)
+				) {
+					if (msg.invocationId)
+						ws.send(this.completionError(msg.invocationId, 'Invalid channel subscriptions.'))
+					break
+				}
+				const state = ws.deserializeAttachment() as SocketState
+				const current = new Set(state.channels ?? [])
+				for (const channel of channels) {
+					if (msg.target === 'SubscribeTo') current.add(channel)
+					else current.delete(channel)
+				}
+				if (current.size > 128) {
+					if (msg.invocationId)
+						ws.send(this.completionError(msg.invocationId, 'Too many channel subscriptions.'))
+					break
+				}
+				state.channels = [...current]
+				ws.serializeAttachment(state)
+				if (msg.invocationId) ws.send(this.completion(msg.invocationId, null))
+				break
+			}
 			case 'SubscribeToPlayers': {
 				const playerIds = parsePlayerIds(msg.arguments)
 				// An argument we can't read is not "subscribe to nobody": subscribing

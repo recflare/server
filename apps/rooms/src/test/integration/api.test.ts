@@ -3744,6 +3744,9 @@ describe('rooms endpoints', () => {
 
 		// The save is a camelCase projection, NOT the PascalCase CurrentSave shape.
 		expect(saved.value.subRoomDataSave).toEqual({
+			persistenceVersion: 41,
+			omVersion: 0,
+			ugcSubVersion: 0,
 			subRoomDataSaveId: expect.any(Number),
 			subRoomId: 2,
 			unityAssetId: null,
@@ -6076,6 +6079,7 @@ describe('rooms endpoints', () => {
 			'GET /rooms/{roomId}/bans',
 			'GET /rooms/{roomId}/bans/history',
 			'GET /rooms/{roomId}/bans/{playerId}/isBanned',
+			'GET /rooms/{roomId}/boosts/{playerId}/count',
 			'GET /rooms/{roomId}/experience',
 			'GET /rooms/{roomId}/experience/player',
 			'GET /rooms/{roomId}/interactionby/me',
@@ -6089,6 +6093,7 @@ describe('rooms endpoints', () => {
 			'GET /roomserver/rooms/createdby/me',
 			'GET /showcase/{playerId}',
 			'POST /rooms/bulk',
+			'POST /rooms/create',
 			'POST /rooms/{roomId}/bans',
 			'POST /rooms/{roomId}/clone',
 			'POST /rooms/{roomId}/experience',
@@ -6119,6 +6124,7 @@ describe('rooms endpoints', () => {
 			'PUT /rooms/{roomId}/subrooms/{subRoomId}/modify',
 			'PUT /rooms/{roomId}/subrooms/{subRoomId}/permissions',
 			'PUT /rooms/{roomId}/tags',
+			'PUT /rooms/{roomId}/v2/restrictions',
 			'PUT /rooms/{roomId}/warning',
 		])
 
@@ -6135,7 +6141,7 @@ describe('rooms endpoints', () => {
 // `UnitySubAssets`. Maker-pen saves stay empty arrays, and a missing studio cloud-build
 // table must not fail the room read.
 describe('studio room bundles', () => {
-	const ASSET = '11111111-2222-4333-8444-555555555555'
+	const ASSET = 'aa111111-2222-4333-8444-555555555555'
 	const winName = publicStudioBundleFilename(9901, ASSET, 'windows', 'main')
 	const androidName = publicStudioBundleFilename(9901, ASSET, 'android', 'main')
 	const winHash = '47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='
@@ -6157,7 +6163,12 @@ describe('studio room bundles', () => {
 		Tags: [],
 		ModerationState: 0,
 		CreatedAt: '2026-10-03T00:00:00.000Z',
-		...(unityAssetId ? { UnityAssetId: unityAssetId } : {}),
+		...(unityAssetId
+			? {
+					UnityAssetId: unityAssetId,
+					StudioSourceAsset: { Filename: 'source-manifest.json', Hash: 'source-hash' },
+				}
+			: {}),
 	})
 
 	async function reset() {
@@ -6294,20 +6305,24 @@ describe('studio room bundles', () => {
 				{ unityAssetId: ASSET, target: 0, version: 1, filename: winName },
 				{ unityAssetId: ASSET, target: 2, version: 1, filename: androidName },
 			],
-			filename: winName,
-			hash: winHash,
+			filename: 'source-manifest.json',
+			hash: 'source-hash',
 		})
-		expect((await SELF.fetch(`${ORIGIN}/rooms/9901/subrooms/99011/unityasset`)).status).toBe(404)
+		expect((await SELF.fetch(`${ORIGIN}/rooms/9901/subrooms/99011/unityasset`)).status).toBe(200)
 		expect(
 			(
 				await SELF.fetch(
-					`${ORIGIN}/rooms/9901/subrooms/99011/unityasset?unityAssetId=00000000-0000-4000-8000-000000000000`
+					`${ORIGIN}/rooms/9901/subrooms/99011/unityasset?unityAssetId=00000000-0000-4000-8000-000000000000`,
+					{ headers: await bearer('1') }
 				)
 			).status
 		).toBe(404)
 		expect(
-			(await SELF.fetch(`${ORIGIN}/rooms/9902/subrooms/99021/unityasset?unityAssetId=${ASSET}`))
-				.status
+			(
+				await SELF.fetch(`${ORIGIN}/rooms/9902/subrooms/99021/unityasset?unityAssetId=${ASSET}`, {
+					headers: await bearer('1'),
+				})
+			).status
 		).toBe(404)
 
 		const detail = await SELF.fetch(
@@ -6316,15 +6331,12 @@ describe('studio room bundles', () => {
 		)
 		expect(detail.status).toBe(200)
 		// The detail lifts the Windows bundle to the top level when no target is named, and
-		// names every bundle the client's way — `UnityAsset`/`UnityAssetHash`, not the stored
-		// `Filename`/`Hash`.
+		// lists only dependencies in UnitySubAssets. Repeating the root there makes the
+		// game load it twice and Unity rejects the second load with room error 8714.
 		expect(await detail.json()).toMatchObject({
 			UnityAsset: winName,
 			UnityAssetHash: winHash,
-			UnitySubAssets: [
-				{ UnityAssetId: ASSET, UnityAsset: winName, UnityAssetHash: winHash },
-				{ UnityAssetId: ASSET, UnityAsset: androidName, UnityAssetHash: androidHash },
-			],
+			UnitySubAssets: [],
 		})
 
 		const questDetail = await SELF.fetch(
@@ -6334,9 +6346,7 @@ describe('studio room bundles', () => {
 		expect(await questDetail.json()).toMatchObject({
 			UnityAsset: androidName,
 			UnityAssetHash: androidHash,
-			UnitySubAssets: [
-				{ UnityAssetId: ASSET, UnityAsset: androidName, UnityAssetHash: androidHash },
-			],
+			UnitySubAssets: [],
 		})
 
 		const light = await SELF.fetch(`${ORIGIN}/rooms/9901/subrooms/99011/saves/no_unity_assets`, {
@@ -6356,6 +6366,35 @@ describe('studio room bundles', () => {
 			UnityAssetHash: null,
 			UnitySubAssets: [],
 		})
+	})
+
+	it('never loads the main bundle again as a dependency, including mixed-case GUIDs', async () => {
+		await reset()
+		await storeFiles()
+		await env.DB.prepare(
+			"UPDATE subroom_save SET data=json_set(data, '$.UnityAssetId', ?1) WHERE sub_room_id=99011"
+		)
+			.bind(ASSET.toUpperCase())
+			.run()
+		const row = await env.DB.prepare(
+			'SELECT current_save_id FROM subroom WHERE sub_room_id=99011'
+		).first<{ current_save_id: number }>()
+		for (const [query, filename] of [
+			['', winName],
+			['?unityAssetTarget=0', winName],
+			['?unityAssetTarget=2', androidName],
+			['?unityAssetTarget=1', null],
+		] as const) {
+			const response = await SELF.fetch(
+				`${ORIGIN}/rooms/9901/subrooms/99011/saves/${row!.current_save_id}${query}`,
+				{ headers: await bearer('1') }
+			)
+			expect(response.status).toBe(200)
+			expect(await response.json()).toMatchObject({
+				UnityAsset: filename,
+				UnitySubAssets: [],
+			})
+		}
 	})
 
 	// A FIRST-PARTY room's bundle — captured from the official game and loaded by hand
@@ -6680,5 +6719,380 @@ describe('Studio baked Unity asset downloads', () => {
 			"UPDATE room SET data=json_set(data, '$.Accessibility', 0) WHERE room_id=900090"
 		).run()
 		expect(await (await bulk({ UnityAssetIds: [mainId] })).json()).toEqual([])
+	})
+})
+
+describe('Studio room management contracts', () => {
+	it('lists private co-owned rooms, but excludes hosts and pending invites', async () => {
+		for (const [id, role, invited] of [
+			[91001, 30, 0],
+			[91002, 10, 0],
+			[91003, 0, 30],
+		]) {
+			await seedRoomWithSubRooms(env.DB, {
+				RoomId: id,
+				Name: `StudioRole${id}`,
+				CreatorAccountId: 999,
+				Accessibility: 0,
+				Roles: [{ AccountId: 880, Role: role, InvitedRole: invited }],
+				SubRooms: [],
+			})
+		}
+		const rooms = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/ownedby/me`, { headers: await bearer('880') })
+		).json()) as Array<{ RoomId: number }>
+		expect(rooms.map((r) => r.RoomId)).toEqual([91001])
+		expect(
+			await (
+				await SELF.fetch(`${ORIGIN}/rooms/createdby/me`, { headers: await bearer('880') })
+			).json()
+		).toEqual([])
+	})
+	it('returns null for Studio name validation and preserves the legacy empty object', async () => {
+		expect(
+			await (await SELF.fetch(`${ORIGIN}/rooms?name=StudioUnusedName&include=525581`)).json()
+		).toBeNull()
+		expect(await (await SELF.fetch(`${ORIGIN}/rooms?name=StudioUnusedName`)).json()).toEqual({})
+	})
+	it('creates a private empty R2 room and rejects a case-insensitive duplicate', async () => {
+		const create = async (name: string, auth = true) =>
+			SELF.fetch(`${ORIGIN}/rooms/create`, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/x-www-form-urlencoded',
+					...(auth ? await bearer('880') : {}),
+				},
+				body: new URLSearchParams({ name, ugcVersion: '2' }).toString(),
+			})
+		expect((await create('StudioFreshRoom', false)).status).toBe(401)
+		const response = await create('StudioFreshRoom')
+		expect(response.status).toBe(200)
+		const room = (await response.json()) as Room
+		expect(room).toMatchObject({
+			Name: 'StudioFreshRoom',
+			UgcVersion: 2,
+			Accessibility: 0,
+			CreatorAccountId: 880,
+			Tags: [],
+			LoadScreens: [],
+			RestrictedCircuitsAllowListNames: [],
+			PublishedAt: null,
+		})
+		expect(room.SubRooms).toEqual([
+			expect.objectContaining({
+				Name: 'Home',
+				CreatorAccountId: 880,
+				CurrentSave: expect.objectContaining({ DataBlob: null, OMVersion: 198 }),
+				UnitySceneId: '5d4e40d8-f289-4295-a6e1-4f907835007d',
+			}),
+		])
+		const added = await SELF.fetch(`${ORIGIN}/rooms/${Number(room.RoomId)}/subrooms`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...(await bearer('880')) },
+			body: 'name=Second',
+		})
+		expect(added.status).toBe(200)
+		const lookup = await SELF.fetch(`${ORIGIN}/rooms/${Number(room.RoomId)}?include=525581`)
+		const refreshed = await lookup.json<
+			Room & { SubRooms: Array<{ SubRoomId: number; CurrentSave: unknown }> }
+		>()
+		expect(refreshed.SubRooms).toHaveLength(2)
+		for (const sub of refreshed.SubRooms) {
+			expect(sub.CurrentSave).toMatchObject({ DataBlob: null, OMVersion: 198 })
+		}
+		const initial = refreshed.SubRooms[0]!.CurrentSave as { SubRoomDataSaveId: number }
+		const subRoomId = Number(refreshed.SubRooms[0]!.SubRoomId)
+		const initialSave = await SELF.fetch(
+			`${ORIGIN}/rooms/${Number(room.RoomId)}/subrooms/${subRoomId}/saves/${initial.SubRoomDataSaveId}`,
+			{ headers: await bearer('880') }
+		)
+		expect(initialSave.status).toBe(200)
+		expect(await initialSave.json()).toMatchObject({ DataBlob: null, OMVersion: 198 })
+		for (const fields of [{ OMVersion: 197, UgcSubVersion: 3 }, {}]) {
+			const saved = await SELF.fetch(
+				`${ORIGIN}/rooms/${Number(room.RoomId)}/subrooms/${subRoomId}/data`,
+				{
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json', ...(await bearer('880')) },
+					body: JSON.stringify({ ...fields, AutoPublish: true }),
+				}
+			)
+			expect(saved.status).toBe(200)
+			const updated = await (
+				await SELF.fetch(`${ORIGIN}/rooms/${Number(room.RoomId)}?include=525581`)
+			).json<Room & { SubRooms: Array<{ CurrentSave: unknown }> }>()
+			expect(updated.SubRooms[0]!.CurrentSave).toMatchObject({ OMVersion: 197, UgcSubVersion: 3 })
+		}
+		expect((await create('studiofreshroom')).status).toBe(409)
+		expect((await create('bad name')).status).toBe(400)
+		expect(
+			(
+				await SELF.fetch(`${ORIGIN}/rooms/${Number(room.RoomId)}`, {
+					method: 'DELETE',
+					headers: await bearer('880'),
+				})
+			).status
+		).toBe(200)
+	})
+	it('keeps fresh R1 rooms owned and their new subrooms visible to the Studio picker', async () => {
+		const response = await SELF.fetch(`${ORIGIN}/rooms/create`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...(await bearer('880')) },
+			body: new URLSearchParams({ name: 'StudioFreshR1', ugcVersion: '1' }).toString(),
+		})
+		expect(response.status).toBe(200)
+		const created = await response.json<Room>()
+		const roomId = Number(created.RoomId)
+		expect(created.Roles).toEqual([expect.objectContaining({ AccountId: 880, Role: 255 })])
+		const added = await SELF.fetch(`${ORIGIN}/rooms/${roomId}/subrooms`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...(await bearer('880')) },
+			body: 'name=Second',
+		})
+		expect(added.status).toBe(200)
+		const lookup = await SELF.fetch(`${ORIGIN}/rooms?name=StudioFreshR1&include=525581`)
+		const room = await lookup.json<Room & { SubRooms: Array<{ SubRoomId: number }> }>()
+		expect(room.SubRooms).toEqual([
+			expect.objectContaining({
+				Name: 'Home',
+				CurrentSave: null,
+				UnitySceneId: 'a75f7547-79eb-47c6-8986-6767abcb4f92',
+			}),
+			expect.objectContaining({
+				Name: 'Second',
+				CurrentSave: null,
+				UnitySceneId: 'a75f7547-79eb-47c6-8986-6767abcb4f92',
+			}),
+		])
+		for (const path of ['/rooms/ownedby/me', '/rooms/createdby/me']) {
+			const rooms = await (
+				await SELF.fetch(ORIGIN + path, { headers: await bearer('880') })
+			).json<Room[]>()
+			expect(rooms.some((entry) => entry.RoomId === created.RoomId)).toBe(true)
+		}
+		const history = await SELF.fetch(
+			`${ORIGIN}/rooms/${roomId}/subrooms/${room.SubRooms[0]!.SubRoomId}/saves/no_unity_assets`,
+			{ headers: await bearer('880') }
+		)
+		expect(history.status).toBe(200)
+		expect(await history.json()).toMatchObject({ Results: [] })
+		expect(
+			(
+				await SELF.fetch(`${ORIGIN}/rooms/${roomId}`, {
+					method: 'DELETE',
+					headers: await bearer('880'),
+				})
+			).status
+		).toBe(200)
+	})
+
+	it('saves the Studio age rating through v2 restrictions with ownership checks', async () => {
+		const before = await (await SELF.fetch(`${ORIGIN}/rooms/2`)).json<Room>()
+		const update = async (body: string, account?: string) =>
+			SELF.fetch(`${ORIGIN}/rooms/2/v2/restrictions`, {
+				method: 'PUT',
+				headers: {
+					'Content-Type': 'application/x-www-form-urlencoded',
+					...(account ? await bearer(account) : {}),
+				},
+				body,
+			})
+		expect((await update('ageRating=1')).status).toBe(401)
+		expect((await update('ageRating=1', '999')).status).toBe(403)
+		const result = await update('ageRating=1&supportsScreens=True&supportsWalkVR=False', '1')
+		expect(result.status).toBe(200)
+		expect(await result.json()).toMatchObject({
+			Success: true,
+			Error: null,
+			Value: {
+				AgeRating: 1,
+				SupportsScreens: true,
+				SupportsWalkVR: false,
+				LoadScreens: before.LoadScreens,
+			},
+		})
+		const invalid = await update('ageRating=99', '1')
+		expect(await invalid.json()).toEqual({
+			Success: false,
+			Error: 'Invalid age rating.',
+			Value: null,
+		})
+		expect((await (await SELF.fetch(`${ORIGIN}/rooms/2`)).json<Room>()).AgeRating).toBe(1)
+		await update('ageRating=2&supportsWalkVR=True', '1')
+	})
+
+	it('does not advertise an archived baked asset as editable source', async () => {
+		const id = '11111111-2222-4333-8444-555555555555'
+		await seedRoomWithSubRooms(env.DB, {
+			RoomId: 91004,
+			Name: 'StudioArchivedGame',
+			CreatorAccountId: 880,
+			Roles: [],
+			SubRooms: [
+				{
+					SubRoomId: 91004,
+					Name: 'Home',
+					CurrentSave: {
+						UnityAssetId: id,
+						DataBlob: 'original-game.room',
+						SavedOnPlatform: 0,
+						SavedOnDeviceClass: 2,
+						SavedByAccountId: 880,
+						CreatedAt: '2026-01-01T00:00:00Z',
+					},
+				},
+			],
+		})
+		const headers = await bearer('880')
+		const url = `${ORIGIN}/rooms/91004/subrooms/91004/saves/no_unity_assets`
+		const studio = (await (
+			await SELF.fetch(url, { headers: { ...headers, 'User-Agent': 'RRStudio' } })
+		).json()) as { Results: Array<Record<string, unknown>> }
+		expect(studio.Results[0]).toMatchObject({ UnityAssetId: null, DataBlob: 'original-game.room' })
+		const legacy = (await (await SELF.fetch(url, { headers })).json()) as typeof studio
+		expect(legacy.Results[0]!.UnityAssetId).toBe(id)
+		expect(
+			(await SELF.fetch(`${ORIGIN}/rooms/91004/subrooms/91004/unityasset?unityAssetId=${id}`))
+				.status
+		).toBe(404)
+		const original = (await (await SELF.fetch(`${ORIGIN}/rooms/91004`)).json()) as {
+			SubRooms: Array<{ CurrentSave: Record<string, unknown> }>
+		}
+		expect(original.SubRooms[0]!.CurrentSave.UnityAssetId).toBe(id)
+	})
+	it('persists source manifests and returns them independently of baked builds', async () => {
+		await seedRoomWithSubRooms(env.DB, {
+			RoomId: 91005,
+			Name: 'StudioSourceRoom',
+			CreatorAccountId: 880,
+			Roles: [],
+			SubRooms: [{ SubRoomId: 91005, Name: 'Home', CurrentSave: null }],
+		})
+		const id = '22222222-3333-4444-8555-666666666666'
+		const saved = await SELF.fetch(`${ORIGIN}/rooms/91005/subrooms/91005/data`, {
+			method: 'POST',
+			headers: { ...(await bearer('880')), 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				UnityAssetId: id,
+				UnityAsset: { Filename: 'manifest.json', Hash: 'source-hash' },
+				SubRoomData: { Filename: 'maker.room' },
+				AutoPublish: true,
+			}),
+		})
+		expect(saved.status).toBe(200)
+		const source = await (
+			await SELF.fetch(`${ORIGIN}/rooms/91005/subrooms/91005/unityasset?unityAssetId=${id}`)
+		).json()
+		expect(source).toMatchObject({
+			unityAssetId: id,
+			filename: 'manifest.json',
+			hash: 'source-hash',
+			bakedUnityAssets: [],
+		})
+		const history = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/91005/subrooms/91005/saves/no_unity_assets`, {
+				headers: { ...(await bearer('880')), 'User-Agent': 'RRStudio' },
+			})
+		).json()) as { Results: Array<Record<string, unknown>> }
+		expect(history.Results[0]).toMatchObject({
+			UnityAssetId: id,
+			SavedOnPlatform: null,
+			SavedOnDeviceClass: null,
+		})
+	})
+})
+
+describe('Studio source revision permissions', () => {
+	it('keeps drafts and historical source behind save-history permissions', async () => {
+		const roomId = 987650
+		await seedRoomWithSubRooms(env.DB, {
+			RoomId: roomId,
+			Name: 'PrivateStudioDraft',
+			CreatorAccountId: 987650,
+			Accessibility: 0,
+			Roles: [{ AccountId: 987651, Role: 30 }],
+			SubRooms: [{ SubRoomId: roomId, Name: 'Home', CurrentSave: null }],
+		})
+		const url = `${ORIGIN}/rooms/${roomId}/subrooms/${roomId}/unityasset`
+		const save = async (id: string, filename: string, autoPublish: boolean) => {
+			const response = await SELF.fetch(`${ORIGIN}/rooms/${roomId}/subrooms/${roomId}/data`, {
+				method: 'POST',
+				headers: { ...(await bearer(String(roomId))), 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					UnityAssetId: id,
+					UnityAsset: { Filename: filename, Hash: 'source-hash' },
+					SubRoomData: { Filename: 'draft.room' },
+					AutoPublish: autoPublish,
+				}),
+			})
+			expect(response.status).toBe(200)
+		}
+		const oldId = '11111111-3333-4444-8555-666666666666'
+		const currentId = '22222222-3333-4444-8555-666666666666'
+		const draftId = '33333333-3333-4444-8555-666666666666'
+		await save(oldId, 'old.json', true)
+		await save(currentId, 'published.json', true)
+		await save(draftId, 'draft.json', false)
+		for (const headers of [{}, await bearer('987652')]) {
+			for (const query of ['', `?unityAssetId=${currentId}`]) {
+				const response = await SELF.fetch(url + query, { headers })
+				expect(response.status).toBe(200)
+				expect(await response.json()).toMatchObject({ filename: 'published.json' })
+			}
+		}
+		for (const id of [draftId, oldId]) {
+			expect((await SELF.fetch(url + `?unityAssetId=${id}`)).status).toBe(401)
+			expect(
+				(await SELF.fetch(url + `?unityAssetId=${id}`, { headers: await bearer('987652') })).status
+			).toBe(403)
+			for (const account of ['987650', '987651']) {
+				const response = await SELF.fetch(url + `?unityAssetId=${id}`, {
+					headers: await bearer(account),
+				})
+				expect(response.status).toBe(200)
+				expect(await response.json()).toMatchObject({
+					filename: id === draftId ? 'draft.json' : 'old.json',
+				})
+			}
+		}
+		for (const account of ['987650', '987651']) {
+			const response = await SELF.fetch(url, { headers: await bearer(account) })
+			expect(await response.json()).toMatchObject({ filename: 'draft.json' })
+		}
+		// A reused asset ID must not make a newer draft public or hide it from its owner.
+		await save(currentId, 'replacement-draft.json', false)
+		const publicSource = await SELF.fetch(url + `?unityAssetId=${currentId}`)
+		expect(await publicSource.json()).toMatchObject({ filename: 'published.json' })
+		const ownerSource = await SELF.fetch(url + `?unityAssetId=${currentId}`, {
+			headers: await bearer('987650'),
+		})
+		expect(await ownerSource.json()).toMatchObject({ filename: 'replacement-draft.json' })
+	})
+	it('does not expose an unpublished first revision through default lookup', async () => {
+		await seedRoomWithSubRooms(env.DB, {
+			RoomId: 987660,
+			Name: 'UnpublishedStudioSource',
+			CreatorAccountId: 987660,
+			Roles: [],
+			SubRooms: [{ SubRoomId: 987660, Name: 'Home', CurrentSave: null }],
+		})
+		const url = `${ORIGIN}/rooms/987660/subrooms/987660`
+		const saved = await SELF.fetch(url + '/data', {
+			method: 'POST',
+			headers: { ...(await bearer('987660')), 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				UnityAssetId: '44444444-3333-4444-8555-666666666666',
+				UnityAsset: { Filename: 'first-draft.json', Hash: null },
+				AutoPublish: false,
+			}),
+		})
+		expect(saved.status).toBe(200)
+		expect((await SELF.fetch(url + '/unityasset')).status).toBe(404)
+		expect(
+			(await SELF.fetch(url + '/unityasset', { headers: await bearer('987661') })).status
+		).toBe(404)
+		const source = await SELF.fetch(url + '/unityasset', { headers: await bearer('987660') })
+		expect(source.status).toBe(200)
+		expect(await source.json()).toMatchObject({ filename: 'first-draft.json' })
 	})
 })

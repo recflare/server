@@ -845,6 +845,94 @@ export async function cloneRoom(
 	return cloned
 }
 
+/** Create an empty Studio room, reserving its id and name in one write. */
+export async function createStudioRoom(
+	db: D1Database,
+	name: string,
+	accountId: number,
+	ugcVersion: 1 | 2
+): Promise<Room | null> {
+	const room: Room = {
+		RoomId: 0,
+		Name: name,
+		Description: '',
+		ImageName: '',
+		CreatorAccountId: accountId,
+		Accessibility: Accessibility.Private,
+		State: 0,
+		PublishState: 0,
+		WarningMask: 0,
+		CustomWarning: null,
+		SupportsScreens: true,
+		SupportsWalkVR: true,
+		SupportsTeleportVR: true,
+		SupportsVRLow: true,
+		SupportsQuest2: true,
+		SupportsMobile: true,
+		SupportsJuniors: true,
+		SupportsLevelVoting: false,
+		IsRRO: false,
+		IsRecRoomApproved: false,
+		IsDorm: false,
+		IsPlacePlay: false,
+		IsDeveloperOwned: false,
+		IsJuniorCreated: false,
+		ExcludeFromLists: false,
+		ExcludeFromSearch: false,
+		CloningAllowed: false,
+		MinLevel: 0,
+		AgeRating: 0,
+		CreatedAt: new Date().toISOString(),
+		PublishedAt: null,
+		BecameRRStudioRoomAt: null,
+		Stats: { ...ZERO_STATS },
+		UgcVersion: ugcVersion,
+		PersistenceVersion: 0,
+		UgcSubVersion: null,
+		MinUgcSubVersion: null,
+		MaxPlayers: 4,
+		MaxPlayerCalculationMode: 0,
+		DisableMicAutoMute: false,
+		DisableRoomComments: false,
+		EncryptVoiceChat: false,
+		ToxmodEnabled: false,
+		LoadScreenLocked: false,
+		AutoLocalizeRoom: false,
+		LocalizationContext: {},
+		RankedEntityId: '',
+		Roles: [
+			{
+				AccountId: accountId,
+				Role: Role.Creator,
+				LastChangedByAccountId: null,
+				InvitedRole: Role.None,
+			},
+		],
+		Tags: [],
+		SubRooms: [],
+	}
+	const inserted = await db
+		.prepare(
+			`INSERT INTO room (data)
+		 SELECT json_set(?1, '$.RoomId', COALESCE(MAX(room_id), 0) + 1) FROM room
+		 HAVING NOT EXISTS (SELECT 1 FROM room WHERE name_lower = lower(?2))
+		 RETURNING data`
+		)
+		.bind(serializeRoom(room), name)
+		.first<{ data: string }>()
+	if (!inserted) return null
+	const created = JSON.parse(inserted.data) as Room
+	// Studio's picker and empty-save loader support these modern Maker Room scenes,
+	// not the legacy sandbox scene used by generic game subroom creation.
+	const scene =
+		ugcVersion === 2
+			? '5d4e40d8-f289-4295-a6e1-4f907835007d'
+			: 'a75f7547-79eb-47c6-8986-6767abcb4f92'
+	return (
+		(await createSubRoom(db, Number(created.RoomId), accountId, 'Home', scene))?.room ?? created
+	)
+}
+
 /** Set a room's Description in place (the caller is responsible for the owner check). */
 export async function setRoomDescription(
 	db: D1Database,
@@ -1439,9 +1527,13 @@ export interface SaveSubRoomDataInput {
 	 */
 	description?: string
 	persistenceVersion?: number
+	omVersion?: number
+	ugcSubVersion?: number
 	inventionUsage?: string
 	/** Optional baked-asset id; emitted on the save only when present. */
 	unityAssetId?: string
+	/** Uploaded JSON authoring manifest, distinct from a playable baked bundle. */
+	unitySource?: { Filename: string; Hash: string | null }
 	/**
 	 * The client's `AutoPublish`. True publishes the save outright (the author wants it
 	 * live now); false/absent stages it for a manual `publish_save`. Dorms ignore this and
@@ -1476,9 +1568,11 @@ export function subRoomDataBlob(sub: SubRoom | undefined | null): string {
 /** Fields that vary between a real save and one reconstructed from the legacy shape. */
 interface BuildSaveInput {
 	subRoomId: unknown
-	dataBlob: string
+	dataBlob: string | null
 	dataBlobHash: string | null
 	persistenceVersion: number
+	omVersion?: number
+	ugcSubVersion?: number
 	savedByAccountId: unknown
 	description: string
 	createdAt: string
@@ -1511,8 +1605,8 @@ function buildSubRoomSave(input: BuildSaveInput): SubRoomDataSave {
 		DataBlobHash: input.dataBlobHash,
 		ReferencedUnityAssetIds: [],
 		PersistenceVersion: input.persistenceVersion,
-		OMVersion: 0,
-		UgcSubVersion: 0,
+		OMVersion: input.omVersion ?? 0,
+		UgcSubVersion: input.ugcSubVersion ?? 0,
 		SavedByAccountId: input.savedByAccountId,
 		SavedOnPlatform: 0,
 		SavedOnDeviceClass: 0,
@@ -1745,25 +1839,34 @@ export async function saveSubRoomData(
 			: undefined)
 	const priorVersion = previous?.PersistenceVersion
 	const priorBlob = previous?.DataBlob
-	const save = await insertSubRoomSave(
-		db,
+	const saveData = buildSubRoomSave({
 		subRoomId,
-		buildSubRoomSave({
-			subRoomId,
-			// A save that carries no new blob (e.g. a description-only save) keeps the one
-			// the subroom already loads from.
-			dataBlob: input.subRoomDataFilename ?? (typeof priorBlob === 'string' ? priorBlob : ''),
-			dataBlobHash: input.subRoomDataHash ?? null,
-			persistenceVersion:
-				input.persistenceVersion ?? (typeof priorVersion === 'number' ? priorVersion : 0),
-			savedByAccountId: accountId,
-			// The save comment — empty string, not null, when the save carries none (the
-			// reference's `roomDesc ?? ""`).
-			description: input.description ?? '',
-			createdAt: new Date().toISOString(),
-			unityAssetId: input.unityAssetId,
-		})
-	)
+		// A save that carries no new blob (e.g. a description-only save) keeps the one
+		// the subroom already loads from.
+		dataBlob:
+			input.subRoomDataFilename ??
+			(typeof priorBlob === 'string' || priorBlob === null ? priorBlob : ''),
+		dataBlobHash: input.subRoomDataHash ?? null,
+		persistenceVersion:
+			input.persistenceVersion ?? (typeof priorVersion === 'number' ? priorVersion : 0),
+		omVersion:
+			input.omVersion ?? (typeof previous?.OMVersion === 'number' ? previous.OMVersion : 0),
+		ugcSubVersion:
+			input.ugcSubVersion ??
+			(typeof previous?.UgcSubVersion === 'number' ? previous.UgcSubVersion : 0),
+		savedByAccountId: accountId,
+		// The save comment — empty string, not null, when the save carries none (the
+		// reference's `roomDesc ?? ""`).
+		description: input.description ?? '',
+		createdAt: new Date().toISOString(),
+		unityAssetId: input.unityAssetId,
+	})
+	if (input.unitySource) {
+		saveData.StudioSourceAsset = input.unitySource
+		saveData.SavedOnPlatform = null
+		saveData.SavedOnDeviceClass = null
+	}
+	const save = await insertSubRoomSave(db, subRoomId, saveData)
 	const saveId = Number(save.SubRoomDataSaveId)
 	sub.DataSavedAt = new Date().toISOString()
 	if (input.persistenceVersion !== undefined) sub.PersistenceVersion = input.persistenceVersion
@@ -1951,7 +2054,8 @@ export async function createSubRoom(
 	db: D1Database,
 	roomId: number,
 	accountId: number,
-	name: string
+	name: string,
+	initialScene?: string
 ): Promise<{ room: Room; subRoom: SubRoom } | null> {
 	const room = await getRoomById(db, roomId)
 	if (!room) return null
@@ -1959,14 +2063,29 @@ export async function createSubRoom(
 	const subRoom = await insertSubRoom(db, roomId, {
 		Name: name,
 		CreatorAccountId: accountId,
-		UnitySceneId: await baseSubRoomScene(db, roomId),
+		UnitySceneId: initialScene ?? (await baseSubRoomScene(db, roomId)),
 		MaxPlayers: 4,
 		Accessibility: Accessibility.Unlisted,
 		IsSandbox: true,
 		LastModeratedSaveModerationState: 0,
 		ShouldAutoStageSaves: true,
-		// Nothing saved yet — the first room save mints one and points current_save_id
-		// at it. Until then the subroom reads with `CurrentSave: null`.
+		// Rooms 2 validates CurrentSave.OMVersion even when the scene uses its built-in
+		// empty template. No blob or uploaded Studio bundle is needed for that template.
+		...(room.UgcVersion === 2
+			? {
+					CurrentSave: buildSubRoomSave({
+						subRoomId: 0,
+						dataBlob: null,
+						dataBlobHash: null,
+						persistenceVersion: 0,
+						// 20260323.14's built-in object-model template format (0xC6).
+						omVersion: 198,
+						savedByAccountId: accountId,
+						description: '',
+						createdAt: new Date().toISOString(),
+					}),
+				}
+			: {}),
 	})
 	// Refresh the hydrated SubRooms so the returned room includes the one just inserted.
 	await attachSubRooms(db, [room])
@@ -2706,6 +2825,20 @@ async function hydrateRooms(
 	rooms: Room[],
 	stats?: Map<number, RoomStats>
 ): Promise<Room[]> {
+	for (const room of rooms) {
+		// Studio enumerates these collections directly when opening Room Settings.
+		for (const field of [
+			'LoadScreens',
+			'PromoImages',
+			'PromoExternalContent',
+			'RestrictedCircuitsAllowListNames',
+		]) {
+			if (!Array.isArray(room[field])) room[field] = []
+		}
+		// An unpublished room has no publication date; an empty string fails the
+		// game's Nullable<DateTime> decoder and discards the entire owned-room list.
+		if (room.PublishedAt === '') room.PublishedAt = null
+	}
 	await Promise.all([
 		attachSubRooms(db, rooms),
 		attachTags(db, rooms),

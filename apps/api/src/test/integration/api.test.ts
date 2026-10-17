@@ -4756,6 +4756,59 @@ describe('public endpoints', () => {
 		})
 	})
 
+	describe('POST /api/sanitize/v2/isAllowed/bulk', () => {
+		const bulk = async (body: URLSearchParams | FormData, authed = true) =>
+			exports.default.fetch(`${ORIGIN}/api/sanitize/v2/isAllowed/bulk`, {
+				method: 'POST',
+				headers: authed ? await bearer('42') : {},
+				body,
+			})
+
+		test('401s without a token', async () => {
+			expect((await bulk(new URLSearchParams('Values=hello'), false)).status).toBe(401)
+		})
+
+		test('preserves repeated values, order, empty text and duplicates in the Studio envelope', async () => {
+			const body = new URLSearchParams()
+			for (const text of ['MakerRoom', 'fuck this', '', 'Scunthorpe', 'MakerRoom', 'sh1t'])
+				body.append('Values', text)
+			const res = await bulk(body)
+			expect(res.status).toBe(200)
+			expect(await res.json()).toEqual({
+				Success: true,
+				Error: null,
+				Value: { ArePure: [true, false, true, true, true, false] },
+			})
+		})
+
+		test('accepts a single multipart value and an empty batch', async () => {
+			const body = new FormData()
+			body.append('Values', 'a$$hole')
+			expect(await (await bulk(body)).json()).toEqual({
+				Success: true,
+				Error: null,
+				Value: { ArePure: [false] },
+			})
+			expect(await (await bulk(new URLSearchParams())).json()).toEqual({
+				Success: true,
+				Error: null,
+				Value: { ArePure: [] },
+			})
+		})
+
+		test('rejects file values rather than marking them clean', async () => {
+			const body = new FormData()
+			body.append('Values', new Blob(['hello']), 'text.txt')
+			const res = await bulk(body)
+			expect(res.status).toBe(400)
+			expect(await res.json()).toEqual({
+				Success: false,
+				Error: 'Values must be strings.',
+				Value: null,
+			})
+		})
+	})
+
 	describe('POST /api/sanitize/v1/isPure', () => {
 		const isPure = async (Value?: string, authed = true) =>
 			exports.default.fetch(`${ORIGIN}/api/sanitize/v1/isPure`, {
@@ -10343,6 +10396,7 @@ describe('openapi', () => {
 			'POST /api/rooms/v1/verifyRole',
 			'POST /api/sanitize/v1',
 			'POST /api/sanitize/v1/isPure',
+			'POST /api/sanitize/v2/isAllowed/bulk',
 			'POST /api/v1/progression/bulk',
 			'POST /outfits/bulk',
 			'POST /statsigUserProperties',

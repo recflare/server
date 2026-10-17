@@ -105,8 +105,8 @@ inconsistency here without checking the client first.
 - The room save (`rooms`: `POST /subrooms/:sid/data`) is the ONE exception to that shape:
   `value` is `{ room, subRoomDataSave }`, and `error` is NULL rather than `""`. The
   `subRoomDataSave` is camelCase with a different field set from the PascalCase
-  `CurrentSave` embedded in the room (no persistence/OM/UGC versions, no moderation state,
-  no asset arrays; but `unityAsset`/`unityAssetHash`). Don't unify the two projections.
+  `CurrentSave` embedded in the room (no moderation state or asset arrays;
+  version fields are camelCase, alongside `unityAsset`/`unityAssetHash`). Keep the projections distinct.
 - A subroom's saved scene loads from `CurrentSave.DataBlob` (`rooms`: `GET /rooms/:id`),
   NOT the flat `DataBlob` on the subroom — a subroom with no `CurrentSave` silently loads
   nothing. The key must be present (null before the first publish); read it via
@@ -123,8 +123,8 @@ inconsistency here without checking the client first.
   `GET …/saves/:saveId` is the detail behind a list row, under the same gate, and a
   PASCALCASE row like the list serves — NOT the camelCase projection the room save's
   response uses (served that, the client showed a save with every value missing). It
-  differs from the list row only in how it names bundles: each `UnitySubAssets` entry is
-  `{ UnityAssetId, UnityAsset, UnityAssetHash }`, the main bundle is lifted to top-level
+  differs from the list row only in how it names bundles: dependency entries in `UnitySubAssets`
+  are `{ UnityAssetId, UnityAsset, UnityAssetHash }`, the main bundle appears only at top-level
   `UnityAsset`/`UnityAssetHash`, and there is no `Tags`. Three shapes of one save; keep
   them straight.
 - The save reads (`rooms`: `…/saves`, `…/saves/no_unity_assets` and `…/saves/:saveId`) are

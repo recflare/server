@@ -286,16 +286,18 @@ export const RestrictionDto = z.object({
 	DisplayReason: z.string().nullable().describe('Reason shown to the player. Free text'),
 })
 
-export function roleLookup(role: 'developer' | 'moderator') {
+export function roleLookup(role: 'developer' | 'moderator' | 'screenshare') {
 	return {
 		tags: ['Roles'],
 		summary: `Whether a player has the ${role} role`,
 		description:
-			`Returns a bare JSON boolean (\`true\`/\`false\`), not an object. Off by default and ` +
-			`granted only by an operator via \`runx admin grant-${role}\`. The same flag also rides ` +
-			`in the access token's \`role\` claim, so the client rarely needs this route.\n\n` +
-			`This is the ONE-player form. \`/role/${role}?id=\` is a different question with a ` +
-			`different answer shape — which of several players hold the role, as an array.`,
+			role === 'screenshare'
+				? 'Returns a bare JSON boolean. Screenshare is enabled for every existing account, matching the access-token role policy; unknown accounts return 404. Studio uses this to validate room-owner video permissions.'
+				: `Returns a bare JSON boolean (\`true\`/\`false\`), not an object. Off by default and ` +
+					`granted only by an operator via \`runx admin grant-${role}\`. The same flag also rides ` +
+					`in the access token's \`role\` claim, so the client rarely needs this route.\n\n` +
+					`This is the ONE-player form. \`/role/${role}?id=\` is a different question with a ` +
+					`different answer shape — which of several players hold the role, as an array.`,
 		parameters: [
 			{
 				name: 'id',

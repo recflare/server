@@ -1111,6 +1111,14 @@ export const SanitizeRequest = z.object({
 /** `POST /api/sanitize/v1/isPure` — whether the text is free of profanity. */
 export const IsPureResponse = z.object({ IsPure: z.boolean() })
 
+/** Studio sends repeated Values form fields and consumes this result envelope. */
+export const BulkAllowedRequest = z.object({ Values: z.array(z.string()) })
+export const BulkAllowedResponse = z.object({
+	Success: z.boolean(),
+	Error: z.string().nullable(),
+	Value: z.object({ ArePure: z.array(z.boolean()) }).nullable(),
+})
+
 /** `GET /api/keepsakes/globalconfig` — the keepsake feature switches. */
 export const KeepsakeConfig = z.object({
 	KeepsakeFeatureEnabled: z.boolean(),

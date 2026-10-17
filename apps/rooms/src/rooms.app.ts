@@ -16,6 +16,7 @@ import {
 	cloneSubRoom,
 	countRoomsByCreator,
 	createNotification,
+	createStudioRoom,
 	createSubRoom,
 	deleteExpiredRoomInvites,
 	deleteRoom,
@@ -46,7 +47,6 @@ import {
 	getRoomsByIds,
 	getSimilarRooms,
 	getStudioUnityAsset,
-	getSubRoom,
 	getSubRoomPermissions,
 	getSubRoomSaveById,
 	getSubRoomSaves,
@@ -159,6 +159,7 @@ import {
 	roomIdParam,
 	RoomLookup,
 	RoomPascalEnvelope,
+	RoomRestrictionsEnvelope,
 	RoomResultEnvelope,
 	RoomRoleDto,
 	RoomSaveEnvelope,
@@ -933,11 +934,15 @@ function toSaveResponse(save: Record<string, unknown>, target: number | null = n
 		unityAssetId: str(save.UnityAssetId),
 		unityAsset: baked?.filename ?? null,
 		unityAssetHash: baked?.hash ?? null,
-		dataBlob: str(save.DataBlob) ?? '',
+		dataBlob: str(save.DataBlob),
 		dataBlobHash: str(save.DataBlobHash),
+		persistenceVersion: num(save.PersistenceVersion) ?? 0,
+		omVersion: num(save.OMVersion) ?? 0,
+		ugcSubVersion: num(save.UgcSubVersion) ?? 0,
 		savedByAccountId: num(save.SavedByAccountId),
-		savedOnPlatform: num(save.SavedOnPlatform) ?? 0,
-		savedOnDeviceClass: num(save.SavedOnDeviceClass) ?? 0,
+		savedOnPlatform: save.SavedOnPlatform === null ? null : (num(save.SavedOnPlatform) ?? 0),
+		savedOnDeviceClass:
+			save.SavedOnDeviceClass === null ? null : (num(save.SavedOnDeviceClass) ?? 0),
 		description: str(save.Description),
 		createdAt: str(save.CreatedAt) ?? '',
 	}
@@ -1014,18 +1019,30 @@ function toSaveWithoutUnityAssets(save: Record<string, unknown>) {
 		ReferencedUnityAssetIds: Array.isArray(save.ReferencedUnityAssetIds)
 			? save.ReferencedUnityAssetIds
 			: [],
-		DataBlob: str(save.DataBlob) ?? '',
+		DataBlob: str(save.DataBlob),
 		DataBlobHash: str(save.DataBlobHash),
 		PersistenceVersion: num(save.PersistenceVersion) ?? 0,
 		OMVersion: num(save.OMVersion) ?? 0,
 		SavedByAccountId: num(save.SavedByAccountId),
-		SavedOnPlatform: num(save.SavedOnPlatform) ?? 0,
-		SavedOnDeviceClass: num(save.SavedOnDeviceClass) ?? 0,
+		SavedOnPlatform: save.SavedOnPlatform === null ? null : (num(save.SavedOnPlatform) ?? 0),
+		SavedOnDeviceClass:
+			save.SavedOnDeviceClass === null ? null : (num(save.SavedOnDeviceClass) ?? 0),
 		Description: str(save.Description) ?? '',
 		ModerationState: num(save.ModerationState) ?? 0,
 		CreatedAt: str(save.CreatedAt) ?? '',
 		UgcSubVersion: num(save.UgcSubVersion) ?? 0,
 	}
+}
+
+/** A JSON authoring manifest is not interchangeable with a baked game bundle. */
+function studioSource(
+	save: Record<string, unknown>
+): { Filename: string; Hash: string | null } | null {
+	const value = save.StudioSourceAsset
+	if (typeof value !== 'object' || value === null) return null
+	const source = value as { Filename?: unknown; Hash?: unknown }
+	if (typeof source.Filename !== 'string' || source.Filename === '') return null
+	return { Filename: source.Filename, Hash: typeof source.Hash === 'string' ? source.Hash : null }
 }
 
 /**
@@ -1035,10 +1052,10 @@ function toSaveWithoutUnityAssets(save: Record<string, unknown>) {
  * values were all missing). Two things differ from the list row, both observed against
  * the reference:
  *
- * - Each `UnitySubAssets` entry is `{ UnityAssetId, UnityAsset, UnityAssetHash }` — the
- *   stored `Filename`/`Hash` under the names the client's save-detail decoder reads —
- *   and the save's own main bundle is lifted to top-level `UnityAsset`/`UnityAssetHash`
- *   (the named target's, Windows when none was named; both null for a maker-pen save).
+ * - The save's main bundle is at top-level `UnityAsset`/`UnityAssetHash`. Only other
+ *   bundles belong in `UnitySubAssets`, as `{ UnityAssetId, UnityAsset, UnityAssetHash }`.
+ *   Concrete filenames use the named target, Windows when absent; the main fields
+ *   are null for a maker-pen save.
  * - No `Tags`, and `UnityAssetId` is always present (null when the save carried none).
  *
  * Built key by key like {@link toSaveWithoutUnityAssets}, for the same reason.
@@ -1047,11 +1064,18 @@ function toSaveDetail(save: Record<string, unknown>, target: number | null) {
 	const str = (v: unknown) => (typeof v === 'string' ? v : null)
 	const num = (v: unknown) => (typeof v === 'number' ? v : null)
 	const main = pickBakedBundle(save, target)
+	// The root bundle is loaded separately through UnityAsset. Listing it as a
+	// dependency makes Unity load the same serialized files twice (room error 8714).
+	// A detail response names concrete files, so default to Windows just as `main`
+	// does; it cannot carry both platform builds under the same asset GUID.
+	const rootId = str(save.UnityAssetId)?.toLowerCase()
 	const bundles = (Array.isArray(save.UnitySubAssets) ? save.UnitySubAssets : []).filter(
 		(item): item is Record<string, unknown> =>
 			typeof item === 'object' &&
 			item !== null &&
-			(target === null || (item as { Target?: unknown }).Target === target)
+			(item as { Target?: unknown }).Target === (target ?? 0) &&
+			(typeof (item as { UnityAssetId?: unknown }).UnityAssetId !== 'string' ||
+				(item as { UnityAssetId: string }).UnityAssetId.toLowerCase() !== rootId)
 	)
 	return {
 		UnitySubAssets: bundles.map((row) => ({
@@ -1070,7 +1094,7 @@ function toSaveDetail(save: Record<string, unknown>, target: number | null) {
 		ReferencedUnityAssetIds: Array.isArray(save.ReferencedUnityAssetIds)
 			? save.ReferencedUnityAssetIds
 			: [],
-		DataBlob: str(save.DataBlob) ?? '',
+		DataBlob: str(save.DataBlob),
 		DataBlobHash: str(save.DataBlobHash),
 		PersistenceVersion: num(save.PersistenceVersion) ?? 0,
 		OMVersion: num(save.OMVersion) ?? 0,
@@ -1121,7 +1145,9 @@ async function ownedRooms(c: Context<App>) {
 async function ownedRoomsExcludingDorm(c: Context<App>) {
 	const accountId = await authedAccountId(c)
 	if (accountId === null) return unauthorized(c)
-	const rooms = await getRoomsByCreator(c.env.DB, accountId)
+	const rooms = (await getContributedRooms(c.env.DB, accountId)).filter((room) =>
+		canManageRoom(room, accountId)
+	)
 	return c.json(rooms.filter((r) => r.IsDorm !== true))
 }
 
@@ -1278,10 +1304,42 @@ const app = new Hono<App>()
 			if (idParam) {
 				const id = firstId(idParam)
 				const room = id === undefined ? null : await getRoomById(c.env.DB, id)
-				return c.json(room ?? {})
+				return c.json(room ?? (c.req.query('include') === '525581' ? null : {}))
 			}
 			const room = await getRoomByName(c.env.DB, nameParam ?? '')
-			return c.json(room ?? {})
+			return c.json(room ?? (c.req.query('include') === '525581' ? null : {}))
+		}
+	)
+
+	// Studio creates an empty room directly, rather than cloning a game template.
+	.post(
+		'/rooms/create',
+		describeRoute({
+			tags: ['My rooms'],
+			summary: 'Create an empty Studio room',
+			security: AUTHED,
+			requestBody: form(CloneRoomRequest, 'Room name and optional ugcVersion (1 or 2)'),
+			responses: {
+				200: json(RoomDto, 'The private room with its empty Home subroom'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const accountId = await authedAccountId(c)
+			if (accountId === null) return unauthorized(c)
+			const body = await c.req.parseBody()
+			const name = typeof body.name === 'string' ? body.name.trim() : ''
+			const invalid = roomNameRejection(name, 'room name')
+			if (name === '' || invalid !== null)
+				return c.json({ error: invalid ?? 'A room name is required.' }, 400)
+			const version = Number(body.ugcVersion ?? 1)
+			if (version !== 1 && version !== 2) return c.json({ error: 'Unsupported UGC version.' }, 400)
+			const maxRooms = intVar(c.env.MAX_ROOMS_PER_ACCOUNT, DEFAULT_MAX_ROOMS_PER_ACCOUNT)
+			if (maxRooms > 0 && (await countRoomsByCreator(c.env.DB, accountId)) >= maxRooms)
+				return c.json({ error: `You can only have ${maxRooms} rooms.` }, 403)
+			const room = await createStudioRoom(c.env.DB, name, accountId, version)
+			if (!room) return c.json({ error: 'A room with that name already exists.' }, 409)
+			return c.json(room)
 		}
 	)
 
@@ -1688,9 +1746,9 @@ const app = new Hono<App>()
 		'/rooms/ownedby/me',
 		describeRoute({
 			tags: ['My rooms'],
-			summary: 'Rooms the caller owns (excluding their dorm)',
+			summary: 'Rooms the caller owns or co-owns (excluding their dorm)',
 			description: [
-				'The caller’s own rooms with the dorm filtered out: a dorm is auto-provisioned, not a',
+				'The caller’s created and accepted co-owned rooms with the dorm filtered out: a dorm is auto-provisioned, not a',
 				'room the player made, so it doesn’t belong in the “rooms you own” list. Use',
 				'`createdby/me` for everything the account created. Accessibility is deliberately NOT',
 				'filtered — this is the owner’s own list, so unpublished (Private) rooms appear, unlike',
@@ -3553,8 +3611,9 @@ const app = new Hono<App>()
 	// Auth-gated (401) and owner/co-owner-only (403). Body is a form of
 	// `supports*=True|False` fields (see RESTRICTION_FIELDS); only the fields present
 	// are changed. Returns the updated room in the `{ success, error, value }` envelope.
-	.put(
-		'/rooms/:roomId{[0-9]+}/restrictions',
+	.on(
+		'PUT',
+		['/rooms/:roomId{[0-9]+}/restrictions', '/rooms/:roomId{[0-9]+}/v2/restrictions'],
 		describeRoute({
 			tags: ['Room settings'],
 			summary: 'Set a room’s platform/movement support flags',
@@ -3567,7 +3626,10 @@ const app = new Hono<App>()
 			parameters: [roomIdParam],
 			requestBody: form(RestrictionsRequest, 'The flags to change'),
 			responses: {
-				200: json(RoomEnvelope, 'The updated room, or a rejection with `success: false`'),
+				200: json(
+					RoomRestrictionsEnvelope,
+					'The updated room; Studio v2 uses a PascalCase result envelope'
+				),
 				401: UNAUTHORIZED_RESPONSE,
 				403: FORBIDDEN_RESPONSE,
 			},
@@ -3584,7 +3646,7 @@ const app = new Hono<App>()
 			if (!canManageRoom(room, accountId)) return c.body(null, 403)
 
 			const body = (await c.req.parseBody().catch(() => ({}))) as Record<string, unknown>
-			const patch: Record<string, boolean> = {}
+			const patch: Record<string, boolean | number> = {}
 			for (const [key, value] of Object.entries(body)) {
 				const field = RESTRICTION_FIELDS[key.toLowerCase()]
 				if (field !== undefined && typeof value === 'string') {
@@ -3592,8 +3654,20 @@ const app = new Hono<App>()
 				}
 			}
 
+			const ageEntry = Object.entries(body).find(([key]) => key.toLowerCase() === 'agerating')
+			if (ageEntry !== undefined) {
+				const age = ageEntry[1]
+				if (typeof age !== 'string' || !/^[012]$/.test(age)) {
+					if (c.req.path.endsWith('/v2/restrictions'))
+						return c.json({ Success: false, Error: 'Invalid age rating.', Value: null })
+					return roomEnvelope(c, null, 'Invalid age rating.')
+				}
+				patch.AgeRating = Number(age)
+			}
 			const updated = await updateRoomFields(c.env.DB, roomId, room, patch)
 			await pushRoomUpdate(c, accountId, updated)
+			if (c.req.path.endsWith('/v2/restrictions'))
+				return c.json({ Success: true, Error: null, Value: updated })
 			return roomEnvelope(c, updated)
 		}
 	)
@@ -3925,7 +3999,14 @@ const app = new Hono<App>()
 			// `TotalResults` counts the whole history, not the page — that is what the client
 			// pages against.
 			return c.json({
-				Results: page.map(toSaveWithoutUnityAssets),
+				Results: page.map((save) => {
+					const result = toSaveWithoutUnityAssets(save)
+					// Archived game bundles have no editable Unity project. Studio can still
+					// load their Maker Pen data; don't make it fetch a nonexistent source manifest.
+					if (c.req.header('user-agent')?.startsWith('RRStudio') && !studioSource(save))
+						result.UnityAssetId = null
+					return result
+				}),
 				TotalResults: saves.length,
 				TotalCount: saves.length,
 			})
@@ -4003,24 +4084,22 @@ const app = new Hono<App>()
 		}
 	)
 
-	// Metadata for the unity asset on one of this subroom's saves. The editor calls
-	// this after a build; the game reads the same bundles from `CurrentSave` and then
-	// downloads `filename` from the CDN. Bare object, no envelope, no auth — the room
-	// document already names the files.
+	// The authoring manifest on a save. Its JSON source filename is independent of
+	// the baked game bundles; a baked-only archive has no editable source to return.
 	.get(
 		'/rooms/:roomId{[0-9]+}/subrooms/:subRoomId{[0-9]+}/unityasset',
 		describeRoute({
 			tags: ['Subrooms'],
 			summary: 'The unity asset attached to a subroom save',
 			description: [
-				'The baked Windows and Android bundles stored for `unityAssetId`, when that id is',
+				'The editable JSON source manifest and any baked bundles stored for `unityAssetId`, when that id is',
 				'on a save of this subroom. A bare object: `unityAssetId`, `createdByAccountId`,',
 				'`bakedUnityAssets` (one entry per main bundle), plus `filename` and `hash` for the',
-				'Windows bundle. Bytes are `GET /unityasset/{filename}` on the CDN.',
+				'authoring manifest. Source JSON is `GET /roomunityasset/{filename}` on the CDN; baked bundles remain separate.',
 				'',
-				'`target` is 0 for Windows and 2 for Android/Quest. Stripped bundles are stored and',
-				'not listed. An unknown room, subroom, or asset is a 404. No auth: `GET /rooms/{id}`',
-				'already includes the same filenames on `CurrentSave`.',
+				'Stripped bundles are not listed. The published current save is public. Other revisions require the same',
+				'authentication and permissions as save history. Without an asset ID, authorized',
+				'readers receive the latest source; other callers receive only the published source.',
 			].join(' '),
 			parameters: [
 				roomIdParam,
@@ -4029,6 +4108,8 @@ const app = new Hono<App>()
 			],
 			responses: {
 				200: json(UnityAssetWithSourceDto, 'The unity asset and its baked bundles'),
+				401: UNAUTHORIZED_RESPONSE,
+				403: FORBIDDEN_RESPONSE,
 				404: { description: 'No such room, subroom, or asset on that subroom' },
 			},
 		}),
@@ -4036,27 +4117,40 @@ const app = new Hono<App>()
 			const roomId = Number.parseInt(c.req.param('roomId'), 10)
 			const subRoomId = Number.parseInt(c.req.param('subRoomId'), 10)
 			const unityAssetId = c.req.query('unityAssetId') ?? ''
-			if (unityAssetId === '') return c.notFound()
 
-			const sub = await getSubRoom(c.env.DB, roomId, subRoomId)
-			if (!sub) return c.notFound()
-			const saves = await getSubRoomSaves(c.env.DB, subRoomId)
-			const save = saves.find((row) => row.UnityAssetId === unityAssetId)
+			const room = await getRoomById(c.env.DB, roomId)
+			const sub = room && findSubRoom(room, subRoomId)
+			if (!room || !sub) return c.notFound()
+			const current = sub.CurrentSave
+			let save =
+				typeof current === 'object' && current !== null
+					? (current as Record<string, unknown>)
+					: undefined
+			const accountId = await authedAccountId(c)
+			const canReadHistory = accountId !== null && (await canReadSaves(c, room, roomId, accountId))
+			if (canReadHistory) {
+				const saves = await getSubRoomSaves(c.env.DB, subRoomId)
+				save =
+					unityAssetId === ''
+						? saves.find((row) => studioSource(row) !== null)
+						: saves.find((row) => row.UnityAssetId === unityAssetId)
+			} else if (unityAssetId !== '' && save?.UnityAssetId !== unityAssetId) {
+				if (accountId === null) return unauthorized(c)
+				return c.body(null, 403)
+			}
 			if (!save) return c.notFound()
-
-			const asset = await getStudioUnityAsset(c.env.DB, unityAssetId)
-			if (!asset) return c.notFound()
-
-			// Main bundles, Windows first; the Windows one (or the first there is) supplies
-			// the top-level `filename`/`hash`.
-			const mains = bakedUnityAssets(asset.builds)
-			const source = mains.find((build) => build.Target === 0) ?? mains[0]
+			const source = studioSource(save)
 			if (!source) return c.notFound()
+
+			const asset = await getStudioUnityAsset(c.env.DB, String(save.UnityAssetId))
+
+			// Baked bundles are optional until compilation; the source exists before a build.
+			const mains = bakedUnityAssets(asset?.builds ?? [])
 
 			const savedBy = typeof save.SavedByAccountId === 'number' ? save.SavedByAccountId : 0
 			return c.json({
-				unityAssetId: asset.unityAssetId,
-				createdByAccountId: asset.createdByAccountId || savedBy,
+				unityAssetId: String(save.UnityAssetId),
+				createdByAccountId: asset?.createdByAccountId || savedBy,
 				bakedUnityAssets: mains.map((build) => ({
 					unityAssetId: build.UnityAssetId,
 					target: build.Target,
@@ -4132,8 +4226,11 @@ const app = new Hono<App>()
 				RoomData?: { Filename?: string; Hash?: string | null }
 				SubRoomData?: { Filename?: string; Hash?: string | null }
 				UnityAssetId?: string | null
+				UnityAsset?: { Filename?: string; Hash?: string | null }
 				Description?: string
 				PersistenceVersion?: number
+				OMVersion?: number
+				UgcSubVersion?: number
 				InventionUsage?: string
 				AutoPublish?: boolean
 			}
@@ -4145,10 +4242,19 @@ const app = new Hono<App>()
 				roomDataFilename: body.RoomData?.Filename,
 				roomDataHash: typeof body.RoomData?.Hash === 'string' ? body.RoomData.Hash : undefined,
 				unityAssetId: typeof body.UnityAssetId === 'string' ? body.UnityAssetId : undefined,
+				unitySource:
+					typeof body.UnityAsset?.Filename === 'string' && body.UnityAsset.Filename !== ''
+						? {
+								Filename: body.UnityAsset.Filename,
+								Hash: typeof body.UnityAsset.Hash === 'string' ? body.UnityAsset.Hash : null,
+							}
+						: undefined,
 				autoPublish: body.AutoPublish === true,
 				description: typeof body.Description === 'string' ? body.Description : undefined,
 				persistenceVersion:
 					typeof body.PersistenceVersion === 'number' ? body.PersistenceVersion : undefined,
+				omVersion: typeof body.OMVersion === 'number' ? body.OMVersion : undefined,
+				ugcSubVersion: typeof body.UgcSubVersion === 'number' ? body.UgcSubVersion : undefined,
 				inventionUsage: typeof body.InventionUsage === 'string' ? body.InventionUsage : undefined,
 			})
 			if (!result) {

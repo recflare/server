@@ -19,6 +19,12 @@ declare module 'cloudflare:test' {
 const ORIGIN = 'https://example.com'
 const TEST_SECRET = 'test-signing-key'
 
+it('returns an empty recommendation list when no circuit corpus is installed', async () => {
+	const response = await SELF.fetch(`${ORIGIN}/commonQuery/rrstudio/chiprecommendations`)
+	expect(response.status).toBe(200)
+	expect(await response.json()).toEqual([])
+})
+
 function b64url(input: ArrayBuffer | string): string {
 	const bytes = typeof input === 'string' ? new TextEncoder().encode(input) : new Uint8Array(input)
 	let binary = ''
@@ -113,13 +119,13 @@ it('lists no cloud builds for a room', async () => {
 	expect(await res.json()).toEqual({ results: [], totalResults: 0 })
 })
 
-it('serves a stubbed cloud build rate limit config', async () => {
+it('serves the Studio rate-limit DTO without blocking a first build', async () => {
 	const res = await SELF.fetch('https://example.com/cloud-builds/get-rate-limit-config')
 	expect(res.status).toBe(200)
 	expect(await res.json()).toEqual({
-		maxBuildsPerHour: 100,
-		maxConcurrentBuilds: 10,
-		cooldownSeconds: 0,
+		buildThrottleIntervalHours: 1,
+		warnAfterBuildsPerInterval: 90,
+		maxBuildsPerInterval: 100,
 	})
 })
 

@@ -65,6 +65,7 @@ const DEFAULT_CONNECT_PLAYER = 9000
 
 interface HubRecord {
 	type?: number
+	error?: string
 	target?: string
 	invocationId?: string
 	result?: unknown
@@ -197,6 +198,44 @@ describe('internal endpoint auth', () => {
 })
 
 describe('hub protocol', () => {
+	test('Studio named subscriptions merge and unsubscribe', async () => {
+		const { ws, waitFor } = await connect('conn-studio-channels')
+		const stub = env.RECFLARE_NOTIFICATIONS_HUB.getByName('global')
+		for (const [i, channel] of ['RRS:first', 'RRS:second', 'RRS:first'].entries()) {
+			send(ws, {
+				type: 1,
+				invocationId: `s${i}`,
+				target: 'SubscribeTo',
+				arguments: [{ Channels: [channel] }],
+			})
+			expect(
+				(await waitFor((r) => r.type === 3 && r.invocationId === `s${i}`)).error
+			).toBeUndefined()
+		}
+		const channels = () =>
+			runInDurableObject(
+				stub,
+				(_instance, state) =>
+					state
+						.getWebSockets()
+						.map(
+							(socket) =>
+								socket.deserializeAttachment() as { connectionId: string; channels?: string[] }
+						)
+						.find((attachment) => attachment.connectionId === 'conn-studio-channels')?.channels
+			)
+		expect(await channels()).toEqual(['RRS:first', 'RRS:second'])
+		send(ws, {
+			type: 1,
+			invocationId: 'u',
+			target: 'UnsubscribeFrom',
+			arguments: [{ Channels: ['RRS:first'] }],
+		})
+		expect((await waitFor((r) => r.type === 3 && r.invocationId === 'u')).error).toBeUndefined()
+		expect(await channels()).toEqual(['RRS:second'])
+		ws.close()
+	})
+
 	test('GetSubscriptions reflects SubscribeToPlayers', async () => {
 		const { ws, waitFor } = await connect('conn-subs')
 

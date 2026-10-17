@@ -235,7 +235,7 @@ it('GET /openapi.json documents every route', async () => {
 			Object.keys(ops).map((method) => `${method.toUpperCase()} ${path}`)
 		)
 	)
-	expect([...documented].sort()).toEqual(['GET /', 'POST /upload'])
+	expect([...documented].sort()).toEqual(['GET /', 'POST /upload', 'POST /upload/unityassets'])
 
 	// Every operation carries a summary — a path present but undescribed is not
 	// documentation.
@@ -245,4 +245,168 @@ it('GET /openapi.json documents every route', async () => {
 
 	// Every schema inlines: a `$ref` here would be a dangling reference (see openapi.ts).
 	expect(JSON.stringify(spec).includes('"$ref"')).toBe(false)
+})
+
+it('uploads Studio source files in order with verified hashes and a manifest under its own prefix', async () => {
+	const headers = { ...(await bearer()), 'User-Agent': 'RRStudio' }
+	const body = new FormData()
+	body.append('file', new File(['first'], 'a.txt'))
+	body.append('file', new File(['second'], 'b.txt'))
+	const res = await SELF.fetch(`${ORIGIN}/upload/unityassets`, { method: 'POST', headers, body })
+	expect(res.status).toBe(200)
+	const files = (await res.json()) as Array<{ Filename: string; Hash: string }>
+	expect(files).toHaveLength(2)
+	for (const [i, file] of files.entries()) {
+		expect(file.Filename).toMatch(/^[0-9a-z]{40}$/)
+		const stored = await env.CDN_ASSETS.get(`unityasset/${file.Filename}`)
+		expect(await stored!.text()).toBe(i === 0 ? 'first' : 'second')
+		const hash = await crypto.subtle.digest(
+			'SHA-256',
+			new TextEncoder().encode(i === 0 ? 'first' : 'second')
+		)
+		expect(file.Hash).toBe(btoa(String.fromCharCode(...new Uint8Array(hash))))
+	}
+	const manifest = new FormData()
+	manifest.append('fileType', '9')
+	manifest.append(
+		'file',
+		new File(['{"Version":3,"Files":[]}'], 'manifest.json', { type: 'application/json' })
+	)
+	const uploaded = await SELF.fetch(`${ORIGIN}/upload`, { method: 'POST', headers, body: manifest })
+	expect(uploaded.status).toBe(200)
+	const source = (await uploaded.json()) as { Filename: string; Hash: string }
+	expect(source.Hash).toBeTruthy()
+	expect(await (await env.CDN_ASSETS.get(`roomunityasset/${source.Filename}`))!.text()).toBe(
+		'{"Version":3,"Files":[]}'
+	)
+	const unauthenticated = new FormData()
+	unauthenticated.append('file', new File(['x'], 'x.txt'))
+	expect(
+		(await SELF.fetch(`${ORIGIN}/upload/unityassets`, { method: 'POST', body: unauthenticated }))
+			.status
+	).toBe(401)
+})
+
+it('accepts the Mono multipart wire format without changing binary file bytes', async () => {
+	const boundary = 'mono-studio-boundary'
+	const payload = new Uint8Array([0, 255, 128, 13, 10, 0, 200])
+	const parts: Array<string | Uint8Array> = []
+	for (let i = 0; i < 2; i++)
+		parts.push(
+			`--${boundary}\r\nContent-Type: application/octet-stream\r\nContent-Disposition: form-data; name=file; filename=file.bin; filename*=utf-8''file.bin\r\n\r\n`,
+			payload,
+			'\r\n'
+		)
+	parts.push(`--${boundary}--\r\n`)
+	const body = await new Response(
+		new Blob(parts).stream().pipeThrough(new CompressionStream('gzip'))
+	).arrayBuffer()
+	const result = await SELF.fetch(`${ORIGIN}/upload/unityassets`, {
+		method: 'POST',
+		headers: {
+			...(await bearer()),
+			'Content-Type': `multipart/form-data; boundary="${boundary}"`,
+			'Content-Encoding': 'gzip',
+		},
+		body,
+	})
+	expect(result.status).toBe(200)
+	const files = await result.json<Array<{ Filename: string }>>()
+	expect(files).toHaveLength(2)
+	expect(files[0].Filename).toBe(files[1].Filename)
+	const saved = await env.CDN_ASSETS.get(`unityasset/${files[0].Filename}`)
+	expect(new Uint8Array(await saved!.arrayBuffer())).toEqual(payload)
+})
+
+it('accepts Studio gzip multipart batches with stable content-addressed filenames', async () => {
+	const body = new FormData()
+	body.append('file', new File(['first'], 'file.bin'))
+	body.append('file', new File(['second'], 'file.bin'))
+	body.append('file', new File(['first'], 'file.bin'))
+	const request = new Request(`${ORIGIN}/upload/unityassets`, { method: 'POST', body })
+	const compressed = request.body!.pipeThrough(new CompressionStream('gzip'))
+	const bytes = await new Response(compressed).arrayBuffer()
+	const headers = {
+		...(await bearer()),
+		'User-Agent': 'RRStudio',
+		'Content-Type': request.headers.get('content-type')!,
+		'Content-Encoding': 'gzip',
+	}
+	const upload = async () => SELF.fetch(request.url, { method: 'POST', headers, body: bytes })
+	const result = await upload()
+	expect(result.status).toBe(200)
+	const files = await result.json<Array<{ Filename: string; Hash: string }>>()
+	expect(files).toHaveLength(3)
+	expect(files.map((file) => file.Filename)).toEqual([
+		'3jz19z865iu7adldcdxv6stlddxq0yp5qjvnon77',
+		'4wk7uj0ueguhyik1bkmvgcl60upxvkg9wwjbdlrk',
+		'3jz19z865iu7adldcdxv6stlddxq0yp5qjvnon77',
+	])
+	expect(files[0]).toEqual(files[2])
+	expect(files[0]!.Filename).not.toBe(files[1]!.Filename)
+	for (const [i, file] of files.entries()) {
+		expect(await (await env.CDN_ASSETS.get(`unityasset/${file.Filename}`))!.text()).toBe(
+			i === 1 ? 'second' : 'first'
+		)
+	}
+	expect(await (await upload()).json()).toEqual(files)
+	// The next SDK request compresses the source manifest through /upload too.
+	const manifest = JSON.stringify({
+		Version: 3,
+		Files: files.map((file, i) => ({ n: file.Filename, p: `Assets/${i}.txt` })),
+	})
+	const manifestForm = new FormData()
+	manifestForm.append('fileType', '9')
+	manifestForm.append('file', new File([manifest], 'file.bin', { type: 'application/json' }))
+	const manifestRequest = new Request(`${ORIGIN}/upload`, { method: 'POST', body: manifestForm })
+	const manifestBytes = await new Response(
+		manifestRequest.body!.pipeThrough(new CompressionStream('gzip'))
+	).arrayBuffer()
+	const saved = await SELF.fetch(manifestRequest.url, {
+		method: 'POST',
+		headers: { ...headers, 'Content-Type': manifestRequest.headers.get('content-type')! },
+		body: manifestBytes,
+	})
+	expect(saved.status).toBe(200)
+	const metadata = await saved.json<{ Filename: string }>()
+	expect(await (await env.CDN_ASSETS.get(`roomunityasset/${metadata.Filename}`))!.text()).toBe(
+		manifest
+	)
+})
+
+it('rejects malformed and oversized compressed source uploads without an internal error', async () => {
+	const headers = {
+		...(await bearer()),
+		'Content-Encoding': 'gzip',
+		'Content-Type': 'multipart/form-data; boundary=test',
+	}
+	expect(
+		(
+			await SELF.fetch(`${ORIGIN}/upload/unityassets`, {
+				method: 'POST',
+				headers,
+				body: 'invalid gzip',
+			})
+		).status
+	).toBe(400)
+	const original = env.MAX_UPLOAD_BYTES
+	env.MAX_UPLOAD_BYTES = '16'
+	try {
+		const form = new FormData()
+		form.append('file', new File([new Uint8Array(100_000)], 'large.bin'))
+		const request = new Request(`${ORIGIN}/upload/unityassets`, { method: 'POST', body: form })
+		const compressed = await new Response(
+			request.body!.pipeThrough(new CompressionStream('gzip'))
+		).arrayBuffer()
+		expect(compressed.byteLength).toBeLessThan(1000)
+		const response = await SELF.fetch(request.url, {
+			method: 'POST',
+			headers: { ...headers, 'Content-Type': request.headers.get('content-type')! },
+			body: compressed,
+		})
+		expect(response.status).toBe(413)
+	} finally {
+		if (original === undefined) delete env.MAX_UPLOAD_BYTES
+		else env.MAX_UPLOAD_BYTES = original
+	}
 })

@@ -1821,6 +1821,22 @@ describe('auth worker routes', () => {
 		expect(await res.text()).toBe('')
 	})
 
+	test('GET /role/screenshare/:id matches the token feature gate for existing accounts', async () => {
+		for (const id of [42, 77]) {
+			const res = await exports.default.fetch(`${ORIGIN}/role/screenshare/${id}`)
+			expect(res.status).toBe(200)
+			expect(await res.json()).toBe(true)
+		}
+	})
+
+	test('GET /role/screenshare/:id does not grant a role to unknown accounts', async () => {
+		for (const id of ['999999', 'nonsense']) {
+			const res = await exports.default.fetch(`${ORIGIN}/role/screenshare/${id}`)
+			expect(res.status).toBe(404)
+			expect(await res.text()).toBe('')
+		}
+	})
+
 	test('GET /role/developer/:id returns a bare false for an un-flagged account', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/role/developer/42`)
 		expect(res.status).toBe(200)
@@ -2032,6 +2048,7 @@ describe('auth worker routes', () => {
 			'GET /role/developer/{id}',
 			'GET /role/moderator',
 			'GET /role/moderator/{id}',
+			'GET /role/screenshare/{id}',
 			'POST /account/me/changepassword',
 			'POST /cachedlogin/forplatformid/{platform}/{id}',
 			'POST /cachedlogin/forplatformids',

@@ -19,6 +19,7 @@ export interface CloudBuildRow {
 	error: string | null
 	unityAssetId: string
 	createdByAccountId: number
+	serverDataFileName?: string | null
 }
 
 export type BundlePlatform = StudioBundlePlatform
@@ -58,10 +59,14 @@ function toCloudBuild(row: BuildListRow): CloudBuildRow {
 	return {
 		cloudBuildId: row.cloud_build_id,
 		startedAt: row.started_at,
-		completedAt: row.completed_at,
+		completedAt: row.completed_at || null,
 		error: row.error,
 		unityAssetId: row.unity_asset_id,
 		createdByAccountId: row.created_by_account_id,
+		serverDataFileName:
+			row.completed_at && !row.error && /^\d+$/.test(row.cloud_build_id)
+				? `studio-builds/${row.cloud_build_id}/server-data.json`
+				: null,
 	}
 }
 

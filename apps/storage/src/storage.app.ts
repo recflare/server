@@ -51,6 +51,9 @@ const UPLOAD_SUBFOLDER: Record<number, string> = {
 	4: 'video',
 	5: 'invention',
 	6: 'room',
+	8: 'room',
+	9: 'roomunityasset',
+	10: 'unityasset',
 }
 
 /** Resolve the storage subfolder for a posted FileType, or `undefined` when unknown. */
@@ -100,6 +103,121 @@ function textField(body: Record<string, unknown>, ...names: string[]): string | 
 	return undefined
 }
 
+/** Workers requires quoted disposition parameters; Mono emits valid bare tokens. */
+function normalizeMultipartHeaders(contentType: string): TransformStream<Uint8Array, Uint8Array> {
+	const boundary = /boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(contentType)
+	const marker = new TextEncoder().encode(`\r\n--${boundary?.[1] ?? boundary?.[2]}`)
+	let pending = new Uint8Array(0)
+	let headers = true
+	return new TransformStream({
+		transform(chunk, controller) {
+			const bytes = new Uint8Array(pending.length + chunk.length)
+			bytes.set(pending)
+			bytes.set(chunk, pending.length)
+			pending = bytes
+			while (pending.length) {
+				if (headers) {
+					let end = -1
+					for (let i = 0; i + 3 < pending.length; i++)
+						if (
+							pending[i] === 13 &&
+							pending[i + 1] === 10 &&
+							pending[i + 2] === 13 &&
+							pending[i + 3] === 10
+						) {
+							end = i + 4
+							break
+						}
+					if (end < 0) {
+						if (pending.length > 64 * 1024) throw new Error('Multipart headers exceed limit')
+						return
+					}
+					const text = new TextDecoder()
+						.decode(pending.subarray(0, end))
+						.replace(/^Content-Disposition:[^\r\n]*/gim, (line) =>
+							line.replace(
+								/(;\s*(?:name|filename)=)([!#$%&'*+\-.^_`|~0-9a-z]+)(?=;|\r|$)/gi,
+								'$1"$2"'
+							)
+						)
+					controller.enqueue(new TextEncoder().encode(text))
+					pending = pending.subarray(end)
+					headers = false
+				} else {
+					let start = -1
+					for (let i = 0; i + marker.length + 1 < pending.length; i++) {
+						if (
+							pending[i] === 13 &&
+							marker.every((byte, j) => pending[i + j] === byte) &&
+							pending[i + marker.length] === 13 &&
+							pending[i + marker.length + 1] === 10
+						) {
+							start = i
+							break
+						}
+					}
+					if (start < 0) {
+						const end = Math.max(0, pending.length - marker.length - 2)
+						if (end) controller.enqueue(pending.subarray(0, end))
+						pending = pending.subarray(end)
+						return
+					}
+					const end = start + marker.length + 2
+					controller.enqueue(pending.subarray(0, end))
+					pending = pending.subarray(end)
+					headers = true
+				}
+			}
+		},
+		flush(controller) {
+			if (pending.length) controller.enqueue(pending)
+		},
+	})
+}
+
+/** Studio compresses the entire multipart body, not the individual file parts. */
+async function readUploadForm(
+	request: Request,
+	limit: number
+): Promise<{ form: FormData } | { error: string; status: 400 | 413 | 415 }> {
+	const encoding = request.headers.get('content-encoding')?.trim().toLowerCase()
+	if (encoding && encoding !== 'identity' && encoding !== 'gzip')
+		return { error: 'Unsupported upload encoding.', status: 415 }
+	let tooLarge = false
+	try {
+		let stream = request.body
+		if (!stream) return { form: new FormData() }
+		if (encoding === 'gzip') stream = stream.pipeThrough(new DecompressionStream('gzip'))
+		let decodedBytes = 0
+		stream = stream.pipeThrough(
+			new TransformStream<Uint8Array, Uint8Array>({
+				transform(chunk, controller) {
+					decodedBytes += chunk.byteLength
+					// Account for the multipart envelope while bounding expanded input before parsing.
+					if (decodedBytes > limit + 64 * 1024) {
+						tooLarge = true
+						throw new Error('Decoded upload exceeds limit')
+					}
+					controller.enqueue(chunk)
+				},
+			})
+		)
+		const headers = new Headers(request.headers)
+		headers.delete('content-encoding')
+		headers.delete('content-length')
+		if (/^multipart\/form-data\s*;/i.test(headers.get('content-type') ?? ''))
+			stream = stream.pipeThrough(normalizeMultipartHeaders(headers.get('content-type')!))
+		return {
+			form: await new Request(request.url, { method: 'POST', headers, body: stream }).formData(),
+		}
+	} catch {
+		return {
+			error: tooLarge ? 'Files exceed the upload limit.' : 'Invalid upload form.',
+			status: tooLarge ? 413 : 400,
+		}
+	}
+}
+
 const app = new Hono<App>()
 	.use(
 		'*',
@@ -141,6 +259,46 @@ const app = new Hono<App>()
 	// references it by. Also accepts a name-only post (no binary) that just echoes
 	// back an explicit `name`/`filename`/`imagename`. Mirrors the reference `Upload`.
 	.post(
+		'/upload/unityassets',
+		describeRoute({
+			tags: ['Upload'],
+			summary: 'Upload Studio source files',
+			security: AUTHED,
+			description:
+				'Repeated multipart file parts, returned in request order with filename and SHA-256.',
+		}),
+		async (c) => {
+			const id = await validateAndGetAccountId(c.req.raw, await c.env.JWT_SECRET.get())
+			if (id === null) return c.body(null, 401)
+			const limit = maxUploadBytes(c.env.MAX_UPLOAD_BYTES)
+			const parsed = await readUploadForm(c.req.raw, limit)
+			if ('error' in parsed) return c.json({ error: parsed.error }, parsed.status)
+			const form = parsed.form
+			const files = Array.from(form.values()).filter(
+				(value): value is File => value instanceof File
+			)
+			if (files.length === 0) return c.json({ error: 'No source files supplied.' }, 400)
+			if (files.reduce((size, file) => size + file.size, 0) > limit)
+				return c.json({ error: 'Source files exceed the upload limit.' }, 413)
+			const uploaded = []
+			for (const file of files) {
+				const bytes = await file.arrayBuffer()
+				const hash = await crypto.subtle.digest('SHA-256', bytes)
+				// SDK XYGEAHCXHVR: unsigned little-endian SHA-256, base36 padded to
+				// 50 digits, then the first 40 characters. Its source manifest already
+				// contains this name before upload; random names cannot round-trip.
+				const name = new Uint8Array(hash)
+					.reduceRight((n, byte) => n * 256n + BigInt(byte), 0n)
+					.toString(36)
+					.padStart(50, '0')
+					.slice(0, 40)
+				await c.env.CDN_ASSETS.put(`unityasset/${name}`, bytes, { sha256: hash })
+				uploaded.push({ Filename: name, Hash: btoa(String.fromCharCode(...new Uint8Array(hash))) })
+			}
+			return c.json(uploaded)
+		}
+	)
+	.post(
 		'/upload',
 		describeRoute({
 			tags: ['Upload'],
@@ -173,16 +331,18 @@ const app = new Hono<App>()
 			const id = await validateAndGetAccountId(c.req.raw, secret)
 			if (id === null) return c.body(null, 401)
 
-			const body = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>)
+			const roles = await validateAndGetRoles(c.req.raw, secret)
+			const isStaff = roles?.some((role) => STAFF_ROLES.has(role)) ?? false
+			const limit = maxUploadBytes(c.env.MAX_UPLOAD_BYTES)
+			const parsed = await readUploadForm(c.req.raw, isStaff ? Number.MAX_SAFE_INTEGER : limit)
+			if ('error' in parsed) return c.json({ error: parsed.error }, parsed.status)
+			const body = Object.fromEntries(parsed.form.entries())
 
 			// The binary part is identified by being a file (filename/content-type),
 			// not by its field name — matching the reference's part detection.
 			const file = Object.values(body).find((v): v is File => v instanceof File)
 
 			if (file) {
-				const roles = await validateAndGetRoles(c.req.raw, secret)
-				const isStaff = roles?.some((role) => STAFF_ROLES.has(role)) ?? false
-				const limit = maxUploadBytes(c.env.MAX_UPLOAD_BYTES)
 				if (!isStaff && file.size > limit) {
 					return c.json({ error: `file exceeds the ${limit}-byte upload limit` }, 413)
 				}
@@ -208,6 +368,13 @@ const app = new Hono<App>()
 					// worker answer one from a HEAD instead of downloading the blob to digest it.
 					sha256: await crypto.subtle.digest('SHA-256', bytes),
 				})
+				if (c.req.header('user-agent')?.startsWith('RRStudio')) {
+					const hash = await crypto.subtle.digest('SHA-256', bytes)
+					return c.json({
+						Filename: filename,
+						Hash: btoa(String.fromCharCode(...new Uint8Array(hash))),
+					})
+				}
 				return c.json({ filename })
 			}
 

@@ -304,7 +304,9 @@ async function authedId(c: Context<App>): Promise<number | null> {
 }
 
 /** Whether one account row holds a role. Absent/false both mean no role. */
-function holdsRole(account: Account, role: 'developer' | 'moderator'): boolean {
+function holdsRole(account: Account, role: 'developer' | 'moderator' | 'screenshare'): boolean {
+	// Matches accountTokenRoles: screenshare is a feature gate on every account token.
+	if (role === 'screenshare') return true
 	return (role === 'developer' ? account.isDeveloper : account.isModerator) === true
 }
 
@@ -314,7 +316,11 @@ function holdsRole(account: Account, role: 'developer' | 'moderator'): boolean {
  * mirroring the reference API. An id that is not a number is answered as unknown (404) rather
  * than as a 400: `/role/developer/nonsense` is just an id that matches nothing.
  */
-async function roleAnswer(c: Context<App>, role: 'developer' | 'moderator', id: string) {
+async function roleAnswer(
+	c: Context<App>,
+	role: 'developer' | 'moderator' | 'screenshare',
+	id: string
+) {
 	logger.info(`${role} role lookup`, { id })
 	const accountId = Number.parseInt(id, 10)
 	const account = Number.isNaN(accountId) ? null : await getAccount(c.env.DB, accountId)
@@ -1706,6 +1712,11 @@ const app = new Hono<App>()
 	// Moderator's bulk form, kept in step with developer's above.
 	.get('/role/moderator', describeRoute(roleFilter('moderator')), (c) =>
 		roleFilterAnswer(c, 'moderator')
+	)
+
+	// Studio queries each room owner's screenshare role before validating video players.
+	.get('/role/screenshare/:id', describeRoute(roleLookup('screenshare')), (c) =>
+		roleAnswer(c, 'screenshare', c.req.param('id'))
 	)
 
 	// @guess Oculus nonce. The client asks for this before a Meta login; the exact shape

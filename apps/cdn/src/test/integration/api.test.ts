@@ -362,6 +362,7 @@ describe('cdn endpoints', () => {
 			'GET /data/{id}',
 			'GET /invention/{dataBlob}',
 			'GET /room/{dataBlob}',
+			'GET /roomunityasset/{filename}',
 			'GET /sigs/{sigName}',
 			'GET /unityasset/{filename}',
 			'HEAD /unityasset/{filename}',
@@ -376,4 +377,28 @@ describe('cdn endpoints', () => {
 		// Schemas must inline: a `$ref` here is a dangling reference (see openapi.ts).
 		expect(JSON.stringify(spec).includes('"$ref"')).toBe(false)
 	})
+})
+
+test('Studio authoring source manifests and source files remain distinct from baked bundles', async () => {
+	await env.CDN_ASSETS.put(
+		'roomunityasset/studio-source-fixture.json',
+		'{"Version":3,"Files":[]}',
+		{ httpMetadata: { contentType: 'application/json' } }
+	)
+	const source = await exports.default.fetch(`${ORIGIN}/roomunityasset/studio-source-fixture.json`)
+	expect(source.status).toBe(200)
+	expect(await source.json()).toEqual({ Version: 3, Files: [] })
+	await env.CDN_ASSETS.put('unityasset/studio-source-fixture.txt', 'source data')
+	const file = await exports.default.fetch(`${ORIGIN}/unityasset/studio-source-fixture.txt`)
+	expect(await file.text()).toBe('source data')
+	expect(
+		(
+			await exports.default.fetch(`${ORIGIN}/unityasset/studio-source-fixture.txt`, {
+				method: 'HEAD',
+			})
+		).status
+	).toBe(200)
+	expect((await exports.default.fetch(`${ORIGIN}/roomunityasset/missing-source.json`)).status).toBe(
+		404
+	)
 })

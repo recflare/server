@@ -18,6 +18,43 @@ import { GAME_VERSION, gameBuild } from '@repo/domain'
 // last a day so the client doesn't have to refresh it.
 export const TOKEN_TTL_SECONDS = 86400
 
+/** A build host can check component text, but cannot act as an account. */
+export async function generateStudioBuildValidationToken(
+	buildId: string,
+	secret: string
+): Promise<string> {
+	return sign(
+		{
+			aud: 'studio-build-validation',
+			scope: 'studio.build.validate',
+			buildId,
+			exp: Math.floor(Date.now() / 1000) + 8 * 3600,
+		},
+		secret,
+		'HS256'
+	)
+}
+
+export async function validateStudioBuildValidationToken(
+	request: Request,
+	secret: string
+): Promise<boolean> {
+	const header = request.headers.get('Authorization') ?? ''
+	if (!header.startsWith('Bearer ')) return false
+	try {
+		const payload = await verify(header.slice(7), secret, 'HS256')
+		return (
+			payload.sub === undefined &&
+			payload.aud === 'studio-build-validation' &&
+			payload.scope === 'studio.build.validate' &&
+			typeof payload.buildId === 'string' &&
+			/^[1-9]\d*$/.test(payload.buildId)
+		)
+	} catch {
+		return false
+	}
+}
+
 /**
  * Validate an HS256 token and return its `sub` (account id) claim, or `null` when
  * the token is malformed, has a bad signature, or is expired/not-yet-valid.

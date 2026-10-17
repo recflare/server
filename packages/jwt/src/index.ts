@@ -5,6 +5,8 @@ export {
 	validateAndGetRoles,
 	validateAndGetVersion,
 	generateToken,
+	generateStudioBuildValidationToken,
+	validateStudioBuildValidationToken,
 	generatePhotonAuthToken,
 	TOKEN_TTL_SECONDS,
 } from './jwt'

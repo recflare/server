@@ -353,6 +353,22 @@ const app = new Hono<App>()
 		(c) => serveAsset(c, `avatar/${c.req.param('asset')}`)
 	)
 
+	// Editable Unity source manifests. Baked bundles are served separately.
+	.get(
+		'/roomunityasset/:filename{.+}',
+		describeRoute({
+			tags: ['Assets'],
+			summary: 'Download a Studio authoring manifest',
+			parameters: [keyParam('filename', 'Uploaded JSON source manifest', true)],
+			responses: assetResponses('The source manifest'),
+		}),
+		async (c) => {
+			const name = c.req.param('filename')
+			if (name.includes('..')) return c.body(null, 400)
+			return serveAsset(c, `roomunityasset/${name}`)
+		}
+	)
+
 	// Rec Room Studio room bundles. The filename is the one a room save or
 	// `GET …/unityasset` advertises — the R2 key itself (`studio/<roomId>/…`), as
 	// `unity_asset.filename` records it. Only a recorded filename is served, so this
@@ -426,16 +442,14 @@ async function serveUnityAsset(c: Context<App>) {
 	const name = c.req.param('filename') ?? ''
 	if (name.includes('..')) return c.body(null, 400)
 	const key = await unityAssetR2Key(c.env.DB, name)
-	if (!key) return c.notFound()
-	return serveAsset(c, key)
+	return serveAsset(c, key ?? `unityasset/${name}`)
 }
 
 /** Build the Studio bundle HEAD response outside Hono's HEAD-to-GET fallback. */
 async function studioUnityAssetHead(env: StudioAssetEnv, name: string): Promise<Response> {
 	if (name.includes('..')) return new Response(null, { status: 400 })
 	const key = await unityAssetR2Key(env.DB, name)
-	if (!key) return new Response(null, { status: 404 })
-	const head = await env.CDN_ASSETS.head(key)
+	const head = await env.CDN_ASSETS.head(key ?? `unityasset/${name}`)
 	if (!head) return new Response(null, { status: 404 })
 
 	const headers = new Headers()

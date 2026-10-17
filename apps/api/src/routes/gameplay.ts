@@ -1,6 +1,8 @@
 import { Hono } from 'hono'
 import { describeRoute } from 'hono-openapi'
 
+import { validateStudioBuildValidationToken } from '@repo/jwt'
+
 import charadesAprilWords from '../../static/charades-april.json'
 import charadesWords from '../../static/charades.json'
 import communityBoard from '../../static/community-board.json'
@@ -8,6 +10,9 @@ import { authedId, unauthorized } from '../http'
 import {
 	AUTHED,
 	BareString,
+	BulkAllowedRequest,
+	BulkAllowedResponse,
+	form,
 	idParam,
 	IsPureResponse,
 	json,
@@ -141,6 +146,42 @@ export const gameplayRoutes = new Hono<App>({ strict: false })
 			if (id === null) return unauthorized(c)
 			const { value } = await sanitizeRequest(c)
 			return c.json({ IsPure: !containsSwears(value) })
+		}
+	)
+
+	// Studio checks all component text in one request, preserving duplicates and order.
+	.post(
+		'/api/sanitize/v2/isAllowed/bulk',
+		describeRoute({
+			tags: ['Gameplay'],
+			summary: 'Check Studio component text in bulk',
+			description:
+				'Checks repeated Values form fields using the existing profanity policy. ArePure matches the input order, including duplicate and empty strings. Accepts an account token or a dedicated Studio build-validation credential with no account identity.',
+			security: AUTHED,
+			requestBody: form(BulkAllowedRequest, 'Repeated Values fields'),
+			responses: {
+				200: json(BulkAllowedResponse, 'Ordered results in a Studio result envelope'),
+				400: json(BulkAllowedResponse, 'Invalid form values'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			if (
+				(await authedId(c)) === null &&
+				!(await validateStudioBuildValidationToken(c.req.raw, await c.env.JWT_SECRET.get()))
+			)
+				return unauthorized(c)
+			const body = await c.req.parseBody({ all: true }).catch(() => null)
+			const field = body?.Values
+			const values = field === undefined ? [] : Array.isArray(field) ? field : [field]
+			if (body === null || values.some((value) => typeof value !== 'string')) {
+				return c.json({ Success: false, Error: 'Values must be strings.', Value: null }, 400)
+			}
+			return c.json({
+				Success: true,
+				Error: null,
+				Value: { ArePure: values.map((value) => !containsSwears(value as string)) },
+			})
 		}
 	)
 
