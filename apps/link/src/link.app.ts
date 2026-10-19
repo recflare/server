@@ -23,4 +23,8 @@ const app = new Hono<App>()
 		return c.text('hello, world!')
 	})
 
+	.get('/actionlink/newPlayerFriendCodeConsumptionCount', async (c) => {
+		return c.json(0) // referrals not counted so 0
+	})
+
 export default app
