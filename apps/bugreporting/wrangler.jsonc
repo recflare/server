@@ -1,0 +1,38 @@
+{
+	"name": "bugreporting",
+	"main": "src/bugreporting.app.ts",
+	"compatibility_date": "2026-06-16",
+	"compatibility_flags": ["nodejs_compat"],
+	"r2_buckets": [
+		{
+			"binding": "ATTACHMENTS",
+			"bucket_name": "recflare-bugreports"
+		}
+	],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "recflare",
+			"database_id": "local",
+			"migrations_dir": "migrations",
+			"migrations_table": "d1_migrations_bugreporting"
+		}
+	],
+	"secrets_store_secrets": [
+		{
+			"binding": "JWT_SECRET",
+			"store_id": "local",
+			"secret_name": "JWT_SECRET"
+		}
+	],
+	"vars": {
+		"NAME": "bugreporting",
+		"ENVIRONMENT": "development",
+		"SENTRY_RELEASE": "unknown",
+		"DOMAIN": "rec.example.com"
+	},
+	"upload_source_maps": true,
+	"observability": {
+		"enabled": false
+	}
+}
