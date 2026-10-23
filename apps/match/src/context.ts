@@ -13,20 +13,17 @@ export type Env = SharedHonoEnv & {
 	// player's personal dorm room on first entry, and holds player presence — the
 	// room instance each player is currently in (written by matchmake/heartbeat,
 	// read by the heartbeat and the batch `/player` lookup). See @repo/domain's
-	// presence-db (table owned/migrated by the `rooms` worker).
+	// presence-db (table owned/migrated by the `rooms` worker). Also holds the
+	// per-player settings map (`player_settings`, owned by the `playersettings`
+	// worker), touched only by `GET|PUT /player/avoidjuniors`: the "avoid juniors"
+	// preference is a matchmaking question the client asks this worker, but it is
+	// stored with the rest of the player's settings, not in presence.
 	DB: D1Database
 	/**
 	 * The `notify` worker's NotificationsHub DO — pushes websocket notifications to a
 	 * player. Used by `POST /invite` to deliver the game-invite message to the invitee.
 	 */
 	RECFLARE_NOTIFICATIONS_HUB: DurableObjectNamespace<NotificationsHub>
-	/**
-	 * The per-player settings map the `playersettings` worker owns (`player:<id>` → JSON
-	 * `{ key: value }`). Read-only here, and only by `GET /player/avoidjuniors`: the
-	 * "avoid juniors" preference is a matchmaking question the client asks this worker,
-	 * but it is stored with the rest of the player's settings, not in presence.
-	 */
-	RECFLARE_PLAYER_SETTINGS: KVNamespace
 	/**
 	 * Room substitutions applied at matchmake time, as comma-separated `<fromRoomId>=<to>`
 	 * pairs — e.g. `2=100` or `2=MyHub,3=100` — where `from` is the room id the client

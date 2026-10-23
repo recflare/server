@@ -33,8 +33,12 @@ export type Env = SharedHonoEnv & {
 	 * may sign in on it — so the version check never sends a supporter to update.
 	 */
 	ROLLOUT_GAME_VERSIONS?: string
-	// Shared rooms database (schema/migrations owned by the `rooms` worker). Used
-	// read-only here to resolve room roles for `/api/rooms/v1/verifyRole`.
+	// Shared `recflare` database. Rooms (owned by the `rooms` worker) are read here to
+	// resolve room roles for `/api/rooms/v1/verifyRole`; `player_settings` (owned by the
+	// `playersettings` worker — one JSON map per player) is read AND written by
+	// `GET|PUT /api/players/v1/playerPhotoTaggingSetting`, whose preference is one key
+	// (`playerPhotoTaggingSetting`) in that shared bag, so the write MERGES — see
+	// `writePhotoTaggingSetting`.
 	DB: D1Database
 	// Image bucket (shared with the `img` worker, which serves objects back by
 	// key). Uploaded saved images are written here.
@@ -42,14 +46,6 @@ export type Env = SharedHonoEnv & {
 	// Shared CDN bucket (owned by the `cdn` worker, written by `storage`). Read
 	// here only to hash an invention's uploaded data blob under `invention/`.
 	CDN_ASSETS: R2Bucket
-	/**
-	 * The per-player settings map the `playersettings` worker owns (`player:<id>` → JSON
-	 * `{ key: value }`). Read and written here by
-	 * `GET|PUT /api/players/v1/playerPhotoTaggingSetting`: the photo-tagging preference is
-	 * one key (`playerPhotoTaggingSetting`) in that shared bag, not a store of its own, so
-	 * the write MERGES — see `writePhotoTaggingSetting`.
-	 */
-	RECFLARE_PLAYER_SETTINGS: KVNamespace
 	// SignalR notifications hub (DO owned by the `notify` worker). Bound here to
 	// push RelationshipChanged notifications when a player's relationship changes.
 	RECFLARE_NOTIFICATIONS_HUB: DurableObjectNamespace<NotificationsHub>

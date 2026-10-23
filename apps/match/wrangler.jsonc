@@ -5,8 +5,10 @@
 	"compatibility_date": "2026-06-16",
 	"compatibility_flags": ["nodejs_compat"],
 	// Shared `recflare` DB. Reads room scenes for matchmaking, writes a player's
-	// personal dorm room on first dorm entry (see getOrCreateDormRoom), and holds
-	// player presence (the `presence` table — owned/migrated by the `rooms` worker).
+	// personal dorm room on first dorm entry (see getOrCreateDormRoom), holds
+	// player presence (the `presence` table — owned/migrated by the `rooms` worker),
+	// and the per-player settings map (`player_settings`, owned by the `playersettings`
+	// worker) that GET|PUT /player/avoidjuniors reads one key of.
 	// This worker owns the `room_invite` table behind POST /invite (schema/migration
 	// here); its own migrations_table keeps that history separate from the other
 	// workers' migrations on the shared database.
@@ -18,15 +20,6 @@
 			"database_id": "local",
 			"migrations_dir": "migrations",
 			"migrations_table": "d1_migrations_match"
-		}
-	],
-	// Per-player settings KV, owned by the `playersettings` worker. Read-only here, for
-	// GET /player/avoidjuniors. The "local" id placeholder is replaced with the real id
-	// from RECFLARE_KV at deploy time.
-	"kv_namespaces": [
-		{
-			"binding": "RECFLARE_PLAYER_SETTINGS",
-			"id": "local"
 		}
 	],
 	// Presence sweep. Rows expire on their own TTL (15m) and reads already ignore

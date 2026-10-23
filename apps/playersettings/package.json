@@ -12,6 +12,7 @@
 		"deploy": "run-wrangler-deploy",
 		"dev": "run-wrangler-dev",
 		"fix:workers-types": "run-wrangler-types",
+		"migrate": "run-wrangler-migrate",
 		"test": "run-vitest"
 	},
 	"dependencies": {
