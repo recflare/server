@@ -134,7 +134,7 @@ function errorMessage(data: Record<string, unknown>, status: number): string {
 }
 
 interface CallOptions {
-	method?: 'GET' | 'POST' | 'PUT' | 'DELETE'
+	method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
 	/** Form fields — auth and accounts read their input with Hono's `parseBody()`. */
 	form?: Record<string, string>
 	/** A JSON body — what notify's internal endpoints take instead. */
