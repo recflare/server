@@ -4,8 +4,9 @@ import { beforeAll, describe, expect, test } from 'vitest'
 
 import '../../accounts.app'
 
-import { SCHEMA_DDL } from '@repo/domain'
+import { ROOM_SCHEMA_DDL, SCHEMA_DDL, seedRoomWithSubRooms, SUBROOM_SCHEMA_DDL } from '@repo/domain'
 
+import importRooms from '../../../../rooms/static/ImportRooms.json'
 import { WHITELISTED_EMOJIS } from '../../whitelisted-emojis'
 
 import type { Env } from '../../context'
@@ -19,9 +20,17 @@ const ORIGIN = 'https://example.com'
 // Apply the accounts schema + seed the system (uid 0) and Coach (uid 1) accounts
 // into the test D1 (mirrors apps/auth/migrations/0001_accounts.sql).
 beforeAll(async () => {
-	// Seed the shared JWT signing key into the local Secrets Store so .get() resolves.
 	await adminSecretsStore(env.JWT_SECRET).create('test-signing-key')
+
 	for (const stmt of SCHEMA_DDL) await env.DB.prepare(stmt).run()
+
+	// Add the new room setup right here
+	for (const stmt of ROOM_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	for (const stmt of SUBROOM_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	for (const room of importRooms) {
+		await seedRoomWithSubRooms(env.DB, room as Record<string, unknown>)
+	}
+
 	const insert = env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
 	await env.DB.batch([
 		insert.bind(JSON.stringify({ accountId: 0, username: 'RecRoom', displayName: 'Rec Room' })),
@@ -176,6 +185,28 @@ describe('public endpoints', () => {
 		// It's retrievable afterwards.
 		const lookup = await exports.default.fetch(`${ORIGIN}/account/${body.value.accountId}`)
 		const found = (await lookup.json()) as { username: string }
+		const dorm = await env.DB.prepare(
+			'SELECT data FROM room WHERE creator_account_id = ?1 AND is_dorm = 1'
+		)
+			.bind(body.value.accountId)
+			.first<{ data: string }>()
+
+		expect(dorm).not.toBeNull()
+
+		const dormData = JSON.parse(dorm!.data) as {
+			RoomId: number
+			Name: string
+			IsDorm: boolean
+		}
+
+		expect(dormData.Name).toBe(`@${body.value.username}'s Dorm`)
+		expect(dormData.IsDorm).toBe(true)
+
+		const subroom = await env.DB.prepare('SELECT sub_room_id FROM subroom WHERE room_id = ?1')
+			.bind(dormData.RoomId)
+			.first<{ sub_room_id: number }>()
+
+		expect(subroom).not.toBeNull()
 		expect(found.username).toBe(body.value.username)
 	})
 })

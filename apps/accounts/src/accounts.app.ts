@@ -9,6 +9,7 @@ import {
 	getAccount,
 	getAccountByUsername,
 	getAccountsByIds,
+	getOrCreateDormRoom,
 	searchAccounts,
 	updateAccount,
 } from '@repo/domain'
@@ -438,7 +439,7 @@ const app = new Hono<App>()
 			const account = await createAccount(c.env.DB, {
 				platforms: Number.isNaN(platforms) ? 0 : platforms,
 			})
-			// TODO: also create a dorm Room/SubRoom for the new account.
+			await getOrCreateDormRoom(c.env.DB, account.accountId)
 			return c.json({ success: true, value: toAccountDto(account) })
 		}
 	)
