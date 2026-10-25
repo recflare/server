@@ -962,9 +962,15 @@ function pickBakedBundle(
 	target: number | null
 ): { filename: string; hash: string | null } | null {
 	if (!Array.isArray(save.UnitySubAssets)) return null
+	const rootId = typeof save.UnityAssetId === 'string' ? save.UnityAssetId.toLowerCase() : null
 	const rows = save.UnitySubAssets.filter(
 		(item): item is { Target?: unknown; Filename?: unknown; Hash?: unknown } =>
-			typeof item === 'object' && item !== null
+			typeof item === 'object' &&
+			item !== null &&
+			(rootId === null ||
+				('UnityAssetId' in item &&
+					typeof item.UnityAssetId === 'string' &&
+					item.UnityAssetId.toLowerCase() === rootId))
 	)
 	const chosen =
 		target === null

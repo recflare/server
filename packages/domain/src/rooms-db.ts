@@ -2512,13 +2512,21 @@ export async function attachStudioUnityAssets(
 	db: D1Database,
 	saves: SubRoomDataSave[]
 ): Promise<void> {
-	const ids = [
-		...new Set(
-			saves
-				.map((save) => save.UnityAssetId)
-				.filter((id): id is string => typeof id === 'string' && id !== '')
-		),
-	]
+	// The cloud build partitions prefab/material exports into separate bundles.
+	// The main scene keeps external references to them, so the loader must receive
+	// every export, including shared dependencies, before it instantiates the scene.
+	const assetIds = (save: SubRoomDataSave): string[] => {
+		if (typeof save.UnityAssetId !== 'string' || save.UnityAssetId === '') return []
+		const serverData = save.ServerData as { Exports?: unknown } | null | undefined
+		const exports = Array.isArray(serverData?.Exports) ? serverData.Exports : []
+		const ids = new Set([save.UnityAssetId.toLowerCase()])
+		for (const item of exports) {
+			const id = (item as { u?: unknown } | null)?.u
+			if (typeof id === 'string' && id !== '') ids.add(id.toLowerCase())
+		}
+		return [...ids]
+	}
+	const ids = [...new Set(saves.flatMap(assetIds))]
 	if (ids.length === 0) return
 	const builds = (await listUnityAssetBuilds(db, ids)).filter((build) =>
 		isStudioBundleFilename(build.Filename)
@@ -2533,7 +2541,7 @@ export async function attachStudioUnityAssets(
 	for (const save of saves) {
 		const id = save.UnityAssetId
 		if (typeof id !== 'string') continue
-		const baked = bakedUnityAssets(byAsset.get(id.toLowerCase()) ?? [])
+		const baked = bakedUnityAssets(assetIds(save).flatMap((assetId) => byAsset.get(assetId) ?? []))
 		if (baked.length === 0) continue
 		save.UnitySubAssets = baked
 	}

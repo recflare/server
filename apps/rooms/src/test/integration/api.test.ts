@@ -6331,6 +6331,84 @@ describe('studio room bundles', () => {
 		)
 	}
 
+	it('serves partitioned prefab and shared-material exports as save dependencies', async () => {
+		await reset()
+		await storeFiles()
+		const prefab = '00111111-2222-4333-8444-555555555555'
+		const shared = '00222222-2222-4333-8444-555555555555'
+		await env.DB.prepare(
+			"UPDATE subroom_save SET data=json_set(data,'$.ServerData',json(?1)) WHERE sub_room_id=99011"
+		)
+			.bind(
+				JSON.stringify({
+					Exports: [
+						{ e: 'prefab', u: prefab.toUpperCase() },
+						{ e: 'shared', u: shared },
+						{ e: 'duplicate', u: prefab },
+					],
+				})
+			)
+			.run()
+		for (const id of [prefab, shared]) {
+			for (const target of [0, 2]) {
+				for (const kind of ['main', 'stripped'] as const) {
+					await putUnityAsset(
+						env.DB,
+						{
+							UnityAssetId: id,
+							Target: target,
+							Version: 5,
+							Filename: publicStudioBundleFilename(
+								9901,
+								id,
+								target === 0 ? 'windows' : 'android',
+								kind
+							),
+							Hash: winHash,
+						},
+						kind
+					)
+				}
+			}
+		}
+		for (const target of [0, 2]) {
+			const response = await SELF.fetch(`${ORIGIN}/rooms/9901?unityAssetTarget=${target}`)
+			const room = (await response.json()) as {
+				SubRooms: Array<{
+					CurrentSave: {
+						SubRoomDataSaveId: number
+						UnitySubAssets: Array<{ UnityAssetId: string; Target: number }>
+					}
+				}>
+			}
+			const current = room.SubRooms[0]!.CurrentSave
+			expect(current.UnitySubAssets.map((asset) => asset.UnityAssetId).sort()).toEqual(
+				[ASSET, prefab, shared].sort()
+			)
+			expect(current.UnitySubAssets.every((asset) => asset.Target === target)).toBe(true)
+			const detailResponse = await SELF.fetch(
+				`${ORIGIN}/rooms/9901/subrooms/99011/saves/${current.SubRoomDataSaveId}?unityAssetTarget=${target}`,
+				{ headers: await bearer('1') }
+			)
+			expect(await detailResponse.json()).toMatchObject({
+				UnityAsset: target === 0 ? winName : androidName,
+				UnitySubAssets: [prefab, shared].map((id) => ({
+					UnityAssetId: id,
+					UnityAsset: publicStudioBundleFilename(
+						9901,
+						id,
+						target === 0 ? 'windows' : 'android',
+						'main'
+					),
+					UnityAssetHash: winHash,
+				})),
+			})
+		}
+		await env.DB.prepare('DELETE FROM unity_asset WHERE unity_asset_id IN (?1,?2)')
+			.bind(prefab, shared)
+			.run()
+	})
+
 	it('loads baked bundles onto the room and serves the unity asset', async () => {
 		await reset()
 
