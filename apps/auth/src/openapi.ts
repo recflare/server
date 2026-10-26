@@ -301,7 +301,7 @@ export function roleLookup(role: 'developer' | 'moderator' | 'screenshare') {
 		summary: `Whether a player has the ${role} role`,
 		description:
 			role === 'screenshare'
-				? 'Returns a bare JSON boolean. Screenshare is enabled for every existing account, matching the access-token role policy; unknown accounts return 404. Studio uses this to validate room-owner video permissions.'
+				? 'Returns a bare JSON boolean. Screenshare is disabled by default and requires an explicit staff grant, matching the access-token role policy; unknown accounts return 404. Studio uses this to validate room-owner video permissions.'
 				: `Returns a bare JSON boolean (\`true\`/\`false\`), not an object. Off by default and ` +
 					`granted only by an operator via \`runx admin grant-${role}\`. The same flag also rides ` +
 					`in the access token's \`role\` claim, so the client rarely needs this route.\n\n` +

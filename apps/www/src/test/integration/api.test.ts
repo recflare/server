@@ -14,6 +14,7 @@ import {
 	updateAccount,
 } from '@repo/domain/src/accounts-db'
 import { AUDIT_LOG_SCHEMA_DDL } from '@repo/domain/src/audit-db'
+import { AVATAR_STUDIO_SCHEMA, avatarStudioFlags } from '@repo/domain/src/avatar-studio'
 import { PlatformType } from '@repo/domain/src/enums'
 import { getPendingGifts, RECEIVED_GIFT_SCHEMA_DDL } from '@repo/domain/src/gifts-db'
 import {
@@ -132,6 +133,7 @@ beforeAll(async () => {
 	for (const stmt of PRESENCE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	// `account` likewise: owned by `auth`, read and (for the benefits claim) written here.
 	for (const stmt of ACCOUNT_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	for (const stmt of AVATAR_STUDIO_SCHEMA) await env.DB.prepare(stmt).run()
 	// And `platform_account`, where a claimed Discord identity is linked.
 	for (const stmt of PLATFORM_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	// `report` and `warning` are owned (and migrated) by `api`; www serves the staff panel
@@ -3267,7 +3269,7 @@ it('tells a signed-in player whether they can upload, and nobody else', async ()
 		headers: { authorization: `Bearer ${await tokenFor(8601, ['gameClient'])}` },
 	})
 	expect(res.status).toBe(200)
-	expect(await res.json()).toEqual({ granted: false })
+	expect(await res.json()).toMatchObject({ granted: false, avatar: false, screenshare: false })
 
 	// A Discord role named in STUDIO_ROLLOUT grants the same access without the flag, and the
 	// page reads it from the same helper `auth` stamps `betastudio` from, so the two agree.
@@ -3282,7 +3284,7 @@ it('tells a signed-in player whether they can upload, and nobody else', async ()
 		const rolled = await SELF.fetch('https://example.com/api/studio-access', {
 			headers: { authorization: `Bearer ${await tokenFor(8601, ['gameClient'])}` },
 		})
-		expect(await rolled.json()).toEqual({ granted: true })
+		expect(await rolled.json()).toMatchObject({ granted: true, avatar: false, screenshare: false })
 		// The flag itself never moved; the staff list is still empty of this account.
 		expect((await getAccount(env.DB, 8601))?.hasStudio).not.toBe(true)
 	} finally {
@@ -3325,13 +3327,13 @@ it('lets staff add, list, and remove studio upload access', async () => {
 	const mine = await SELF.fetch('https://example.com/api/studio-access', {
 		headers: { authorization: `Bearer ${await tokenFor(8601, ['gameClient'])}` },
 	})
-	expect(await mine.json()).toEqual({ granted: true })
+	expect(await mine.json()).toMatchObject({ granted: true, avatar: false, screenshare: false })
 
 	const list = await staffGet('/api/staff/studio-access', 8110)
 	expect(list.status).toBe(200)
 	const body = (await list.json()) as { accounts: Array<{ accountId: number }> }
 	expect(body.accounts).toEqual([
-		{ accountId: 8601, username: 'StudioFan', displayName: expect.any(String) },
+		{ accountId: 8601, username: 'StudioFan', displayName: expect.any(String), enabled: true },
 	])
 	expect((await getAccount(env.DB, 8601))?.hasStudio).toBe(true)
 
@@ -3348,7 +3350,7 @@ it('lets staff add, list, and remove studio upload access', async () => {
 	const after = await SELF.fetch('https://example.com/api/studio-access', {
 		headers: { authorization: `Bearer ${await tokenFor(8601, ['gameClient'])}` },
 	})
-	expect(await after.json()).toEqual({ granted: false })
+	expect(await after.json()).toMatchObject({ granted: false, avatar: false, screenshare: false })
 
 	expect(await auditRows('grant_studio_access', 8601)).toEqual([
 		{
@@ -3423,4 +3425,137 @@ it('lets staff opt themselves in and out of the sandbox pool, and only themselve
 		[8121, true],
 		[8120, false],
 	])
+})
+
+it('manages Avatar Studio flags and screen sharing independently, with staff authorization', async () => {
+	await updateAccount(env.DB, 8611, { username: 'AvatarFan', hasStudio: true })
+	await updateAccount(env.DB, 8612, { username: 'ScreenFan' })
+	const url = '/api/staff/studio-access'
+	for (const kind of ['avatar', 'screenshare']) {
+		const denied = await SELF.fetch(`https://example.com${url}`, {
+			method: 'POST',
+			headers: {
+				authorization: `Bearer ${await tokenFor(8612)}`,
+				'content-type': 'application/json',
+			},
+			body: JSON.stringify({ accountId: 8612, kind }),
+		})
+		expect(denied.status).toBe(403)
+		expect((await SELF.fetch(`https://example.com${url}?kind=${kind}`)).status).toBe(401)
+		const deniedDelete = await SELF.fetch(`https://example.com${url}/8611?kind=${kind}`, {
+			method: 'DELETE',
+			headers: { authorization: `Bearer ${await tokenFor(8612)}` },
+		})
+		expect(deniedDelete.status).toBe(403)
+	}
+	expect((await staffPost(url, 8110, { accountId: 8611, kind: 'unknown' })).status).toBe(400)
+	expect((await staffGet(`${url}?kind=unknown`, 8110)).status).toBe(400)
+	expect((await staffDelete(`${url}/8611?kind=unknown`, 8110)).status).toBe(400)
+	expect((await staffPost(url, 8110, { accountId: 99999999, kind: 'avatar' })).status).toBe(404)
+	await env.DB.prepare('INSERT INTO avatar_studio_access VALUES (?, ?, ?, ?)')
+		.bind(8611, 9, 'before', 'before')
+		.run()
+	expect((await staffPost(url, 8110, { username: '@AvatarFan', kind: 'avatar' })).status).toBe(200)
+	expect(await avatarStudioFlags(env.DB, 8611)).toBe(15)
+	const repeated = await staffPost(url, 8110, { accountId: 8611, kind: 'avatar' })
+	expect(await repeated.json()).toMatchObject({ alreadyGranted: true })
+	const avatarList = await staffGet(`${url}?kind=avatar`, 8110)
+	expect(await avatarList.json()).toMatchObject({ accounts: [{ accountId: 8611, enabled: true }] })
+	expect((await getAccount(env.DB, 8611))?.hasScreenshare).toBeUndefined()
+	await staffDelete(`${url}/8611?kind=avatar`, 8110)
+	expect(await avatarStudioFlags(env.DB, 8611)).toBe(8)
+	expect((await getAccount(env.DB, 8611))?.hasStudio).toBe(true)
+	expect((await staffPost(url, 8110, { username: 'ScreenFan', kind: 'screenshare' })).status).toBe(
+		200
+	)
+	expect((await getAccount(env.DB, 8612))?.hasScreenshare).toBe(true)
+	const screenList = await staffGet(`${url}?kind=screenshare`, 8110)
+	expect(await screenList.json()).toMatchObject({ accounts: [{ accountId: 8612, enabled: true }] })
+	const status = await SELF.fetch('https://example.com/api/studio-access', {
+		headers: { authorization: `Bearer ${await tokenFor(8612)}` },
+	})
+	expect(await status.json()).toMatchObject({ granted: false, avatar: false, screenshare: true })
+	await staffDelete(`${url}/8612?kind=screenshare`, 8110)
+	expect((await getAccount(env.DB, 8612))?.hasScreenshare).toBe(false)
+	expect(await (await staffGet(`${url}?kind=screenshare`, 8110)).json()).toEqual({ accounts: [] })
+	expect(await auditRows('grant_avatar_access', 8611)).toHaveLength(2)
+	expect(await auditRows('revoke_screenshare_access', 8612)).toHaveLength(1)
+})
+
+it('grants and revokes each Avatar Studio feature without changing other permissions', async () => {
+	const features = {
+		'avatar-items': 1,
+		'avatar-costumes': 2,
+		'avatar-badges': 4,
+		'avatar-consumables': 8,
+	}
+	const url = '/api/staff/studio-access'
+	await updateAccount(env.DB, 8621, {
+		username: 'FeatureFan',
+		hasStudio: true,
+		hasScreenshare: false,
+	})
+	await env.DB.prepare('INSERT INTO avatar_studio_access VALUES (?, ?, ?, ?)')
+		.bind(8621, 16, 'original', 'original')
+		.run()
+	let expected = 16
+	const status = async () => {
+		const response = await SELF.fetch('https://example.com/api/studio-access', {
+			headers: { authorization: `Bearer ${await tokenFor(8621)}` },
+		})
+		expect(response.status).toBe(200)
+		return response.json() as Promise<Record<string, boolean>>
+	}
+	for (const [kind, mask] of Object.entries(features)) {
+		expect((await status())[kind]).toBe(false)
+		const denied = await SELF.fetch(`https://example.com${url}`, {
+			method: 'POST',
+			headers: {
+				authorization: `Bearer ${await tokenFor(8621)}`,
+				'content-type': 'application/json',
+			},
+			body: JSON.stringify({ accountId: 8621, kind }),
+		})
+		expect(denied.status).toBe(403)
+		const deniedDelete = await SELF.fetch(`https://example.com${url}/8621?kind=${kind}`, {
+			method: 'DELETE',
+			headers: { authorization: `Bearer ${await tokenFor(8621)}` },
+		})
+		expect(deniedDelete.status).toBe(403)
+		expect((await staffPost(url, 8110, { username: '@FeatureFan', kind })).status).toBe(200)
+		expected |= mask
+		expect(await avatarStudioFlags(env.DB, 8621)).toBe(expected)
+		const repeated = await staffPost(url, 8110, { accountId: 8621, kind })
+		expect(await repeated.json()).toMatchObject({ alreadyGranted: true })
+		expect((await status())[kind]).toBe(true)
+		const list = await staffGet(`${url}?kind=${kind}`, 8110)
+		expect(await list.json()).toMatchObject({
+			accounts: expect.arrayContaining([
+				expect.objectContaining({ accountId: 8621, enabled: true }),
+			]),
+		})
+	}
+	for (const [kind, mask] of Object.entries(features)) {
+		expect((await staffDelete(`${url}/8621?kind=${kind}`, 8110)).status).toBe(200)
+		expected &= ~mask
+		expect(await avatarStudioFlags(env.DB, 8621)).toBe(expected)
+		expect((await status())[kind]).toBe(false)
+		for (const [otherKind, otherMask] of Object.entries(features)) {
+			expect((await status())[otherKind]).toBe((expected & otherMask) !== 0)
+		}
+		const list = await staffGet(`${url}?kind=${kind}`, 8110)
+		const remaining = (await list.json()) as { accounts: Array<{ accountId: number }> }
+		expect(remaining.accounts.some((a) => a.accountId === 8621)).toBe(false)
+		const repeat = await staffDelete(`${url}/8621?kind=${kind}`, 8110)
+		expect(await repeat.json()).toMatchObject({ removed: false })
+		expect(await auditRows(`grant_${kind}_access`, 8621)).toHaveLength(2)
+		expect(await auditRows(`revoke_${kind}_access`, 8621)).toHaveLength(2)
+	}
+	expect((await getAccount(env.DB, 8621))?.hasStudio).toBe(true)
+	expect((await getAccount(env.DB, 8621))?.hasScreenshare).toBe(false)
+	expect(
+		await env.DB.prepare('SELECT created_at FROM avatar_studio_access WHERE account_id=8621').first(
+			'created_at'
+		)
+	).toBe('original')
 })

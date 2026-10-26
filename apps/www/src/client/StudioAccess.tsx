@@ -14,16 +14,29 @@ import { call, isAdmin, useAction } from './api'
 
 const PAGE = '/settings/recroomstudio'
 
+type AccessKind = keyof typeof accessLabels
+const accessLabels = {
+	studio: 'Studio uploads',
+	'avatar-items': 'Avatar Studio items',
+	'avatar-costumes': 'Avatar Studio costumes',
+	'avatar-badges': 'Avatar Studio badges',
+	'avatar-consumables': 'Avatar Studio consumables',
+	screenshare: 'Screen sharing',
+}
+
 interface AccessRow {
 	accountId: number
 	username: string | null
 	displayName: string | null
+	enabled: boolean
 }
 
-export function StudioAccessPage({
+function AccessPage({
+	kind,
 	account,
 	navigate,
 }: {
+	kind: AccessKind
 	/** undefined while the session is still being checked, null when signed out. */
 	account: { accountId: number; username: string } | null | undefined
 	navigate: (to: string) => void
@@ -39,15 +52,17 @@ export function StudioAccessPage({
 	const add = useAction()
 
 	const load = useCallback(async () => {
-		const me = await call<{ granted: boolean }>('/api/studio-access', { authed: true })
-		setGranted(me.granted === true)
+		const me = await call<Record<AccessKind | 'granted', boolean>>('/api/studio-access', {
+			authed: true,
+		})
+		setGranted((kind === 'studio' ? me.granted : me[kind]) === true)
 		if (isAdmin()) {
-			const page = await call<{ accounts: AccessRow[] }>('/api/staff/studio-access', {
+			const page = await call<{ accounts: AccessRow[] }>(`/api/staff/studio-access?kind=${kind}`, {
 				authed: true,
 			})
 			setRows(page.accounts ?? [])
 		}
-	}, [])
+	}, [kind])
 
 	const accountId = account?.accountId
 	useEffect(() => {
@@ -80,13 +95,13 @@ export function StudioAccessPage({
 		void add.run(async () => {
 			const result = await call<{ username: string; alreadyGranted: boolean }>(
 				'/api/staff/studio-access',
-				{ method: 'POST', authed: true, json: { username: username.trim() } }
+				{ method: 'POST', authed: true, json: { username: username.trim(), kind } }
 			)
 			setUsername('')
 			await reload()
 			return result.alreadyGranted
-				? `@${result.username} is already on the list.`
-				: `@${result.username} can upload the next time they sign in to Studio.`
+				? `@${result.username} already has ${accessLabels[kind]} access.`
+				: `@${result.username} now has ${accessLabels[kind]} access.`
 		})
 	}
 
@@ -95,7 +110,14 @@ export function StudioAccessPage({
 		setRemoveError('')
 		void (async () => {
 			try {
-				await call(`/api/staff/studio-access/${row.accountId}`, { method: 'DELETE', authed: true })
+				await call(
+					row.enabled
+						? `/api/staff/studio-access/${row.accountId}?kind=${kind}`
+						: '/api/staff/studio-access',
+					row.enabled
+						? { method: 'DELETE', authed: true }
+						: { method: 'POST', authed: true, json: { accountId: row.accountId, kind } }
+				)
 				await reload()
 			} catch (err) {
 				setRemoveError(err instanceof Error ? err.message : String(err))
@@ -108,13 +130,16 @@ export function StudioAccessPage({
 	const signInHref = `/login?next=${encodeURIComponent(PAGE)}`
 
 	return (
-		<main className={staff ? 'shell wide' : 'shell'}>
-			<h1>RecFlare Studio access</h1>
+		<section>
+			<h2>{accessLabels[kind]}</h2>
 			<section className="card">
 				<p className="muted">
-					RecFlare Studio signs in with any account. Uploading is limited to accounts on this list.
-					Access is picked up the next time you sign in to Studio, or when that session refreshes. A
-					session you already have keeps its old access until then, and a session lasts a day.
+					{kind === 'studio'
+						? 'Manage permission to upload from RecFlare Studio.'
+						: kind.startsWith('avatar-')
+							? 'Grant this Avatar Studio feature independently. Studio upload access is also required. Roomie equipment still requires developer access.'
+							: 'Screen sharing is disabled by default. Staff can enable it for individual users.'}{' '}
+					Sign in again or refresh the session to pick up permission changes.
 				</p>
 				{account === undefined ? (
 					<p className="muted">Loading…</p>
@@ -130,7 +155,7 @@ export function StudioAccessPage({
 						>
 							Sign in
 						</a>{' '}
-						<span className="muted">to see whether this account can upload.</span>
+						<span className="muted">to see the access for this account.</span>
 					</p>
 				) : loading ? (
 					<p className="muted">Loading…</p>
@@ -138,22 +163,23 @@ export function StudioAccessPage({
 					<p className="error">{loadError}</p>
 				) : granted ? (
 					<p>
-						<strong>{account.username}</strong> can upload in RecFlare Studio. If the editor still
+						<strong>{account.username}</strong> has {accessLabels[kind]} access. If the editor still
 						says otherwise, sign out of it and sign in again.
 					</p>
 				) : (
 					<p>
-						<strong>{account.username}</strong> cannot upload in RecFlare Studio yet. A moderator
-						can add this account to the list.
+						<strong>{account.username}</strong> does not have {accessLabels[kind]} access. A
+						moderator can add this account to the list.
 					</p>
 				)}
 			</section>
 			{staff && account && (
 				<section className="card">
-					<h2>Whitelist</h2>
+					<h3>Whitelist</h3>
 					<p className="muted">
-						Adding a player puts the betastudio role on their next Studio sign-in. Developers are
-						not on this list unless someone adds them.
+						{kind === 'screenshare'
+							? 'Only users on this list can share their screen.'
+							: 'Add a username to grant access, or remove a player to revoke it.'}
 					</p>
 					<form
 						onSubmit={(e) => {
@@ -172,7 +198,7 @@ export function StudioAccessPage({
 							/>
 						</label>
 						<button type="submit" disabled={add.pending || username.trim() === ''}>
-							Add
+							{kind === 'screenshare' ? 'Enable' : 'Add'}
 						</button>
 					</form>
 					{add.error && <p className="error">{add.error}</p>}
@@ -180,7 +206,7 @@ export function StudioAccessPage({
 					{loading ? (
 						<p className="muted">Loading…</p>
 					) : loadError ? null : rows.length === 0 ? (
-						<p className="muted">Nobody is on the list.</p>
+						<p className="muted">No users on this list.</p>
 					) : (
 						<ul className="studio-access-list">
 							{rows.map((row) => (
@@ -192,13 +218,12 @@ export function StudioAccessPage({
 										{row.displayName && row.displayName !== row.username ? (
 											<span className="muted"> · {row.displayName}</span>
 										) : null}
+										{kind === 'screenshare' && (
+											<span className="muted"> - {row.enabled ? 'Enabled' : 'Disabled'}</span>
+										)}
 									</span>
-									<button
-										type="button"
-										disabled={removing === row.accountId}
-										onClick={() => remove(row)}
-									>
-										Remove
+									<button type="button" disabled={removing !== null} onClick={() => remove(row)}>
+										{kind === 'screenshare' ? (row.enabled ? 'Disable' : 'Enable') : 'Remove'}
 									</button>
 								</li>
 							))}
@@ -207,6 +232,20 @@ export function StudioAccessPage({
 					{removeError && <p className="error">{removeError}</p>}
 				</section>
 			)}
+		</section>
+	)
+}
+
+export function StudioAccessPage(props: {
+	account: { accountId: number; username: string } | null | undefined
+	navigate: (to: string) => void
+}) {
+	return (
+		<main className="shell wide">
+			<h1>RecFlare Studio access</h1>
+			{(Object.keys(accessLabels) as AccessKind[]).map((kind) => (
+				<AccessPage key={kind} kind={kind} {...props} />
+			))}
 		</main>
 	)
 }

@@ -11,6 +11,7 @@
  * it from `@repo/domain` (each uses the subset it needs).
  */
 
+import { AVATAR_STUDIO_ACCESS } from './avatar-studio'
 import { bindPlaceholders, chunkForBinds } from './d1-binds'
 
 /**
@@ -206,6 +207,8 @@ export interface Account {
 	 * open keeps its old access until it signs in again or refreshes.
 	 */
 	hasStudio?: boolean
+	/** Staff override for screen sharing. Absent means screen sharing is disabled. */
+	hasScreenshare?: boolean
 }
 
 interface AccountRow {
@@ -500,10 +503,23 @@ export async function listInfluencerIds(db: D1Database): Promise<number[]> {
  * Every account flagged `hasStudio`, lowest id first — the website's staff list. A JSON
  * scan rather than a generated column: the list is short and only staff read it.
  */
-export async function listStudioAccounts(db: D1Database): Promise<Account[]> {
+export async function listStudioAccounts(
+	db: D1Database,
+	kind: 'studio' | 'avatar' | 'screenshare' | keyof typeof AVATAR_STUDIO_ACCESS = 'studio'
+): Promise<Account[]> {
+	const mask =
+		kind === 'avatar'
+			? 7
+			: Object.hasOwn(AVATAR_STUDIO_ACCESS, kind)
+				? AVATAR_STUDIO_ACCESS[kind as keyof typeof AVATAR_STUDIO_ACCESS]
+				: 0
 	const { results } = await db
 		.prepare(
-			`SELECT data FROM account WHERE json_extract(data, '$.hasStudio') = 1 ORDER BY account_id`
+			mask !== 0
+				? `SELECT data FROM account WHERE account_id IN (SELECT account_id FROM avatar_studio_access WHERE (flags & ${mask}) != 0) ORDER BY account_id`
+				: kind === 'screenshare'
+					? `SELECT data FROM account WHERE json_extract(data, '$.hasScreenshare') = 1 ORDER BY account_id`
+					: `SELECT data FROM account WHERE json_extract(data, '$.hasStudio') = 1 ORDER BY account_id`
 		)
 		.all<AccountRow>()
 	return parseAll(results)

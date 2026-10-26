@@ -28,6 +28,14 @@ export interface AvatarStudioSave {
 	update_current: number
 	created_at: string
 }
+/** Independent authoring permissions reported by Studio's access override. */
+export const AVATAR_STUDIO_ACCESS = {
+	'avatar-items': 1,
+	'avatar-costumes': 2,
+	'avatar-badges': 4,
+	'avatar-consumables': 8,
+} as const
+
 export async function avatarStudioFlags(db: D1Database, accountId: number): Promise<number> {
 	const row = await db
 		.prepare('SELECT flags FROM avatar_studio_access WHERE account_id=?')

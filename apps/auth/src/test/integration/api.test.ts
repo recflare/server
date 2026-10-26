@@ -692,8 +692,8 @@ describe('auth worker routes', () => {
 		expect(payload.iss).toBe('https://auth.recflare.net')
 		expect(payload.aud).toBe('https://auth.recflare.net')
 		expect(payload.role).toContain('gameClient')
-		// screenshare is a feature gate, not a grant — every token carries it.
-		expect(payload.role).toContain('screenshare')
+		// Screen sharing is disabled until staff explicitly grant it.
+		expect(payload.role).not.toContain('screenshare')
 		// A plain adult account carries nothing beyond those — no elevated roles.
 		expect(payload.role).not.toContain('developer')
 		expect(payload.role).not.toContain('moderator')
@@ -750,6 +750,37 @@ describe('auth worker routes', () => {
 	// refresh, and the Studio device grant — and a refresh after a revoke drops it. A
 	// token that kept the role for the rest of the day would leave a removed player
 	// uploading.
+	test('screen sharing requires a staff grant on login, refresh, and role lookup', async () => {
+		await seedAccount(9819, 'ScreenSharePlayer')
+		expect((await tokenFor(`account_id=9819&password=${LOGIN_PASSWORD}`)).role).not.toContain(
+			'screenshare'
+		)
+		await updateAccount(env.DB, 9819, { hasScreenshare: true })
+		const granted = await tokenFor(`account_id=9819&password=${LOGIN_PASSWORD}`)
+		expect(granted.role).toContain('screenshare')
+		expect(await (await exports.default.fetch(`${ORIGIN}/role/screenshare/9819`)).json()).toBe(true)
+		const session = await postToken(`account_id=9819&password=${LOGIN_PASSWORD}`)
+		const sessionBody = session.json as { refresh_token: string }
+		await updateAccount(env.DB, 9819, { hasScreenshare: false })
+		const refresh = await exports.default.fetch(`${ORIGIN}/connect/token`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({
+				grant_type: 'refresh_token',
+				refresh_token: sessionBody.refresh_token,
+			}),
+		})
+		expect(refresh.status).toBe(200)
+		const refreshed = (await refresh.json()) as { access_token: string }
+		const payload = JSON.parse(
+			atob(refreshed.access_token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))
+		)
+		expect(payload.role).not.toContain('screenshare')
+		expect(await (await exports.default.fetch(`${ORIGIN}/role/screenshare/9819`)).json()).toBe(
+			false
+		)
+	})
+
 	test('POST /connect/token stamps betastudio only while the account has hasStudio', async () => {
 		// 9811/9812, not 9601–9605: those ids belong to the staff-login audit tests,
 		// which insert with OR IGNORE and then count `staff_login` rows.
@@ -761,7 +792,6 @@ describe('auth worker routes', () => {
 		await updateAccount(env.DB, 9811, { hasStudio: true })
 		expect((await tokenFor(`account_id=9811&password=${LOGIN_PASSWORD}`)).role).toEqual([
 			'gameClient',
-			'screenshare',
 			'betastudio',
 		])
 
@@ -780,7 +810,6 @@ describe('auth worker routes', () => {
 			.run()
 		expect((await tokenFor(`account_id=9812&password=${LOGIN_PASSWORD}`)).role).toEqual([
 			'gameClient',
-			'screenshare',
 			'developer',
 			'moderator',
 			'betastudio',
@@ -813,7 +842,6 @@ describe('auth worker routes', () => {
 		expect(signedIn.status).toBe(200)
 		expect(decodePayload(signedIn.json.access_token as string).role).toEqual([
 			'gameClient',
-			'screenshare',
 			'betastudio',
 		])
 
@@ -854,7 +882,7 @@ describe('auth worker routes', () => {
 
 			// Same list grammar as DISCORD_ROLLOUT_ROLE_IDS; any one named role qualifies.
 			env.STUDIO_ROLLOUT = ` ${otherRole}x ,\n${studioRole} `
-			expect((await login(9813)).role).toEqual(['gameClient', 'screenshare', 'betastudio'])
+			expect((await login(9813)).role).toEqual(['gameClient', 'betastudio'])
 			// A Discord link holding only other roles is not in the rollout.
 			expect((await login(9814)).role).not.toContain('betastudio')
 			// The account flag never moved: this is the var, not a grant written anywhere.
@@ -945,7 +973,7 @@ describe('auth worker routes', () => {
 			)
 			.run()
 		const payload = await tokenFor(`account_id=92&password=${LOGIN_PASSWORD}`)
-		expect(payload.role).toEqual(expect.arrayContaining(['gameClient', 'screenshare', 'junior']))
+		expect(payload.role).toEqual(expect.arrayContaining(['gameClient', 'junior']))
 		expect(payload.role).not.toContain('developer')
 		// `rn.privilege` is a claim, not a scope — it sits beside `role`, never in `scope`.
 		expect(payload['rn.privilege']).toEqual(['BanVChat', 'BanRmChat'])
@@ -964,9 +992,7 @@ describe('auth worker routes', () => {
 			)
 			.run()
 		const payload = await tokenFor(`account_id=95&password=${LOGIN_PASSWORD}`)
-		expect(payload.role).toEqual(
-			expect.arrayContaining(['gameClient', 'screenshare', 'influencer'])
-		)
+		expect(payload.role).toEqual(expect.arrayContaining(['gameClient', 'influencer']))
 		expect(payload.role).not.toContain('developer')
 
 		// Off the flag, off the token — no other flag implies it.
@@ -2016,7 +2042,7 @@ describe('auth worker routes', () => {
 		for (const id of [42, 77]) {
 			const res = await exports.default.fetch(`${ORIGIN}/role/screenshare/${id}`)
 			expect(res.status).toBe(200)
-			expect(await res.json()).toBe(true)
+			expect(await res.json()).toBe(false)
 		}
 	})
 

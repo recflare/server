@@ -331,8 +331,8 @@ async function authedId(c: Context<App>): Promise<number | null> {
 
 /** Whether one account row holds a role. Absent/false both mean no role. */
 function holdsRole(account: Account, role: 'developer' | 'moderator' | 'screenshare'): boolean {
-	// Matches accountTokenRoles: screenshare is a feature gate on every account token.
-	if (role === 'screenshare') return true
+	// Match the same staff override used when minting account tokens.
+	if (role === 'screenshare') return account.hasScreenshare === true
 	return (role === 'developer' ? account.isDeveloper : account.isModerator) === true
 }
 
@@ -382,10 +382,8 @@ async function roleFilterAnswer(c: Context<App>, role: 'developer' | 'moderator'
 
 /**
  * The role names beyond `gameClient` for an account's token `role` claim. Base roles
- * (gameClient) are added by generateToken. `screenshare` rides on EVERY token — the
- * client gates the screen-share feature on it and nothing grants it per-account, so it
- * is unconditional (even with no account resolved). The rest are the operator-granted
- * extras, plus `junior` off the account's own `isJunior` flag.
+ * (gameClient) are added by generateToken. `screenshare` requires an explicit staff
+ * grant via `hasScreenshare`. The other roles come from account flags and Studio access.
  *
  * `betastudio` rides on `studio` — the account's Studio access as `hasStudioAccess`
  * resolves it: the `hasStudio` flag staff set from the website, OR a Discord link holding
@@ -397,10 +395,13 @@ async function roleFilterAnswer(c: Context<App>, role: 'developer' | 'moderator'
  * deterministic: screenshare, developer, moderator, junior, betastudio, then influencer.
  */
 function accountRoles(
-	account: Pick<Account, 'isDeveloper' | 'isModerator' | 'isJunior' | 'isInfluencer'> | null,
+	account: Pick<
+		Account,
+		'isDeveloper' | 'isModerator' | 'isJunior' | 'isInfluencer' | 'hasScreenshare'
+	> | null,
 	studio: boolean
 ): string[] {
-	const roles = ['screenshare']
+	const roles: string[] = account?.hasScreenshare === true ? ['screenshare'] : []
 	if (!account) return roles
 	if (account.isDeveloper) roles.push('developer')
 	if (account.isModerator) roles.push('moderator')
@@ -1103,8 +1104,8 @@ const app = new Hono<App>()
 				'',
 				'**Roles.** The token embeds a `role` claim from the account, so developer/moderator',
 				'powers refresh on every login and every refresh grant. `junior` rides along for an',
-				'account flagged `isJunior`, and `screenshare` is on every token — it is a feature',
-				'gate the client reads, not a privilege anyone is granted. `betastudio` is stamped',
+				'account flagged `isJunior`. `screenshare` requires a staff grant on the Studio Access',
+				'page. `betastudio` is stamped',
 				'from the account’s `hasStudio` flag (staff set it on the website) or from a Discord',
 				'link holding a role in the `STUDIO_ROLLOUT` var. RecFlare Studio',
 				'treats that claim as permission to upload; `developer` does not confer it. A junior',
