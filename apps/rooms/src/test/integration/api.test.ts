@@ -6404,6 +6404,33 @@ describe('studio room bundles', () => {
 				})),
 			})
 		}
+		// In-game saves reuse the compiled Studio asset. They must keep the export
+		// manifest when staging, saving again, and publishing the new scene data.
+		for (const autoPublish of [false, false, true]) {
+			const response = await SELF.fetch(`${ORIGIN}/rooms/9901/subrooms/99011/data`, {
+				method: 'POST',
+				headers: { ...(await bearer('1')), 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					UnityAssetId: ASSET.toUpperCase(),
+					SubRoomData: { Filename: 'in-game-save' },
+					AutoPublish: autoPublish,
+				}),
+			})
+			const result = (await response.json()) as {
+				success: boolean
+				value: { subRoomDataSave: { subRoomDataSaveId: number; unityAsset: string } }
+			}
+			expect(result.success).toBe(true)
+			expect(result.value.subRoomDataSave.unityAsset).toBe(winName)
+			const detail = await SELF.fetch(
+				`${ORIGIN}/rooms/9901/subrooms/99011/saves/${result.value.subRoomDataSave.subRoomDataSaveId}?unityAssetTarget=0`,
+				{ headers: await bearer('1') }
+			)
+			expect(await detail.json()).toMatchObject({
+				UnityAsset: winName,
+				UnitySubAssets: [prefab, shared].map((UnityAssetId) => ({ UnityAssetId })),
+			})
+		}
 		await env.DB.prepare('DELETE FROM unity_asset WHERE unity_asset_id IN (?1,?2)')
 			.bind(prefab, shared)
 			.run()

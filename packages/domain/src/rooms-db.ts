@@ -1924,6 +1924,19 @@ export async function saveSubRoomData(
 		createdAt: new Date().toISOString(),
 		unityAssetId: input.unityAssetId,
 	})
+	// A live client save changes the scene data while reusing the baked Studio
+	// asset. Its export manifest belongs to that asset and is needed again on the
+	// save's immediate reload (prefabs/materials live in separate bundles).
+	// A new Studio source upload must wait for its own cloud-build manifest.
+	if (
+		!input.unitySource &&
+		typeof input.unityAssetId === 'string' &&
+		typeof previous?.UnityAssetId === 'string' &&
+		input.unityAssetId.toLowerCase() === previous.UnityAssetId.toLowerCase() &&
+		previous.ServerData != null
+	) {
+		saveData.ServerData = previous.ServerData
+	}
 	if (input.unitySource) {
 		saveData.StudioSourceAsset = input.unitySource
 		saveData.SavedOnPlatform = null
