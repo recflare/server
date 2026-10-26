@@ -591,6 +591,15 @@ const settingsImportKv = new Command('settings-import-kv')
 		await fs.writeFile(sqlFile, statements.join('\n'))
 		try {
 			await execSqlFile(sqlFile, remote, 'playersettings')
+		} catch (err) {
+			// A large remote `--file` goes through D1's import API, and wrangler can fail its
+			// final status poll with this after the import has already completed (it did, for
+			// all 15,137 rows, the first time this ran). Fall through to the check below, which
+			// decides whether the rows actually landed.
+			if (!(err instanceof Error && err.message.includes('Not currently importing anything'))) {
+				throw err
+			}
+			console.log(chalk.yellow('  wrangler lost track of the import; checking what landed'))
 		} finally {
 			await fs.remove(sqlFile)
 		}
