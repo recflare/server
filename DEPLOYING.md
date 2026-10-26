@@ -114,7 +114,8 @@ Take the IDs output from the commands and put them into `.env` (`RECFLARE_D1` an
 
 > Upgrading a deployment from before player settings moved into D1? They were in a
 > `RECFLARE_PLAYER_SETTINGS` KV namespace; copy it across with
-> `just settings-import-kv --remote` between `just migrate` and `just deploy` (see CLI.md).
+> `just settings-import-kv --remote` after `just migrate`, then again right after
+> `just deploy` (see CLI.md).
 
 The secrets store holds the shared `JWT_SECRET` HS256 signing key — every worker
 binds it so tokens signed by `auth` verify everywhere. Record its id in `.env` as

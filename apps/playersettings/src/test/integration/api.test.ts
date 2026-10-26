@@ -182,6 +182,29 @@ describe('playersettings endpoints', () => {
 		)
 	})
 
+	// The map lives on the D1 every worker shares, so a player can't grow it without bound.
+	it('PUT /playersettings refuses a write that would push the map past the cap', async () => {
+		await seedRaw(11, JSON.stringify({ A: '1' }))
+		const big = Array.from({ length: 70 }, (_, i) => ({ key: `K${i}`, value: 'x'.repeat(1024) }))
+
+		const res = await SELF.fetch(`${ORIGIN}/playersettings`, {
+			method: 'PUT',
+			headers: { ...(await bearer('11')), 'content-type': 'application/json' },
+			body: JSON.stringify(big),
+		})
+		expect(res.status).toBe(413)
+		expect(await stored(11)).toEqual({ A: '1' })
+
+		// Under the cap, the same kind of write still lands.
+		const ok = await SELF.fetch(`${ORIGIN}/playersettings`, {
+			method: 'PUT',
+			headers: { ...(await bearer('11')), 'content-type': 'application/json' },
+			body: JSON.stringify(big.slice(0, 10)),
+		})
+		expect(ok.status).toBe(200)
+		expect(Object.keys((await stored(11)) ?? {})).toHaveLength(11)
+	})
+
 	it('PUT /playersettings 200s with no parseable settings', async () => {
 		const res = await SELF.fetch(`${ORIGIN}/playersettings`, putForm({}, await bearer('9')))
 		expect(res.status).toBe(200)

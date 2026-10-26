@@ -174,13 +174,19 @@ across for a deployment that predates the move. The namespace id comes from
 `RECFLARE_PLAYER_SETTINGS` in `RECFLARE_KV` in `.env` (which the deploys used to read it from)
 or from `--namespace-id`.
 
-Upgrade in this order: `just migrate -F playersettings` (creates the table), then this
-import, then `just deploy`. The import MERGES: a row that already exists keeps every key it
-has and gains the ones only KV knew, so running it after the cut-over — or again — never
-undoes something a player has toggled since. `--overwrite` makes the KV value win instead.
-Nothing is deleted on either side. Keys that aren't a `player:<id>` holding a JSON object of
-strings are reported and skipped. Once it has run, the namespace (and the `RECFLARE_KV` line)
-can be deleted.
+Upgrade in this order: `just migrate -F playersettings` (creates the table), this import,
+`just deploy`, then this import AGAIN. The first run does the bulk while the KV-backed workers
+are still live; the second picks up players and keys that appeared in KV in between. The import MERGES:
+KV fills in what a row lacks, and the row wins any key it has moved off the seeded default.
+A key still AT its default (`Recroom.OOBE` 77, `TUTORIAL_COMPLETE_MASK` 11,
+`FIRST_TIME_IN_FLAGS` 0) loses to KV, because `GET /playersettings` seeds exactly those for a
+player with no row, so a returning player who signed in before their map was imported keeps
+their KV progress. The one thing it can't recover is a KV change made between the first
+run and the deploy to a key the first run already imported off-default; keep that window
+short. `--overwrite` makes the KV value win outright. Nothing is deleted on either side. A
+value that is a number or boolean is imported as its string; a null, object or array value
+drops only that key; a key that isn't a `player:<id>` holding a JSON object is reported and
+skipped. Once the second run is done, the namespace (and the `RECFLARE_KV` line) can be deleted.
 
 ### `lookup` — print an account
 

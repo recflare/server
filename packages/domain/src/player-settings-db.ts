@@ -45,12 +45,43 @@ export async function readPlayerSettings(
 	return row === null ? null : (JSON.parse(row.data) as PlayerSettings)
 }
 
-/** Store `settings` as the player's whole map, replacing whatever row they had. */
+/**
+ * The most a player's stored map may hold, in bytes of its JSON. The map is player-written
+ * and lives on the D1 every worker shares, so an uncapped one lets any account grow its row
+ * toward D1's ~2 MB row limit and, across enough accounts, fill the database. Real maps are
+ * tiny: the 15,134 imported from KV averaged ~2 KB (46 keys), and the largest was ~12 KB
+ * (182 keys) — this leaves about five times that.
+ */
+export const MAX_PLAYER_SETTINGS_BYTES = 64 * 1024
+
+/** A write that would grow a player's map past {@link MAX_PLAYER_SETTINGS_BYTES}. */
+export class PlayerSettingsTooLargeError extends Error {
+	constructor(
+		readonly accountId: number,
+		readonly bytes: number
+	) {
+		super(
+			`player ${accountId}'s settings would be ${bytes} bytes (limit ${MAX_PLAYER_SETTINGS_BYTES})`
+		)
+		this.name = 'PlayerSettingsTooLargeError'
+	}
+}
+
+function settingsBytes(settings: PlayerSettings): number {
+	return new TextEncoder().encode(JSON.stringify(settings)).byteLength
+}
+
+/**
+ * Store `settings` as the player's whole map, replacing whatever row they had. Throws
+ * {@link PlayerSettingsTooLargeError} when the map is over {@link MAX_PLAYER_SETTINGS_BYTES}.
+ */
 export async function writePlayerSettings(
 	db: D1Database,
 	accountId: number,
 	settings: PlayerSettings
 ): Promise<void> {
+	const bytes = settingsBytes(settings)
+	if (bytes > MAX_PLAYER_SETTINGS_BYTES) throw new PlayerSettingsTooLargeError(accountId, bytes)
 	await db
 		.prepare(
 			`INSERT INTO player_settings (account_id, data) VALUES (?1, ?2)
@@ -76,7 +107,8 @@ export function samePlayerSettings(a: PlayerSettings | null, b: PlayerSettings |
 
 /**
  * Store `next` as the player's settings unless it is what `existing` already says, in which
- * case nothing is written. Returns whether a write happened.
+ * case nothing is written. Returns whether a write happened. Throws
+ * {@link PlayerSettingsTooLargeError} when `next` is over {@link MAX_PLAYER_SETTINGS_BYTES}.
  *
  * `existing` is the map the caller read to build `next` from; passing the map it read (not a
  * fresh read) is the point — the comparison costs no database operation.

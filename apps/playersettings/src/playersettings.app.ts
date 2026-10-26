@@ -4,6 +4,7 @@ import { useWorkersLogger } from 'workers-tagged-logger'
 
 import {
 	mergePlayerSettings,
+	PlayerSettingsTooLargeError,
 	putPlayerSettingsIfChanged,
 	readPlayerSettings,
 	writePlayerSettings,
@@ -202,13 +203,16 @@ const app = new Hono<App>()
 				'player’s other settings alone. A JSON body is also accepted, as one object or an',
 				'array, in either `key`/`value` or `Key`/`Value` casing; entries with an empty key are',
 				'dropped. An unparseable or empty body is a no-op 200, not a 400, and so is a PUT whose',
-				'values are already stored — nothing is written. Empty body on success.',
+				'values are already stored — nothing is written. A PUT that would make the stored map',
+				'larger than 64 KiB of JSON is refused with a 413 and changes nothing. Empty body on',
+				'success.',
 			].join(' '),
 			security: AUTHED,
 			requestBody: formOrJson(SettingFormWrite, SettingJsonWrite, 'The setting(s) to write'),
 			responses: {
 				200: { description: 'Applied, or nothing parseable to apply (empty body)' },
 				401: UNAUTHORIZED_RESPONSE,
+				413: { description: 'The stored map would exceed 64 KiB; nothing was written' },
 			},
 		}),
 		async (c) => {
@@ -221,7 +225,12 @@ const app = new Hono<App>()
 			const patch: Record<string, string> = {}
 			for (const { key, value } of incoming) patch[key] = value
 
-			await mergePlayerSettings(c.env.DB, id, patch)
+			try {
+				await mergePlayerSettings(c.env.DB, id, patch)
+			} catch (err) {
+				if (err instanceof PlayerSettingsTooLargeError) return c.body(null, 413)
+				throw err
+			}
 			return c.body(null, 200)
 		}
 	)
