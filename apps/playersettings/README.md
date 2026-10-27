@@ -22,6 +22,11 @@ Player-settings worker served on the `playersettings` subdomain.
 > Emptying the map with DELETE puts the player back to a first read: the next
 > `GET` re-seeds the defaults.
 
+> Keys under `Growth.YIR.` (the client's Year-In-Review telemetry — distance
+> drawn, time with friends, …) are **dropped** on `PUT`, not stored. The client
+> posts them with a new value every time, so they were about half of all writes
+> and nothing reads them. See `IGNORED_SETTING_PREFIXES` in `default-settings.ts`.
+
 ## KV namespace
 
 ```sh

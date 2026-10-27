@@ -164,6 +164,40 @@ describe('playersettings endpoints', () => {
 		)
 	})
 
+	it('PUT /playersettings drops Growth.YIR telemetry without writing', async () => {
+		const stored = '{ "PlayerSessionCount": "5" }'
+		await env.RECFLARE_PLAYER_SETTINGS.put('player:11', stored)
+
+		const form = await SELF.fetch(
+			`${ORIGIN}/playersettings`,
+			putForm({ key: 'Growth.YIR.UGC.TubeDistance', value: '1234.5' }, await bearer('11'))
+		)
+		expect(form.status).toBe(200)
+		expect(await env.RECFLARE_PLAYER_SETTINGS.get('player:11', 'text')).toBe(stored)
+
+		// A JSON batch keeps the real settings and drops only the telemetry.
+		const json = await SELF.fetch(`${ORIGIN}/playersettings`, {
+			method: 'PUT',
+			headers: { 'content-type': 'application/json', ...(await bearer('11')) },
+			body: JSON.stringify([
+				{ key: 'Growth.YIR.DistanceTraveled', value: '99' },
+				{ key: 'MakerPenSessionCount', value: '3' },
+			]),
+		})
+		expect(json.status).toBe(200)
+		expect(await env.RECFLARE_PLAYER_SETTINGS.get('player:11', 'json')).toEqual({
+			PlayerSessionCount: '5',
+			MakerPenSessionCount: '3',
+		})
+
+		// A player with nothing stored stays unseeded: no key is created for telemetry alone.
+		await SELF.fetch(
+			`${ORIGIN}/playersettings`,
+			putForm({ key: 'Growth.YIR.TimeSpentWithFriends', value: '7' }, await bearer('12'))
+		)
+		expect(await env.RECFLARE_PLAYER_SETTINGS.get('player:12', 'text')).toBeNull()
+	})
+
 	it('PUT /playersettings 200s with no parseable settings', async () => {
 		const res = await SELF.fetch(`${ORIGIN}/playersettings`, putForm({}, await bearer('9')))
 		expect(res.status).toBe(200)

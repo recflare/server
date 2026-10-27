@@ -6,7 +6,7 @@ import { mergePlayerSettings } from '@repo/domain'
 import { withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
 import { validateAndGetAccountId } from '@repo/jwt'
 
-import { DEFAULT_SETTINGS } from './default-settings'
+import { DEFAULT_SETTINGS, isIgnoredSetting } from './default-settings'
 import {
 	AUTHED,
 	formOrJson,
@@ -196,7 +196,9 @@ const app = new Hono<App>()
 				'player’s other settings alone. A JSON body is also accepted, as one object or an',
 				'array, in either `key`/`value` or `Key`/`Value` casing; entries with an empty key are',
 				'dropped. An unparseable or empty body is a no-op 200, not a 400, and so is a PUT whose',
-				'values are already stored — nothing is written to KV. Empty body on success.',
+				'values are already stored — nothing is written to KV. Keys under `Growth.YIR.` (the',
+				'client’s Year-In-Review telemetry, which changes on every post) are dropped rather than',
+				'stored. Empty body on success.',
 			].join(' '),
 			security: AUTHED,
 			requestBody: formOrJson(SettingFormWrite, SettingJsonWrite, 'The setting(s) to write'),
@@ -209,7 +211,7 @@ const app = new Hono<App>()
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
 
-			const incoming = await parseSettings(c)
+			const incoming = (await parseSettings(c)).filter((s) => !isIgnoredSetting(s.key))
 			if (incoming.length === 0) return c.body(null, 200)
 
 			const patch: Record<string, string> = {}
