@@ -4,11 +4,18 @@
 	"main": "src/playersettings.app.ts",
 	"compatibility_date": "2026-06-16",
 	"compatibility_flags": ["nodejs_compat"],
-	// Per-player settings persistence.
-	"kv_namespaces": [
+	// Shared `recflare` DB (created manually with `wrangler d1 create recflare`; the
+	// "local" placeholder is spliced out at deploy time). This worker owns the
+	// `player_settings` table (schema/migration here) — one JSON row per player, which
+	// `api`, `match` and `chat` also read and merge into. Its own migrations_table keeps
+	// history separate from the other workers' migrations on the shared database.
+	"d1_databases": [
 		{
-			"binding": "RECFLARE_PLAYER_SETTINGS",
-			"id": "local"
+			"binding": "DB",
+			"database_name": "recflare",
+			"database_id": "local",
+			"migrations_dir": "migrations",
+			"migrations_table": "d1_migrations_playersettings"
 		}
 	],
 	// Shared Secrets Store holding the HS256 JWT signing key. Every worker binds the

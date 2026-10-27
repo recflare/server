@@ -1,7 +1,8 @@
 /**
  * Default player settings seeded on a player's first read, ported verbatim from
- * the reference's `PlayerSettingsController.GetPlayerSettings`. Ordered; written to KV the
- * first time a player has no stored settings.
+ * the reference's `PlayerSettingsController.GetPlayerSettings`. Ordered; written to the player’s row the
+ * first time a player has no stored settings. Mirrored as `SEEDED_DEFAULTS` in
+ * packages/tools/src/cmd/admin.cmd.ts (the KV import treats these values as the seed) — keep in sync.
  */
 export const DEFAULT_SETTINGS: Array<{ Key: string; Value: string }> = [
 	{ Key: 'Recroom.OOBE', Value: '77' },

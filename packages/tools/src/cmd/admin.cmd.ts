@@ -32,6 +32,7 @@ import type { D1ExecResult } from '../d1'
  *   runx admin grant-plus      --username alice [--revoke] [--remote]
  *   runx admin reload-plus     <amount> [--dry-run] [--remote]
  *   runx admin cai-load        [--file <export.json>] [--dry-run] [--remote]
+ *   runx admin settings-import-kv [--namespace-id <id>] [--overwrite] [--dry-run] [--remote]
  */
 
 /**
@@ -404,6 +405,233 @@ const caiLoad = new Command('cai-load')
 		console.log(chalk.green(`✓ custom avatar items loaded into ${target(remote)}`))
 	})
 
+/** The KV binding the player settings used to live under — the key `RECFLARE_KV` files its id by. */
+const SETTINGS_KV_BINDING = 'RECFLARE_PLAYER_SETTINGS'
+/** Every settings key in that namespace was `player:<accountId>`. */
+const SETTINGS_KV_PREFIX = 'player:'
+/** The KV bulk-get API takes at most this many keys per request. */
+const KV_BULK_GET_LIMIT = 100
+
+/**
+ * Run `wrangler kv …` from the `playersettings` directory — the namespace was that worker's
+ * binding, so with `--local` the dev-store state wrangler kept for it is under its .wrangler/.
+ */
+async function runKv(args: string[], remote: boolean): Promise<string> {
+	cd(path.join(getRepoRoot(), 'apps', 'playersettings'))
+	const out = await $`pnpm exec wrangler kv ${args} ${remote ? '--remote' : '--local'}`.quiet()
+	return out.stdout
+}
+
+/** The JSON wrangler prints after its banner (which can carry ANSI `[` sequences of its own). */
+function parseWranglerJson<T>(stdout: string): T {
+	const m = /^[[{]/m.exec(stdout)
+	if (!m) throw new Error(`unexpected wrangler output:\n${stdout}`)
+	return JSON.parse(stdout.slice(m.index)) as T
+}
+
+/** The old namespace's id, from the `RECFLARE_KV` entry the deploys used to splice it from. */
+async function settingsNamespaceIdFromEnv(): Promise<string> {
+	const raw = await readRootEnv('RECFLARE_KV')
+	const id = raw ? (JSON.parse(raw) as Record<string, string>)[SETTINGS_KV_BINDING] : undefined
+	if (id) return id
+	throw new Error(
+		`no ${SETTINGS_KV_BINDING} id in RECFLARE_KV — pass --namespace-id, or add the old namespace's id to .env`
+	)
+}
+
+/**
+ * Copy the old `RECFLARE_PLAYER_SETTINGS` KV namespace into the `player_settings` table (owned
+ * by the `playersettings` worker). A KV value was the player's whole map as a JSON object of
+ * strings, which is exactly what the row's `data` holds, so each key becomes one row.
+ *
+ * Rows that already exist are MERGED: KV fills in what D1 lacks, and D1 wins any key it has
+ * moved off the seeded default. A key D1 still holds AT its default (`SEEDED_DEFAULTS`) does
+ * not count as the player's — `GET /playersettings` seeds those for any player with no row, so
+ * a player who signed in after the cut-over but before the import has a fresh row of
+ * defaults, and their KV progress (OOBE, tutorial mask) has to beat it. That makes the import
+ * safe to run after the cut-over and to re-run. `--overwrite` makes KV win outright instead.
+ * Nothing is deleted on either side.
+ *
+ * What it cannot recover is a KV write made after the import read the namespace, to a key the
+ * imported row already holds off-default: D1 keeps the imported value. So run it once before
+ * `just deploy` (the bulk) and once after (to catch anyone who changed something in between).
+ */
+/**
+ * What `GET /playersettings` seeds for a player with no row — mirror of `DEFAULT_SETTINGS` in
+ * apps/playersettings/src/default-settings.ts. A D1 value equal to one of these may be the
+ * seed rather than the player's, so the import lets KV replace it.
+ */
+const SEEDED_DEFAULTS: Record<string, string> = {
+	'Recroom.OOBE': '77',
+	TUTORIAL_COMPLETE_MASK: '11',
+	FIRST_TIME_IN_FLAGS: '0',
+}
+
+/**
+ * A KV value as a settings map, or null when it isn't one. Numbers and booleans are kept as
+ * their string form (what a PUT would have stored); a null, object or array value drops just
+ * that key rather than the player's whole map.
+ */
+function kvSettingsMap(value: string | null | undefined): Record<string, string> | null {
+	let parsed: unknown
+	try {
+		parsed = value == null ? null : JSON.parse(value)
+	} catch {
+		return null
+	}
+	if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+	const map: Record<string, string> = {}
+	for (const [k, v] of Object.entries(parsed)) {
+		if (typeof v === 'string') map[k] = v
+		else if (typeof v === 'number' || typeof v === 'boolean') map[k] = String(v)
+	}
+	return map
+}
+
+const settingsImportKv = new Command('settings-import-kv')
+	.description('Copy the old RECFLARE_PLAYER_SETTINGS KV namespace into player_settings (merges)')
+	.option(
+		'--namespace-id <id>',
+		`The KV namespace to read (default: ${SETTINGS_KV_BINDING} in RECFLARE_KV from .env; "local" with --local)`
+	)
+	.option(
+		'--overwrite',
+		'Let the KV value replace a row that already exists (the default merges, keeping what D1 has)',
+		false
+	)
+	.option('--dry-run', 'Read the namespace, report what would be written, change nothing', false)
+	.option('--local', 'Target the local dev database and KV store (the default).', false)
+	.option('--remote', 'Target the deployed database and namespace instead.', false)
+	.action(async (opts) => {
+		const remote = resolveRemote(opts)
+		const namespaceId = opts.namespaceId ?? (remote ? await settingsNamespaceIdFromEnv() : 'local')
+		console.log(
+			`Reading KV namespace ${namespaceId} (${remote ? 'remote' : 'local'}) into ${target(remote)}`
+		)
+
+		const keys = parseWranglerJson<Array<{ name: string }>>(
+			await runKv(
+				['key', 'list', '--namespace-id', namespaceId, '--prefix', SETTINGS_KV_PREFIX],
+				remote
+			)
+		).map((k) => k.name)
+		console.log(`${keys.length} ${SETTINGS_KV_PREFIX}* key(s) in the namespace`)
+
+		const rows: Array<{ accountId: number; data: string }> = []
+		const skipped: string[] = []
+		let empty = 0
+		for (let i = 0; i < keys.length; i += KV_BULK_GET_LIMIT) {
+			const chunk = keys.slice(i, i + KV_BULK_GET_LIMIT)
+			const file = path.join(os.tmpdir(), `recflare-kv-keys-${Date.now()}-${i}.json`)
+			await fs.writeFile(file, JSON.stringify(chunk))
+			// `bulk get` answers `{ key: value }`, or `{ key: { value, metadata } }` with
+			// `--with-metadata`; read either.
+			let got: Record<string, string | { value: string | null } | null>
+			try {
+				got = parseWranglerJson(
+					await runKv(['bulk', 'get', file, '--namespace-id', namespaceId], remote)
+				)
+			} finally {
+				await fs.remove(file)
+			}
+			for (const key of chunk) {
+				const accountId = Number(key.slice(SETTINGS_KV_PREFIX.length))
+				const raw = got[key]
+				const map = kvSettingsMap(typeof raw === 'string' ? raw : raw?.value)
+				if (!Number.isSafeInteger(accountId) || accountId <= 0 || map === null) {
+					skipped.push(key)
+					continue
+				}
+				// An empty map is what a player with no row reads as; nothing to import.
+				if (Object.keys(map).length === 0) {
+					empty++
+					continue
+				}
+				rows.push({ accountId, data: JSON.stringify(map) })
+			}
+			console.log(`  fetched ${Math.min(i + chunk.length, keys.length)}/${keys.length}`)
+		}
+		for (const key of skipped) console.log(chalk.yellow(`  skipping ${key}: not a settings map`))
+
+		// Merge: start from D1, lay KV over it, then lay back every D1 key that isn't sitting at
+		// its seeded default. (`json_group_object` of no rows is `{}`, which patches nothing.)
+		const d1OwnKeys = `(SELECT json_group_object(s.key, s.value) FROM json_each(player_settings.data) AS s WHERE NOT EXISTS (SELECT 1 FROM json_each('${sqlStr(JSON.stringify(SEEDED_DEFAULTS))}') AS d WHERE d.key = s.key AND d.value = s.value))`
+		const onConflict = opts.overwrite
+			? 'excluded.data'
+			: `json_patch(json_patch(player_settings.data, excluded.data), ${d1OwnKeys})`
+		const statements = rows.map(
+			(r) =>
+				`INSERT INTO player_settings (account_id, data) VALUES (${r.accountId}, '${sqlStr(r.data)}') ON CONFLICT (account_id) DO UPDATE SET data = ${onConflict};`
+		)
+		console.log(
+			`${rows.length} player(s) to import, ${empty} empty, ${skipped.length} skipped` +
+				(opts.overwrite
+					? ' (KV overwrites existing rows)'
+					: ' (existing rows merge; D1 wins unless still at a seeded default)')
+		)
+		if (opts.dryRun) {
+			console.log(
+				chalk.cyan(`--dry-run: built ${statements.length} statements; nothing was written.`)
+			)
+			return
+		}
+		if (rows.length === 0) {
+			console.log(chalk.green('✓ nothing to import'))
+			return
+		}
+
+		const count = async (): Promise<number> =>
+			Number(
+				(await execSql('SELECT COUNT(*) AS n FROM player_settings', remote, 'playersettings'))
+					.results[0]?.n ?? 0
+			)
+		const before = await count()
+
+		const sqlFile = path.join(os.tmpdir(), `recflare-settings-${Date.now()}.sql`)
+		await fs.writeFile(sqlFile, statements.join('\n'))
+		try {
+			await execSqlFile(sqlFile, remote, 'playersettings')
+		} catch (err) {
+			// A large remote `--file` goes through D1's import API, and wrangler can fail its
+			// final status poll with this after the import has already completed (it did, for
+			// all 15,137 rows, the first time this ran). Fall through to the check below, which
+			// decides whether the rows actually landed.
+			if (!(err instanceof Error && err.message.includes('Not currently importing anything'))) {
+				throw err
+			}
+			console.log(chalk.yellow('  wrangler lost track of the import; checking what landed'))
+		} finally {
+			await fs.remove(sqlFile)
+		}
+
+		// Prove it landed: a merge never deletes, so the table holds at least every imported id.
+		const after = await count()
+		// Chunked: one IN list of every id outgrows D1's statement limit (and argv) at ~15k players.
+		const ids = rows.map((r) => r.accountId)
+		let found = 0
+		for (let i = 0; i < ids.length; i += 1000) {
+			found += Number(
+				(
+					await execSql(
+						`SELECT COUNT(*) AS n FROM player_settings WHERE account_id IN (${ids.slice(i, i + 1000).join(', ')})`,
+						remote,
+						'playersettings'
+					)
+				).results[0]?.n ?? 0
+			)
+		}
+		if (found !== ids.length) {
+			throw new Error(
+				`import did not land: ${ids.length - found} of ${ids.length} rows are missing. Re-run it.`
+			)
+		}
+		const added = after - before
+		console.log(
+			`${added} new row(s), ${rows.length - added} merged into existing rows (${after} rows now)`
+		)
+		console.log(chalk.green(`✓ player settings imported into ${target(remote)}`))
+	})
+
 const lookup = new Command('lookup')
 	.description('Print an account by id or username')
 	.option('--account <id>', 'Account id to look up')
@@ -467,6 +695,7 @@ export const adminCmd = new Command('admin')
 	.addCommand(grantStudio)
 	.addCommand(reloadPlus)
 	.addCommand(caiLoad)
+	.addCommand(settingsImportKv)
 	.addCommand(lookup)
 	.addHelpText(
 		'after',

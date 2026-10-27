@@ -158,6 +158,36 @@ script names every item the storefront doesn't list. The
 committed `2025-1-cai.json` is already priced. Rarity isn't carried over, since the record
 has no field for it.
 
+### `settings-import-kv` — copy the old player-settings KV namespace into D1
+
+```sh
+bun runx admin settings-import-kv --dry-run --remote    # count what the namespace holds
+bun runx admin settings-import-kv --remote
+bun runx admin settings-import-kv --remote --namespace-id <id> --overwrite
+just settings-import-kv --remote                        # the same, as a recipe
+```
+
+Player settings used to live in a Workers KV namespace (`RECFLARE_PLAYER_SETTINGS`, one
+`player:<id>` key per player holding their map as JSON); they now live in the
+`player_settings` table on the shared D1, one JSON row per player. This copies the namespace
+across for a deployment that predates the move. The namespace id comes from
+`RECFLARE_PLAYER_SETTINGS` in `RECFLARE_KV` in `.env` (which the deploys used to read it from)
+or from `--namespace-id`.
+
+Upgrade in this order: `just migrate -F playersettings` (creates the table), this import,
+`just deploy`, then this import AGAIN. The first run does the bulk while the KV-backed workers
+are still live; the second picks up players and keys that appeared in KV in between. The import MERGES:
+KV fills in what a row lacks, and the row wins any key it has moved off the seeded default.
+A key still AT its default (`Recroom.OOBE` 77, `TUTORIAL_COMPLETE_MASK` 11,
+`FIRST_TIME_IN_FLAGS` 0) loses to KV, because `GET /playersettings` seeds exactly those for a
+player with no row, so a returning player who signed in before their map was imported keeps
+their KV progress. The one thing it can't recover is a KV change made between the first
+run and the deploy to a key the first run already imported off-default; keep that window
+short. `--overwrite` makes the KV value win outright. Nothing is deleted on either side. A
+value that is a number or boolean is imported as its string; a null, object or array value
+drops only that key; a key that isn't a `player:<id>` holding a JSON object is reported and
+skipped. Once the second run is done, the namespace (and the `RECFLARE_KV` line) can be deleted.
+
 ### `lookup` — print an account
 
 ```sh
@@ -172,7 +202,7 @@ the account has a password, the developer role, and the moderator role.
 
 ### Selecting an account
 
-Every command except `reload-plus` and `cai-load` targets exactly one account, by **either**:
+Every command except `reload-plus`, `cai-load` and `settings-import-kv` targets exactly one account, by **either**:
 
 - `--account <id>` — numeric account id
 - `--username <name>` — username (case-insensitive)
