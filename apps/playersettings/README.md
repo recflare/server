@@ -23,9 +23,11 @@ Player-settings worker served on the `playersettings` subdomain.
 > `GET` re-seeds the defaults.
 
 > Keys under `Growth.YIR.` (the client's Year-In-Review telemetry — distance
-> drawn, time with friends, …) are **dropped** on `PUT`, not stored. The client
-> posts them with a new value every time, so they were about half of all writes
-> and nothing reads them. See `IGNORED_SETTING_PREFIXES` in `default-settings.ts`.
+> drawn, time with friends, …) and `MakerPenSessionCount` are **dropped** on
+> `PUT`, not stored. The client posts them with a new value every time, so they
+> were over half of all writes and nothing reads them. Real maker pen preferences
+> (`MakerPen_SnappingMode`, …) are kept. See `IGNORED_SETTING_KEYS` /
+> `IGNORED_SETTING_PREFIXES` in `default-settings.ts`.
 
 ## KV namespace
 

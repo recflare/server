@@ -164,7 +164,7 @@ describe('playersettings endpoints', () => {
 		)
 	})
 
-	it('PUT /playersettings drops Growth.YIR telemetry without writing', async () => {
+	it('PUT /playersettings drops Growth.YIR and MakerPenSessionCount without writing', async () => {
 		const stored = '{ "PlayerSessionCount": "5" }'
 		await env.RECFLARE_PLAYER_SETTINGS.put('player:11', stored)
 
@@ -175,19 +175,21 @@ describe('playersettings endpoints', () => {
 		expect(form.status).toBe(200)
 		expect(await env.RECFLARE_PLAYER_SETTINGS.get('player:11', 'text')).toBe(stored)
 
-		// A JSON batch keeps the real settings and drops only the telemetry.
+		// A JSON batch keeps the real settings (a maker pen PREFERENCE included) and drops
+		// only the telemetry and the session counter.
 		const json = await SELF.fetch(`${ORIGIN}/playersettings`, {
 			method: 'PUT',
 			headers: { 'content-type': 'application/json', ...(await bearer('11')) },
 			body: JSON.stringify([
 				{ key: 'Growth.YIR.DistanceTraveled', value: '99' },
 				{ key: 'MakerPenSessionCount', value: '3' },
+				{ key: 'MakerPen_SnappingMode', value: '2' },
 			]),
 		})
 		expect(json.status).toBe(200)
 		expect(await env.RECFLARE_PLAYER_SETTINGS.get('player:11', 'json')).toEqual({
 			PlayerSessionCount: '5',
-			MakerPenSessionCount: '3',
+			MakerPen_SnappingMode: '2',
 		})
 
 		// A player with nothing stored stays unseeded: no key is created for telemetry alone.
