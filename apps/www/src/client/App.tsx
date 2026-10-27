@@ -1819,7 +1819,7 @@ function StaffPlayerActions({ account, navigate }: { account: PublicAccount; nav
 							e.preventDefault()
 							void itemGift.run(async () => {
 								const res = await call<{
-									kind: 'custom_item' | 'skin' | 'consumable'
+									kind: 'custom_item' | 'badge' | 'skin' | 'consumable'
 									name: string
 									prefabName?: string
 									owned?: number
@@ -1829,6 +1829,8 @@ function StaffPlayerActions({ account, navigate }: { account: PublicAccount; nav
 								})
 								setItemId('')
 								switch (res.kind) {
+									case 'badge':
+										return `Granted the badge “${res.name}” to @${account.username}.`
 									case 'skin':
 										return `Sent the skin “${res.name}” (${res.prefabName}) to @${account.username}.`
 									case 'consumable':
@@ -1840,12 +1842,12 @@ function StaffPlayerActions({ account, navigate }: { account: PublicAccount; nav
 						}}
 					>
 						<label>
-							Gift item
+							Gift item or badge
 							<span className="staff-gift">
 								<input
 									type="text"
 									value={itemId}
-									placeholder="Custom item, skin or consumable id"
+									placeholder="Badge, custom item, skin or consumable id"
 									spellCheck={false}
 									required
 									onChange={(e) => setItemId(e.target.value)}
@@ -1855,10 +1857,11 @@ function StaffPlayerActions({ account, navigate }: { account: PublicAccount; nav
 								</button>
 							</span>
 							<span className="hint">
-								A custom avatar item’s guid, a skin’s modification guid, a consumable’s item desc,
-								or a store id — the kind is worked out from the id. Arrives as a gift box, as if
-								bought from the store; free to them, and a creator isn’t paid. Consumables stack:
-								send again for another.
+								A badge or custom avatar item’s guid, a skin’s modification guid, a consumable’s
+								item desc, or a store id — the kind is worked out from the id. Arrives as a gift
+								box, as if bought from the store; free to them, and a creator isn’t paid.
+								Consumables stack: send again for another. Badges must be published and can be
+								granted while the player is offline.
 							</span>
 						</label>
 						{itemGift.error && <p className="error">{itemGift.error}</p>}

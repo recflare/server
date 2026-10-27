@@ -13,6 +13,7 @@ import {
 	getOutfits,
 	getPendingGifts,
 	getPlayerIdsInRoom,
+	getPresence,
 	grantInvention,
 	levelReward,
 	levelsReached,
@@ -117,6 +118,8 @@ import {
 	ErrorResponse,
 	form,
 	GameRewardRequest,
+	GrantRoomBadgeRequest,
+	GrantRoomBadgeResponse,
 	HeldRoomKeyDto,
 	InfluencerIdsResponse,
 	IsOnWishlistBulkRequest,
@@ -292,6 +295,28 @@ async function authedBuild(c: Context<App>): Promise<number | null> {
 /** Results.Unauthorized() equivalent — 401 with empty body. */
 function unauthorized(c: Context<App>) {
 	return c.body(null, 401)
+}
+
+/** The badge tab reads another account's inventory, filtered before paging. */
+async function customAvatarItemsPage(c: Context<App>, accountId: number, callerId: number) {
+	const owned = await getOwnedCustomAvatarItems(c.env.DB, accountId)
+	const outfitType = c.req.query('outfitType')
+	const visible = owned.filter(
+		(item) =>
+			(accountId === callerId || item.Accessibility !== 0) &&
+			(outfitType === undefined || item.OutfitType === Number(outfitType))
+	)
+	const pageNumber = (value: string | undefined, fallback: number) => {
+		const parsed = Number(value ?? fallback)
+		return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : fallback
+	}
+	const skip = pageNumber(c.req.query('skip'), 0)
+	const take = Math.min(pageNumber(c.req.query('take'), 1000), 1000)
+	const page = visible.slice(skip, skip + take)
+	const Results = isQuestAssetTarget(c.req.query('unityAssetTarget'))
+		? page.map(toQuestCustomAvatarItem)
+		: page
+	return c.json({ Results, TotalResults: visible.length })
 }
 
 /**
@@ -3058,6 +3083,99 @@ const app = new Hono<App>({ strict: false })
 			if (id === null) return unauthorized(c)
 			const owned = await getInventory(c.env.DB, id)
 			return c.json([...owned, ...defaultAvatarItems].map(toAvatarItemV4))
+		}
+	)
+
+	.get(
+		'/econ/customAvatarItems/v1/ownedby/:accountId{[0-9]+}',
+		describeRoute({
+			tags: ['Avatar'],
+			summary: 'Custom avatar items owned by an account',
+			description:
+				'Lists owned and created items, filtered by outfitType and paged by skip/take. ' +
+				'TotalResults is the filtered count before paging. Other accounts see published items only. ' +
+				'Honors unityAssetTarget as the caller-owned inventory does.',
+			security: AUTHED,
+			responses: {
+				200: json(CustomAvatarItemsResponse, 'The owned items'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+			return customAvatarItemsPage(c, Number(c.req.param('accountId')), id)
+		}
+	)
+	.post(
+		'/circuitsRoomRewards/grantRoomBadge',
+		describeRoute({
+			tags: ['Avatar'],
+			summary: 'Award a room badge from a circuit',
+			description:
+				'Grants a published room badge to a player in the caller’s live room instance. ' +
+				'The badge must belong to that room. ResponseCode is 0 on a new grant, 1 if already owned, ' +
+				'or 2 on an invalid grant. A new grant creates and announces a gift package.',
+			security: AUTHED,
+			requestBody: jsonBody(GrantRoomBadgeRequest, 'The badge, player and room instance'),
+			responses: {
+				200: json(GrantRoomBadgeResponse, 'The circuit result'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+			const failed = (ErrorMessage: string) => c.json({ ResponseCode: 2, ErrorMessage })
+			const parsed = GrantRoomBadgeRequest.safeParse(await c.req.json().catch(() => null))
+			if (!parsed.success) return failed('Invalid room badge request')
+			const body = parsed.data
+			const [badge] = await getCustomAvatarItems(c.env.DB, [
+				body.BadgeCustomAvatarItemId.toLowerCase(),
+			])
+			const roomId = (badge?.CustomBadgeMetadata as { RoomId?: number } | null)?.RoomId
+			if (
+				!badge ||
+				badge.OutfitType !== 1000 ||
+				badge.Accessibility === 0 ||
+				badge.CurrentSaves.length === 0 ||
+				!roomId
+			)
+				return failed('No published room badge')
+			type BadgeInstance = { roomId: number; roomInstanceId: number }
+			const [caller, target] = await Promise.all([
+				getPresence<BadgeInstance>(c.env.DB, id),
+				getPresence<BadgeInstance>(c.env.DB, body.TargetAccountId),
+			])
+			if (
+				caller?.roomInstance?.roomId !== roomId ||
+				caller.roomInstance.roomInstanceId !== body.RoomInstanceId ||
+				target?.roomInstance?.roomId !== roomId ||
+				target.roomInstance.roomInstanceId !== body.RoomInstanceId
+			) {
+				return failed('Players must be in the badge’s room instance')
+			}
+			const owned = await ownedCustomAvatarItemIds(c.env.DB, body.TargetAccountId, [
+				badge.CustomAvatarItemId,
+			])
+			if (badge.CreatorAccountId === body.TargetAccountId || owned.size > 0) {
+				return c.json({ ResponseCode: 1, ErrorMessage: null })
+			}
+			// The insert decides the winner of concurrent grants, so only one box is created.
+			if (
+				!(await grantCustomAvatarItem(c.env.DB, body.TargetAccountId, badge.CustomAvatarItemId))
+			) {
+				return c.json({ ResponseCode: 1, ErrorMessage: null })
+			}
+			const content = toCustomGiftContent(
+				badge,
+				censorSwears(body.GrantMessage ?? ''),
+				COACH_ACCOUNT_ID,
+				null
+			)
+			const box = await createGift(c.env.DB, body.TargetAccountId, content)
+			await pushCustomGiftReceived(c, body.TargetAccountId, box.id, content)
+			return c.json({ ResponseCode: 0, ErrorMessage: null })
 		}
 	)
 

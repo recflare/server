@@ -38,13 +38,14 @@ export async function grantCustomAvatarItem(
 	accountId: number,
 	customAvatarItemId: string,
 	now: Date = new Date()
-): Promise<void> {
-	await db
+): Promise<boolean> {
+	const { meta } = await db
 		.prepare(
 			'INSERT OR IGNORE INTO inventory_custom (account_id, custom_avatar_item_id, acquired_at) VALUES (?1, ?2, ?3)'
 		)
 		.bind(accountId, customAvatarItemId, now.toISOString())
 		.run()
+	return meta.changes > 0
 }
 
 /**

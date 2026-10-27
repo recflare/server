@@ -37,6 +37,7 @@ import { generateToken } from '@repo/jwt'
 import {
 	createCustomAvatarItem,
 	SCHEMA_DDL as CUSTOM_AVATAR_ITEM_SCHEMA_DDL,
+	importCustomAvatarItem,
 } from '../../../../api/src/custom-avatar-items-db'
 import {
 	createReport,
@@ -2635,6 +2636,77 @@ it('gifts a player a custom item in a gift box', async () => {
 			},
 		},
 	])
+})
+
+it('grants a published room badge through profile gifting without room presence, once', async () => {
+	await clearHub()
+	await updateAccount(env.DB, 8530, { username: 'BadgeRecipient' })
+	const seed = await seedCustomItem('0a1b2c3d-0000-4000-8000-000000000030', 8531)
+	const badge = await importCustomAvatarItem(env.DB, {
+		...seed,
+		Name: 'Room Champion',
+		OutfitType: 1000,
+		CustomBadgeMetadata: { RoomId: 12345 },
+		CurrentSaves: [
+			{
+				CustomAvatarItemSaveId: 1,
+				CustomAvatarItemId: seed.CustomAvatarItemId,
+				UnityAssetId: crypto.randomUUID(),
+				BodyType: 0,
+				OutfitType: 1000,
+				QAState: 0,
+				CreatedAt: seed.CreatedAt,
+				ModifiedAt: seed.ModifiedAt,
+				Description: null,
+				ThumbnailFileName: 'badge.png',
+				AdditionalConfiguration: '{}',
+				UnityAsset: 'badge.png',
+				UnityAssetHash: '',
+				UnityAsset2: null,
+				UnityAsset2Hash: null,
+			},
+		],
+	})
+	const responses = await Promise.all([
+		giftItem(8530, badge.CustomAvatarItemId.toUpperCase(), 'Congratulations!'),
+		giftItem(8530, badge.CustomAvatarItemId, 'Congratulations!'),
+	])
+	expect(responses.map((r) => r.status).sort((a, b) => a - b)).toEqual([200, 409])
+	const body = await responses.find((r) => r.status === 200)!.json()
+	expect(body).toMatchObject({ kind: 'badge', name: 'Room Champion' })
+	await expect(ownedCustomAvatarItemIds(env.DB, 8530, [badge.CustomAvatarItemId])).resolves.toEqual(
+		new Set([badge.CustomAvatarItemId])
+	)
+	const gifts = await getPendingGifts(env.DB, 8530)
+	expect(gifts).toHaveLength(1)
+	expect(gifts[0]).toMatchObject({
+		CustomAvatarItemId: badge.CustomAvatarItemId,
+		AvatarItemType: 0,
+		GiftContext: 500,
+		Message: 'Congratulations!',
+	})
+	const frames = await hubFrames()
+	expect(frames).toHaveLength(1)
+	expect(frames[0]).toMatchObject({
+		playerId: 8530,
+		notificationType: 31,
+		data: { CustomAvatarItemId: badge.CustomAvatarItemId, Message: 'Congratulations!' },
+	})
+	expect(await auditRows('gift_custom_item', 8530)).toHaveLength(1)
+	expect((await giftItem(8530, badge.CustomAvatarItemId)).status).toBe(409)
+	const draft = await importCustomAvatarItem(env.DB, {
+		...badge,
+		CustomAvatarItemId: crypto.randomUUID(),
+		Accessibility: 0,
+	})
+	expect((await giftItem(8530, draft.CustomAvatarItemId)).status).toBe(404)
+	const unbuilt = await importCustomAvatarItem(env.DB, {
+		...badge,
+		CustomAvatarItemId: crypto.randomUUID(),
+		CurrentSaves: [],
+	})
+	expect((await giftItem(8530, unbuilt.CustomAvatarItemId)).status).toBe(400)
+	expect(await getPendingGifts(env.DB, 8530)).toHaveLength(1)
 })
 
 it('refuses a custom item gift the store would refuse', async () => {

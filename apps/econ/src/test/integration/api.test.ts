@@ -19,6 +19,7 @@ import {
 	PROGRESSION_SCHEMA_DDL,
 	RECEIVED_GIFT_SCHEMA_DDL,
 	ROOM_SCHEMA_DDL,
+	setPresence,
 	updateAccount,
 } from '@repo/domain'
 import { PlatformType } from '@repo/domain/src/enums'
@@ -594,6 +595,134 @@ describe('econ endpoints', () => {
 			body: JSON.stringify({ OutfitSelections: 'a,,0' }),
 		})
 		expect(res.status).toBe(404)
+	})
+
+	test('room badges grant once from a live circuit and appear on another player’s badge tab', async () => {
+		const seed = await createCustomAvatarItem(env.DB, {
+			customAvatarItemId: crypto.randomUUID(),
+			creatorAccountId: 801,
+			name: 'Room badge',
+			description: '',
+			price: 0,
+			baseAvatarItemId: 1,
+			baseAvatarItemColor: '#fff',
+			accessibility: 1,
+			designFilename: 'badge.png',
+			thumbnailImageFilename: 'badge.png',
+		})
+		const badge = await importCustomAvatarItem(env.DB, {
+			...seed,
+			OutfitType: 1000,
+			CustomBadgeMetadata: { RoomId: 989891 },
+			CurrentSaves: [
+				{
+					CustomAvatarItemSaveId: 1,
+					CustomAvatarItemId: seed.CustomAvatarItemId,
+					UnityAssetId: crypto.randomUUID(),
+					BodyType: 0,
+					OutfitType: 1000,
+					QAState: 0,
+					CreatedAt: seed.CreatedAt,
+					ModifiedAt: seed.ModifiedAt,
+					Description: null,
+					ThumbnailFileName: 'badge.png',
+					AdditionalConfiguration: '{}',
+					UnityAsset: 'badge.png',
+					UnityAssetHash: '',
+					UnityAsset2: null,
+					UnityAsset2Hash: null,
+				},
+			],
+		})
+		const presence = async (accountId: number, roomInstanceId = 891) =>
+			setPresence(env.DB, {
+				accountId,
+				roomInstance: { roomId: 989891, roomInstanceId },
+				statusVisibility: 0,
+				deviceClass: 0,
+				vrMovementMode: 0,
+				platform: 0,
+				appVersion: '20260323.14',
+			})
+		await presence(802)
+		await presence(803)
+		const grant = async (overrides = {}, authenticated = true): Promise<Response> =>
+			exports.default.fetch(`${ORIGIN}/circuitsRoomRewards/grantRoomBadge`, {
+				method: 'POST',
+				headers: {
+					...(authenticated ? await bearer('802') : {}),
+					'Content-Type': 'application/json',
+				},
+				body: JSON.stringify({
+					TargetAccountId: 803,
+					BadgeCustomAvatarItemId: badge.CustomAvatarItemId.toUpperCase(),
+					RoomInstanceId: 891,
+					GrantMessage: 'Well done!',
+					...overrides,
+				}),
+			})
+		const list = async (query = '', authenticated = true): Promise<Response> =>
+			exports.default.fetch(`${ORIGIN}/econ/customAvatarItems/v1/ownedby/803${query}`, {
+				headers: authenticated ? await bearer('802') : {},
+			})
+		expect((await grant({}, false)).status).toBe(401)
+		expect((await list('', false)).status).toBe(401)
+		expect(await (await list('?outfitType=1000')).json()).toEqual({ Results: [], TotalResults: 0 })
+		expect(await (await grant({ RoomInstanceId: 892 })).json()).toMatchObject({ ResponseCode: 2 })
+		await presence(803, 892)
+		expect(await (await grant()).json()).toMatchObject({ ResponseCode: 2 })
+		await presence(803)
+		expect(
+			await (await grant({ BadgeCustomAvatarItemId: crypto.randomUUID() })).json()
+		).toMatchObject({ ResponseCode: 2 })
+		const grants = await Promise.all([grant(), grant()])
+		expect(
+			(await Promise.all(grants.map((r) => r.json() as Promise<{ ResponseCode: number }>)))
+				.map((r) => r.ResponseCode)
+				.sort((a, b) => a - b)
+		).toEqual([0, 1])
+		expect(await (await grant()).json()).toEqual({ ResponseCode: 1, ErrorMessage: null })
+		const gifts = await getPendingGifts(env.DB, 803)
+		expect(gifts).toHaveLength(1)
+		expect(gifts[0]!).toMatchObject({
+			CustomAvatarItemId: badge.CustomAvatarItemId,
+			Message: 'Well done!',
+		})
+		await grantCustomAvatarItem(env.DB, 803, seed.CustomAvatarItemId)
+		const shirt = await createCustomAvatarItem(env.DB, {
+			customAvatarItemId: crypto.randomUUID(),
+			creatorAccountId: 801,
+			name: 'Shirt',
+			description: '',
+			price: 0,
+			baseAvatarItemId: 1,
+			baseAvatarItemColor: '#fff',
+			accessibility: 1,
+			designFilename: 'shirt.png',
+			thumbnailImageFilename: 'shirt.png',
+		})
+		await grantCustomAvatarItem(env.DB, 803, shirt.CustomAvatarItemId)
+		const draft = await importCustomAvatarItem(env.DB, {
+			...badge,
+			CustomAvatarItemId: crypto.randomUUID(),
+			Accessibility: 0,
+		})
+		await grantCustomAvatarItem(env.DB, 803, draft.CustomAvatarItemId)
+		expect(
+			await (await grant({ BadgeCustomAvatarItemId: draft.CustomAvatarItemId })).json()
+		).toMatchObject({ ResponseCode: 2 })
+		expect(await (await list('?outfitType=1000&skip=0&take=1000')).json()).toEqual({
+			Results: [{ ...badge, PurchaseInfo: null }],
+			TotalResults: 1,
+		})
+		expect(await (await list('?outfitType=1000&skip=1&take=1')).json()).toEqual({
+			Results: [],
+			TotalResults: 1,
+		})
+		expect(await (await list('?outfitType=1000&unityAssetTarget=2')).json()).toMatchObject({
+			Results: [{ CurrentSaves: [{ UnityAsset: 'badge.png' }] }],
+			TotalResults: 1,
+		})
 	})
 
 	test('GET /econ/customAvatarItems/v1/owned 401s without a token, lists what the caller bought', async () => {
@@ -8068,6 +8197,7 @@ describe('econ endpoints', () => {
 			'GET /api/subscriptionseasons/v1/seasons/current',
 			'GET /api/ugcPurchasables/v1/items/room/{roomId}',
 			'GET /econ/customAvatarItems/v1/owned',
+			'GET /econ/customAvatarItems/v1/ownedby/{accountId}',
 			'GET /econ/roomEconConfig/{roomId}',
 			'GET /econ/roomGiftDropShops/room/{roomId}',
 			'GET /econ/roomInventory/room/{roomId}',
@@ -8116,6 +8246,7 @@ describe('econ endpoints', () => {
 			'POST /api/storefronts/v3/buyInvention',
 			'POST /api/timedCurrencyGrants/update',
 			'POST /api/ugcPurchasables/v1/items/bulk',
+			'POST /circuitsRoomRewards/grantRoomBadge',
 			'PUT /api/equipment/v1/update',
 			'PUT /api/roomconsumables/v1/roomConsumable',
 			'PUT /api/roomconsumables/v1/roomConsumable/{id}/consume',

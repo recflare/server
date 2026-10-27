@@ -1413,7 +1413,12 @@ async function giftCustomItem(
 		return c.json({ error: 'This player already owns that item' }, 409)
 	}
 
-	await grantCustomAvatarItem(c.env.DB, playerId, item.CustomAvatarItemId)
+	if (item.OutfitType === 1000 && item.CurrentSaves.length === 0) {
+		return c.json({ error: 'That badge has no published image' }, 400)
+	}
+	if (!(await grantCustomAvatarItem(c.env.DB, playerId, item.CustomAvatarItemId))) {
+		return c.json({ error: 'This player already owns that item' }, 409)
+	}
 	const content = staffGiftContent({
 		GiftContext: GIFT_CONTEXT_PURCHASED_GIFT_A,
 		CustomAvatarItemId: item.CustomAvatarItemId,
@@ -1439,7 +1444,7 @@ async function giftCustomItem(
 	await announceGift(c, playerId, gift.id, content)
 
 	return c.json({
-		kind: 'custom_item',
+		kind: item.OutfitType === 1000 ? 'badge' : 'custom_item',
 		playerId,
 		customAvatarItemId: item.CustomAvatarItemId,
 		name: item.Name,

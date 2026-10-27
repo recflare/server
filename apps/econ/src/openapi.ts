@@ -117,6 +117,18 @@ export const CustomAvatarItemsResponse = z.object({
 	TotalResults: z.int(),
 })
 
+export const GrantRoomBadgeRequest = z.object({
+	TargetAccountId: z.int().positive(),
+	BadgeCustomAvatarItemId: z.uuid(),
+	RoomInstanceId: z.int().positive(),
+	GrantMessage: z.string().nullable().optional(),
+})
+
+export const GrantRoomBadgeResponse = z.object({
+	ResponseCode: z.union([z.literal(0), z.literal(1), z.literal(2)]),
+	ErrorMessage: z.string().nullable(),
+})
+
 /**
  * A Rec Room Plus subscription (the client calls it a `CampusCard`). Nothing here sells one,
  * so this is the complimentary subscription reported by a caller whose token carries
