@@ -6,9 +6,11 @@ import '../../auth.app'
 
 import {
 	AUDIT_LOG_SCHEMA_DDL,
+	EMAIL_CODE_SCHEMA_DDL,
 	GAME_VERSION,
 	getAccount,
 	getAccountsByDeviceId,
+	getPasswordHash,
 	hashPassword,
 	PRESENCE_SCHEMA_DDL,
 	ROOM_SCHEMA_DDL,
@@ -38,6 +40,7 @@ import {
 	PLATFORM_BACKFILL_SQL,
 	PLATFORM_SCHEMA_DDL,
 } from '../../platform-db'
+import { resetPasswordUrl } from '../../recovery-email'
 import { consumeRefreshToken, issueRefreshToken, REFRESH_SCHEMA_DDL } from '../../refresh-db'
 import {
 	STUDIO_CLIENT_ID,
@@ -79,6 +82,8 @@ beforeAll(async () => {
 	metaSecretId = await adminSecretsStore(env.META_APP_SECRET).create(META_APP_SECRET)
 	for (const stmt of SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of REFRESH_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	// The pending email codes (`/account/recoverpassword` issues one as a password_reset).
+	for (const stmt of EMAIL_CODE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	// Platform identity links — one account can hold several (a PC and a headset), and
 	// this table is what both the picker and the cached_login grant read.
 	for (const stmt of PLATFORM_SCHEMA_DDL) await env.DB.prepare(stmt).run()
@@ -1119,7 +1124,9 @@ describe('auth worker routes', () => {
 			.bind(77)
 			.first<{ data: string }>()
 		expect(row!.data).toContain('"deviceClass":2')
-		expect(row!.data).not.toContain('2.0')
+		// Keyed, not a bare '2.0': the row's lastLoginTime has milliseconds, so a login at
+		// `…:02.045Z` would match that string on its own.
+		expect(row!.data).not.toContain('"deviceClass":2.0')
 	})
 
 	// The grant the live client actually logs in with, and the one path whose device
@@ -2021,6 +2028,205 @@ describe('auth worker routes', () => {
 		expect(await rotate.json()).toEqual({ success: true })
 	})
 
+	/** POST a form-urlencoded body to one of the unauthenticated recovery routes. */
+	const postForm = (path: string, body: string) =>
+		exports.default.fetch(`${ORIGIN}${path}`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body,
+		})
+	const recover = (body: string) => postForm('/account/recoverpassword', body)
+	const reset = (body: string) => postForm('/account/resetpassword', body)
+	const SENT = { Success: true, Error: null, error_id: null }
+
+	/** The pending recovery row for an account, or null. */
+	const pendingReset = (accountId: number) =>
+		env.DB.prepare(
+			"SELECT code_hash AS codeHash, created_at AS createdAt, expires_at AS expiresAt FROM email_code WHERE account_id = ?1 AND purpose = 'password_reset'"
+		)
+			.bind(accountId)
+			.first<{ codeHash: string | null; createdAt: number; expiresAt: number }>()
+
+	/**
+	 * Only the code's hash is stored and the email goes to the local binding's log, so a test
+	 * that needs to KNOW the code puts a known one in: same hash function as the route.
+	 */
+	const plantCode = async (accountId: number, code: string) => {
+		await env.DB.prepare(
+			"UPDATE email_code SET code_hash = ?2 WHERE account_id = ?1 AND purpose = 'password_reset'"
+		)
+			.bind(accountId, await hashPassword(code))
+			.run()
+	}
+
+	/** A fresh account with an email address on it, for the recovery tests. */
+	const accountWithEmail = async (tag: string, email: string) => {
+		const claims = await tokenFor(`grant_type=create_account&platform_id=steam-${tag}`)
+		const accountId = Number(claims.sub)
+		await updateAccount(env.DB, accountId, { email })
+		return accountId
+	}
+
+	test('POST /account/recoverpassword issues a code and emails it', async () => {
+		const id = await accountWithEmail('recover1', 'recover1@example.com')
+		const before = Math.floor(Date.now() / 1000)
+		const res = await recover('email=recover1%40example.com')
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual(SENT)
+
+		const row = await pendingReset(id)
+		expect(row).not.toBeNull()
+		expect(row!.codeHash).toMatch(/^[^:]+:[^:]+$/)
+		expect(row!.createdAt).toBeGreaterThanOrEqual(before)
+		expect(row!.expiresAt - row!.createdAt).toBe(30 * 60)
+	})
+
+	test('POST /account/recoverpassword finds the account case-insensitively', async () => {
+		const id = await accountWithEmail('recover2', 'Recover2@Example.com')
+		const res = await recover('email=RECOVER2%40example.com')
+		expect(await res.json()).toEqual(SENT)
+		expect(await pendingReset(id)).not.toBeNull()
+	})
+
+	test('POST /account/recoverpassword answers an unknown address exactly like a sent one', async () => {
+		const res = await recover('email=nobody-here%40example.com')
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual(SENT)
+		const rows = await env.DB.prepare('SELECT COUNT(*) AS n FROM email_code').first<{
+			n: number
+		}>()
+		// Nothing was issued for it — the account doesn't exist — but the caller can't tell.
+		expect(rows!.n).toBeGreaterThanOrEqual(0)
+	})
+
+	test('POST /account/recoverpassword refuses a missing or malformed address, in the client envelope', async () => {
+		for (const [body, error] of [
+			['', 'Enter the email address on your account.'],
+			['email=', 'Enter the email address on your account.'],
+			['email=not-an-address', "That doesn't look like an email address."],
+		]) {
+			const res = await recover(body!)
+			expect(res.status).toBe(200)
+			expect(await res.json()).toEqual({ Success: false, Error: error, error_id: null })
+		}
+	})
+
+	test('POST /account/recoverpassword does not resend within the cooldown', async () => {
+		const id = await accountWithEmail('recover3', 'recover3@example.com')
+		expect(await (await recover('email=recover3%40example.com')).json()).toEqual(SENT)
+		const first = await pendingReset(id)
+		// Same answer, but the pending code is untouched: no second email went out.
+		expect(await (await recover('email=recover3%40example.com')).json()).toEqual(SENT)
+		expect(await pendingReset(id)).toEqual(first)
+	})
+
+	test('POST /account/recoverpassword replaces the pending code once the cooldown has passed', async () => {
+		const id = await accountWithEmail('recover4', 'recover4@example.com')
+		await recover('email=recover4%40example.com')
+		const first = await pendingReset(id)
+		await env.DB.prepare(
+			"UPDATE email_code SET created_at = created_at - 600 WHERE account_id = ?1 AND purpose = 'password_reset'"
+		)
+			.bind(id)
+			.run()
+		await recover('email=recover4%40example.com')
+		const second = await pendingReset(id)
+		expect(second!.codeHash).not.toBe(first!.codeHash)
+		expect(second!.createdAt).toBeGreaterThan(first!.createdAt - 600)
+	})
+
+	test('POST /account/resetpassword sets the password with the emailed code, once', async () => {
+		const id = await accountWithEmail('reset1', 'reset1@example.com')
+		await recover('email=reset1%40example.com')
+		await plantCode(id, '123456')
+		// A refresh token from an old session, which the reset signs out.
+		const refresh = await issueRefreshToken(env.DB, id)
+
+		const res = await reset('email=reset1%40example.com&code=123456&newPassword=brand-new')
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ success: true })
+		expect(await pendingReset(id)).toBeNull()
+		expect(await consumeRefreshToken(env.DB, refresh)).toBeNull()
+
+		// The new password signs in.
+		const login = await exports.default.fetch(`${ORIGIN}/connect/token`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: `grant_type=password&account_id=${id}&password=brand-new`,
+		})
+		expect(login.status).toBe(200)
+
+		// The code was spent: the same one again is refused.
+		const again = await reset('email=reset1%40example.com&code=123456&newPassword=another')
+		expect(again.status).toBe(400)
+	})
+
+	test('POST /account/resetpassword voids the recovery on a wrong code', async () => {
+		const id = await accountWithEmail('reset2', 'reset2@example.com')
+		await recover('email=reset2%40example.com')
+		await plantCode(id, '123456')
+
+		const wrong = await reset('email=reset2%40example.com&code=654321&newPassword=brand-new')
+		expect(wrong.status).toBe(400)
+		expect(await wrong.json()).toEqual({
+			success: false,
+			error: 'That code is wrong or has expired. Request a new recovery email and try again.',
+		})
+		// Burned, not deleted: the row stays for the resend cooldown, with no code to guess.
+		expect((await pendingReset(id))!.codeHash).toBeNull()
+
+		// The RIGHT code no longer works either — a new email has to be requested.
+		const right = await reset('email=reset2%40example.com&code=123456&newPassword=brand-new')
+		expect(right.status).toBe(400)
+		expect(await getPasswordHash(env.DB, id)).toBeNull()
+	})
+
+	test('POST /account/resetpassword refuses a lapsed code', async () => {
+		const id = await accountWithEmail('reset3', 'reset3@example.com')
+		await recover('email=reset3%40example.com')
+		await plantCode(id, '123456')
+		await env.DB.prepare(
+			"UPDATE email_code SET expires_at = expires_at - 3600 WHERE account_id = ?1 AND purpose = 'password_reset'"
+		)
+			.bind(id)
+			.run()
+		const res = await reset('email=reset3%40example.com&code=123456&newPassword=brand-new')
+		expect(res.status).toBe(400)
+		expect(await pendingReset(id)).toBeNull()
+	})
+
+	test('POST /account/resetpassword refuses the same way for no recovery and an unknown address', async () => {
+		const sameError = {
+			success: false,
+			error: 'That code is wrong or has expired. Request a new recovery email and try again.',
+		}
+		await accountWithEmail('reset4', 'reset4@example.com')
+		const none = await reset('email=reset4%40example.com&code=123456&newPassword=brand-new')
+		expect(none.status).toBe(400)
+		expect(await none.json()).toEqual(sameError)
+		const unknown = await reset('email=nobody%40example.com&code=123456&newPassword=brand-new')
+		expect(unknown.status).toBe(400)
+		expect(await unknown.json()).toEqual(sameError)
+	})
+
+	test('POST /account/resetpassword refuses a missing field', async () => {
+		for (const body of [
+			'code=123456&newPassword=x',
+			'email=a%40b.com&newPassword=x',
+			'email=a%40b.com&code=123456',
+		]) {
+			const res = await reset(body)
+			expect(res.status).toBe(400)
+			expect(((await res.json()) as { success: boolean }).success).toBe(false)
+		}
+	})
+
+	test('the reset link carries the address and the code for the website', () => {
+		expect(resetPasswordUrl('https://www.rec.example.com', 'a+b@example.com', '012345')).toBe(
+			'https://www.rec.example.com/reset-password?email=a%2Bb%40example.com&code=012345'
+		)
+	})
+
 	test('GET /privileges/me/restrictions is an empty array for an unrestricted caller', async () => {
 		const token = await accessTokenFor('grant_type=create_account&platform_id=steam-restrict1')
 		const res = await exports.default.fetch(`${ORIGIN}/privileges/me/restrictions`, {
@@ -2267,6 +2473,8 @@ describe('auth worker routes', () => {
 			'GET /role/moderator/{id}',
 			'GET /role/screenshare/{id}',
 			'POST /account/me/changepassword',
+			'POST /account/recoverpassword',
+			'POST /account/resetpassword',
 			'POST /cachedlogin/forplatformid/{platform}/{id}',
 			'POST /cachedlogin/forplatformids',
 			'POST /connect/device/approve',

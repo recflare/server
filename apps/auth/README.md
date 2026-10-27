@@ -15,6 +15,8 @@ authenticates players and issues the JWTs every other worker verifies.
 | POST   | `/connect/device/deny`                     | Website refuses it                                                                               |
 | POST   | `/connect/token`                           | OAuth token endpoint; issues a JWT + refresh token. Studio polls this with the device-code grant |
 | POST   | `/account/me/changepassword`               | Change the caller's password (auth-gated)                                                        |
+| POST   | `/account/recoverpassword`                 | "Forgot password": email a six-digit code (and a link to WWW `/reset-password`) to the address   |
+| POST   | `/account/resetpassword`                   | Website finishes the recovery: address + emailed code + new password; the code works once        |
 | GET    | `/role/developer/:id`                      | Developer role lookup; a bare JSON boolean                                                       |
 | GET    | `/role/moderator/:id`                      | Moderator role lookup; a bare JSON boolean                                                       |
 | GET    | `/openapi.json`                            | Generated OpenAPI 3.1 spec (see below)                                                           |

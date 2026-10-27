@@ -249,6 +249,30 @@ export const ChangePasswordResponse = z.object({
 	error: z.string().optional(),
 })
 
+/** `POST /account/recoverpassword` form body — the one thing the client sends. */
+export const RecoverPasswordRequest = z.object({
+	email: z.string().describe('The address on the account; nothing else identifies it'),
+})
+
+/**
+ * `POST /account/recoverpassword` response body: the client's PascalCase result envelope,
+ * `{ Success, Error, error_id }` — the one route here that answers in it. `Error` is null
+ * on success and a sentence otherwise; `error_id` is always null (nothing here numbers its
+ * errors) and is kept because the client's decoder wants the key.
+ */
+export const RecoverPasswordResponse = z.object({
+	Success: z.boolean(),
+	Error: z.string().nullable(),
+	error_id: z.number().nullable(),
+})
+
+/** `POST /account/resetpassword` form body — what the website's reset page posts. */
+export const ResetPasswordRequest = z.object({
+	email: z.string().describe('The address the code was sent to'),
+	code: z.string().describe('The six digits from the email'),
+	newPassword: z.string().describe('Required; empty is rejected'),
+})
+
 /**
  * Spec for the `/role/:role/:id` lookups, which are identical apart from the role.
  * Both return a BARE JSON boolean rather than an object — the client reads the whole

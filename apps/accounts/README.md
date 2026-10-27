@@ -20,7 +20,9 @@ worker; this worker binds it read/write.
 | GET    | `/accountprivacysettings/:id`  |      | An account's privacy settings                    |
 | PUT    | `/account/me/displayname`      | ✓    | Set display name                                 |
 | PUT    | `/account/me/username`         | ✓    | Change username (unique + change remaining)      |
-| POST   | `/account/me/email`            | ✓    | Set email                                        |
+| POST   | `/account/me/email`            | ✓    | Change email: stages it; codes to old, then new  |
+| GET    | `/account/me/email/pending`    | ✓    | The email change awaiting a code, and which      |
+| POST   | `/account/me/email/confirm`    | ✓    | Spend a code; the new address's one applies it   |
 | POST   | `/account/me/phone`            | ✓    | Set phone number                                 |
 | PUT    | `/account/me/identityflags`    | ✓    | Set identity flags bitmask                       |
 | PUT    | `/account/me/personalpronouns` | ✓    | Set personal pronouns (posted as `pronounFlags`) |

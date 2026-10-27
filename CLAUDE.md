@@ -312,6 +312,18 @@ inconsistency here without checking the client first.
   cannot name the file (its decoder wants `UnityAsset`/`UnityAssetHash`), and the room loads
   nothing. Every imported first-party room broke when the splice moved from the Studio-only
   table to `unity_asset`, with every response looking correct.
+- "Forgot password" (`auth`: `POST /account/recoverpassword`) posts only `email`, and the client
+  reads the PascalCase envelope `{ Success, Error, error_id }` — `Error` and `error_id` null on
+  success — not the lowercase `{ success, error }` the password change answers in. The address is
+  all the server gets, so an email is UNIQUE across accounts (`idx_account_email_lower`, enforced
+  by `accounts` `POST /account/me/email`). The recovery finishes on the WEBSITE
+  (`/reset-password`, posting `auth` `POST /account/resetpassword`): the game has no screen for it.
+- Setting the email (`accounts`: `POST /account/me/email`) STAGES the address and still answers
+  `{ success: true }` — the game reads nothing else — while `/account/me` keeps serving the old
+  one until the emailed codes come back through `…/email/confirm` (website only, `/confirm-email`).
+  Two steps: the CURRENT address approves first (so a stolen session can't move the recovery
+  address), then the NEW address confirms itself (so a typo is never stored); an account with no
+  email gets only the second, and may re-enter a different address at any time.
 - Accessibility is sent as the `RoomAccessibility` enum NAME on
   `rooms` `PUT /rooms/:id/subrooms/:sid/accessibility` (`accessibility=Private`), not the
   ordinal the room-level `/rooms/:id/accessibility` takes. The enum has five members

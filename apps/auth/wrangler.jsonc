@@ -46,6 +46,15 @@
 			"secret_name": "META_APP_SECRET"
 		}
 	],
+	// Cloudflare Email Sending, for the password-recovery code (POST /account/recoverpassword).
+	// Nothing to splice in: the binding has no id, but the `from` domain (EMAIL_FROM, default
+	// no-reply@<DOMAIN>) has to be enabled for Email Sending once per account — see DEPLOYING.md.
+	// Locally (and under vitest) the binding logs the message rather than sending it.
+	"send_email": [
+		{
+			"name": "EMAIL"
+		}
+	],
 	"upload_source_maps": true,
 	"observability": {
 		"enabled": false

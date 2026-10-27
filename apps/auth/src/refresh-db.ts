@@ -99,3 +99,17 @@ export async function consumeRefreshToken(db: D1Database, token: string): Promis
 	if (!row || row.expiresAt < now) return null
 	return row.accountId
 }
+
+/**
+ * Revoke every refresh token the account holds — after a password RESET, so whoever had
+ * the old password is signed out everywhere once the owner takes the account back. Access
+ * tokens already issued run out on their own (TOKEN_TTL_SECONDS); nothing can recall a
+ * stateless JWT. Returns how many were revoked.
+ */
+export async function revokeRefreshTokens(db: D1Database, accountId: number): Promise<number> {
+	const { meta } = await db
+		.prepare('DELETE FROM refresh_tokens WHERE account_id = ?1')
+		.bind(accountId)
+		.run()
+	return meta.changes
+}

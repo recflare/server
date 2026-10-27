@@ -37,12 +37,25 @@
 			"secret_name": "JWT_SECRET"
 		}
 	],
+	// Cloudflare Email Sending, for the code that confirms an email change
+	// (POST /account/me/email). Nothing to splice in: the binding has no id, but the `from`
+	// domain (EMAIL_FROM, default no-reply@<DOMAIN>) has to be enabled for Email Sending once
+	// per account — see DEPLOYING.md. Locally (and under vitest) the binding logs the message.
+	"send_email": [
+		{
+			"name": "EMAIL"
+		}
+	],
 	"upload_source_maps": true,
 	"observability": {
 		"enabled": false
 	},
 	"vars": {
 		"ENVIRONMENT": "development", // overridden during deployment
-		"SENTRY_RELEASE": "unknown" // overridden during deployment
+		"SENTRY_RELEASE": "unknown", // overridden during deployment
+		// Overridden at deploy time, same as `auth`. The confirmation email's link is built
+		// from these (`https://www.<DOMAIN>/confirm-email`).
+		"DOMAIN": "rec.example.com",
+		"SUBDOMAINS": "{}"
 	}
 }

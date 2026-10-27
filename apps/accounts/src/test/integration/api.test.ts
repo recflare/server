@@ -4,7 +4,7 @@ import { beforeAll, describe, expect, test } from 'vitest'
 
 import '../../accounts.app'
 
-import { SCHEMA_DDL } from '@repo/domain'
+import { EMAIL_CODE_SCHEMA_DDL, hashPassword, SCHEMA_DDL } from '@repo/domain'
 
 import { WHITELISTED_EMOJIS } from '../../whitelisted-emojis'
 
@@ -22,6 +22,8 @@ beforeAll(async () => {
 	// Seed the shared JWT signing key into the local Secrets Store so .get() resolves.
 	await adminSecretsStore(env.JWT_SECRET).create('test-signing-key')
 	for (const stmt of SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	// The codes an email change is confirmed with (owned by `auth`'s migrations).
+	for (const stmt of EMAIL_CODE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	const insert = env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
 	await env.DB.batch([
 		insert.bind(JSON.stringify({ accountId: 0, username: 'RecRoom', displayName: 'Rec Room' })),
@@ -668,18 +670,249 @@ describe('auth-gated endpoints', () => {
 		expect(res.status).toBe(400)
 	})
 
-	test('POST /account/me/email persists the email, surfaced by /account/me', async () => {
-		const res = await exports.default.fetch(`${ORIGIN}/account/me/email`, {
-			...form({ email: 'ners@recroom.com' }),
+	/** POST an address for an account, as the website and the game do. */
+	const postEmail = async (id: string, email: string) =>
+		exports.default.fetch(`${ORIGIN}/account/me/email`, {
+			...form({ email }),
 			method: 'POST',
-			headers: { ...(await bearer('888')), 'Content-Type': 'application/x-www-form-urlencoded' },
+			headers: { ...(await bearer(id)), 'Content-Type': 'application/x-www-form-urlencoded' },
 		})
+	/** POST a code to confirm the account's staged change. */
+	const confirmEmail = async (id: string, code: string) =>
+		exports.default.fetch(`${ORIGIN}/account/me/email/confirm`, {
+			...form({ code }),
+			method: 'POST',
+			headers: { ...(await bearer(id)), 'Content-Type': 'application/x-www-form-urlencoded' },
+		})
+	const pendingEmail = async (id: string) =>
+		(await (
+			await exports.default.fetch(`${ORIGIN}/account/me/email/pending`, {
+				headers: await bearer(id),
+			})
+		).json()) as { pending: string | null; sentTo: string | null }
+	const emailOf = async (id: string) =>
+		(
+			(await (
+				await exports.default.fetch(`${ORIGIN}/account/me`, { headers: await bearer(id) })
+			).json()) as { email: string }
+		).email
+	type Purpose = 'email_change' | 'email_verify'
+	/** The staged step's row. Only the code's hash is stored; `plantCode` puts a known one in. */
+	const stagedRow = (id: string, purpose: Purpose) =>
+		env.DB.prepare(
+			'SELECT code_hash AS codeHash, payload, created_at AS createdAt FROM email_code WHERE account_id = ?1 AND purpose = ?2'
+		)
+			.bind(Number(id), purpose)
+			.first<{ codeHash: string | null; payload: string; createdAt: number }>()
+	const plantCode = async (id: string, purpose: Purpose, code: string) => {
+		await env.DB.prepare(
+			'UPDATE email_code SET code_hash = ?2 WHERE account_id = ?1 AND purpose = ?3'
+		)
+			.bind(Number(id), await hashPassword(code), purpose)
+			.run()
+	}
+	/** Set an address the way a player does, through every step the account needs. */
+	const setEmail = async (id: string, email: string) => {
+		const staged = await postEmail(id, email)
+		if (staged.status !== 200) return staged
+		if ((await pendingEmail(id)).sentTo !== email) {
+			await plantCode(id, 'email_change', '100000')
+			const approved = await confirmEmail(id, '100000')
+			if (approved.status !== 200) return approved
+		}
+		await plantCode(id, 'email_verify', '100001')
+		return confirmEmail(id, '100001')
+	}
+
+	test('POST /account/me/email on an account with no address: one code, to the new address', async () => {
+		const res = await postEmail('888', 'ners@recroom.com')
 		expect(res.status).toBe(200)
 		expect(await res.json()).toEqual({ success: true })
 
-		// The stored email is now returned by the self account (was a null stub).
-		const me = await exports.default.fetch(`${ORIGIN}/account/me`, { headers: await bearer('888') })
-		expect(((await me.json()) as { email: string }).email).toBe('ners@recroom.com')
+		// Staged, not applied: the self account still has no email, and the pending read says
+		// where the code went — the NEW address, since there is nobody else to ask.
+		expect(await emailOf('888')).toBe('')
+		expect(await pendingEmail('888')).toEqual({
+			pending: 'ners@recroom.com',
+			sentTo: 'ners@recroom.com',
+		})
+		const row = await stagedRow('888', 'email_verify')
+		expect(row?.payload).toBe('ners@recroom.com')
+		expect(row?.codeHash).toMatch(/^[^:]+:[^:]+$/)
+		expect(await stagedRow('888', 'email_change')).toBeNull()
+
+		await plantCode('888', 'email_verify', '123456')
+		const ok = await confirmEmail('888', '123456')
+		expect(ok.status).toBe(200)
+		expect(await ok.json()).toEqual({ success: true, applied: true, pending: null, sentTo: null })
+		expect(await emailOf('888')).toBe('ners@recroom.com')
+		expect(await pendingEmail('888')).toEqual({ pending: null, sentTo: null })
+
+		// Spent: the same code again is refused.
+		expect((await confirmEmail('888', '123456')).status).toBe(400)
+	})
+
+	test('with no address on file, a mistyped address can be replaced at once; the same one waits', async () => {
+		await postEmail('892', 'typo@exmaple.com')
+		const first = await stagedRow('892', 'email_verify')
+
+		// A DIFFERENT address right away: a fresh code, to it.
+		expect((await postEmail('892', 'right@example.com')).status).toBe(200)
+		const second = await stagedRow('892', 'email_verify')
+		expect(second?.payload).toBe('right@example.com')
+		expect(second?.codeHash).not.toBe(first?.codeHash)
+		expect((await pendingEmail('892')).sentTo).toBe('right@example.com')
+
+		// The SAME address again within the cooldown is a repeat, and refused.
+		const repeat = await postEmail('892', 'right@example.com')
+		expect(repeat.status).toBe(400)
+		expect(((await repeat.json()) as { error: string }).error).toMatch(/less than two minutes/)
+		expect(await stagedRow('892', 'email_verify')).toEqual(second)
+	})
+
+	test('with an address on file, the current address approves and then the new one confirms', async () => {
+		expect((await setEmail('889', 'first@example.com')).status).toBe(200)
+		expect(await emailOf('889')).toBe('first@example.com')
+
+		// Step 1: the code goes to the address being given up, not the new one.
+		expect((await postEmail('889', 'second@example.com')).status).toBe(200)
+		expect(await pendingEmail('889')).toEqual({
+			pending: 'second@example.com',
+			sentTo: 'first@example.com',
+		})
+		expect(await stagedRow('889', 'email_verify')).toBeNull()
+		expect(await emailOf('889')).toBe('first@example.com')
+
+		// Approving it applies nothing yet: step 2's code goes to the new address.
+		await plantCode('889', 'email_change', '111111')
+		const approved = await confirmEmail('889', '111111')
+		expect(approved.status).toBe(200)
+		expect(await approved.json()).toEqual({
+			success: true,
+			applied: false,
+			pending: 'second@example.com',
+			sentTo: 'second@example.com',
+		})
+		expect(await stagedRow('889', 'email_change')).toBeNull()
+		expect(await pendingEmail('889')).toEqual({
+			pending: 'second@example.com',
+			sentTo: 'second@example.com',
+		})
+		expect(await emailOf('889')).toBe('first@example.com')
+
+		// Step 2 lands it.
+		await plantCode('889', 'email_verify', '222222')
+		const done = await confirmEmail('889', '222222')
+		expect(await done.json()).toEqual({ success: true, applied: true, pending: null, sentTo: null })
+		expect(await emailOf('889')).toBe('second@example.com')
+	})
+
+	test('a wrong code at either step voids the change; a new attempt starts again at step 1', async () => {
+		expect((await setEmail('893', 'keep@example.com')).status).toBe(200)
+
+		// Wrong at step 1: burned, and the right code no longer works.
+		await postEmail('893', 'next@example.com')
+		await plantCode('893', 'email_change', '333333')
+		const wrong = await confirmEmail('893', '999999')
+		expect(wrong.status).toBe(400)
+		expect(await wrong.json()).toEqual({
+			success: false,
+			error: 'That code is wrong or has expired. Save the address again to be sent a new one.',
+		})
+		expect((await stagedRow('893', 'email_change'))?.codeHash).toBeNull()
+		expect(await pendingEmail('893')).toEqual({ pending: null, sentTo: null })
+		expect((await confirmEmail('893', '333333')).status).toBe(400)
+
+		// Past the cooldown, try again: step 1 again, then wrong at step 2.
+		await env.DB.prepare(
+			"UPDATE email_code SET created_at = created_at - 600 WHERE account_id = 893 AND purpose = 'email_change'"
+		).run()
+		expect((await postEmail('893', 'next@example.com')).status).toBe(200)
+		await plantCode('893', 'email_change', '444444')
+		expect((await confirmEmail('893', '444444')).status).toBe(200)
+		await plantCode('893', 'email_verify', '555555')
+		expect((await confirmEmail('893', '000000')).status).toBe(400)
+		expect((await stagedRow('893', 'email_verify'))?.codeHash).toBeNull()
+		expect((await confirmEmail('893', '555555')).status).toBe(400)
+		expect(await emailOf('893')).toBe('keep@example.com')
+
+		// A fresh attempt (cooldown passed) starts at step 1 again, whatever the address: the
+		// current address has approved nothing yet.
+		await env.DB.prepare(
+			"UPDATE email_code SET created_at = created_at - 600 WHERE account_id = 893 AND purpose = 'email_change'"
+		).run()
+		expect((await postEmail('893', 'other@example.com')).status).toBe(200)
+		expect((await pendingEmail('893')).sentTo).toBe('keep@example.com')
+		expect(await stagedRow('893', 'email_verify')).toBeNull()
+	})
+
+	test('with an address on file, a second attempt within the cooldown is refused whatever the address, and re-saving the same address applies at once', async () => {
+		expect((await setEmail('890', 'cool@example.com')).status).toBe(200)
+		await postEmail('890', 'cooler@example.com')
+		const first = await stagedRow('890', 'email_change')
+		// A different new address is still the current inbox being written to: refused.
+		const again = await postEmail('890', 'coolest@example.com')
+		expect(again.status).toBe(400)
+		expect(((await again.json()) as { error: string }).error).toMatch(/less than two minutes/)
+		expect(await stagedRow('890', 'email_change')).toEqual(first)
+
+		// Re-saving the current address in another case: no code, applied directly.
+		expect((await postEmail('890', 'COOL@example.com')).status).toBe(200)
+		expect(await emailOf('890')).toBe('COOL@example.com')
+	})
+
+	test('POST /account/me/email/confirm refuses an empty code and a code with nothing staged', async () => {
+		const empty = await confirmEmail('891', '')
+		expect(empty.status).toBe(400)
+		const none = await confirmEmail('891', '123456')
+		expect(none.status).toBe(400)
+		expect(await none.json()).toEqual({
+			success: false,
+			error: 'That code is wrong or has expired. Save the address again to be sent a new one.',
+		})
+	})
+
+	test('the email routes 401 without a token', async () => {
+		const pending = await exports.default.fetch(`${ORIGIN}/account/me/email/pending`)
+		expect(pending.status).toBe(401)
+		// A well-formed body, so the refusal is for the missing token and not the form.
+		const confirm = await exports.default.fetch(`${ORIGIN}/account/me/email/confirm`, {
+			...form({ code: '123456' }),
+			method: 'POST',
+		})
+		expect(confirm.status).toBe(401)
+	})
+
+	test('POST /account/me/email refuses an address another account holds, case-insensitively', async () => {
+		expect((await setEmail('886', 'shared@example.com')).status).toBe(200)
+
+		// Another account, same address in different case: refused with a sentence the
+		// website shows — a 400 like the malformed-address refusal, but with a body.
+		const taken = await postEmail('887', 'Shared@Example.com')
+		expect(taken.status).toBe(400)
+		expect(await taken.json()).toEqual({
+			success: false,
+			error: 'That email address is already on another account.',
+		})
+		expect(await emailOf('887')).toBe('')
+
+		// The holder may save it again (a no-op), and may change case — no code either way.
+		expect((await postEmail('886', 'shared@example.com')).status).toBe(200)
+		expect((await postEmail('886', 'SHARED@example.com')).status).toBe(200)
+		expect(await emailOf('886')).toBe('SHARED@example.com')
+
+		// A change that was staged while the address was free is refused as it lands, if
+		// another account took the address meanwhile.
+		expect((await postEmail('887', 'contested@example.com')).status).toBe(200)
+		expect((await setEmail('886', 'contested@example.com')).status).toBe(200)
+		await plantCode('887', 'email_verify', '100002')
+		const late = await confirmEmail('887', '100002')
+		expect(late.status).toBe(400)
+		expect(((await late.json()) as { error: string }).error).toMatch(/already on another account/)
+
+		// Once the holder moves on, the address is free.
+		expect((await setEmail('886', 'moved@example.com')).status).toBe(200)
+		expect((await setEmail('887', 'shared@example.com')).status).toBe(200)
 	})
 
 	test('GET /openapi.json documents every route', async () => {
@@ -706,6 +939,7 @@ describe('auth-gated endpoints', () => {
 			'GET /',
 			'GET /account/bulk',
 			'GET /account/me',
+			'GET /account/me/email/pending',
 			'GET /account/search',
 			'GET /account/username/{name}',
 			'GET /account/{id}',
@@ -716,6 +950,7 @@ describe('auth-gated endpoints', () => {
 			'POST /account/bulk',
 			'POST /account/create',
 			'POST /account/me/email',
+			'POST /account/me/email/confirm',
 			'POST /account/me/phone',
 			'PUT /account/me/bannerimage',
 			'PUT /account/me/bio',
@@ -871,16 +1106,17 @@ describe('name, email and bio validation', () => {
 		}
 
 		// `someone@localhost` is in the ACCEPTED list on purpose: it's valid per the RFC,
-		// and an undeliverable address costs nothing here.
-		for (const email of [
+		// and an undeliverable address costs nothing here. One account per address: a second
+		// save on the same account within two minutes is refused for the cooldown, not the syntax.
+		for (const [i, email] of [
 			'someone@example.com',
 			'first.last+tag@mail.example.co.uk',
 			'someone@localhost',
-		]) {
+		].entries()) {
 			const res = await exports.default.fetch(`${ORIGIN}/account/me/email`, {
 				...form({ email }),
 				method: 'POST',
-				headers,
+				headers: await authed(`881${i}`),
 			})
 			expect(res.status, email).toBe(200)
 		}

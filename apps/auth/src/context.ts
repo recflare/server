@@ -19,6 +19,22 @@ export type Env = SharedHonoEnv & {
 	// offline, Meta logins are impossible without it, so an empty value fails those
 	// logins with a 500 rather than silently trusting the client's platform_id.
 	META_APP_SECRET: SecretsStoreSecret
+	/**
+	 * Cloudflare Email Sending (`send_email` in wrangler.jsonc). The one thing this worker
+	 * mails is the password-recovery code (`POST /account/recoverpassword`); `accounts` binds
+	 * the same for its email-change confirmation. The `from` address is `EMAIL_FROM` below
+	 * (read through `emailSender`), whose domain has to be onboarded onto Email Sending
+	 * (`wrangler email sending enable <domain>`, see DEPLOYING.md) or every send fails — which
+	 * the route reports to the player as the email not going out, and nothing else is affected.
+	 * Locally and in tests the binding logs the message instead of sending it.
+	 */
+	EMAIL: SendEmail
+	/**
+	 * The address recovery emails come from. Set for every worker from the root `.env`
+	 * (`RECFLARE_EMAIL_FROM`); unset means `no-reply@<DOMAIN>`. Its domain must be one Email
+	 * Sending has been enabled on — Cloudflare refuses a send from any other.
+	 */
+	EMAIL_FROM?: string
 	// Signup caps, both optional (see auth.app.ts for what each arm counts and why).
 	// Unset falls back to the DEFAULT_MAX_ACCOUNTS_* constants there; 0 disables that arm.
 	// Typed `string | number` because a var declared in wrangler.jsonc `vars` arrives as a

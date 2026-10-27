@@ -151,6 +151,25 @@ string.
 wrangler secrets-store secret create <store-id> --name CLOUD_BUILD_KEY --scopes workers --remote
 ```
 
+**Enable Email Sending** for the domain, so the workers can send the two emails they have:
+`auth`'s password-recovery code ("Forgot password" in the game sends a six-digit code to
+the address on the account, with a link to `www.<domain>/reset-password`) and `accounts`'
+email-change confirmation (changing the address on an account sends a code to the current
+address to approve it and then one to the new address to confirm it, each with a link to
+`www.<domain>/confirm-email`).
+Both workers bind Cloudflare Email Sending (`send_email` in their `wrangler.jsonc`, nothing
+to splice in), but Cloudflare only delivers from a domain that has been onboarded — once
+per account:
+
+```bash
+wrangler email sending enable <domain>
+```
+
+Emails come from `no-reply@<domain>`; set `RECFLARE_EMAIL_FROM` in `.env` to send from a
+different mailbox or domain (that one must be enabled instead). Without this step the
+workers still deploy and everything else works; a recovery request or an email change is
+answered with "the email could not be sent", and the failure is logged.
+
 Then apply the schema. `just migrate` will set up the database and populate it with data. This runs non-interactively, so be careful!
 
 ```bash

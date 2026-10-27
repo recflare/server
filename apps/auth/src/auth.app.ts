@@ -4,11 +4,16 @@ import { useWorkersLogger } from 'workers-tagged-logger'
 import { z } from 'zod'
 
 import {
+	beginEmailCode,
+	completeEmailCode,
 	countAccountsByDeviceId,
 	countAccountsBySignupIp,
 	createAccount,
+	EMAIL_CODE_TTL_SECONDS,
+	emailSender,
 	GAME_VERSION,
 	getAccount,
+	getAccountByEmail,
 	getAccountByUsername,
 	getAccountsByIds,
 	getPasswordHash,
@@ -16,6 +21,7 @@ import {
 	hashPassword,
 	isRolloutGameVersion,
 	isSupportedGameVersion,
+	isValidEmail,
 	rolloutGameBuilds,
 	RoomInstanceType,
 	setLastLoginTime,
@@ -63,6 +69,9 @@ import {
 	OAuthError,
 	PlatformIdsRequest,
 	PlatformType,
+	RecoverPasswordRequest,
+	RecoverPasswordResponse,
+	ResetPasswordRequest,
 	RestrictionDto,
 	roleFilter,
 	roleLookup,
@@ -80,7 +89,8 @@ import {
 	linkPlatformIdentity,
 	parseRoleIdList,
 } from './platform-db'
-import { consumeRefreshToken, issueRefreshToken } from './refresh-db'
+import { recoveryEmail } from './recovery-email'
+import { consumeRefreshToken, issueRefreshToken, revokeRefreshTokens } from './refresh-db'
 import { verifySteamTicket } from './steam-ticket'
 import {
 	approveDeviceGrant,
@@ -1823,6 +1833,158 @@ const app = new Hono<App>()
 
 			const ok = await setPasswordHash(c.env.DB, id, await hashPassword(newPassword))
 			if (!ok) return c.body(null, 404)
+			return c.json({ success: true })
+		}
+	)
+
+	// "Forgot password" — the game posts the address on the account and nothing else, so the
+	// address is how the account is found (which is why it is unique across accounts). A
+	// six-digit code is emailed, typed out and prefilled into a link to the website's
+	// `/reset-password` page, where the new password is chosen (`/account/resetpassword`
+	// below): the game has no screen to finish a recovery on.
+	//
+	// Unauthenticated, and so answered the same way whether or not the address is on an
+	// account: `Success: true`, "we've sent an email if there is one". The route is otherwise
+	// a way to ask which addresses have accounts here. The refusals it does voice are the
+	// ones the player can act on — no address, a malformed one, the mail not going out —
+	// in the client's PascalCase `{ Success, Error, error_id }` envelope, which is the one
+	// shape it has been seen to read for this route. See @repo/domain's email-code-db.ts for the code's
+	// rules (one attempt, a cooldown on resends, a 30-minute life).
+	.post(
+		'/account/recoverpassword',
+		describeRoute({
+			tags: ['Account'],
+			summary: 'Email a password-recovery code',
+			description: [
+				'Emails a six-digit code to the address, with a link to the website’s reset page',
+				'(`/reset-password?email=…&code=…`) where the new password is chosen via',
+				'`POST /account/resetpassword`. Answers `Success: true` whether or not the address',
+				'is on an account, so the route can’t be used to find out which addresses are.',
+				'A new request replaces the pending code; one is sent per address at most every',
+				'two minutes. The code works once: a wrong guess voids it and the recovery has to',
+				'be requested again. Refusals — no address, a malformed one, the email failing to',
+				'send — are `Success: false` with the reason in `Error`.',
+			].join(' '),
+			requestBody: form(RecoverPasswordRequest, 'The address on the account'),
+			responses: {
+				200: json(RecoverPasswordResponse, 'Sent, or nothing to send to; `Error` says if not'),
+			},
+		}),
+		async (c) => {
+			const body = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>)
+			const email = typeof body.email === 'string' ? body.email.trim() : ''
+			const refuse = (error: string) => c.json({ Success: false, Error: error, error_id: null })
+			if (email === '') return refuse('Enter the email address on your account.')
+			if (!isValidEmail(email)) return refuse("That doesn't look like an email address.")
+
+			const account = await getAccountByEmail(c.env.DB, email)
+			if (account === null) {
+				// Answered exactly like a sent email, see above. Logged, since a run of these
+				// from one place is somebody probing.
+				logger.info('password recovery requested for an address on no account')
+				return c.json({ Success: true, Error: null, error_id: null })
+			}
+
+			const code = await beginEmailCode(c.env.DB, 'password_reset', account.accountId)
+			if (code === null) {
+				logger.info('password recovery re-requested within the cooldown; not resent', {
+					accountId: account.accountId,
+				})
+				return c.json({ Success: true, Error: null, error_id: null })
+			}
+
+			const message = recoveryEmail({
+				// The stored address, not the posted one: same account either way (the lookup
+				// is case-insensitive), and the stored one is the one the player chose to be
+				// reached at.
+				to: account.email ?? email,
+				from: emailSender(c.env),
+				domain: c.env.DOMAIN,
+				www: buildEndpoints(c.env.DOMAIN, c.env.SUBDOMAINS).WWW,
+				code,
+				validMinutes: Math.round(EMAIL_CODE_TTL_SECONDS / 60),
+			})
+			try {
+				await c.env.EMAIL.send(message)
+			} catch (err) {
+				// Told to the player: they would otherwise wait on an email that is never
+				// coming. The usual cause is the sender's domain not being enabled for Email
+				// Sending (see DEPLOYING.md), which is an operator's problem, hence the log.
+				logger.error('could not send the password recovery email', {
+					accountId: account.accountId,
+					error: err instanceof Error ? err.message : String(err),
+				})
+				return refuse('The recovery email could not be sent. Please try again later.')
+			}
+			logger.info('password recovery email sent', { accountId: account.accountId })
+			return c.json({ Success: true, Error: null, error_id: null })
+		}
+	)
+
+	// The other half: the website's `/reset-password` page posts the address, the code from
+	// the email and the new password. Unauthenticated — the code IS the credential. A wrong
+	// code voids the pending recovery (one guess per email), and the refusal reads the same
+	// whether the code was wrong, lapsed or never issued, so nothing here says whether a
+	// recovery is in flight for an address. Success sets the password and signs the account
+	// out everywhere else by revoking its refresh tokens. This is our own route, not the
+	// client's: the game never calls it, so it answers in the `{ success, error }` shape the
+	// website's other forms read.
+	.post(
+		'/account/resetpassword',
+		describeRoute({
+			tags: ['Account'],
+			summary: 'Finish a password recovery with the emailed code',
+			description: [
+				'Sets the password of the account under `email` when `code` is the one its recovery',
+				'email carried. Unauthenticated; the code is the credential, and it works ONCE — a',
+				'wrong code voids the recovery, and `POST /account/recoverpassword` has to be posted',
+				'again for a new one. The refusal is the same sentence whether the code was wrong,',
+				'has lapsed (30 minutes) or was never issued. On success the account’s refresh',
+				'tokens are revoked, so other sessions sign out. Posted by the website’s',
+				'`/reset-password` page, never by the game.',
+			].join(' '),
+			requestBody: form(ResetPasswordRequest, 'Address, emailed code and the new password'),
+			responses: {
+				200: json(ChangePasswordResponse, 'Password set'),
+				400: json(
+					ChangePasswordResponse,
+					'Missing field, or the code is wrong, lapsed or not issued (`error` says which, if the player can act on it)'
+				),
+			},
+		}),
+		async (c) => {
+			const body = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>)
+			const email = typeof body.email === 'string' ? body.email.trim() : ''
+			const code = typeof body.code === 'string' ? body.code.trim() : ''
+			const newPassword = typeof body.newPassword === 'string' ? body.newPassword : ''
+			const refuse = (error: string) => c.json({ success: false, error }, 400)
+			if (email === '') return refuse('Enter the email address the code was sent to.')
+			if (code === '') return refuse('Enter the code from the email.')
+			if (newPassword === '') return refuse('You must enter a new password.')
+
+			const WRONG_CODE =
+				'That code is wrong or has expired. Request a new recovery email and try again.'
+			const account = await getAccountByEmail(c.env.DB, email)
+			if (account === null) {
+				logger.info('password reset posted for an address on no account')
+				return refuse(WRONG_CODE)
+			}
+
+			const { outcome } = await completeEmailCode(
+				c.env.DB,
+				'password_reset',
+				account.accountId,
+				code
+			)
+			if (outcome !== 'ok') {
+				logger.info('password reset refused', { accountId: account.accountId, outcome })
+				return refuse(WRONG_CODE)
+			}
+
+			const ok = await setPasswordHash(c.env.DB, account.accountId, await hashPassword(newPassword))
+			if (!ok) return c.body(null, 404)
+			const revoked = await revokeRefreshTokens(c.env.DB, account.accountId)
+			logger.info('password reset by email', { accountId: account.accountId, revoked })
 			return c.json({ success: true })
 		}
 	)

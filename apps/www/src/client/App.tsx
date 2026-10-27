@@ -584,12 +584,54 @@ const saveEmail = (email: string): Promise<unknown> =>
 		refusal: 'That email address looks wrong.',
 	})
 
+/**
+ * The email change awaiting a code, if any: `saveEmail` STAGES the address and `accounts`
+ * emails six-digit codes — first to the current address when there is one (so a stolen
+ * session can't move it), then to the new one (so a typo is never stored). `sentTo` says
+ * which step this is. Each code is spent with {@link confirmEmail}. This read is what lets
+ * the form show the code step after a reload, or right after signup.
+ */
+interface PendingEmail {
+	pending: string | null
+	sentTo: string | null
+}
+const fetchPendingEmail = (): Promise<PendingEmail> =>
+	call<PendingEmail>(`${where().accounts}/account/me/email/pending`, { authed: true })
+
+/**
+ * Spend the code from the email. One try per code. `applied` false means the current address
+ * has approved and a second code is now out to the new one, which `pending`/`sentTo` name.
+ */
+const confirmEmail = (code: string): Promise<PendingEmail & { applied: boolean }> =>
+	call<PendingEmail & { applied: boolean }>(`${where().accounts}/account/me/email/confirm`, {
+		form: { code },
+		authed: true,
+	})
+
 /** Change the account's password. Lives on `auth`, not `accounts`. */
 const changePassword = (oldPassword: string, newPassword: string): Promise<unknown> =>
 	call(`${where().auth}/account/me/changepassword`, {
 		form: { oldPassword, newPassword },
 		authed: true,
 	})
+
+/**
+ * "Forgot password": ask `auth` to email a recovery code to the address. The same route the
+ * game posts, so it answers in the client's PascalCase envelope — and a refusal is a 200
+ * with `Success: false`, which `call` doesn't throw on, hence the check here. `Success: true`
+ * says nothing about whether the address is on an account; the page's copy allows for that.
+ */
+const recoverPassword = async (email: string): Promise<void> => {
+	const r = await call<{ Success: boolean; Error: string | null }>(
+		`${where().auth}/account/recoverpassword`,
+		{ form: { email } }
+	)
+	if (!r.Success) throw new Error(r.Error || 'The recovery email could not be sent.')
+}
+
+/** Finish the recovery: the address, the code from the email, and the password to set. */
+const resetPassword = (email: string, code: string, newPassword: string): Promise<unknown> =>
+	call(`${where().auth}/account/resetpassword`, { form: { email, code, newPassword } })
 
 /** Where this account's benefits stand: `www` reads them off the account row. */
 interface BenefitsStatus {
@@ -2463,6 +2505,21 @@ export function App() {
 					navigate={navigate}
 					onAuthed={setAccount}
 				/>
+			) : path === '/confirm-email' ? (
+				// Where the email-change confirmation's link lands (`?code=…`). Wants the
+				// account's own session — the code approves the change, the session says whose —
+				// so a signed-out visitor is sent through sign-in and back.
+				<ConfirmEmailPage
+					account={account}
+					search={search}
+					navigate={navigate}
+					onChange={setAccount}
+				/>
+			) : path === '/reset-password' ? (
+				// Where the recovery email's link lands (`?email=…&code=…`), and where "Forgot
+				// your password?" on the sign-in page goes. Needs no session — the emailed code
+				// is the credential — and a client-side route like the rest.
+				<ResetPasswordPage search={search} navigate={navigate} />
 			) : path === '/device' ? (
 				// Studio opens this from verification_uri_complete. The code was minted by
 				// auth; this page only approves it with the website session.
@@ -2959,6 +3016,11 @@ function LoginPage({
 							your Steam ID — set a password on it and it signs in here too.
 						</p>
 						<LoginForm onAuthed={authed} />
+						<p className="muted swap">
+							<Link to="/reset-password" navigate={navigate}>
+								Forgot your password?
+							</Link>
+						</p>
 						{/* The other door. Shown on the server's say-so like the signup tab: the URL is
 						    null until the Discord app is configured. `next` rides along through Discord in
 						    sessionStorage, since the round trip drops the query. */}
@@ -2989,6 +3051,277 @@ function LoginPage({
 								</Link>
 							</p>
 						)}
+					</>
+				)}
+			</section>
+		</main>
+	)
+}
+
+/**
+ * `/confirm-email` — where the email-change emails' links land, with the code in the query.
+ * The code approves a step and the account's own session says whose, so this wants a
+ * sign-in: a signed-out visitor goes through `/login` and comes back here. The account
+ * page's email card does the same thing without the link; this page exists so the emails
+ * have somewhere to point. Both steps' emails point here: after the current address
+ * approves, the page waits for the new address's code.
+ */
+function ConfirmEmailPage({
+	account,
+	search,
+	navigate,
+	onChange,
+}: {
+	account: SelfAccount | null | undefined
+	search: string
+	navigate: Navigate
+	onChange: (a: SelfAccount) => void
+}) {
+	const [code, setCode] = useState(new URLSearchParams(search).get('code') ?? '')
+	const [pending, setPending] = useState<PendingEmail | null | undefined>(undefined)
+	const [approved, setApproved] = useState('')
+	const { pending: busy, error, done, run } = useAction()
+
+	useEffect(() => {
+		if (account === null) navigate(`/login?next=${encodeURIComponent(`/confirm-email${search}`)}`)
+	}, [account, navigate, search])
+
+	useEffect(() => {
+		if (!account) return
+		fetchPendingEmail()
+			.then((p) => setPending(p.pending === null ? null : p))
+			.catch(() => setPending(null))
+	}, [account])
+
+	if (!account) return null
+	return (
+		<main className="shell">
+			<section className="card">
+				<h2>Confirm your email change</h2>
+				{done ? (
+					<>
+						<p className="ok">{done}</p>
+						<p className="muted swap">
+							<Link to="/account" navigate={navigate}>
+								Back to your account
+							</Link>
+						</p>
+					</>
+				) : pending === null ? (
+					<>
+						<p className="muted">
+							No email change is waiting on <strong>@{account.username}</strong>. It may already be
+							confirmed, or the code may have lapsed or been used — save the address again from your
+							account page for a new one.
+						</p>
+						<p className="muted swap">
+							<Link to="/account" navigate={navigate}>
+								Go to your account
+							</Link>
+						</p>
+					</>
+				) : (
+					<form
+						onSubmit={(e) => {
+							e.preventDefault()
+							void run(async () => {
+								const next = await confirmEmail(code.trim())
+								if (!next.applied) {
+									// Step 1 done; the second code's email links back here too. Not
+									// `done`: the page stays on the form for that code.
+									setPending(next)
+									setCode('')
+									setApproved(
+										`Approved. A second code was emailed to ${next.sentTo} — enter it here, or follow that email's link.`
+									)
+									return ''
+								}
+								const applied = pending?.pending ?? ''
+								onChange({ ...account, email: applied })
+								return `Your account's email is now ${applied}.`
+							})
+						}}
+					>
+						{pending && (
+							<p className="muted">
+								Changing <strong>@{account.username}</strong>&apos;s email to{' '}
+								<strong>{pending.pending}</strong>. Enter the code sent to{' '}
+								<strong>{pending.sentTo}</strong>. It works once: a wrong code voids the change.
+								{pending.sentTo !== pending.pending &&
+									' Once approved, a second code goes to the new address.'}
+							</p>
+						)}
+						{approved && <p className="ok">{approved}</p>}
+						<label>
+							Code
+							<input
+								type="text"
+								inputMode="numeric"
+								pattern="[0-9]{6}"
+								value={code}
+								autoComplete="one-time-code"
+								onChange={(e) => setCode(e.target.value)}
+								required
+							/>
+						</label>
+						{error && <p className="error">{error}</p>}
+						<button type="submit" disabled={busy || pending === undefined}>
+							{busy ? 'Confirming…' : 'Confirm'}
+						</button>
+					</form>
+				)}
+			</section>
+		</main>
+	)
+}
+
+/**
+ * `/reset-password` — password recovery, both halves. With no code in the query it asks for
+ * the email address on the account and has `auth` send the code; with one (the email's link
+ * carries both the address and the code) it asks for the new password and posts the three
+ * together. Whoever typed the code by hand, or asked for the email here and then read it,
+ * switches to the second form with the link under the first.
+ *
+ * The code is spent by ONE attempt, right or wrong — `auth` voids the recovery on a wrong
+ * code so it can't be guessed — so a refusal here points back at requesting a new email
+ * rather than inviting a retry of the code.
+ */
+function ResetPasswordPage({ search, navigate }: { search: string; navigate: Navigate }) {
+	const params = new URLSearchParams(search)
+	const [email, setEmail] = useState(params.get('email') ?? '')
+	const [code, setCode] = useState(params.get('code') ?? '')
+	const [newPassword, setNewPassword] = useState('')
+	// The link arrives with a code; a visitor from the sign-in page doesn't have one yet.
+	const [haveCode, setHaveCode] = useState(params.get('code') !== null)
+	const request = useAction()
+	const finish = useAction()
+
+	return (
+		<main className="shell">
+			<section className="card">
+				{haveCode ? (
+					<>
+						<h2>Choose a new password</h2>
+						<p className="muted">
+							Enter the six-digit code from the email and the password you want. The code works
+							once, for 30 minutes.
+						</p>
+						{finish.done ? (
+							<>
+								<p className="ok">{finish.done}</p>
+								<p className="muted swap">
+									<Link to="/login" navigate={navigate}>
+										Sign in
+									</Link>
+								</p>
+							</>
+						) : (
+							<form
+								onSubmit={(e) => {
+									e.preventDefault()
+									void finish.run(async () => {
+										await resetPassword(email.trim(), code.trim(), newPassword)
+										return 'Your password has been changed. Sign in with it here or in the game.'
+									})
+								}}
+							>
+								<label>
+									Email address
+									<input
+										type="email"
+										value={email}
+										autoComplete="email"
+										onChange={(e) => setEmail(e.target.value)}
+										required
+									/>
+								</label>
+								<label>
+									Code
+									<input
+										type="text"
+										inputMode="numeric"
+										pattern="[0-9]{6}"
+										value={code}
+										autoComplete="one-time-code"
+										onChange={(e) => setCode(e.target.value)}
+										required
+									/>
+								</label>
+								<label>
+									New password
+									<input
+										type="password"
+										value={newPassword}
+										autoComplete="new-password"
+										onChange={(e) => setNewPassword(e.target.value)}
+										required
+									/>
+								</label>
+								{finish.error && <p className="error">{finish.error}</p>}
+								<button type="submit" disabled={finish.pending}>
+									{finish.pending ? 'Saving…' : 'Set password'}
+								</button>
+							</form>
+						)}
+						{!finish.done && (
+							<p className="muted swap">
+								No code, or it stopped working?{' '}
+								<a
+									href="/reset-password"
+									onClick={(e) => {
+										e.preventDefault()
+										setHaveCode(false)
+									}}
+								>
+									Request a new email
+								</a>
+							</p>
+						)}
+					</>
+				) : (
+					<>
+						<h2>Reset your password</h2>
+						<p className="muted">
+							Enter the email address on your account. If there is an account under it, we&apos;ll
+							email you a six-digit code and a link to come back here.
+						</p>
+						<form
+							onSubmit={(e) => {
+								e.preventDefault()
+								void request.run(async () => {
+									await recoverPassword(email.trim())
+									return "If that address is on an account, an email is on its way. Check your inbox (and spam folder), then enter the code here or follow the email's link."
+								})
+							}}
+						>
+							<label>
+								Email address
+								<input
+									type="email"
+									value={email}
+									autoComplete="email"
+									onChange={(e) => setEmail(e.target.value)}
+									required
+								/>
+							</label>
+							{request.error && <p className="error">{request.error}</p>}
+							{request.done && <p className="ok">{request.done}</p>}
+							<button type="submit" disabled={request.pending}>
+								{request.pending ? 'Sending…' : 'Email me a code'}
+							</button>
+						</form>
+						<p className="muted swap">
+							Already have a code?{' '}
+							<a
+								href="/reset-password"
+								onClick={(e) => {
+									e.preventDefault()
+									setHaveCode(true)
+								}}
+							>
+								Enter it
+							</a>
+						</p>
 					</>
 				)}
 			</section>
@@ -4351,7 +4684,8 @@ function SignupForm({
 					// Saved with the new session's own token: `create_account` takes no email,
 					// `accounts` owns the field. Deliberately not fatal — the account exists and
 					// the session is live, and the same field is one call away on the account
-					// page.
+					// page. The address is STAGED, not set: `accounts` emails it a code, and the
+					// account page (where this lands) picks the pending change up and asks for it.
 					if (wanted !== '') await saveEmail(wanted).catch(() => {})
 
 					// The session is already stored, so a failure here isn't one they can act on
@@ -5391,18 +5725,43 @@ function EmailForm({
 	onChange: (a: SelfAccount) => void
 }) {
 	const [email, setEmail] = useState(account.email ?? '')
-	const { pending, error, done, run } = useAction()
+	// The change a code is out for, once `accounts` says so — asked on mount, so a reload
+	// (or arriving here straight from signup, which saved the address) resumes at the code.
+	const [pending, setPending] = useState<PendingEmail | null>(null)
+	const [code, setCode] = useState('')
+	const save = useAction()
+	const confirm = useAction()
+
+	useEffect(() => {
+		fetchPendingEmail()
+			.then((p) => setPending(p.pending === null ? null : p))
+			.catch(() => {})
+	}, [])
 
 	return (
 		<section className="card">
 			<h2>Email</h2>
+			<p className="muted">
+				Used to recover your password, so changing it takes a code at your current address to
+				approve it, then one at the new address to confirm it. With no address yet, just the second.
+			</p>
 			<form
 				onSubmit={(e) => {
 					e.preventDefault()
-					void run(async () => {
-						await saveEmail(email.trim())
-						onChange({ ...account, email })
-						return 'Email saved.'
+					void save.run(async () => {
+						const wanted = email.trim()
+						await saveEmail(wanted)
+						// Re-saving the current address applies at once; anything else is staged
+						// and `accounts` knows where the code went.
+						const now = await fetchPendingEmail().catch(() => null)
+						if (now === null || now.pending === null) {
+							onChange({ ...account, email: wanted })
+							setPending(null)
+							return 'Email saved.'
+						}
+						setPending(now)
+						setCode('')
+						return `A six-digit code was emailed to ${now.sentTo}. Enter it below.`
 					})
 				}}
 			>
@@ -5416,12 +5775,57 @@ function EmailForm({
 						required
 					/>
 				</label>
-				{error && <p className="error">{error}</p>}
-				{done && <p className="ok">{done}</p>}
-				<button type="submit" disabled={pending}>
-					{pending ? 'Saving…' : 'Save email'}
+				{save.error && <p className="error">{save.error}</p>}
+				{save.done && <p className="ok">{save.done}</p>}
+				<button type="submit" disabled={save.pending}>
+					{save.pending ? 'Saving…' : 'Save email'}
 				</button>
 			</form>
+			{pending && (
+				<form
+					onSubmit={(e) => {
+						e.preventDefault()
+						void confirm.run(async () => {
+							const next = await confirmEmail(code.trim())
+							setCode('')
+							if (!next.applied) {
+								// Step 1 done: the current address approved. Step 2's code is out.
+								setPending(next)
+								return `Approved. A second code was emailed to ${next.sentTo} — enter it to finish.`
+							}
+							const applied = pending.pending ?? ''
+							onChange({ ...account, email: applied })
+							setEmail(applied)
+							setPending(null)
+							return 'Email changed.'
+						})
+					}}
+				>
+					<p className="muted">
+						Changing to <strong>{pending.pending}</strong>. Enter the code sent to{' '}
+						<strong>{pending.sentTo}</strong> — it works once, for 30 minutes. Wrong code, or
+						mistyped the address? Save the address again for a new one.
+					</p>
+					<label>
+						Code
+						<input
+							type="text"
+							inputMode="numeric"
+							pattern="[0-9]{6}"
+							value={code}
+							autoComplete="one-time-code"
+							onChange={(e) => setCode(e.target.value)}
+							required
+						/>
+					</label>
+					{confirm.error && <p className="error">{confirm.error}</p>}
+					{confirm.done && <p className="ok">{confirm.done}</p>}
+					<button type="submit" disabled={confirm.pending}>
+						{confirm.pending ? 'Confirming…' : 'Confirm'}
+					</button>
+				</form>
+			)}
+			{!pending && confirm.done && <p className="ok">{confirm.done}</p>}
 		</section>
 	)
 }

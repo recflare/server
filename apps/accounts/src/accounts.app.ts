@@ -3,12 +3,19 @@ import { describeRoute, openAPIRouteHandler, validator } from 'hono-openapi'
 import { useWorkersLogger } from 'workers-tagged-logger'
 
 import {
+	beginEmailCode,
+	cancelEmailCode,
+	completeEmailCode,
 	createAccount,
 	DEFAULT_USERNAME_CHANGES,
 	defaultAccount,
+	EMAIL_CODE_TTL_SECONDS,
+	emailSender,
 	getAccount,
+	getAccountByEmail,
 	getAccountByUsername,
 	getAccountsByIds,
+	pendingEmailCode,
 	SEARCH_LIMIT,
 	searchAccounts,
 	updateAccount,
@@ -25,6 +32,8 @@ import { validateAndGetAccountId } from '@repo/jwt'
 // The notification-type ids the hub carries (owned by the `notify` worker). Imported as a
 // value — the enum has no runtime dependencies.
 import { NotificationType } from '../../notify/src/notification-types'
+import { buildEndpoints } from '../../ns/src/endpoints'
+import { emailChangeEmail } from './email-change-email'
 import {
 	AccountDto,
 	BannerImageRequest,
@@ -34,6 +43,9 @@ import {
 	CreateAccountRequest,
 	CreateAccountResult,
 	DisplayNameRequest,
+	EmailConfirmRequest,
+	EmailConfirmResponse,
+	EmailRefusal,
 	EmailRequest,
 	EmojiRequest,
 	form,
@@ -41,6 +53,7 @@ import {
 	IdentityFlagsRequest,
 	json,
 	ParentalControl,
+	PendingEmailResponse,
 	PhoneRequest,
 	PrivacySettings,
 	ProfileImageRequest,
@@ -240,6 +253,91 @@ async function pushAccountUpdate(c: Context<App>, account: Account): Promise<voi
 
 /** The empty-body 401 every auth-gated route returns; reused across their specs. */
 const UNAUTHORIZED_RESPONSE = { description: 'Missing or invalid bearer token (empty body)' }
+
+/** What the email routes say when the address is already on another account. */
+const EMAIL_TAKEN = 'That email address is already on another account.'
+
+/** What `POST /account/me/email/confirm` says to any code that doesn't take. */
+const EMAIL_CODE_WRONG =
+	'That code is wrong or has expired. Save the address again to be sent a new one.'
+
+/** What the email routes say to a repeat within the cooldown. */
+const EMAIL_TOO_SOON =
+	'A code was emailed less than two minutes ago. Enter that one, or try again in a minute.'
+
+/** What the email routes say when the mail service refused the send. */
+const EMAIL_NOT_SENT = 'The confirmation email could not be sent. Please try again later.'
+
+/** The account's current address, or null when it has none (absent or empty). */
+const currentEmail = (account: Account | null): string | null => account?.email?.trim() || null
+
+/**
+ * Send one of the email-change codes. False when the mail service refused it, in which case
+ * the code is dropped (cooldown included) — nothing went out, so nothing to wait on, and the
+ * player can try again at once. The usual cause is the sender's domain not being enabled for
+ * Email Sending (DEPLOYING.md): an operator's problem, hence the log.
+ */
+async function sendEmailCode(
+	c: Context<App>,
+	input: {
+		purpose: 'email_change' | 'email_verify'
+		to: string
+		code: string
+		newEmail: string
+		currentEmail: string | null
+	}
+): Promise<boolean> {
+	const id = (await authedId(c))!
+	const message = emailChangeEmail({
+		to: input.to,
+		from: emailSender(c.env),
+		domain: c.env.DOMAIN,
+		www: buildEndpoints(c.env.DOMAIN, c.env.SUBDOMAINS).WWW,
+		code: input.code,
+		newEmail: input.newEmail,
+		// Step 2's letter reads as "confirm this address" whether or not there is a current
+		// one: by then the current address has had its say.
+		currentEmail: input.purpose === 'email_change' ? input.currentEmail : null,
+		validMinutes: Math.round(EMAIL_CODE_TTL_SECONDS / 60),
+	})
+	try {
+		await c.env.EMAIL.send(message)
+	} catch (err) {
+		await cancelEmailCode(c.env.DB, input.purpose, id)
+		logger.error('could not send the email-change code', {
+			accountId: id,
+			purpose: input.purpose,
+			error: err instanceof Error ? err.message : String(err),
+		})
+		return false
+	}
+	logger.info('email-change code sent', { accountId: id, purpose: input.purpose })
+	return true
+}
+
+/** What `GET /account/me/email/pending` serves: the live step, if any. */
+async function pendingEmailChange(
+	c: Context<App>,
+	id: number
+): Promise<{ pending: string | null; sentTo: string | null }> {
+	const verify = await pendingEmailCode(c.env.DB, 'email_verify', id)
+	if (verify?.payload) return { pending: verify.payload, sentTo: verify.payload }
+	const change = await pendingEmailCode(c.env.DB, 'email_change', id)
+	if (change?.payload) {
+		const current = currentEmail(await getAccount(c.env.DB, id))
+		return { pending: change.payload, sentTo: current ?? change.payload }
+	}
+	return { pending: null, sentTo: null }
+}
+
+/**
+ * Whether a D1 error is the `idx_account_email_lower` UNIQUE index refusing a second holder
+ * of an address — two saves racing past the lookup. D1 surfaces SQLite's message verbatim.
+ */
+function isUniqueEmailViolation(err: unknown): boolean {
+	const message = err instanceof Error ? err.message : String(err)
+	return message.includes('UNIQUE constraint failed') && message.includes('email_lower')
+}
 
 /** Bearer-JWT security requirement, for the auth-gated routes. */
 const AUTHED = [{ bearerAuth: [] }]
@@ -631,18 +729,59 @@ const app = new Hono<App>()
 		}
 	)
 
-	// Set the player's email (persisted on the account row; surfaced by /account/me).
+	// Change the player's email — STAGED, not applied. An address belongs to one account and is
+	// what password recovery goes to, so moving it is the one profile change a stolen session
+	// must not be able to make alone. Two steps, each a six-digit code (@repo/domain's
+	// email-code-db.ts: one attempt, half an hour, and a cooldown on resends):
+	//
+	//  1. `email_change` — to the CURRENT address, when the account has one: its owner approves
+	//     giving it up. A stolen session can't pass this. Skipped for an account with no
+	//     confirmed address, which has nobody to ask.
+	//  2. `email_verify` — to the NEW address: proves it is reachable before it becomes the
+	//     recovery address, so a typo can never be stored. This is the step that applies the
+	//     change. Issued as step 1 is spent, or at once when there was no step 1.
+	//
+	// `/account/me` keeps serving the old address until step 2 lands. A player with NO address
+	// who mistypes one just enters another: a different address always gets a fresh code (the
+	// cooldown only refuses a repeat to the SAME address), since nothing confirmed is at stake.
+	// With a confirmed address, every new attempt starts again at step 1, and step 1's cooldown
+	// applies whatever the new address is — it is the current inbox being written to.
+	//
+	// The game posts this and reads `{ success: true }`, as it always did; it has no screen for
+	// the code, so the emails' links finish the change on the website. A same-address save (a
+	// case change, or re-saving what is there) applies at once — nothing to approve.
+	//
+	// An address another account holds (case-insensitively) is refused with a sentence in the
+	// body, which the website shows, where the malformed-address refusal is an empty 400. Same
+	// status for both: a 400 is what the game client is known to cope with on this route. The
+	// lookup is what the player reads; the UNIQUE index on `email_lower` is the backstop for a
+	// race, re-checked when the change is applied.
 	.post(
 		'/account/me/email',
 		describeRoute({
 			tags: ['Profile'],
-			summary: 'Set email',
-			description: 'Persisted; surfaced only by `/account/me`. Not broadcast.',
+			summary: 'Change email (sends a confirmation code)',
+			description: [
+				'STAGES the change. An account with a confirmed address is sent a six-digit code',
+				'THERE first (its owner approves the change); once that code is posted to',
+				'`POST /account/me/email/confirm`, a second code goes to the NEW address, and',
+				'posting that one applies the change. An account with no address gets only the',
+				'second step. Each email links to the website’s `/confirm-email` page.',
+				'`{ success: true }` means a code was sent. Re-saving the current address applies',
+				'at once. An address on another account (case-insensitive) is refused with',
+				'`{ success: false, error }`; so is a repeat within two minutes of the last code,',
+				'except that an account with no address may enter a DIFFERENT address at any time.',
+				'The malformed-address refusal has no body.',
+			].join(' '),
 			security: AUTHED,
 			responses: {
-				200: json(SuccessResponse, 'Updated'),
-				400: { description: 'Not a syntactically valid address (empty body)' },
+				200: json(SuccessResponse, 'Code sent (or the same address re-saved)'),
+				400: json(
+					EmailRefusal,
+					'Not a syntactically valid address (empty body), or already on another account / asked again too soon'
+				),
 				401: UNAUTHORIZED_RESPONSE,
+				502: json(EmailRefusal, 'The confirmation email could not be sent'),
 			},
 		}),
 		validator('form', EmailRequest, (r, c) => (r.success ? undefined : c.body(null, 400))),
@@ -650,8 +789,148 @@ const app = new Hono<App>()
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
 			const { email } = c.req.valid('form')
-			await updateAccount(c.env.DB, id, { email })
+			const taken = { success: false, error: EMAIL_TAKEN }
+			const holder = await getAccountByEmail(c.env.DB, email)
+			if (holder !== null && holder.accountId !== id) return c.json(taken, 400)
+
+			const current = currentEmail(await getAccount(c.env.DB, id))
+			if (current !== null && current.toLowerCase() === email.toLowerCase()) {
+				await updateAccount(c.env.DB, id, { email })
+				return c.json({ success: true })
+			}
+
+			let code: string | null
+			if (current === null) {
+				// Step 2 straight away. A different address than the one last staged is never
+				// a repeat, so it skips the cooldown — the typo case.
+				const staged = await pendingEmailCode(c.env.DB, 'email_verify', id)
+				code = await beginEmailCode(c.env.DB, 'email_verify', id, email, {
+					force: staged?.payload !== email,
+				})
+			} else {
+				// Step 1; a step 2 left over from an earlier attempt is voided, since the current
+				// address has not approved THIS one.
+				await cancelEmailCode(c.env.DB, 'email_verify', id)
+				code = await beginEmailCode(c.env.DB, 'email_change', id, email)
+			}
+			if (code === null) return c.json({ success: false, error: EMAIL_TOO_SOON }, 400)
+
+			const sent = await sendEmailCode(c, {
+				purpose: current === null ? 'email_verify' : 'email_change',
+				to: current ?? email,
+				code,
+				newEmail: email,
+				currentEmail: current,
+			})
+			if (!sent) return c.json({ success: false, error: EMAIL_NOT_SENT }, 502)
 			return c.json({ success: true })
+		}
+	)
+
+	// The change awaiting a code, for the website to pick up where it left off after a reload
+	// (and right after signup, which saves the address and lands on the account page).
+	.get(
+		'/account/me/email/pending',
+		describeRoute({
+			tags: ['Profile'],
+			summary: 'The email change awaiting confirmation',
+			description: [
+				'The address a code is out for, and where the code went — the current address while',
+				'it is approving the change, the new one while it is confirming itself — or nulls when',
+				'no change is in flight (none staged, or the code lapsed or was spent by a wrong guess).',
+			].join(' '),
+			security: AUTHED,
+			responses: {
+				200: json(PendingEmailResponse, 'The pending change, or nulls'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+			return c.json(await pendingEmailChange(c, id))
+		}
+	)
+
+	// Spend the pending code. The code is what approves the step; the session says whose. One
+	// guess: a wrong code voids the step (and the change), and the address has to be saved again.
+	// The refusal reads the same whether the code was wrong, lapsed or never issued. Which step
+	// is being confirmed follows from what is pending — only one ever is.
+	.post(
+		'/account/me/email/confirm',
+		describeRoute({
+			tags: ['Profile'],
+			summary: 'Confirm an email change step with the emailed code',
+			description: [
+				'Spends the code staged by `POST /account/me/email`. When it was the CURRENT address',
+				'approving the change, a second code is sent to the new address and `applied` is',
+				'false, with `pending`/`sentTo` saying so; when it was the new address confirming',
+				'itself, the change is applied and `applied` is true. The code works ONCE: a wrong one',
+				'voids the change. The refusal is the same sentence whether the code was wrong, has',
+				'lapsed (30 minutes) or was never issued. The address is re-checked against other',
+				'accounts as it lands.',
+			].join(' '),
+			security: AUTHED,
+			responses: {
+				200: json(EmailConfirmResponse, 'Step confirmed; `applied` says whether the change landed'),
+				400: json(
+					EmailRefusal,
+					'No code, a code that is wrong / lapsed / not issued, or an address another account took meanwhile'
+				),
+				401: UNAUTHORIZED_RESPONSE,
+				502: json(EmailRefusal, 'The second code’s email could not be sent'),
+			},
+		}),
+		validator('form', EmailConfirmRequest, (r, c) =>
+			r.success
+				? undefined
+				: c.json({ success: false, error: 'Enter the code from the email.' }, 400)
+		),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+			const { code } = c.req.valid('form')
+
+			// Step 2, if it is the one out; else step 1.
+			const verifying = (await pendingEmailCode(c.env.DB, 'email_verify', id)) !== null
+			const purpose = verifying ? 'email_verify' : 'email_change'
+			const result = await completeEmailCode(c.env.DB, purpose, id, code)
+			if (result.outcome !== 'ok' || !result.payload) {
+				logger.info('email change refused', { accountId: id, purpose, outcome: result.outcome })
+				return c.json({ success: false, error: EMAIL_CODE_WRONG }, 400)
+			}
+			const email = result.payload
+			const taken = { success: false, error: EMAIL_TAKEN }
+			const holder = await getAccountByEmail(c.env.DB, email)
+			if (holder !== null && holder.accountId !== id) return c.json(taken, 400)
+
+			if (!verifying) {
+				// The current address has approved; now the new one proves itself. Forced past the
+				// cooldown: step 1 just gated this, and the previous verify code (if any) went out
+				// at least a step-1 cooldown ago.
+				const next = await beginEmailCode(c.env.DB, 'email_verify', id, email, { force: true })
+				const sent =
+					next !== null &&
+					(await sendEmailCode(c, {
+						purpose: 'email_verify',
+						to: email,
+						code: next,
+						newEmail: email,
+						currentEmail: currentEmail(await getAccount(c.env.DB, id)),
+					}))
+				if (!sent) return c.json({ success: false, error: EMAIL_NOT_SENT }, 502)
+				logger.info('email change approved by the current address', { accountId: id })
+				return c.json({ success: true, applied: false, pending: email, sentTo: email })
+			}
+
+			try {
+				await updateAccount(c.env.DB, id, { email })
+			} catch (err) {
+				if (isUniqueEmailViolation(err)) return c.json(taken, 400)
+				throw err
+			}
+			logger.info('email changed', { accountId: id })
+			return c.json({ success: true, applied: true, pending: null, sentTo: null })
 		}
 	)
 

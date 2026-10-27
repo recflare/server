@@ -36,7 +36,8 @@ export const SCHEMA_DDL: string[] = [
 		has_plus INTEGER GENERATED ALWAYS AS (json_extract(data, '$.hasPlus')) VIRTUAL,
 		is_influencer INTEGER GENERATED ALWAYS AS (json_extract(data, '$.isInfluencer')) VIRTUAL,
 		signup_ip TEXT GENERATED ALWAYS AS (json_extract(data, '$.signupIp')) VIRTUAL,
-		device_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.deviceId')) VIRTUAL
+		device_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.deviceId')) VIRTUAL,
+		email_lower TEXT GENERATED ALWAYS AS (NULLIF(lower(json_extract(data, '$.email')), '')) VIRTUAL
 	)`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_account_id ON account (account_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_accounts_username_lower ON account (username_lower)`,
@@ -44,6 +45,10 @@ export const SCHEMA_DDL: string[] = [
 	`CREATE INDEX IF NOT EXISTS idx_account_is_influencer ON account (is_influencer) WHERE is_influencer = 1`,
 	`CREATE INDEX IF NOT EXISTS idx_account_signup_ip ON account (signup_ip)`,
 	`CREATE INDEX IF NOT EXISTS idx_account_device_id ON account (device_id)`,
+	// An email address belongs to ONE account: password recovery (`auth`
+	// `POST /account/recoverpassword`) is handed nothing but the address and has to find the
+	// account from it. Case-insensitive, and an empty/absent email is NULL so it never collides.
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_account_email_lower ON account (email_lower) WHERE email_lower IS NOT NULL`,
 ]
 
 /** Client-facing account shape (camelCase, exactly as the client's AccountDTO). */
@@ -111,7 +116,12 @@ export interface Account {
 	signupIp?: string
 	/** The client IP of the most recent successful login; refreshed on every login. */
 	lastLoginIp?: string
-	/** Set via POST /account/me/email; absent until the player provides one. */
+	/**
+	 * Set via POST /account/me/email; absent until the player provides one. UNIQUE across
+	 * accounts, case-insensitively (`idx_account_email_lower`): it is the one thing a password
+	 * recovery is given to find the account by, so `accounts` refuses an address another account
+	 * holds. Look an account up by it with {@link getAccountByEmail}.
+	 */
 	email?: string
 	/** Set via POST /account/me/phone; absent until the player provides one. */
 	phone?: string
@@ -314,6 +324,21 @@ export async function getAccountByUsername(
 }
 
 /** Default cap on how many matches `searchAccounts` returns. */
+/**
+ * The account holding an email address, or null when none does. Case-insensitive, over the
+ * `email_lower` index, and an address is held by at most one account (see {@link Account.email}).
+ * Whitespace around the address is ignored; an empty address matches nothing.
+ */
+export async function getAccountByEmail(db: D1Database, email: string): Promise<Account | null> {
+	const needle = email.trim().toLowerCase()
+	if (needle === '') return null
+	const row = await db
+		.prepare('SELECT data FROM account WHERE email_lower = ?1')
+		.bind(needle)
+		.first<{ data: string }>()
+	return row ? (JSON.parse(row.data) as Account) : null
+}
+
 export const SEARCH_LIMIT = 20
 
 /** Escape LIKE wildcards so user input is matched literally (using `\` as the escape char). */

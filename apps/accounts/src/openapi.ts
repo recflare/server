@@ -231,6 +231,38 @@ export const EmailRequest = z.object({
 		.describe('A syntactically valid address (RFC 5321/5322, so at most 254); otherwise 400'),
 })
 
+/** `POST /account/me/email/confirm` form body. */
+export const EmailConfirmRequest = z.object({
+	code: z
+		.string()
+		.trim()
+		.min(1, 'Enter the code from the email.')
+		.describe('The six digits from the email'),
+})
+
+/** `POST /account/me/email/confirm` response body. */
+export const EmailConfirmResponse = z.object({
+	success: z.literal(true),
+	applied: z.boolean().describe('Whether the change has landed, or a second code is now out'),
+	pending: z.string().nullable().describe('The new address, while a second code is out'),
+	sentTo: z.string().nullable().describe('Where that second code went (the new address)'),
+})
+
+/** `GET /account/me/email/pending` response body. */
+export const PendingEmailResponse = z.object({
+	pending: z
+		.string()
+		.nullable()
+		.describe('The address awaiting confirmation, or null when no change is in flight'),
+	sentTo: z
+		.string()
+		.nullable()
+		.describe('Where the code went: the current address, or the new one when there was none'),
+})
+
+/** The `{ success: false, error }` the email routes refuse with. */
+export const EmailRefusal = z.object({ success: z.literal(false), error: z.string() })
+
 export const PhoneRequest = z.object({
 	// No shape rule on purpose: the client sends E.164 (`+15552223333`), which the name
 	// rule above would reject outright by eating the leading `+`.

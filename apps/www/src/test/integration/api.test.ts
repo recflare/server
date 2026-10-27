@@ -715,7 +715,7 @@ it('reports where an account stands on benefits', async () => {
 	// Claimed (roles recorded, even none). `linked` says THAT a Discord identity has claimed,
 	// never which one — the id is of no use to the page, and an account's linked identities
 	// have no business on the wire.
-	await updateAccount(env.DB, 4003, { email: 'p@example.com' })
+	await updateAccount(env.DB, 4003, { email: 'p4003@example.com' })
 	await linkPlatformIdentity(env.DB, 4003, PlatformType.Discord, '99001', [])
 	res = await SELF.fetch('https://example.com/api/benefits/status', {
 		headers: { authorization: `Bearer ${token}` },
@@ -766,7 +766,7 @@ it('refuses to unlink a discord until the account has an email address', async (
 	)
 
 	// An email alone, no password, is enough.
-	await updateAccount(env.DB, 4021, { passwordHash: undefined, email: 'p@example.com' })
+	await updateAccount(env.DB, 4021, { passwordHash: undefined, email: 'p4021@example.com' })
 	expect((await unlink(token)).status).toBe(200)
 	await expect(isPlatformIdentityLinked(env.DB, 4021, PlatformType.Discord, '99021')).resolves.toBe(
 		false
@@ -777,7 +777,7 @@ it('unlinks every discord on the account, and takes plus and studio with it', as
 	const token = await tokenFor(4022)
 	await updateAccount(env.DB, 4022, {
 		username: 'Leaver',
-		email: 'p@example.com',
+		email: 'p4022@example.com',
 		hasPlus: true,
 		hasStudio: true,
 	})
@@ -812,7 +812,7 @@ it('unlinks every discord on the account, and takes plus and studio with it', as
 	expect(after?.hasPlus).toBeUndefined()
 	expect(after?.hasStudio).toBeUndefined()
 	expect(after?.username).toBe('Leaver')
-	expect(after?.email).toBe('p@example.com')
+	expect(after?.email).toBe('p4022@example.com')
 
 	// Nothing left to unlink.
 	const again = await unlink(token)
@@ -824,7 +824,7 @@ it('unlinks every discord on the account, and takes plus and studio with it', as
 // that player's first claim, on whatever account they next link, is still their first.
 it('does not remember a claim when the unlinked discord never claimed', async () => {
 	const token = await tokenFor(4023)
-	await updateAccount(env.DB, 4023, { email: 'p@example.com' })
+	await updateAccount(env.DB, 4023, { email: 'p4023@example.com' })
 	await linkPlatformIdentity(env.DB, 4023, PlatformType.Discord, '99024')
 	expect((await unlink(token)).status).toBe(200)
 	expect((await getAccount(env.DB, 4023))?.hasClaimedDiscord).toBeUndefined()

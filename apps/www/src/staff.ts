@@ -1579,7 +1579,8 @@ export async function addUsernameChangeHandler(c: Context<App>) {
 
 /**
  * Remove a player's password so they can set a new one in game — the recovery for someone
- * who has forgotten it, since nothing here can send a reset email. `hadPassword` says whether
+ * who has forgotten it AND has no email on the account (with one, "Forgot password" in game
+ * or `/reset-password` here emails them a code via `auth`). `hadPassword` says whether
  * there was one to remove; clearing an already-clear password succeeds, and is still logged.
  */
 export async function clearPasswordHandler(c: Context<App>) {
