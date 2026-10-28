@@ -12,13 +12,33 @@
 -- recovery sent to a shared address could only ever reach one of them anyway. Those
 -- players set it again from the account page or in game.
 --
+-- The clean-up runs over a throwaway plain index on the column. Without one, finding each
+-- address's keeper is a scan of the whole table — parsing every row's JSON — PER ROW with
+-- an address, which is what a correlated `MIN(account_id)` did on the first attempt and
+-- what D1 killed for exceeding its CPU limit. With it, the duplicates are one grouped
+-- index walk and the update one indexed join.
+--
 -- Kept in sync with SCHEMA_DDL in @repo/domain's accounts-db.ts (and its mirror in
 -- apps/econ/src/avatar-db.ts).
 
 ALTER TABLE account ADD COLUMN email_lower TEXT GENERATED ALWAYS AS (NULLIF(lower(json_extract(data, '$.email')), '')) VIRTUAL;
 
+CREATE INDEX idx_account_email_lower_dedupe ON account (email_lower) WHERE email_lower IS NOT NULL;
+
 UPDATE account SET data = json_remove(data, '$.email')
- WHERE email_lower IS NOT NULL
-   AND account_id > (SELECT MIN(a2.account_id) FROM account a2 WHERE a2.email_lower = account.email_lower);
+ WHERE account_id IN (
+   SELECT a.account_id
+     FROM account a
+     JOIN (
+       SELECT email_lower, MIN(account_id) AS keeper
+         FROM account
+        WHERE email_lower IS NOT NULL
+        GROUP BY email_lower
+       HAVING COUNT(*) > 1
+     ) d ON a.email_lower = d.email_lower
+    WHERE a.account_id > d.keeper
+ );
+
+DROP INDEX idx_account_email_lower_dedupe;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_account_email_lower ON account (email_lower) WHERE email_lower IS NOT NULL;

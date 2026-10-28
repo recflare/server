@@ -20,9 +20,10 @@
  *    from the last email.
  *  - A code lapses after {@link EMAIL_CODE_TTL_SECONDS}.
  *  - A fresh email goes out at most once per {@link EMAIL_CODE_RESEND_COOLDOWN_SECONDS} per
- *    account and purpose, however often one is asked for — recovery can be requested by
- *    anyone who knows an address, and without this it would be a way to flood someone's
- *    inbox. Within the cooldown nothing is issued and nothing should be sent.
+ *    account and purpose, and at most {@link EMAIL_CODE_DAILY_LIMIT} times a day, however
+ *    often one is asked for — recovery can be requested by anyone who knows an address, and
+ *    without this it would be a way to flood someone's inbox (a cooldown alone still allows
+ *    hundreds a day). Refused, nothing is issued and nothing should be sent.
  *
  * Only a PBKDF2 hash of the code is stored (the same `hashPassword` as an account's
  * password), never the code: a copy of the table shouldn't be a way into every account with
@@ -30,6 +31,7 @@
  */
 
 import { hashPassword, verifyPassword } from './password'
+import { takeRateLimit } from './rate-limit-db'
 
 /** What a code is for; one pending code per account and purpose. */
 export type EmailCodePurpose = 'password_reset' | 'email_change' | 'email_verify'
@@ -39,6 +41,15 @@ export const EMAIL_CODE_TTL_SECONDS = 30 * 60
 
 /** Another email for the same purpose to the same account is refused within this long (s). */
 export const EMAIL_CODE_RESEND_COOLDOWN_SECONDS = 2 * 60
+
+/**
+ * Codes sent per account and purpose per {@link EMAIL_CODE_DAILY_WINDOW_SECONDS}, counting
+ * only emails that were actually issued (not refused repeats). Enough for anyone genuinely
+ * struggling with a code; a loop pointed at someone's address gets this many and then
+ * silence until tomorrow.
+ */
+export const EMAIL_CODE_DAILY_LIMIT = 5
+export const EMAIL_CODE_DAILY_WINDOW_SECONDS = 24 * 60 * 60
 
 /** The code's length in digits. The emails and the website's forms all print it this wide. */
 export const EMAIL_CODE_LENGTH = 6
@@ -79,14 +90,21 @@ export function newEmailCode(): string {
 export const isEmailCodeShaped = (code: string): boolean =>
 	new RegExp(`^\\d{${EMAIL_CODE_LENGTH}}$`).test(code)
 
+/** Why {@link beginEmailCode} issued nothing. The player is told about the first; the second too. */
+export type EmailCodeRefusal = 'cooldown' | 'quota'
+
+export type EmailCodeIssue =
+	{ code: string; refused?: never } | { code?: never; refused: EmailCodeRefusal }
+
 /**
  * Issue a code for the account and purpose, replacing any pending one, and return it — the
  * only moment it exists in plaintext. `payload` rides along to be handed back when the code
- * is spent. Returns null when a code for this account and purpose was issued less than the
- * cooldown ago (burned or not): nothing changed — the pending code and ITS payload stand —
- * and nothing should be sent. `force` skips that check, for a caller that has its own reason
- * to know the send is not a repeat (a code going to a DIFFERENT address than the last one,
- * or a step a previous code has just unlocked).
+ * is spent. Refuses — nothing changed, the pending code and ITS payload stand, and nothing
+ * should be sent — with `cooldown` when a code for this account and purpose was issued less
+ * than the cooldown ago (burned or not), and with `quota` when {@link EMAIL_CODE_DAILY_LIMIT}
+ * have been issued today. `force` skips the cooldown only, for a caller that has its own
+ * reason to know the send is not a repeat (a code going to a DIFFERENT address than the last
+ * one, or a step a previous code has just unlocked); the daily cap always applies.
  */
 export async function beginEmailCode(
 	db: D1Database,
@@ -94,7 +112,7 @@ export async function beginEmailCode(
 	accountId: number,
 	payload: string | null = null,
 	{ force = false }: { force?: boolean } = {}
-): Promise<string | null> {
+): Promise<EmailCodeIssue> {
 	const now = Math.floor(Date.now() / 1000)
 	if (!force) {
 		const recent = await db
@@ -103,8 +121,20 @@ export async function beginEmailCode(
 			)
 			.bind(accountId, purpose)
 			.first<{ createdAt: number }>()
-		if (recent && now - recent.createdAt < EMAIL_CODE_RESEND_COOLDOWN_SECONDS) return null
+		if (recent && now - recent.createdAt < EMAIL_CODE_RESEND_COOLDOWN_SECONDS) {
+			return { refused: 'cooldown' }
+		}
 	}
+	// Counted after the cooldown, so only codes that would actually go out spend the day's
+	// allowance — a loop re-asking inside the cooldown gets nothing and costs the account's
+	// real owner nothing.
+	const quota = await takeRateLimit(
+		db,
+		`email_code:${purpose}:${accountId}`,
+		EMAIL_CODE_DAILY_LIMIT,
+		EMAIL_CODE_DAILY_WINDOW_SECONDS
+	)
+	if (!quota.allowed) return { refused: 'quota' }
 
 	const code = newEmailCode()
 	await db
@@ -119,7 +149,7 @@ export async function beginEmailCode(
 		)
 		.bind(accountId, purpose, await hashPassword(code), payload, now, now + EMAIL_CODE_TTL_SECONDS)
 		.run()
-	return code
+	return { code }
 }
 
 /**

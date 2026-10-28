@@ -5,21 +5,21 @@ authenticates players and issues the JWTs every other worker verifies.
 
 ## Routes
 
-| Method | Path                                       | Description                                                                                      |
-| ------ | ------------------------------------------ | ------------------------------------------------------------------------------------------------ |
-| GET    | `/eac/challenge`                           | EAC handshake; a constant, JSON-quoted, as text                                                  |
-| GET    | `/cachedlogin/forplatformid/:platform/:id` | Accounts linked to a platform id, for the login screen                                           |
-| POST   | `/cachedlogin/forplatformids`              | Bulk cached-login lookup (friends resolution)                                                    |
-| POST   | `/connect/deviceauthorization`             | Studio device login: mint a user code and point the browser at WWW `/device`                     |
-| POST   | `/connect/device/approve`                  | Website approves that code for the signed-in account                                             |
-| POST   | `/connect/device/deny`                     | Website refuses it                                                                               |
-| POST   | `/connect/token`                           | OAuth token endpoint; issues a JWT + refresh token. Studio polls this with the device-code grant |
-| POST   | `/account/me/changepassword`               | Change the caller's password (auth-gated)                                                        |
-| POST   | `/account/recoverpassword`                 | "Forgot password": email a six-digit code (and a link to WWW `/reset-password`) to the address   |
-| POST   | `/account/resetpassword`                   | Website finishes the recovery: address + emailed code + new password; the code works once        |
-| GET    | `/role/developer/:id`                      | Developer role lookup; a bare JSON boolean                                                       |
-| GET    | `/role/moderator/:id`                      | Moderator role lookup; a bare JSON boolean                                                       |
-| GET    | `/openapi.json`                            | Generated OpenAPI 3.1 spec (see below)                                                           |
+| Method | Path                                       | Description                                                                                                     |
+| ------ | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| GET    | `/eac/challenge`                           | EAC handshake; a constant, JSON-quoted, as text                                                                 |
+| GET    | `/cachedlogin/forplatformid/:platform/:id` | Accounts linked to a platform id, for the login screen                                                          |
+| POST   | `/cachedlogin/forplatformids`              | Bulk cached-login lookup (friends resolution)                                                                   |
+| POST   | `/connect/deviceauthorization`             | Studio device login: mint a user code and point the browser at WWW `/device`                                    |
+| POST   | `/connect/device/approve`                  | Website approves that code for the signed-in account                                                            |
+| POST   | `/connect/device/deny`                     | Website refuses it                                                                                              |
+| POST   | `/connect/token`                           | OAuth token endpoint; issues a JWT + refresh token. Studio polls this with the device-code grant                |
+| POST   | `/account/me/changepassword`               | Change the caller's password (auth-gated)                                                                       |
+| POST   | `/account/recoverpassword`                 | "Forgot password": email a six-digit code (and a link to WWW `/reset-password`); 5/day per account, 10/h per IP |
+| POST   | `/account/resetpassword`                   | Website finishes the recovery: address + emailed code + new password; the code works once                       |
+| GET    | `/role/developer/:id`                      | Developer role lookup; a bare JSON boolean                                                                      |
+| GET    | `/role/moderator/:id`                      | Moderator role lookup; a bare JSON boolean                                                                      |
+| GET    | `/openapi.json`                            | Generated OpenAPI 3.1 spec (see below)                                                                          |
 
 ## API documentation
 

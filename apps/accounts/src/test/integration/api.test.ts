@@ -4,7 +4,12 @@ import { beforeAll, describe, expect, test } from 'vitest'
 
 import '../../accounts.app'
 
-import { EMAIL_CODE_SCHEMA_DDL, hashPassword, SCHEMA_DDL } from '@repo/domain'
+import {
+	EMAIL_CODE_SCHEMA_DDL,
+	hashPassword,
+	RATE_LIMIT_SCHEMA_DDL,
+	SCHEMA_DDL,
+} from '@repo/domain'
 
 import { WHITELISTED_EMOJIS } from '../../whitelisted-emojis'
 
@@ -24,6 +29,8 @@ beforeAll(async () => {
 	for (const stmt of SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	// The codes an email change is confirmed with (owned by `auth`'s migrations).
 	for (const stmt of EMAIL_CODE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	// The counters that cap how many of those go out per account and day.
+	for (const stmt of RATE_LIMIT_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	const insert = env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
 	await env.DB.batch([
 		insert.bind(JSON.stringify({ accountId: 0, username: 'RecRoom', displayName: 'Rec Room' })),
@@ -859,6 +866,22 @@ describe('auth-gated endpoints', () => {
 		// Re-saving the current address in another case: no code, applied directly.
 		expect((await postEmail('890', 'COOL@example.com')).status).toBe(200)
 		expect(await emailOf('890')).toBe('COOL@example.com')
+	})
+
+	test('POST /account/me/email sends an account at most five codes a day, typos included', async () => {
+		// With no address on file every different address gets a code at once — until the
+		// day's five are spent, when the sixth is refused with a reason, not silently.
+		for (let i = 0; i < 5; i++) {
+			expect((await postEmail('894', `try${i}@example.com`)).status).toBe(200)
+		}
+		const sixth = await postEmail('894', 'try5@example.com')
+		expect(sixth.status).toBe(400)
+		expect(((await sixth.json()) as { error: string }).error).toMatch(/today/)
+		// The fifth is still the one staged, and still works.
+		expect((await pendingEmail('894')).pending).toBe('try4@example.com')
+		await plantCode('894', 'email_verify', '123456')
+		expect((await confirmEmail('894', '123456')).status).toBe(200)
+		expect(await emailOf('894')).toBe('try4@example.com')
 	})
 
 	test('POST /account/me/email/confirm refuses an empty code and a code with nothing staged', async () => {

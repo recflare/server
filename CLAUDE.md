@@ -318,6 +318,9 @@ inconsistency here without checking the client first.
   all the server gets, so an email is UNIQUE across accounts (`idx_account_email_lower`, enforced
   by `accounts` `POST /account/me/email`). The recovery finishes on the WEBSITE
   (`/reset-password`, posting `auth` `POST /account/resetpassword`): the game has no screen for it.
+  Every refusal that would reveal whether an address is on an account, or that a cap was hit
+  (2-minute cooldown, 5 codes/day per account, 10 requests/hour per IP — `rate_limit` table),
+  is answered as `Success: true` and sends nothing.
 - Setting the email (`accounts`: `POST /account/me/email`) STAGES the address and still answers
   `{ success: true }` — the game reads nothing else — while `/account/me` keeps serving the old
   one until the emailed codes come back through `…/email/confirm` (website only, `/confirm-email`).

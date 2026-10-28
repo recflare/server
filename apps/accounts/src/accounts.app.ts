@@ -68,7 +68,7 @@ import { resolveWhitelistedEmoji, WHITELISTED_EMOJIS } from './whitelisted-emoji
 
 import type { Context } from 'hono'
 import type { DescribeRouteOptions } from 'hono-openapi'
-import type { Account } from '@repo/domain'
+import type { Account, EmailCodeIssue } from '@repo/domain'
 import type { App } from './context'
 
 /**
@@ -264,6 +264,16 @@ const EMAIL_CODE_WRONG =
 /** What the email routes say to a repeat within the cooldown. */
 const EMAIL_TOO_SOON =
 	'A code was emailed less than two minutes ago. Enter that one, or try again in a minute.'
+
+/** What the email routes say once the account's codes for the day are spent. */
+const EMAIL_QUOTA =
+	'Too many codes have been emailed for this account today. Please try again tomorrow.'
+
+/** The refusal for a code that was not issued, by why. */
+const emailCodeRefusal = (refused: 'cooldown' | 'quota') => ({
+	success: false,
+	error: refused === 'cooldown' ? EMAIL_TOO_SOON : EMAIL_QUOTA,
+})
 
 /** What the email routes say when the mail service refused the send. */
 const EMAIL_NOT_SENT = 'The confirmation email could not be sent. Please try again later.'
@@ -799,21 +809,22 @@ const app = new Hono<App>()
 				return c.json({ success: true })
 			}
 
-			let code: string | null
+			let issue: EmailCodeIssue
 			if (current === null) {
 				// Step 2 straight away. A different address than the one last staged is never
-				// a repeat, so it skips the cooldown — the typo case.
+				// a repeat, so it skips the cooldown — the typo case. (Not the daily cap.)
 				const staged = await pendingEmailCode(c.env.DB, 'email_verify', id)
-				code = await beginEmailCode(c.env.DB, 'email_verify', id, email, {
+				issue = await beginEmailCode(c.env.DB, 'email_verify', id, email, {
 					force: staged?.payload !== email,
 				})
 			} else {
 				// Step 1; a step 2 left over from an earlier attempt is voided, since the current
 				// address has not approved THIS one.
 				await cancelEmailCode(c.env.DB, 'email_verify', id)
-				code = await beginEmailCode(c.env.DB, 'email_change', id, email)
+				issue = await beginEmailCode(c.env.DB, 'email_change', id, email)
 			}
-			if (code === null) return c.json({ success: false, error: EMAIL_TOO_SOON }, 400)
+			if (issue.refused) return c.json(emailCodeRefusal(issue.refused), 400)
+			const code = issue.code
 
 			const sent = await sendEmailCode(c, {
 				purpose: current === null ? 'email_verify' : 'email_change',
@@ -909,15 +920,15 @@ const app = new Hono<App>()
 				// cooldown: step 1 just gated this, and the previous verify code (if any) went out
 				// at least a step-1 cooldown ago.
 				const next = await beginEmailCode(c.env.DB, 'email_verify', id, email, { force: true })
-				const sent =
-					next !== null &&
-					(await sendEmailCode(c, {
-						purpose: 'email_verify',
-						to: email,
-						code: next,
-						newEmail: email,
-						currentEmail: currentEmail(await getAccount(c.env.DB, id)),
-					}))
+				// The day's cap can bite here too; the approval is spent, so say so plainly.
+				if (next.refused) return c.json(emailCodeRefusal(next.refused), 400)
+				const sent = await sendEmailCode(c, {
+					purpose: 'email_verify',
+					to: email,
+					code: next.code,
+					newEmail: email,
+					currentEmail: currentEmail(await getAccount(c.env.DB, id)),
+				})
 				if (!sent) return c.json({ success: false, error: EMAIL_NOT_SENT }, 502)
 				logger.info('email change approved by the current address', { accountId: id })
 				return c.json({ success: true, applied: false, pending: email, sentTo: email })

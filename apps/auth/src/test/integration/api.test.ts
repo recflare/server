@@ -13,6 +13,7 @@ import {
 	getPasswordHash,
 	hashPassword,
 	PRESENCE_SCHEMA_DDL,
+	RATE_LIMIT_SCHEMA_DDL,
 	ROOM_SCHEMA_DDL,
 	SCHEMA_DDL,
 	seedRoomWithSubRooms,
@@ -84,6 +85,8 @@ beforeAll(async () => {
 	for (const stmt of REFRESH_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	// The pending email codes (`/account/recoverpassword` issues one as a password_reset).
 	for (const stmt of EMAIL_CODE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	// The counters that cap how many of those go out, per account and per IP.
+	for (const stmt of RATE_LIMIT_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	// Platform identity links — one account can hold several (a PC and a headset), and
 	// this table is what both the picker and the cached_login grant read.
 	for (const stmt of PLATFORM_SCHEMA_DDL) await env.DB.prepare(stmt).run()
@@ -2133,6 +2136,58 @@ describe('auth worker routes', () => {
 		const second = await pendingReset(id)
 		expect(second!.codeHash).not.toBe(first!.codeHash)
 		expect(second!.createdAt).toBeGreaterThan(first!.createdAt - 600)
+	})
+
+	test('POST /account/recoverpassword sends an account at most five codes a day', async () => {
+		const id = await accountWithEmail('recover5', 'recover5@example.com')
+		/** Lift the cooldown, so only the daily cap is in play. */
+		const lift = () =>
+			env.DB.prepare(
+				"UPDATE email_code SET created_at = created_at - 600 WHERE account_id = ?1 AND purpose = 'password_reset'"
+			)
+				.bind(id)
+				.run()
+		const hashes: string[] = []
+		for (let i = 0; i < 5; i++) {
+			expect(await (await recover('email=recover5%40example.com')).json()).toEqual(SENT)
+			hashes.push((await pendingReset(id))!.codeHash!)
+			await lift()
+		}
+		expect(new Set(hashes).size).toBe(5)
+		// The sixth is answered the same and changes nothing: no email went out.
+		expect(await (await recover('email=recover5%40example.com')).json()).toEqual(SENT)
+		expect((await pendingReset(id))!.codeHash).toBe(hashes[4])
+	})
+
+	test('POST /account/recoverpassword takes at most ten requests an hour from one IP', async () => {
+		const id = await accountWithEmail('recover6', 'recover6@example.com')
+		const fromIp = (body: string) =>
+			exports.default.fetch(`${ORIGIN}/account/recoverpassword`, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/x-www-form-urlencoded',
+					'CF-Connecting-IP': '203.0.113.9',
+				},
+				body,
+			})
+		// Ten requests for addresses on no account spend the hour's allowance just the same.
+		for (let i = 0; i < 10; i++) {
+			expect(await (await fromIp(`email=nobody${i}%40example.com`)).json()).toEqual(SENT)
+		}
+		// The eleventh, for a real account, is answered the same and issues nothing.
+		expect(await (await fromIp('email=recover6%40example.com')).json()).toEqual(SENT)
+		expect(await pendingReset(id)).toBeNull()
+		// Another IP is unaffected.
+		const other = await exports.default.fetch(`${ORIGIN}/account/recoverpassword`, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/x-www-form-urlencoded',
+				'CF-Connecting-IP': '203.0.113.10',
+			},
+			body: 'email=recover6%40example.com',
+		})
+		expect(await other.json()).toEqual(SENT)
+		expect(await pendingReset(id)).not.toBeNull()
 	})
 
 	test('POST /account/resetpassword sets the password with the emailed code, once', async () => {

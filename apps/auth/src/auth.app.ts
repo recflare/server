@@ -30,6 +30,7 @@ import {
 	setPresence,
 	subRoomDataBlob,
 	supportedGameBuilds,
+	takeRateLimit,
 	updateAccount,
 	verifyPassword,
 	writeAuditLog,
@@ -125,6 +126,19 @@ const TOKEN_SCOPE =
  * and `match` is what holds a blocked player to their dorm.
  */
 const BLOCKED_DESCRIPTION = 'this device or network is blocked'
+
+/**
+ * Password-recovery requests one IP may make per hour (`POST /account/recoverpassword`),
+ * whatever addresses they name and whether or not any is on an account. The route is
+ * unauthenticated and answers every address the same, so this is what stops one source
+ * from working through a list of addresses — the per-account daily cap on codes
+ * (@repo/domain's email-code-db.ts) is what protects each mailbox. Past the cap a request
+ * is answered as if it had succeeded and does nothing; generous enough that a household
+ * behind one address is never caught by it. A request with no `CF-Connecting-IP` (not a
+ * thing at the edge; tests) is not counted.
+ */
+const RECOVERY_REQUESTS_PER_IP = 10
+const RECOVERY_REQUESTS_PER_IP_WINDOW_SECONDS = 60 * 60
 
 /**
  * The website's "Sign in with Discord". `www` completes the Discord OAuth2 exchange (it
@@ -1877,6 +1891,21 @@ const app = new Hono<App>()
 			if (email === '') return refuse('Enter the email address on your account.')
 			if (!isValidEmail(email)) return refuse("That doesn't look like an email address.")
 
+			// Counted before the lookup, so a run through unknown addresses spends it too.
+			const clientIp = c.req.header('cf-connecting-ip') ?? ''
+			if (clientIp !== '') {
+				const ip = await takeRateLimit(
+					c.env.DB,
+					`recoverpassword:ip:${clientIp}`,
+					RECOVERY_REQUESTS_PER_IP,
+					RECOVERY_REQUESTS_PER_IP_WINDOW_SECONDS
+				)
+				if (!ip.allowed) {
+					logger.warn('password recovery rate-limited by ip; not sent', { count: ip.count })
+					return c.json({ Success: true, Error: null, error_id: null })
+				}
+			}
+
 			const account = await getAccountByEmail(c.env.DB, email)
 			if (account === null) {
 				// Answered exactly like a sent email, see above. Logged, since a run of these
@@ -1885,13 +1914,17 @@ const app = new Hono<App>()
 				return c.json({ Success: true, Error: null, error_id: null })
 			}
 
-			const code = await beginEmailCode(c.env.DB, 'password_reset', account.accountId)
-			if (code === null) {
-				logger.info('password recovery re-requested within the cooldown; not resent', {
+			const issue = await beginEmailCode(c.env.DB, 'password_reset', account.accountId)
+			if (issue.refused) {
+				// Within the cooldown, or the account's codes for the day are spent: answered
+				// like a sent email either way, so a loop learns nothing from the refusal.
+				logger.info('password recovery not resent', {
 					accountId: account.accountId,
+					refused: issue.refused,
 				})
 				return c.json({ Success: true, Error: null, error_id: null })
 			}
+			const code = issue.code
 
 			const message = recoveryEmail({
 				// The stored address, not the posted one: same account either way (the lookup
