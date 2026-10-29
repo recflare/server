@@ -34,6 +34,7 @@ import { ModerationPage, PlayerBanStatus } from './Moderation'
 import { PumpleBossFight } from './PumpleBossFight'
 import { StatsPage } from './Stats'
 import { StudioAccessPage } from './StudioAccess'
+import { TestCasesPage } from './TestCases'
 
 import type { ReactNode } from 'react'
 import type { Hosts, PublicAccount } from './api'
@@ -2563,6 +2564,12 @@ export function App() {
 				// load falls through to the SPA shell. The page shows one account's own
 				// status to whoever is signed in, and the whitelist editor only to staff.
 				<StudioAccessPage account={account} navigate={navigate} />
+			) : path === '/testcases' || path.startsWith('/testcases/') ? (
+				<TestCasesPage
+					path={path}
+					signedIn={account === undefined ? undefined : account !== null}
+					navigate={navigate}
+				/>
 			) : path === '/stats' ? (
 				// Unlinked on purpose — nothing in the nav or footer points here; it's for whoever
 				// is handed the URL. Public all the same, and a client-side route like the rest:
