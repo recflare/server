@@ -4476,6 +4476,36 @@ describe('public endpoints', () => {
 		expect(malformed.status).toBe(400)
 	})
 
+	test('invention version loads Studio dependencies without revisiting the source room', async () => {
+		const assetId = '55555555-3333-4444-8555-666666666666'
+		const response = await exports.default.fetch(`${ORIGIN}/api/inventions/v9/save`, {
+			method: 'POST',
+			headers: { ...(await bearer('7373')), 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				name: 'Studio Dependency',
+				inventionDataFilename: 'studio-dependency.inv',
+				referencedUnityAssetIds: [assetId],
+				referencedInventions: [39],
+			}),
+		})
+		const saved = (await response.json()) as {
+			Value: { Invention: { InventionId: number } }
+		}
+		const id = saved.Value.Invention.InventionId
+		// A fresh request has no cached save response or source-room context.
+		for (const version of [0, 1]) {
+			const result = await exports.default.fetch(
+				`${ORIGIN}/api/inventions/v1/version?inventionId=${id}&version=${version}`
+			)
+			expect(result.status).toBe(200)
+			expect(await result.json()).toMatchObject({
+				InventionId: id,
+				ReferencedUnityAssetIds: [assetId],
+				ReferencedInventions: [39],
+			})
+		}
+	})
+
 	test('GET /api/inventions/v1/version serves the version; unknown versions 404', async () => {
 		// The data file is uploaded (via the storage worker) before the metadata save,
 		// so the version carries its hash from the start. No sha256 recorded on this

@@ -185,6 +185,7 @@ export const SubRoomDataSaveResponseDto = z.object({
 	subRoomDataSaveId: z.int(),
 	subRoomId: z.int(),
 	unityAssetId: z.string().nullable().describe('Null unless the save carried one'),
+	referencedUnityAssetIds: z.array(z.string()),
 	unityAsset: z
 		.string()
 		.nullable()
@@ -215,7 +216,7 @@ export const SubRoomDataSaveResponseDto = z.object({
  * subroom whose `CurrentSave` is missing loads no saved content at all.
  *
  * `UnitySubAssets` is empty for a maker-pen save. A Rec Room Studio build fills it
- * with one main bundle per platform. Referenced assets stay empty. The arrays are
+ * with one main bundle per platform. Spawned Studio inventions populate referenced assets. The arrays are
  * always emitted because the client's parser expects them present.
  */
 export const UnitySubAssetDto = z.object({
@@ -230,11 +231,13 @@ export const SubRoomDataSaveDto = z.object({
 	UnitySubAssets: z
 		.array(UnitySubAssetDto)
 		.describe('Subasset dependencies, excluding the main bundle; empty when none'),
-	ReferencedUnityAssets: z.array(z.unknown()).describe('Always empty'),
+	ReferencedUnityAssets: z
+		.array(z.unknown())
+		.describe('Baked bundles for referenced Studio assets'),
 	SubRoomDataSaveId: z.int().describe('Numbered from 1, incremented on every save'),
 	SubRoomId: z.int().describe('The owning subroom — re-pointed when a subroom is cloned'),
 	DataBlob: z.string().nullable().describe('Scene-data key; null uses the built-in empty template'),
-	ReferencedUnityAssetIds: z.array(z.string()).describe('Always empty'),
+	ReferencedUnityAssetIds: z.array(z.string()).describe('Studio asset ids used by this save'),
 	PersistenceVersion: z.int(),
 	OMVersion: z.int(),
 	UgcSubVersion: z.int(),
@@ -983,6 +986,7 @@ export const SaveSubRoomDataRequest = z.object({
 	UgcSubVersion: z.int().optional().describe('UGC format revision; retained when omitted'),
 	InventionUsage: z.string().optional().describe('Recorded on the subroom'),
 	UnityAssetId: z.string().nullable().optional().describe('Recorded on the save when set'),
+	ReferencedUnityAssetIds: z.array(z.string()).optional(),
 	AutoPublish: z
 		.boolean()
 		.optional()
@@ -1047,7 +1051,9 @@ export const SubRoomDataSaveDetailDto = z.object({
 			})
 		)
 		.describe('Main Studio bundles for this save; empty for a maker-pen save'),
-	ReferencedUnityAssets: z.array(z.unknown()).describe('Always empty'),
+	ReferencedUnityAssets: z
+		.array(z.unknown())
+		.describe('Referenced Studio bundles for the requested target'),
 	UnityAsset: z
 		.string()
 		.nullable()

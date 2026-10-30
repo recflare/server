@@ -4107,6 +4107,7 @@ describe('rooms endpoints', () => {
 
 		// The save is a camelCase projection, NOT the PascalCase CurrentSave shape.
 		expect(saved.value.subRoomDataSave).toEqual({
+			referencedUnityAssetIds: [],
 			persistenceVersion: 41,
 			omVersion: 0,
 			ugcSubVersion: 0,
@@ -6481,6 +6482,7 @@ describe('rooms endpoints', () => {
 			'POST /rooms/{roomId}/subrooms',
 			'POST /rooms/{roomId}/subrooms/{subRoomId}/clone',
 			'POST /rooms/{roomId}/subrooms/{subRoomId}/data',
+			'POST /rooms/{roomId}/subrooms/{subRoomId}/datasaves/{saveId}/requestAutomatedModeration',
 			'POST /rooms/{roomId}/subrooms/{subRoomId}/move',
 			'POST /rooms/{roomId}/subrooms/{subRoomId}/publish_save',
 			'POST /unity_assets/baked/bulk',
@@ -7580,6 +7582,156 @@ describe('Studio source revision permissions', () => {
 		expect(source.status).toBe(200)
 		expect(await source.json()).toMatchObject({ filename: 'first-draft.json' })
 	})
+})
+
+it('retains Studio invention dependencies through room save and reload without a root Studio build', async () => {
+	const roomId = 987690
+	const assetId = '55555555-3333-4444-8555-666666666666'
+	await seedRoomWithSubRooms(env.DB, {
+		RoomId: roomId,
+		Name: 'InventionDependencySave',
+		CreatorAccountId: roomId,
+		IsDorm: true,
+		SubRooms: [{ SubRoomId: roomId, Name: 'Home', CurrentSave: null }],
+	})
+	for (const target of [0, 2])
+		await putUnityAsset(env.DB, {
+			UnityAssetId: assetId,
+			Target: target,
+			Version: 5,
+			Filename: `studio/123/${assetId}.${target}.assetbundle`,
+			Hash: `hash-${target}`,
+		})
+	const root = `${ORIGIN}/rooms/${roomId}/subrooms/${roomId}`
+	const save = async (ids: string[]) => {
+		const r = await SELF.fetch(root + '/data', {
+			method: 'POST',
+			headers: { ...(await bearer(String(roomId))), 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				SubRoomData: { Filename: 'invention-scene.room' },
+				ReferencedUnityAssetIds: ids,
+			}),
+		})
+		expect(r.status).toBe(200)
+		return (await r.json()) as {
+			value: { subRoomDataSave: { subRoomDataSaveId: number; referencedUnityAssetIds: string[] } }
+		}
+	}
+	const saved = await save([assetId])
+	expect(saved.value.subRoomDataSave.referencedUnityAssetIds).toEqual([assetId])
+	const room = await getRoomById(env.DB, roomId)
+	expect((room!.SubRooms as Array<{ CurrentSave: unknown }>)[0]!.CurrentSave).toMatchObject({
+		ReferencedUnityAssetIds: [assetId],
+	})
+	for (const target of [0, 2]) {
+		const response = await SELF.fetch(
+			`${root}/saves/${saved.value.subRoomDataSave.subRoomDataSaveId}?unityAssetTarget=${target}`,
+			{ headers: await bearer(String(roomId)) }
+		)
+		expect(await response.json()).toMatchObject({
+			UnityAssetId: null,
+			UnitySubAssets: [],
+			ReferencedUnityAssetIds: [assetId],
+			ReferencedUnityAssets: [
+				{
+					UnityAssetId: assetId,
+					UnityAsset: `studio/123/${assetId}.${target}.assetbundle`,
+					UnityAssetHash: `hash-${target}`,
+				},
+			],
+		})
+	}
+	const repeated = await save([assetId, assetId.toUpperCase()])
+	const deduplicated = await SELF.fetch(
+		`${root}/saves/${repeated.value.subRoomDataSave.subRoomDataSaveId}?unityAssetTarget=0`,
+		{ headers: await bearer(String(roomId)) }
+	)
+	expect(await deduplicated.json()).toMatchObject({
+		ReferencedUnityAssets: [{ UnityAssetId: assetId, UnityAssetHash: 'hash-0' }],
+	})
+	await save([])
+	const cleared = await getRoomById(env.DB, roomId)
+	expect((cleared!.SubRooms as Array<{ CurrentSave: unknown }>)[0]!.CurrentSave).toMatchObject({
+		ReferencedUnityAssetIds: [],
+		ReferencedUnityAssets: [],
+	})
+})
+
+it('reviews Studio saves for invention creation without publishing drafts or overriding staff', async () => {
+	const roomId = 987680
+	const subRoomId = 987680
+	await seedRoomWithSubRooms(env.DB, {
+		RoomId: roomId,
+		Name: 'StudioInventionReview',
+		CreatorAccountId: 987680,
+		Roles: [{ AccountId: 987681, Role: 30 }],
+		SubRooms: [{ SubRoomId: subRoomId, Name: 'Home', CurrentSave: null }],
+	})
+	const root = `${ORIGIN}/rooms/${roomId}/subrooms/${subRoomId}`
+	const save = async (autoPublish: boolean) => {
+		const response = await SELF.fetch(root + '/data', {
+			method: 'POST',
+			headers: { ...(await bearer('987680')), 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				UnityAssetId: '44444444-3333-4444-8555-666666666666',
+				UnityAsset: { Filename: 'review-source.json', Hash: 'source-hash' },
+				AutoPublish: autoPublish,
+			}),
+		})
+		const body = (await response.json()) as {
+			value: { subRoomDataSave: { subRoomDataSaveId: number } }
+		}
+		return body.value.subRoomDataSave.subRoomDataSaveId
+	}
+	const currentId = await save(true)
+	const draftId = await save(false)
+	const review = async (id: number, account?: string, prefix = root) =>
+		SELF.fetch(`${prefix}/datasaves/${id}/requestAutomatedModeration`, {
+			method: 'POST',
+			headers: account ? await bearer(account) : {},
+		})
+	expect((await review(currentId)).status).toBe(401)
+	expect((await review(currentId, '987682')).status).toBe(403)
+	expect(
+		(await review(currentId, '987680', `${ORIGIN}/rooms/1/subrooms/${subRoomId}`)).status
+	).toBe(404)
+	expect((await review(99999999, '987680')).status).toBe(404)
+	for (const id of [currentId, currentId, draftId]) {
+		const response = await review(id, '987681')
+		expect(response.status).toBe(200)
+		expect(await response.json()).toMatchObject({
+			success: true,
+			value: {
+				RoomId: roomId,
+				SubRooms: [
+					{
+						LastModeratedSaveModerationState: 2,
+						StagedSubRoomDataSaveId: draftId,
+						CurrentSave: { SubRoomDataSaveId: currentId, ModerationState: 2 },
+					},
+				],
+			},
+		})
+	}
+	const detail = await SELF.fetch(root + `/saves/${draftId}`, { headers: await bearer('987680') })
+	expect(await detail.json()).toMatchObject({
+		ModerationState: 2,
+		UnityAssetId: '44444444-3333-4444-8555-666666666666',
+	})
+	for (const state of [3, 4, 5, 6]) {
+		await env.DB.prepare(
+			"UPDATE subroom_save SET data=json_set(data, '$.ModerationState', ?1) WHERE sub_room_data_save_id=?2"
+		)
+			.bind(state, draftId)
+			.run()
+		expect((await review(draftId, '987680')).status).toBe(200)
+		const stored = await env.DB.prepare(
+			"SELECT json_extract(data, '$.ModerationState') AS state FROM subroom_save WHERE sub_room_data_save_id=?1"
+		)
+			.bind(draftId)
+			.first<{ state: number }>()
+		expect(stored!.state).toBe(state)
+	}
 })
 
 it('omits hydrated Badges when persisting a room settings edit', async () => {

@@ -1637,6 +1637,8 @@ export interface SaveSubRoomDataInput {
 	inventionUsage?: string
 	/** Optional baked-asset id; emitted on the save only when present. */
 	unityAssetId?: string
+	/** Studio assets used by spawned inventions, independent of the room's own build. */
+	referencedUnityAssetIds?: string[]
 	/** Uploaded JSON authoring manifest, distinct from a playable baked bundle. */
 	unitySource?: { Filename: string; Hash: string | null }
 	/**
@@ -1966,6 +1968,7 @@ export async function saveSubRoomData(
 		createdAt: new Date().toISOString(),
 		unityAssetId: input.unityAssetId,
 	})
+	saveData.ReferencedUnityAssetIds = input.referencedUnityAssetIds ?? []
 	// A live client save changes the scene data while reusing the baked Studio
 	// asset. Its export manifest belongs to that asset and is needed again on the
 	// save's immediate reload (prefabs/materials live in separate bundles).
@@ -2084,6 +2087,39 @@ export async function publishSubRoomSave(
 	const room = await getRoomById(db, roomId)
 	if (!room) return { ok: false, reason: 'not_found' }
 	return { ok: true, room }
+}
+
+/**
+ * Complete the self-hosted Studio save review. There is no external automated
+ * moderation service here. Only unreviewed/pending saves are approved; a staff
+ * decision or escalation must survive retries. This never publishes a staged save.
+ */
+export async function requestSubRoomSaveModeration(
+	db: D1Database,
+	roomId: number,
+	subRoomId: number,
+	saveId: number
+): Promise<Room | null> {
+	if (!(await getSubRoom(db, roomId, subRoomId))) return null
+	if (!(await getSubRoomSaveById(db, subRoomId, saveId))) return null
+	await db.batch([
+		db
+			.prepare(
+				`UPDATE subroom_save SET data = json_set(data, '$.ModerationState', 2)
+				 WHERE sub_room_id = ?1 AND sub_room_data_save_id = ?2
+				 AND COALESCE(json_extract(data, '$.ModerationState'), 0) IN (0, 1)`
+			)
+			.bind(subRoomId, saveId),
+		db
+			.prepare(
+				`UPDATE subroom SET data = json_set(data, '$.LastModeratedSaveModerationState',
+				 (SELECT json_extract(data, '$.ModerationState') FROM subroom_save
+				  WHERE sub_room_id = ?1 AND sub_room_data_save_id = ?2))
+				 WHERE room_id = ?3 AND sub_room_id = ?1`
+			)
+			.bind(subRoomId, saveId, roomId),
+	])
+	return getRoomById(db, roomId)
 }
 
 /** Fields from the client's subroom `modify` form (each applied only when supplied). */
@@ -2581,7 +2617,17 @@ export async function attachStudioUnityAssets(
 		}
 		return [...ids]
 	}
-	const ids = [...new Set(saves.flatMap(assetIds))]
+	const referencedIds = (save: SubRoomDataSave): string[] =>
+		Array.isArray(save.ReferencedUnityAssetIds)
+			? [
+					...new Set(
+						save.ReferencedUnityAssetIds.filter((id): id is string => typeof id === 'string').map(
+							(id) => id.toLowerCase()
+						)
+					),
+				]
+			: []
+	const ids = [...new Set(saves.flatMap((save) => [...assetIds(save), ...referencedIds(save)]))]
 	if (ids.length === 0) return
 	const builds = (await listUnityAssetBuilds(db, ids)).filter((build) =>
 		isStudioBundleFilename(build.Filename)
@@ -2594,6 +2640,10 @@ export async function attachStudioUnityAssets(
 		byAsset.set(build.UnityAssetId, list)
 	}
 	for (const save of saves) {
+		if (referencedIds(save).length > 0)
+			save.ReferencedUnityAssets = bakedUnityAssets(
+				referencedIds(save).flatMap((assetId) => byAsset.get(assetId) ?? [])
+			)
 		const id = save.UnityAssetId
 		if (typeof id !== 'string') continue
 		const baked = bakedUnityAssets(assetIds(save).flatMap((assetId) => byAsset.get(assetId) ?? []))

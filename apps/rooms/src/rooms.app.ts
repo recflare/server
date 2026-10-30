@@ -67,6 +67,7 @@ import {
 	removeCheer,
 	removeFavorite,
 	removeRoomRole,
+	requestSubRoomSaveModeration,
 	Role,
 	roomNameRejection,
 	roomProgression,
@@ -935,6 +936,9 @@ function toSaveResponse(save: Record<string, unknown>, target: number | null = n
 		subRoomDataSaveId: num(save.SubRoomDataSaveId),
 		subRoomId: num(save.SubRoomId),
 		unityAssetId: str(save.UnityAssetId),
+		referencedUnityAssetIds: Array.isArray(save.ReferencedUnityAssetIds)
+			? save.ReferencedUnityAssetIds
+			: [],
 		unityAsset: baked?.filename ?? null,
 		unityAssetHash: baked?.hash ?? null,
 		dataBlob: str(save.DataBlob),
@@ -986,6 +990,13 @@ function pickBakedBundle(
 
 /** Drop baked bundles whose `Target` is not the one the caller asked for. */
 function keepUnityAssetTarget(save: Record<string, unknown>, target: number) {
+	if (Array.isArray(save.ReferencedUnityAssets))
+		save.ReferencedUnityAssets = save.ReferencedUnityAssets.filter(
+			(item) =>
+				typeof item === 'object' &&
+				item !== null &&
+				(item.Target === undefined || item.Target === target)
+		)
 	if (!Array.isArray(save.UnitySubAssets)) return
 	save.UnitySubAssets = save.UnitySubAssets.filter((item) => {
 		if (typeof item !== 'object' || item === null) return false
@@ -1093,7 +1104,16 @@ function toSaveDetail(save: Record<string, unknown>, target: number | null) {
 			UnityAssetHash: str(row.Hash),
 		})),
 		ReferencedUnityAssets: Array.isArray(save.ReferencedUnityAssets)
-			? save.ReferencedUnityAssets
+			? save.ReferencedUnityAssets.filter(
+					(row) =>
+						typeof row === 'object' &&
+						row !== null &&
+						(row.Target === undefined || row.Target === (target ?? 0))
+				).map((row) => ({
+					UnityAssetId: row.UnityAssetId,
+					UnityAsset: row.Filename ?? row.UnityAsset,
+					UnityAssetHash: row.Hash ?? row.UnityAssetHash,
+				}))
 			: [],
 		UnityAsset: main?.filename ?? null,
 		UnityAssetHash: main?.hash ?? null,
@@ -4261,6 +4281,40 @@ const app = new Hono<App>()
 		}
 	)
 
+	// 20260323.14 requests this before saving Studio content into an invention.
+	// Like publish_save, the client consumes the whole room from the result envelope.
+	.post(
+		'/rooms/:roomId{[0-9]+}/subrooms/:subRoomId{[0-9]+}/datasaves/:saveId{[0-9]+}/requestAutomatedModeration',
+		describeRoute({
+			tags: ['Subrooms'],
+			summary: 'Request review of a Studio subroom save',
+			description:
+				'Room managers may request review. This self-hosted server approves unreviewed or pending saves immediately, without an external scanner. Staff decisions are preserved and staged saves remain unpublished.',
+			security: AUTHED,
+			parameters: [roomIdParam, subRoomIdParam, saveIdParam],
+			responses: {
+				200: json(RoomEnvelope, 'The updated room'),
+				401: UNAUTHORIZED_RESPONSE,
+				403: FORBIDDEN_RESPONSE,
+				404: { description: 'No such room, subroom, or save on that subroom' },
+			},
+		}),
+		async (c) => {
+			const accountId = await authedAccountId(c)
+			if (accountId === null) return unauthorized(c)
+			const roomId = Number.parseInt(c.req.param('roomId'), 10)
+			const subRoomId = Number.parseInt(c.req.param('subRoomId'), 10)
+			const saveId = Number.parseInt(c.req.param('saveId'), 10)
+			const room = await getRoomById(c.env.DB, roomId)
+			if (!room || !findSubRoom(room, subRoomId)) return c.notFound()
+			if (!canManageRoom(room, accountId)) return c.body(null, 403)
+			const updated = await requestSubRoomSaveModeration(c.env.DB, roomId, subRoomId, saveId)
+			if (!updated) return c.notFound()
+			await pushRoomUpdate(c, accountId, updated)
+			return roomEnvelope(c, updated)
+		}
+	)
+
 	// The authoring manifest on a save. Its JSON source filename is independent of
 	// the baked game bundles; a baked-only archive has no editable source to return.
 	.get(
@@ -4403,6 +4457,7 @@ const app = new Hono<App>()
 				RoomData?: { Filename?: string; Hash?: string | null }
 				SubRoomData?: { Filename?: string; Hash?: string | null }
 				UnityAssetId?: string | null
+				ReferencedUnityAssetIds?: string[]
 				UnityAsset?: { Filename?: string; Hash?: string | null }
 				Description?: string
 				PersistenceVersion?: number
@@ -4419,6 +4474,9 @@ const app = new Hono<App>()
 				roomDataFilename: body.RoomData?.Filename,
 				roomDataHash: typeof body.RoomData?.Hash === 'string' ? body.RoomData.Hash : undefined,
 				unityAssetId: typeof body.UnityAssetId === 'string' ? body.UnityAssetId : undefined,
+				referencedUnityAssetIds: Array.isArray(body.ReferencedUnityAssetIds)
+					? body.ReferencedUnityAssetIds.filter((id): id is string => typeof id === 'string')
+					: undefined,
 				unitySource:
 					typeof body.UnityAsset?.Filename === 'string' && body.UnityAsset.Filename !== ''
 						? {

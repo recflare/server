@@ -524,6 +524,11 @@ export const InventionVersionDto = z.object({
 		.boolean()
 		.optional()
 		.describe('Set from `v9/save` on — absent on a version saved through `v6/save`'),
+	ReferencedInventions: z.array(z.int()).optional(),
+	ReferencedUnityAssetIds: z
+		.array(z.string())
+		.optional()
+		.describe('Studio bundle ids to resolve before spawning the invention'),
 })
 
 /** A tag on an invention. `Type` 0 = custom (creator-submitted), 2 = auto-derived. */
