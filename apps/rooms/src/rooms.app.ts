@@ -524,15 +524,6 @@ async function isStaff(c: Context<App>): Promise<boolean> {
 }
 
 /**
- * Whether the caller's token carries the `developer` role — the narrower of the two staff
- * roles, for the actions a moderator may not take (deleting a room that isn't theirs).
- */
-async function isDeveloper(c: Context<App>): Promise<boolean> {
-	const roles = await validateAndGetRoles(c.req.raw, await c.env.JWT_SECRET.get())
-	return roles?.includes('developer') ?? false
-}
-
-/**
  * Whether the `:playerId` in the path is banned from the `:roomId` in it — the read behind
  * both `isBanned` routes, which differ only in the envelope they wrap the answer in.
  *
@@ -2656,7 +2647,7 @@ const app = new Hono<App>()
 		}
 	)
 
-	// Delete a room. Auth-gated (401); the owner or a developer may delete — not a moderator.
+	// Delete a room. Auth-gated (401); the owner or staff (a developer or moderator) may delete.
 	// Removes the room record (and per-player interactions with it) and the room's
 	// image object from the shared CDN bucket. Images players *took* in the room are
 	// left alone — they live in the api/img world and outlast the room.
@@ -2666,7 +2657,7 @@ const app = new Hono<App>()
 			tags: ['Room settings'],
 			summary: 'Delete a room',
 			description: [
-				'Owner or developer (a moderator token is refused). Removes the room record, the per-player interactions with it, and the',
+				'Owner or staff (a `developer` / `moderator` token). Removes the room record, the per-player interactions with it, and the',
 				'room’s image object from the shared CDN bucket. Photos players TOOK in the room are',
 				'left alone — those live in the api/img world and outlive the room.',
 			].join(' '),
@@ -2691,7 +2682,7 @@ const app = new Hono<App>()
 				})
 			}
 			const isOwner = room.CreatorAccountId === accountId
-			if (!isOwner && !(await isDeveloper(c))) {
+			if (!isOwner && !(await isStaff(c))) {
 				return roomResult(c, {
 					Success: false,
 					ErrorId: 'Rooms.NotOwner',
@@ -2710,7 +2701,7 @@ const app = new Hono<App>()
 				await c.env.CDN_ASSETS.delete(`room/${imageName}`)
 			}
 
-			// A takedown — a developer deleting a room that isn't theirs — goes in the audit log; an
+			// A takedown — staff deleting a room that isn't theirs — goes in the audit log; an
 			// owner deleting their own room is their business and doesn't. The row keeps the
 			// room's identity, since the room itself is gone and nothing else will answer "which
 			// room was that". Written after the fact and caught: a failed insert must not report
@@ -3907,8 +3898,9 @@ const app = new Hono<App>()
 
 	// Set a room's top-level `Accessibility` (the visibility the public-room/search
 	// filters key on — see the RoomAccessibility enum). Auth-gated (401) and
-	// owner/co-owner-only (403). Body is the `accessibility` form field (an integer).
-	// Returns the updated room in the `{ success, error, value }` envelope.
+	// owner/co-owner or staff (403 otherwise) — staff use it from the website to unpublish a
+	// room (set it Private), and that is audited. Body is the `accessibility` form field (an
+	// integer). Returns the updated room in the `{ success, error, value }` envelope.
 	.put(
 		'/rooms/:roomId{[0-9]+}/accessibility',
 		describeRoute({
@@ -3916,7 +3908,8 @@ const app = new Hono<App>()
 			summary: 'Set a room’s accessibility',
 			description: [
 				'The room’s top-level visibility — the field the public-room and search filters key',
-				'on (0 Private, 1 Public, 2 Unlisted). Owner or co-owner only (403 otherwise).',
+				'on (0 Private, 1 Public, 2 Unlisted). Owner, co-owner, or staff (a `developer` /',
+				'`moderator` token — the website’s unpublish; audited) — 403 otherwise.',
 				'Subrooms carry their own `Accessibility`, set through the subroom `modify` call.',
 			].join(' '),
 			security: AUTHED,
@@ -3935,9 +3928,10 @@ const app = new Hono<App>()
 			const roomId = Number.parseInt(c.req.param('roomId'), 10)
 			const room = await getRoomById(c.env.DB, roomId)
 			if (!room) return roomEnvelope(c, null, 'This room does not exist!')
-			// A valid token but not the room's owner/co-owner → 403 (the auth gate above
-			// already returned 401 for a missing/invalid token).
-			if (!canManageRoom(room, accountId)) return c.body(null, 403)
+			// A valid token but neither the room's owner/co-owner nor staff → 403 (the auth
+			// gate above already returned 401 for a missing/invalid token).
+			const isManager = canManageRoom(room, accountId)
+			if (!isManager && !(await isStaff(c))) return c.body(null, 403)
 
 			const body = (await c.req.parseBody().catch(() => ({}))) as Record<string, unknown>
 			const accessibility =
@@ -3951,7 +3945,39 @@ const app = new Hono<App>()
 			const updated = await updateRoomFields(c.env.DB, roomId, room, {
 				Accessibility: accessibility,
 			})
-			await pushRoomUpdate(c, accountId, updated)
+
+			// Staff changing a room they don't manage is a moderation action, so it's audited
+			// like the takedown and the listing toggle; an owner's own change is not. Written
+			// after the fact and caught: a failed insert must not report the change as refused.
+			if (!isManager) {
+				try {
+					await writeAuditLog(c.env.DB, {
+						playerId: accountId,
+						action: 'room_accessibility',
+						data: {
+							roomId,
+							name: room.Name,
+							creatorAccountId: room.CreatorAccountId,
+							from: room.Accessibility,
+							to: accessibility,
+						},
+					})
+				} catch (err) {
+					logger.error('could not write an audit log row', {
+						action: 'room_accessibility',
+						playerId: accountId,
+						roomId,
+						error: err instanceof Error ? err.message : String(err),
+					})
+				}
+			}
+
+			// The caller's client re-renders from this; for a staff change from the website, the
+			// owner's open client is the one that needs it.
+			if (isManager) await pushRoomUpdate(c, accountId, updated)
+			else if (typeof room.CreatorAccountId === 'number') {
+				await pushRoomUpdate(c, room.CreatorAccountId, updated)
+			}
 			return roomEnvelope(c, updated)
 		}
 	)

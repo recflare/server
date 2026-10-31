@@ -2059,9 +2059,9 @@ describe('rooms endpoints', () => {
 		expect(interactions!.n).toBe(0)
 	})
 
-	it('DELETE /rooms/:id also lets developers through — the website’s takedown — but only there', async () => {
-		// Somebody else's room. A developer token may delete it (a moderator's may not); the
-		// same token may NOT rename it, which is what a misapplied check once allowed.
+	it('DELETE /rooms/:id also lets staff through — the website’s takedown — but only there', async () => {
+		// Somebody else's room. A developer or moderator token may delete it; the same token
+		// may NOT rename it, which is what a misapplied check once allowed.
 		await env.DB.prepare('INSERT INTO room (data) VALUES (?1)')
 			.bind(
 				JSON.stringify({
@@ -2086,14 +2086,10 @@ describe('rooms endpoints', () => {
 		})
 		expect(await bodyOf(rename)).toMatchObject({ Success: false, ErrorId: 'Rooms.NotOwner' })
 
-		// A plain player and a moderator are refused; the developer gets through.
-		const del = async (headers: Record<string, string>) =>
-			bodyOf(await SELF.fetch(`${ORIGIN}/rooms/9501`, { method: 'DELETE', headers }))
+		// A plain player is refused; the developer gets through.
+		const del = async (headers: Record<string, string>, roomId = 9501) =>
+			bodyOf(await SELF.fetch(`${ORIGIN}/rooms/${roomId}`, { method: 'DELETE', headers }))
 		expect(await del(await bearer('2', ['gameClient']))).toMatchObject({
-			Success: false,
-			ErrorId: 'Rooms.NotOwner',
-		})
-		expect(await del(await bearer('998', ['gameClient', 'moderator']))).toMatchObject({
 			Success: false,
 			ErrorId: 'Rooms.NotOwner',
 		})
@@ -2101,15 +2097,35 @@ describe('rooms endpoints', () => {
 		expect(await del(staff)).toMatchObject({ Success: true })
 		expect(await roomExists()).toBe(false)
 
-		// The takedown is the one row in the audit log: the owner's own deletion in the test
-		// above wrote none, and the refused attempts wrote none. It names the actor and keeps
-		// enough of the room to say which one it was, now that the room itself is gone.
+		// A moderator gets through too.
+		await env.DB.prepare('INSERT INTO room (data) VALUES (?1)')
+			.bind(
+				JSON.stringify({
+					RoomId: 9502,
+					Name: 'ModTakesMeDown',
+					CreatorAccountId: 1,
+					IsDorm: false,
+					Accessibility: 1,
+					ImageName: '',
+					SubRooms: [],
+				})
+			)
+			.run()
+		expect(await del(await bearer('998', ['gameClient', 'moderator']), 9502)).toMatchObject({
+			Success: true,
+		})
+		expect(await env.DB.prepare('SELECT 1 FROM room WHERE room_id = 9502').first()).toBeNull()
+
+		// The takedowns are the only rows in the audit log: the owner's own deletion in the
+		// test above wrote none, and the refused attempt wrote none. Each names the actor and
+		// keeps enough of the room to say which one it was, now that the room itself is gone.
 		const { results: audit } = await env.DB.prepare(
-			'SELECT player_id, action, data FROM audit_log WHERE action = ?1'
+			'SELECT player_id, action, data FROM audit_log WHERE action = ?1 ORDER BY audit_log_id'
 		)
 			.bind('room_delete')
 			.all<{ player_id: number; action: string; data: string }>()
-		expect(audit).toHaveLength(1)
+		expect(audit).toHaveLength(2)
+		expect(audit[1].player_id).toBe(998)
 		expect(audit[0].player_id).toBe(999)
 		expect(JSON.parse(audit[0].data)).toEqual({
 			roomId: 9501,
@@ -4030,6 +4046,41 @@ describe('rooms endpoints', () => {
 		// The co-owner (account 2) may set it back to public (1).
 		const pub = await envOf(await putForm('/rooms/2/accessibility', { accessibility: '1' }, '2'))
 		expect(pub.value?.Accessibility).toBe(1)
+	})
+
+	it('PUT /rooms/:id/accessibility lets staff unpublish a room they hold no role on (audited)', async () => {
+		const staffPut = async (roles: string[], accessibility: string) =>
+			envOf(
+				await SELF.fetch(`${ORIGIN}/rooms/2/accessibility`, {
+					method: 'PUT',
+					headers: {
+						...(await bearer('997', ['gameClient', ...roles])),
+						'Content-Type': 'application/x-www-form-urlencoded',
+					},
+					body: new URLSearchParams({ accessibility }).toString(),
+				})
+			)
+		const before = (await (await SELF.fetch(`${ORIGIN}/rooms/2`)).json()) as {
+			Accessibility: number
+		}
+
+		expect((await staffPut(['moderator'], '0')).value?.Accessibility).toBe(0)
+		expect((await staffPut(['developer'], String(before.Accessibility))).value?.Accessibility).toBe(
+			before.Accessibility
+		)
+
+		const { results: audit } = await env.DB.prepare(
+			'SELECT player_id, data FROM audit_log WHERE action = ?1 ORDER BY audit_log_id'
+		)
+			.bind('room_accessibility')
+			.all<{ player_id: number; data: string }>()
+		expect(audit).toHaveLength(2)
+		expect(audit[0].player_id).toBe(997)
+		expect(JSON.parse(audit[0].data)).toMatchObject({
+			roomId: 2,
+			from: before.Accessibility,
+			to: 0,
+		})
 	})
 
 	it('there is no GET for a single subroom — only the room carries them', async () => {

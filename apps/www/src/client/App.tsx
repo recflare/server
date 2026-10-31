@@ -1258,8 +1258,8 @@ const fetchRoomPhotos = (roomId: number): Promise<PublicPhoto[]> =>
 	)
 
 /**
- * Delete a room outright — the developer takedown. `rooms` lets the owner or a developer
- * through and refuses everyone else, moderators included; it answers a refusal as a 200 carrying
+ * Delete a room outright — the staff takedown. `rooms` lets the owner or staff (developer or
+ * moderator) through and refuses everyone else; it answers a refusal as a 200 carrying
  * `Success: false` (the game's envelope), so the check is on the body, not the status.
  */
 async function deleteRoom(roomId: number): Promise<void> {
@@ -1283,6 +1283,22 @@ async function setRoomExcluded(roomId: number, excluded: boolean): Promise<Owned
 	)
 	if (!result.success || result.value === null) {
 		throw new Error(result.error || 'The room’s listing couldn’t be changed.')
+	}
+	return result.value
+}
+
+/**
+ * Set a room's top-level `Accessibility` — the game's own endpoint, which `rooms` also lets
+ * staff through (audited) so the website can unpublish a room. Answers the lowercase
+ * `{ success, error, value }` envelope with the updated room; a refusal is a 403.
+ */
+async function setRoomAccessibility(roomId: number, accessibility: number): Promise<OwnedRoom> {
+	const result = await call<{ success: boolean; error: string; value: OwnedRoom | null }>(
+		`${where().rooms}/rooms/${roomId}/accessibility`,
+		{ method: 'PUT', authed: true, form: { accessibility: String(accessibility) } }
+	)
+	if (!result.success || result.value === null) {
+		throw new Error(result.error || 'The room’s visibility couldn’t be changed.')
 	}
 	return result.value
 }
@@ -3837,9 +3853,12 @@ function RoomPage({
 	// Unlisted rooms are reachable by link, which is what a URL is. Everything else that
 	// isn't Public is somebody's private space, and gets the same sentence a missing room
 	// does: which of the two it is answers a question a stranger has no business asking.
+	// Staff see it anyway — an unpublished room still needs its staff tools (the delete).
 	const visible =
 		room !== null &&
-		(room.Accessibility === Accessibility.Public || room.Accessibility === Accessibility.Unlisted)
+		(isAdmin() ||
+			room.Accessibility === Accessibility.Public ||
+			room.Accessibility === Accessibility.Unlisted)
 
 	return (
 		<main className="shell wide">
@@ -3951,13 +3970,14 @@ function PublicRoomView({
 			</section>
 
 			{/* Staff only, and cosmetic: hidden for everyone else, but `rooms` checks the token's
-			    role itself on the DELETE (developers only) and the listing PUT. */}
+			    role itself on the DELETE, the accessibility PUT and the listing PUT. */}
 			{isAdmin() && (
 				<>
 					{isDeveloper() && <StaffRoomTokens room={room} />}
 					<StaffListing room={room} onRoomChange={onRoomChange} />
+					<StaffUnpublish room={room} onRoomChange={onRoomChange} />
 					<StaffClearInstances room={room} />
-					{isDeveloper() && <StaffTakedown room={room} onTakenDown={onTakenDown} />}
+					<StaffTakedown room={room} onTakenDown={onTakenDown} />
 				</>
 			)}
 		</>
@@ -4089,6 +4109,73 @@ function StaffListing({
 				and by invite, and its creator keeps everything. Sets both the lists and search exclusions
 				at once.
 			</p>
+			{error && <p className="error">{error}</p>}
+			{done && <p className="ok">{done}</p>}
+		</section>
+	)
+}
+
+/**
+ * Unpublish a room: set it Private, so it drops out of every public surface and only its
+ * owner and roles can get in. Heavier than the listing toggle (the link stops working for
+ * players too) but nothing is deleted — the owner can publish it again from the game. Two
+ * steps, since it takes the room away from everyone who plays it.
+ */
+function StaffUnpublish({
+	room,
+	onRoomChange,
+}: {
+	room: OwnedRoom
+	onRoomChange: (room: OwnedRoom) => void
+}) {
+	const [confirming, setConfirming] = useState(false)
+	const { pending, error, done, run } = useAction()
+	const isPrivate = room.Accessibility === Accessibility.Private
+
+	return (
+		<section className="card">
+			<h2>Publishing</h2>
+			<p className="hint">
+				{isPrivate
+					? 'This room is private: only its creator and the people they gave a role can see or join it.'
+					: 'Unpublishing makes the room private. Only its creator and the people they gave a role can see or join it. Nothing is deleted, and the creator can publish it again in game.'}
+			</p>
+			{!isPrivate && (
+				<div className="mod-filter-actions">
+					{confirming ? (
+						<>
+							<button
+								type="submit"
+								disabled={pending}
+								onClick={() =>
+									void run(async () => {
+										const updated = await setRoomAccessibility(room.RoomId, Accessibility.Private)
+										setConfirming(false)
+										// Only the flag is taken: the envelope's room is the stored record,
+										// without the live counters the public lookup folds in.
+										onRoomChange({ ...room, Accessibility: updated.Accessibility })
+										return `^${room.Name} is unpublished.`
+									})
+								}
+							>
+								{pending ? 'Unpublishing…' : 'Yes, unpublish'}
+							</button>
+							<button
+								type="button"
+								className="linkish"
+								onClick={() => setConfirming(false)}
+								disabled={pending}
+							>
+								Cancel
+							</button>
+						</>
+					) : (
+						<button type="submit" onClick={() => setConfirming(true)}>
+							Unpublish room
+						</button>
+					)}
+				</div>
+			)}
 			{error && <p className="error">{error}</p>}
 			{done && <p className="ok">{done}</p>}
 		</section>
