@@ -29,6 +29,7 @@ import {
 	usernamesFor,
 	where,
 } from './api'
+import { ChristmasLayer, XmasHome } from './Christmas'
 import { DeviceLinkPage } from './DeviceLink'
 import { eventIdFromPath, EventPage, EventsPage } from './Events'
 import {
@@ -2667,10 +2668,14 @@ export function App() {
 			) : roomId !== null ? (
 				<RoomPage account={account} config={config} roomId={roomId} navigate={navigate} />
 			) : (
-				<HomePage account={account} config={config} navigate={navigate} />
+				// Frozen until the countdown to November 1st ends; then it is the homepage again.
+				<XmasHome>
+					<HomePage account={account} config={config} navigate={navigate} />
+				</XmasHome>
 			)}
 			<SiteFooter />
 			<HalloweenOverlay />
+			<ChristmasLayer />
 			<PumpleBossFight />
 		</>
 	)
