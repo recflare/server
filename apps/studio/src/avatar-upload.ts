@@ -11,13 +11,18 @@ import { validateAndGetAccountId, validateAndGetRoles } from '@repo/jwt'
 
 import { TOKENS_CURRENCY_TYPE } from '../../api/src/custom-avatar-items-load'
 import { hasStudioAccess } from '../../auth/src/platform-db'
-import { parseMultipart } from '../../studio/src/multipart'
+import { parseMultipart } from './multipart'
 
 import type { Context } from 'hono'
 import type { App } from './context'
 
 /**
  * Web upload of finished avatar asset bundles, turned into a published custom avatar item.
+ *
+ * It lives on the `studio` worker because it writes Studio's data (`avatar_studio_save`, the
+ * `unity_asset` rows, the bundles in `recflare-cdn`) the way a finished build does. The website
+ * calls it straight from the browser with the session's token, like it calls `rooms` or
+ * `accounts`, so the route answers CORS (see studio.app.ts).
  *
  * Rec Room Studio gets an item onto the shelf in three steps: create the item, upload a
  * Unity project, and let the cloud-build worker compile it to bundles. This route takes the

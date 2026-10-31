@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-import { call, useAction } from './api'
+import { call, useAction, where } from './api'
 
 import type { FormEvent } from 'react'
 
@@ -9,7 +9,7 @@ import type { FormEvent } from 'react'
  *
  * Open to accounts with Studio access (the `hasStudio` flag or the rollout role) and the
  * avatar access bit; `/api/studio-access` says which. That is a courtesy that hides the
- * form — `POST /api/studio/avatar-items` checks the same things itself. An item goes
+ * form — `POST <studio>/avatar-items` checks the same things itself. An item goes
  * live on upload, so there is no draft state to show.
  */
 
@@ -111,8 +111,9 @@ export function AvatarUploadPage({
 		const form = e.currentTarget
 		const body = new FormData(form)
 		void upload.run(async () => {
+			// Straight to the studio worker, which owns this data, with the session's token.
 			const res = await call<{ value?: { customAvatarItemId?: string } }>(
-				'/api/studio/avatar-items',
+				`${where().studio}/avatar-items`,
 				{ authed: true, multipart: body }
 			)
 			form.reset()

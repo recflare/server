@@ -17,6 +17,9 @@ export type Env = SharedHonoEnv & {
 	// Shared `recflare-cdn` bucket. Local Studio builds land under
 	// `room/studio/<roomId>/`. The same bucket name the rooms and cdn workers bind.
 	CDN_ASSETS: R2Bucket
+	// Shared `recflare-img` bucket (also bound by `api` / `img` / `mono`). The web avatar upload
+	// puts an item's thumbnail here, where the image host serves it from.
+	IMAGES: R2Bucket
 	/**
 	 * Private pull-worker credential, out of the shared Secrets Store (same store as
 	 * JWT_SECRET). Read it through `cloudBuildKey()` in cloud-builds.ts, never `.get()`

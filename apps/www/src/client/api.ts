@@ -30,6 +30,7 @@ export interface Hosts {
 	rooms: string
 	cdn: string
 	storage: string
+	studio: string
 }
 
 /**

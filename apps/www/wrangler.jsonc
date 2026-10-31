@@ -48,19 +48,6 @@
 			"id": "local"
 		}
 	],
-	// The shared buckets the avatar bundle upload (src/avatar-upload.ts) writes to: the
-	// bundles go to `recflare-cdn` under `avatar/` and the thumbnail to `recflare-img`,
-	// exactly where a Rec Room Studio avatar build and its thumbnail land.
-	"r2_buckets": [
-		{
-			"binding": "CDN_ASSETS",
-			"bucket_name": "recflare-cdn"
-		},
-		{
-			"binding": "IMAGES",
-			"bucket_name": "recflare-img"
-		}
-	],
 	"assets": {
 		"binding": "ASSETS",
 		"not_found_handling": "single-page-application",

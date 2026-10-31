@@ -28,7 +28,6 @@ import {
 // it the box one cron run would, so the amount and the box are econ's and not a copy.
 import { DEFAULT_STARTING_TOKENS } from '../../econ/src/balance-db'
 import { grantDiscordRoleGift } from '../../econ/src/discord-role-gift'
-import { uploadAvatarItemHandler } from './avatar-upload'
 import { authUnreachable, PASSWORD_SIGNUP_DISABLED } from './auth-messages'
 import {
 	AUTHORIZE_URL,
@@ -91,6 +90,7 @@ import {
 	readAuthError,
 	roomsBase,
 	storageBase,
+	studioBase,
 } from './upstream'
 
 import type { Context } from 'hono'
@@ -229,6 +229,7 @@ const app = new Hono<App>()
 				rooms: roomsBase(c.env),
 				cdn: cdnBase(c.env),
 				storage: storageBase(c.env),
+				studio: studioBase(c.env),
 			},
 		})
 	})
@@ -808,9 +809,6 @@ const app = new Hono<App>()
 	})
 
 	.get('/api/studio-access', studioAccessStatusHandler)
-	// Upload finished avatar bundles as a published custom avatar item. Gated inside the
-	// handler on Studio access, so it is not behind `requireStaff`.
-	.post('/api/studio/avatar-items', uploadAvatarItemHandler)
 
 	// ---- Staff moderation panel ---------------------------------------------
 	// The endpoints behind `/moderation` in the SPA. They live here rather than on `api`

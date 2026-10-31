@@ -8,7 +8,7 @@ import {
 	getRoomCoOwnerIds,
 	getSubRoom,
 } from '@repo/domain'
-import { withNotFound, withOnError } from '@repo/hono-helpers'
+import { withDefaultCors, withNotFound, withOnError } from '@repo/hono-helpers'
 import {
 	isStaff,
 	studioBuildValidationId,
@@ -17,6 +17,7 @@ import {
 } from '@repo/jwt'
 
 import { hasStudioAccess } from '../../auth/src/platform-db'
+import { uploadAvatarItemHandler } from './avatar-upload'
 import cloudBuilds from './cloud-builds'
 import distribution from './distribution'
 import { getUserBuildCount, listCloudBuilds, storeLocalCloudBuild } from './local-builds'
@@ -178,6 +179,12 @@ const app = new Hono<App>()
 	.notFound(withNotFound())
 	.route('/', cloudBuilds)
 	.route('/', distribution)
+
+	// The website's avatar bundle upload. A browser calls it, so it answers CORS: `*` is safe
+	// here because it authenticates with the bearer token in `Authorization`, never a cookie,
+	// so there is no ambient credential for a hostile page to ride. Do not add cookie auth.
+	.use('/avatar-items', withDefaultCors())
+	.post('/avatar-items', uploadAvatarItemHandler)
 
 	.get('/', async (c) => {
 		return c.text('hello, world!')

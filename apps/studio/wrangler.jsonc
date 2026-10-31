@@ -27,6 +27,12 @@
 		{
 			"binding": "CDN_ASSETS",
 			"bucket_name": "recflare-cdn"
+		},
+		// Shared `recflare-img` bucket: where the web avatar upload (src/avatar-upload.ts) puts an
+		// item's thumbnail, the same place a Studio avatar build's thumbnail goes.
+		{
+			"binding": "IMAGES",
+			"bucket_name": "recflare-img"
 		}
 	],
 	// Shared Secrets Store holding the HS256 JWT signing key. Every worker binds the
