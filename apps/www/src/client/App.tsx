@@ -42,6 +42,7 @@ import { ModerationPage, PlayerBanStatus } from './Moderation'
 import { PumpleBossFight } from './PumpleBossFight'
 import { RoomsPage } from './Rooms'
 import { StatsPage } from './Stats'
+import { AvatarUploadPage } from './AvatarUpload'
 import { StudioAccessPage } from './StudioAccess'
 
 import type { ReactNode } from 'react'
@@ -2620,6 +2621,10 @@ export function App() {
 				// load falls through to the SPA shell. The page shows one account's own
 				// status to whoever is signed in, and the whitelist editor only to staff.
 				<StudioAccessPage account={account} navigate={navigate} />
+			) : path === '/studio/avatar-upload' || path === '/studio/avatar-upload/' ? (
+				// Studio-access holders only; the page asks `/api/studio-access` and the upload
+				// endpoint re-checks. A client-side route, so a cold load falls through to the SPA shell.
+				<AvatarUploadPage account={account} navigate={navigate} />
 			) : path === '/events' || path === '/events/' ? (
 				// Public, and a client-side route like /stats: not in `run_worker_first`, so a
 				// cold load falls through to the SPA shell. Waits on the config because its
@@ -2765,6 +2770,13 @@ function NavBar({
 								Studio access
 							</Link>
 						)}
+						<Link
+							to="/studio/avatar-upload"
+							navigate={navigate}
+							className={path === '/studio/avatar-upload' ? 'active' : ''}
+						>
+							Upload avatar items
+						</Link>
 						<Link to="/account" navigate={navigate} className={path === '/account' ? 'active' : ''}>
 							My account
 						</Link>

@@ -32,6 +32,13 @@ export type Env = SharedHonoEnv & {
 	 */
 	RECFLARE_PLAYER_SETTINGS: KVNamespace
 	/**
+	 * The shared `recflare-cdn` bucket. The avatar bundle upload writes the Windows and
+	 * Android bundles here under `avatar/`, the path the game downloads them from.
+	 */
+	CDN_ASSETS: R2Bucket
+	/** The shared `recflare-img` bucket, where an avatar item's thumbnail is served from. */
+	IMAGES: R2Bucket
+	/**
 	 * Which ban-EVASION arms the operator enforces — the same knob `match` and `auth`
 	 * read, parsed by the same `banEvasionMatch` (in `api`'s bans-db, which owns the
 	 * policy). www reads it so the staff panel's "who else would this ban reach" preview
