@@ -2445,6 +2445,144 @@ function LilPumpkin() {
 	)
 }
 
+const HACKED_KEY = 'rf_halloween_hacked_seen'
+const HACKED_TEXT = 'HACKED BY...'
+
+const HACKED_CSS = `
+.rf-hacked { position: fixed; inset: 0; z-index: 100005; display: grid; place-items: center; padding: 20px;
+	background: #000c; backdrop-filter: blur(3px); animation: rf-hacked-in 0.2s ease-out; }
+.rf-hacked-box { position: relative; width: min(440px, 100%); padding: 28px 24px 22px; text-align: center;
+	background: #070a07; color: #39ff6a; border: 2px solid #39ff6a; border-radius: 6px;
+	box-shadow: 0 0 30px #39ff6a55, inset 0 0 40px #39ff6a14;
+	font-family: ui-monospace, 'Courier New', monospace; overflow: hidden; }
+.rf-hacked-box:after { content: ""; position: absolute; inset: 0; pointer-events: none;
+	background: repeating-linear-gradient(0deg, #0000 0 2px, #0006 2px 3px); }
+.rf-hacked-x { position: absolute; top: 6px; right: 10px; z-index: 1; background: none; border: 0; color: #39ff6a;
+	font: inherit; font-size: 20px; cursor: pointer; }
+.rf-hacked-title { margin: 0; font-size: clamp(28px, 7vw, 42px); font-weight: 900; letter-spacing: 3px;
+	text-shadow: 2px 0 #ff2a6d, -2px 0 #2af0ff; animation: rf-hacked-glitch 2.4s steps(1) infinite; }
+.rf-hacked-caret { animation: rf-hacked-blink 0.7s steps(1) infinite; }
+.rf-hacked-stage { height: 200px; display: grid; place-items: center; }
+.rf-hacked-pumple { width: 180px; height: 180px; image-rendering: pixelated;
+	animation: rf-hacked-strobe 1.3s steps(1) forwards, rf-hacked-drop 1.3s cubic-bezier(.2, 1.6, .4, 1) forwards; }
+.rf-hacked-name { margin: 0; font-size: 26px; font-weight: 900; letter-spacing: 6px; color: #ff8a1f;
+	text-shadow: 0 0 12px #ff8a1f; animation: rf-hacked-in 0.3s 1.3s both; }
+.rf-hacked-sub { margin: 8px 0 18px; font-size: 13px; opacity: 0.8; animation: rf-hacked-in 0.3s 1.5s both; }
+.rf-hacked-ok { padding: 9px 18px; border: 2px solid #39ff6a; border-radius: 4px; background: #0d1f10;
+	color: #39ff6a; font: inherit; font-weight: 800; letter-spacing: 1px; cursor: pointer;
+	animation: rf-hacked-in 0.3s 1.7s both; }
+.rf-hacked-ok:hover { background: #39ff6a; color: #070a07; }
+@keyframes rf-hacked-in { from { opacity: 0 } to { opacity: 1 } }
+@keyframes rf-hacked-blink { 50% { opacity: 0 } }
+@keyframes rf-hacked-glitch { 0%, 88%, 100% { transform: none } 90% { transform: translateX(-4px) skewX(8deg) }
+	94% { transform: translateX(3px) skewX(-6deg) } }
+@keyframes rf-hacked-strobe {
+	0% { opacity: 0 } 8% { opacity: 1; filter: invert(1) } 16% { opacity: 0 }
+	24% { opacity: 1; filter: hue-rotate(120deg) saturate(3) } 32% { opacity: 0 }
+	42% { opacity: 1; filter: invert(1) hue-rotate(200deg) } 52% { opacity: 0 }
+	64% { opacity: 1; filter: brightness(3) } 76% { opacity: 0.2 } 88%, 100% { opacity: 1; filter: none } }
+@keyframes rf-hacked-drop { from { transform: scale(2.6) rotate(-14deg) } to { transform: none } }
+@media (prefers-reduced-motion: reduce) {
+	.rf-hacked-title, .rf-hacked-pumple, .rf-hacked-caret { animation: none }
+}
+`
+
+/**
+ * Once-ever "you've been hacked" joke: types out HACKED BY..., then Pumple strobes in. Dismissing
+ * it (button, ✕, backdrop or Escape) records it so it never comes back. `?hacked=1` replays it.
+ */
+function HackedModal() {
+	const forced = new URLSearchParams(window.location.search).get('hacked') === '1'
+	const [open, setOpen] = useState(() => {
+		if (forced) return true
+		try {
+			return localStorage.getItem(HACKED_KEY) !== '1'
+		} catch {
+			return false
+		}
+	})
+	const [typed, setTyped] = useState(0)
+	const done = typed >= HACKED_TEXT.length
+	// Let HACKED BY... sit on screen for a beat before Pumple strobes in.
+	// Reduced motion keeps the pacing; the CSS drops the strobe and glitch.
+	const [revealed, setRevealed] = useState(false)
+
+	const dismiss = () => {
+		setOpen(false)
+		try {
+			localStorage.setItem(HACKED_KEY, '1')
+		} catch {
+			// Storage can be unavailable; it just shows again next visit.
+		}
+	}
+
+	useEffect(() => {
+		if (!open || done) return
+		const t = window.setTimeout(() => setTyped((n) => n + 1), typed === 0 ? 500 : 110)
+		return () => window.clearTimeout(t)
+	}, [open, typed, done])
+
+	useEffect(() => {
+		if (!open || !done || revealed) return
+		const t = window.setTimeout(() => setRevealed(true), 1400)
+		return () => window.clearTimeout(t)
+	}, [open, done, revealed])
+
+	useEffect(() => {
+		if (!open) return
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key === 'Escape') dismiss()
+		}
+		window.addEventListener('keydown', onKey)
+		return () => window.removeEventListener('keydown', onKey)
+	}, [open])
+
+	if (!open) return null
+	return (
+		<>
+			<style>{HACKED_CSS}</style>
+			<div className="rf-hacked" onClick={dismiss}>
+				<div
+					className="rf-hacked-box"
+					role="dialog"
+					aria-modal="true"
+					aria-label="Hacked by Pumple"
+					onClick={(e) => e.stopPropagation()}
+				>
+					<button type="button" className="rf-hacked-x" onClick={dismiss} aria-label="Close">
+						✕
+					</button>
+					<h2 className="rf-hacked-title">
+						{HACKED_TEXT.slice(0, typed)}
+						{!revealed && <span className="rf-hacked-caret">█</span>}
+					</h2>
+					<div className="rf-hacked-stage">
+						{revealed && (
+							<img
+								className="rf-hacked-pumple"
+								src={new URL('./Pumple_monster_walk.gif', import.meta.url).href}
+								alt="Pumple"
+								draggable={false}
+							/>
+						)}
+					</div>
+					{revealed && (
+						<>
+							<p className="rf-hacked-name">PUMPLE</p>
+							<p className="rf-hacked-sub">
+								all your rooms are belong to pumpkin. happy halloween 🎃
+							</p>
+							<button type="button" className="rf-hacked-ok" onClick={dismiss}>
+								spooky, ok
+							</button>
+						</>
+					)}
+				</div>
+			</div>
+		</>
+	)
+}
+
 /** Drifting bats, ghosts and pumpkins plus corner cobwebs. Never blocks clicks; the corner button turns it off. */
 function HalloweenOverlay() {
 	const [off, setOff] = useState(() => {
@@ -2495,6 +2633,7 @@ function HalloweenOverlay() {
 					))}
 				</div>
 			)}
+			{!off && <HackedModal />}
 			<button
 				type="button"
 				className="rf-halloween-toggle"
