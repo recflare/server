@@ -3490,6 +3490,24 @@ async function visitedRooms(
 	return hydrateRooms(db, visible.slice(skip, skip + take))
 }
 
+/**
+ * How many distinct rooms the player has visited — the length of the full
+ * {@link getVisitedRooms} list, counted in D1. Joined to `room` like the list, so a
+ * visited room that no longer exists is not counted.
+ */
+export async function countVisitedRooms(db: D1Database, playerId: number): Promise<number> {
+	const row = await db
+		.prepare(
+			`SELECT COUNT(DISTINCT i.room_id) AS n
+			 FROM interaction i
+			 JOIN room r ON r.room_id = i.room_id
+			 WHERE i.player_id = ?1 AND i.last_visited_at IS NOT NULL`
+		)
+		.bind(playerId)
+		.first<{ n: number }>()
+	return row?.n ?? 0
+}
+
 /** A player's interaction state with a room. */
 export interface Interaction {
 	Cheered: boolean

@@ -1025,6 +1025,27 @@ describe('rooms endpoints', () => {
 		expect(other).toEqual([])
 	})
 
+	it('GET /rooms/visitedby/me/count answers the number of distinct rooms visited, as a bare int', async () => {
+		const headers = await bearer('785')
+		const count = async (h: HeadersInit) =>
+			(await (await SELF.fetch(`${ORIGIN}/rooms/visitedby/me/count`, { headers: h })).json()) as unknown
+
+		expect(await count(headers)).toBe(0)
+
+		// A favorite alone is not a visit.
+		await SELF.fetch(`${ORIGIN}/rooms/12/interactionby/me/favorite`, { method: 'PUT', headers })
+		expect(await count(headers)).toBe(0)
+
+		// Revisiting a room doesn't count it twice.
+		await recordRoomVisit(env.DB, 2, 785)
+		await recordRoomVisit(env.DB, 2, 785)
+		await recordRoomVisit(env.DB, 12, 785)
+		expect(await count(headers)).toBe(2)
+
+		expect(await count(await bearer('786'))).toBe(0)
+		expect((await SELF.fetch(`${ORIGIN}/rooms/visitedby/me/count`)).status).toBe(401)
+	})
+
 	it('GET /rooms/visitedby/:playerId serves any player’s visited rooms to any authed caller', async () => {
 		// Give 790 a visit history.
 		const subject = await bearer('790')

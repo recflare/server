@@ -15,6 +15,7 @@ import {
 	cloneRoom,
 	cloneSubRoom,
 	countRoomsByCreator,
+	countVisitedRooms,
 	createNotification,
 	createStudioRoom,
 	createSubRoom,
@@ -180,6 +181,7 @@ import {
 	SearchSuggestions,
 	ServiceStatus,
 	ShowcasedRooms,
+	VisitedRoomCount,
 	stringQuery,
 	SubRoomAccessibilityRequest,
 	SubRoomDataSaveDetailDto,
@@ -2083,6 +2085,29 @@ const app = new Hono<App>()
 			const skip = Number.parseInt(c.req.query('skip') ?? '0', 10) || 0
 			const take = Number.parseInt(c.req.query('take') ?? '100', 10) || 100
 			return c.json(serveRooms(await getVisitedRooms(c.env.DB, accountId, skip, take)))
+		}
+	)
+
+	// How many distinct rooms the caller has visited — the length of `visitedby/me`
+	// unpaginated, as a bare integer. Registered before `visitedby/:playerId` so `me`
+	// isn't read as an id (the numeric constraint would refuse it anyway).
+	.get(
+		'/rooms/visitedby/me/count',
+		describeRoute({
+			tags: ['My rooms'],
+			summary: 'How many rooms the caller visited',
+			description:
+				'The number of distinct rooms the caller has visited (interaction rows with a last-visited time), as a bare integer.',
+			security: AUTHED,
+			responses: {
+				200: json(VisitedRoomCount, 'The visited-room count'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const accountId = await authedAccountId(c)
+			if (accountId === null) return unauthorized(c)
+			return c.json(await countVisitedRooms(c.env.DB, accountId))
 		}
 	)
 

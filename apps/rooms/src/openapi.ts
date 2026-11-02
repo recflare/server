@@ -1213,6 +1213,10 @@ export const RoomExperiencePlayerEnvelope = z.object({
  * `GET /showcase/{playerId}` — the rooms a player showcases on their profile. Stubbed
  * empty; nothing stores a showcase, so the element shape is unknown until something does.
  */
+export const VisitedRoomCount = z
+	.int()
+	.describe('How many distinct rooms the caller has visited — a bare number, not an envelope')
+
 export const ShowcasedRooms = z
 	.array(z.unknown())
 	.describe('Always empty — no room showcase is stored')
