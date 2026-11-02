@@ -49,7 +49,36 @@ through the worker. The `Content-Type` is chosen from the extension (`.mp4`, `.m
 serves it at `/video/<name>`.
 
 Signing needs an R2 API token (the `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` Secrets Store
-bindings) and the account id (`RECFLARE_R2_ACCOUNT_ID`), and the bucket needs a CORS rule allowing
-`PUT` with a `Content-Type` header from the website's origin. Until they are set the route
+bindings) and the account id (`RECFLARE_R2_ACCOUNT_ID`). Until they are set the route
 answers 503. There is no audit table here, so each issued URL is a log line with the account and
 key.
+
+### CORS
+
+The route itself answers CORS like every other route here (`withDefaultCors`: any origin, with
+`Authorization` and `Content-Type` allowed), so the page can call it. The `PUT` is different: it
+goes to R2's own endpoint (`<account id>.r2.cloudflarestorage.com`), not to this worker, so no
+worker code can add headers to it — the bucket has to allow it. Set that once per bucket with
+Wrangler, from a file `cors.json`:
+
+```json
+{
+  "rules": [
+    {
+      "allowed": {
+        "origins": ["https://<your website origin>"],
+        "methods": ["PUT"],
+        "headers": ["content-type"]
+      },
+      "maxAgeSeconds": 3600
+    }
+  ]
+}
+```
+
+```sh
+wrangler r2 bucket cors set recflare-cdn --file cors.json
+```
+
+The rule has no effect on reads, and `cdn` serves the files as before. Setting it replaces the
+bucket's whole CORS configuration, so merge in any rules it already has.

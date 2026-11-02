@@ -285,6 +285,30 @@ it('answers the CORS preflight the website’s upload needs', async () => {
 	expect(res.headers.get('access-control-allow-headers')?.toLowerCase()).toContain('authorization')
 })
 
+// The form POSTs JSON with a bearer token, so the browser preflights it asking for BOTH headers —
+// and a missing one stops the request before the route runs. The same middleware covers every
+// route here; this pins it for the one that sends `Content-Type: application/json`.
+it('answers the CORS preflight the website’s video upload form needs', async () => {
+	const res = await SELF.fetch(`${ORIGIN}/upload/video`, {
+		method: 'OPTIONS',
+		headers: {
+			Origin: 'https://www.example.com',
+			'Access-Control-Request-Method': 'POST',
+			'Access-Control-Request-Headers': 'authorization,content-type',
+		},
+	})
+	expect(res.status).toBe(204)
+	expect(res.headers.get('access-control-allow-origin')).toBe('*')
+	const allowed = res.headers.get('access-control-allow-headers')?.toLowerCase() ?? ''
+	expect(allowed).toContain('authorization')
+	expect(allowed).toContain('content-type')
+})
+
+it('POST /upload/video answers with CORS headers so the page can read the signed URL', async () => {
+	const res = await videoUpload({ filename: 'intro.mp4' }, await bearer('42', ['developer']))
+	expect(res.headers.get('access-control-allow-origin')).toBe('*')
+})
+
 it('GET /openapi.json documents every route', async () => {
 	const res = await SELF.fetch(`${ORIGIN}/openapi.json`)
 	expect(res.status).toBe(200)

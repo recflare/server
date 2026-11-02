@@ -31,7 +31,7 @@
 		//     --scopes workers --remote
 		//
 		// plus RECFLARE_R2_ACCOUNT_ID in `.env`, and a CORS rule on the bucket allowing PUT from
-		// the www origin (the browser uploads to R2 directly). The bindings have to resolve for the
+		// the www origin (the browser uploads to R2 directly; the exact rule is in README.md). The bindings have to resolve for the
 		// deploy: an operator who wants no video uploads creates both with any placeholder value,
 		// and `POST /upload/video` answers 503.
 		{
