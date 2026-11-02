@@ -344,6 +344,35 @@ describe('cdn endpoints', () => {
 		expect(res.status).toBe(404)
 	})
 
+	test('GET /video/:name streams a developer video with the content type it was stored with', async () => {
+		const name = 'intro-1a2b3c4d.mp4'
+		await env.CDN_ASSETS.put(`video/${name}`, new Uint8Array([1, 2, 3, 4, 5, 6]), {
+			httpMetadata: { contentType: 'video/mp4' },
+		})
+		const res = await exports.default.fetch(`${ORIGIN}/video/${name}`)
+		expect(res.status).toBe(200)
+		// Unlike every other prefix, which is octet-stream whatever was stored.
+		expect(res.headers.get('content-type')).toBe('video/mp4')
+		expect(res.headers.get('accept-ranges')).toBe('bytes')
+		expect(new Uint8Array(await res.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3, 4, 5, 6]))
+
+		// A player seeks with Range, and has to get a 206 back.
+		const ranged = await exports.default.fetch(`${ORIGIN}/video/${name}`, {
+			headers: { Range: 'bytes=2-3' },
+		})
+		expect(ranged.status).toBe(206)
+		expect(ranged.headers.get('content-range')).toBe('bytes 2-3/6')
+		expect(new Uint8Array(await ranged.arrayBuffer())).toEqual(new Uint8Array([3, 4]))
+	})
+
+	test('GET /video/:name falls back to octet-stream when no type was stored, and 404s when absent', async () => {
+		await env.CDN_ASSETS.put('video/untyped.bin', new Uint8Array([9]))
+		const untyped = await exports.default.fetch(`${ORIGIN}/video/untyped.bin`)
+		expect(untyped.status).toBe(200)
+		expect(untyped.headers.get('content-type')).toBe('application/octet-stream')
+		expect((await exports.default.fetch(`${ORIGIN}/video/missing.mp4`)).status).toBe(404)
+	})
+
 	test('GET and HEAD /unityasset/:filename stream a stored studio bundle', async () => {
 		await env.DB.prepare('DROP TABLE IF EXISTS unity_asset').run()
 		const absent = await exports.default.fetch(`${ORIGIN}/unityasset/not-stored.assetbundle`)
@@ -435,6 +464,7 @@ describe('cdn endpoints', () => {
 			'GET /roomunityasset/{filename}',
 			'GET /sigs/{sigName}',
 			'GET /unityasset/{filename}',
+			'GET /video/{name}',
 			'HEAD /unityasset/{filename}',
 		])
 

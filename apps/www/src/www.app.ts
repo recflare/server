@@ -56,6 +56,7 @@ import {
 	clearDormHandler,
 	clearPasswordHandler,
 	createReportHandler,
+	createVideoUploadHandler,
 	getCuratedRowHandler,
 	getReportHandler,
 	giftItemHandler,
@@ -906,6 +907,10 @@ const app = new Hono<App>()
 	.post('/api/staff/discord-roles/sync', requireDeveloper, syncDiscordRolesHandler)
 	// Econ's weekly supporter gift, paid now: a bonus round for everyone holding a mapped role.
 	.post('/api/staff/discord-roles/supporter-gift', requireDeveloper, runDiscordRoleGiftHandler)
+	// A presigned PUT for a developer video: the browser uploads to the CDN bucket directly (the
+	// file never crosses a Worker) and `cdn` serves it at /video/<name>. Developer-only because
+	// the object is public the moment it lands.
+	.post('/api/staff/video-uploads', requireDeveloper, createVideoUploadHandler)
 	// Rec Room Plus is worth tokens and a discount, so granting it is developer-only too.
 	.post('/api/staff/players/:id/grant-plus', requireDeveloper, grantPlusHandler)
 	.post('/api/staff/players/:id/username-changes', addUsernameChangeHandler)

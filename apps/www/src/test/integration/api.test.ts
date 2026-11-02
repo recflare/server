@@ -1194,7 +1194,8 @@ it('refuses every staff endpoint without a token, and without a staff role', asy
 		'/api/staff/online/gift-tokens',
 		'/api/staff/discord-roles/1/gift-tokens',
 		'/api/staff/discord-roles/sync',
-		'/api/staff/discord-roles/supporter-gift'
+		'/api/staff/discord-roles/supporter-gift',
+		'/api/staff/video-uploads'
 	)
 	for (const path of writes) {
 		expect((await SELF.fetch(`https://example.com${path}`, { method: 'POST' })).status).toBe(401)
@@ -1212,7 +1213,8 @@ it('refuses every staff endpoint without a token, and without a staff role', asy
 			p.includes('/gift-') ||
 			p.includes('/grant-plus') ||
 			p.endsWith('/sync') ||
-			p.endsWith('/supporter-gift')
+			p.endsWith('/supporter-gift') ||
+			p.endsWith('/video-uploads')
 	)) {
 		expect((await staffPost(path, 8101, { amount: 1 })).status).toBe(403)
 	}
@@ -3914,4 +3916,68 @@ it('lets staff set a curated row, in order', async () => {
 		[8400, { row: 'staffpicks', roomIds: [97_301], previous: [97_302, 97_301] }],
 		[8400, { row: 'inkshowcase', roomIds: [97_302], previous: [] }],
 	])
+})
+
+// The developer video upload: www only SIGNS a PUT for the CDN bucket (the file goes browser →
+// R2), so what is pinned here is the gate, the closed state, and the shape of what is signed.
+// wrangler/vitest config binds R2_ACCOUNT_ID; the S3 token halves come from the Secrets Store,
+// which is NOT seeded until the last test below — so the first answers the unconfigured 503.
+it('refuses a video upload until the R2 credentials are set', async () => {
+	const res = await devPost('/api/staff/video-uploads', 8700, { filename: 'intro.mp4' })
+	expect(res.status).toBe(503)
+	expect(await res.json()).toMatchObject({ error: expect.stringContaining('not set up') })
+})
+
+it('refuses a video upload for a file that is not a video', async () => {
+	for (const filename of ['notes.txt', 'archive.mp4.zip', 'noextension', '', '.mp4x']) {
+		const res = await devPost('/api/staff/video-uploads', 8700, { filename })
+		expect(res.status, filename).toBe(400)
+	}
+	expect((await devPost('/api/staff/video-uploads', 8700, {})).status).toBe(400)
+})
+
+it('issues a presigned PUT for a video, pinned to its content type and audited', async () => {
+	await adminSecretsStore(env.R2_ACCESS_KEY_ID).create('test-access-key')
+	await adminSecretsStore(env.R2_SECRET_ACCESS_KEY).create('test-secret-key')
+
+	const res = await devPost('/api/staff/video-uploads', 8700, { filename: 'My Intro Clip!.MP4' })
+	expect(res.status).toBe(200)
+	const body = (await res.json()) as {
+		uploadUrl: string
+		key: string
+		contentType: string
+		expiresIn: number
+	}
+	// Reduced to a safe name and given a random suffix, so a reused filename is a new object.
+	expect(body.key).toMatch(/^video\/my-intro-clip-[0-9a-f]{8}\.mp4$/)
+	expect(body.contentType).toBe('video/mp4')
+	expect(body.expiresIn).toBe(900)
+
+	const url = new URL(body.uploadUrl)
+	expect(url.host).toBe('test-account.r2.cloudflarestorage.com')
+	expect(url.pathname).toBe(`/recflare-cdn/${body.key}`)
+	// Bound into the signature, so the browser has to send exactly this content type.
+	expect(url.searchParams.get('X-Amz-SignedHeaders')).toBe('content-type;host')
+	expect(url.searchParams.get('X-Amz-Expires')).toBe('900')
+	expect(url.searchParams.get('X-Amz-Credential')).toMatch(
+		/^test-access-key\/\d{8}\/auto\/s3\/aws4_request$/
+	)
+	expect(url.searchParams.get('X-Amz-Signature')).toMatch(/^[0-9a-f]{64}$/)
+	// The secret half never leaves the worker.
+	expect(body.uploadUrl).not.toContain('test-secret-key')
+
+	// The same filename twice is two keys.
+	const again = (await (
+		await devPost('/api/staff/video-uploads', 8700, { filename: 'My Intro Clip!.MP4' })
+	).json()) as { key: string }
+	expect(again.key).not.toBe(body.key)
+
+	const row = await env.DB.prepare(
+		`SELECT player_id, data FROM audit_log WHERE action = 'video_upload_url' ORDER BY audit_log_id`
+	).first<{ player_id: number; data: string }>()
+	expect(row?.player_id).toBe(8700)
+	expect(JSON.parse(row?.data ?? '{}')).toMatchObject({
+		key: body.key,
+		filename: 'My Intro Clip!.MP4',
+	})
 })

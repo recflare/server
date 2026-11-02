@@ -44,7 +44,7 @@ import type { App, Env } from './context'
  * degrades to a whole-object 200 whenever the response is not cacheable. The range
  * answer has to be ours to guarantee.
  */
-async function serveAsset(c: Context<App>, key: string) {
+async function serveAsset(c: Context<App>, key: string, options: { storedType?: boolean } = {}) {
 	if (key.includes('..')) return c.body(null, 400)
 
 	const ifNoneMatch = c.req.header('if-none-match')?.replace(/"/g, '')
@@ -72,7 +72,11 @@ async function serveAsset(c: Context<App>, key: string) {
 	const headers = new Headers()
 	object.writeHttpMetadata(headers)
 	headers.set('etag', object.httpEtag)
-	headers.set('content-type', 'application/octet-stream')
+	// `storedType` keeps the content type the upload was stored with (a video's), falling back to
+	// octet-stream like everything else when the object carries none.
+	if (!options.storedType || !headers.has('content-type')) {
+		headers.set('content-type', 'application/octet-stream')
+	}
 	headers.set('accept-ranges', 'bytes')
 	headers.set('cache-control', CACHE_CONTROL)
 
@@ -336,6 +340,27 @@ const app = new Hono<App>()
 			responses: assetResponses('The data blob'),
 		}),
 		(c) => serveAsset(c, `data/${c.req.param('id')}`)
+	)
+
+	// Developer videos, uploaded from the www admin panel straight into R2 through a presigned
+	// URL (see `www`'s `/api/staff/video-uploads`) — the source of the developer remote-video
+	// screen. Unlike every other prefix these keep the content type they were uploaded with
+	// (`video/mp4`, …), so a player that sniffs the type gets one; Range works as everywhere else,
+	// which is what lets a player seek.
+	.get(
+		'/video/:name{.+}',
+		describeRoute({
+			tags: ['Assets'],
+			summary: 'Serve a developer video',
+			description: [
+				'Streams the object stored under `video/<name>`, as uploaded from the www admin',
+				'panel. Served with the content type it was stored with, falling back to',
+				'`application/octet-stream` when it carries none.',
+			].join(' '),
+			parameters: [keyParam('name', 'The video file name.', true), ...CONDITIONAL_HEADERS],
+			responses: assetResponses('The video'),
+		}),
+		(c) => serveAsset(c, `video/${c.req.param('name')}`, { storedType: true })
 	)
 
 	// Custom avatar item assetbundles by name. A first-party custom avatar item (see the

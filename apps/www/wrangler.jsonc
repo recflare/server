@@ -126,6 +126,28 @@
 			"binding": "DISCORD_BOT_TOKEN",
 			"store_id": "local",
 			"secret_name": "DISCORD_BOT_TOKEN"
+		},
+		// The R2 API token that signs the developer video upload (src/video-upload.ts): create one
+		// in the dashboard (R2 → Manage API tokens, Object Read & Write on the CDN bucket), then
+		//
+		//   wrangler secrets-store secret create <store-id> --name R2_ACCESS_KEY_ID \
+		//     --scopes workers --remote
+		//   wrangler secrets-store secret create <store-id> --name R2_SECRET_ACCESS_KEY \
+		//     --scopes workers --remote
+		//
+		// plus the R2_ACCOUNT_ID var, and a CORS rule on the bucket allowing PUT from the www
+		// origin (the browser uploads to R2 directly). Like the bot token, the bindings have to
+		// resolve for the deploy: an operator who wants no uploads creates both with any
+		// placeholder value, and the upload answers 503.
+		{
+			"binding": "R2_ACCESS_KEY_ID",
+			"store_id": "local",
+			"secret_name": "R2_ACCESS_KEY_ID"
+		},
+		{
+			"binding": "R2_SECRET_ACCESS_KEY",
+			"store_id": "local",
+			"secret_name": "R2_SECRET_ACCESS_KEY"
 		}
 	],
 	// The Discord role refresh: once a day, re-reads every claimed member's roles through

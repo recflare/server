@@ -46,6 +46,7 @@ import { PumpleBossFight } from './PumpleBossFight'
 import { RoomsPage } from './Rooms'
 import { StatsPage } from './Stats'
 import { STUDIO_ACCESS_KINDS, StudioAccessPage, StudioAccessPanel } from './StudioAccess'
+import { VideoUploadForm } from './VideoUpload'
 
 import type { ReactNode } from 'react'
 import type { Hosts, PublicAccount } from './api'
@@ -4141,6 +4142,8 @@ function AdminTabs({ account, navigate }: { account: SelfAccount; navigate: Navi
 							</>
 						),
 					},
+					// The upload is signed by a developer-only route; the file then goes to R2 directly.
+					{ id: 'video', label: 'Video upload', render: () => <VideoUploadForm /> },
 				]
 			: []),
 		// The hand-curated discovery rows ("Featured This Week", "Rooms We Love", …).

@@ -27,6 +27,9 @@ export default defineConfig({
 					// Web signup is OFF unless the operator switches it on; the signup tests below
 					// exercise the open door, and one flips this off to pin the closed one.
 					PASSWORD_SIGNUP: 'on',
+					// Opens the developer video upload's account half; the S3 token halves come from
+					// the Secrets Store and are seeded (or deliberately not) by the tests.
+					R2_ACCOUNT_ID: 'test-account',
 					// The Turnstile keypair is NOT bound here: both keys come from the Secrets
 					// Store now, and the tests seed the local store with the test pair (see
 					// src/test/integration/api.test.ts). A plain binding of the same name would
