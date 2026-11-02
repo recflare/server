@@ -44,6 +44,11 @@ export function form(schema: z.ZodType, description: string): OpenAPIV3_1.Reques
 	}
 }
 
+/** An `application/json` request body. */
+export function jsonBody(schema: z.ZodType, description: string): OpenAPIV3_1.RequestBodyObject {
+	return { description, content: { 'application/json': { schema: toOpenApiSchema(schema) } } }
+}
+
 /** The empty-body 401 the auth-gated routes return. */
 export const UNAUTHORIZED_RESPONSE = { description: 'Missing or invalid bearer token (empty body)' }
 
@@ -64,10 +69,25 @@ export const UploadResponse = z.object({
 		.describe('`<YYYY-MM-DD>/<uuid>[.ext]`, or the posted name on a name-only upload'),
 })
 
+/** `POST /upload/video` success body: where and how to `PUT` the file, and where it will live. */
+export const VideoUploadResponse = z.object({
+	uploadUrl: z.string().describe('A presigned `PUT` URL for the R2 bucket, valid for `expiresIn`'),
+	key: z.string().describe('The object key, `video/<name>-<id>.<ext>`; the `cdn` serves `/<key>`'),
+	contentType: z
+		.string()
+		.describe('The `Content-Type` the `PUT` must send — the signature binds it'),
+	expiresIn: z.number().describe('Seconds the URL stays valid'),
+})
+
 /** The `{ error }` body the 400s carry. */
 export const ErrorResponse = z.object({ error: z.string() })
 
 // ---- Request schemas -------------------------------------------------------
+
+/** `POST /upload/video` JSON body: just the name of the file about to be uploaded. */
+export const VideoUploadRequest = z.object({
+	filename: z.string().describe('The file name, e.g. `intro.mp4`; its extension picks the type'),
+})
 
 /**
  * The text parts of `POST /upload`. Field names are matched case-insensitively, so the

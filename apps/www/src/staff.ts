@@ -75,12 +75,6 @@ import { grantCustomAvatarItem, ownedCustomAvatarItemIds } from '../../econ/src/
 import { NotificationType } from '../../notify/src/notification-types'
 // The sweep itself, so a developer can run it on demand instead of waiting for the cron.
 import { refreshDiscordRoles } from './discord-roles'
-import {
-	planVideoUpload,
-	presignVideoUpload,
-	r2UploadConfig,
-	VIDEO_UPLOAD_TTL_SECONDS,
-} from './video-upload'
 
 import type { Context, MiddlewareHandler } from 'hono'
 import type { Account, CuratedRowSlug, GiftContent } from '@repo/domain'
@@ -1173,41 +1167,6 @@ export async function syncDiscordRolesHandler(c: Context<App>) {
 	await recordPlayerAudit(c, 'sync_discord_roles', { ...summary })
 	logger.info('staff ran the discord role sweep', { moderatorId: staffId(c), ...summary })
 	return c.json(summary)
-}
-
-/**
- * Issue a presigned upload for a developer video. The body names the file (`filename`); the
- * answer is a short-lived `PUT` URL for the CDN bucket, the `key` it will land under (the `cdn`
- * worker serves it at `/<key>`, so the remote-video screen's source is `/video/<name>`), and
- * the `contentType` the browser must send — the signature binds it.
- *
- * The file itself goes browser → R2, not through here: a Worker's request body limit is far
- * under a video's size. Nothing is stored until that PUT happens, so a URL nobody uses leaves
- * nothing behind. Developer-only, because the objects are public on the CDN the moment they
- * exist; each URL issued is on the audit log with the key.
- *
- * 400 for a filename the form does not take, 503 when the operator has not configured the R2
- * credentials (src/video-upload.ts) — the page says so rather than offering a form that cannot work.
- */
-export async function createVideoUploadHandler(c: Context<App>) {
-	const body = (await c.req.json().catch(() => ({}))) as { filename?: unknown }
-	const filename = typeof body.filename === 'string' ? body.filename.trim() : ''
-	const plan = planVideoUpload(filename)
-	if (plan === null) {
-		return c.json({ error: 'Choose an .mp4, .m4v, .webm or .mov video' }, 400)
-	}
-	const config = await r2UploadConfig(c.env)
-	if (config === null) return c.json({ error: 'Video uploads are not set up on this server' }, 503)
-
-	const uploadUrl = await presignVideoUpload(config, plan)
-	await recordPlayerAudit(c, 'video_upload_url', { key: plan.key, filename })
-	logger.info('staff issued a video upload url', { moderatorId: staffId(c), key: plan.key })
-	return c.json({
-		uploadUrl,
-		key: plan.key,
-		contentType: plan.contentType,
-		expiresIn: VIDEO_UPLOAD_TTL_SECONDS,
-	})
 }
 
 /**

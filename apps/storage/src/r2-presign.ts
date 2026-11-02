@@ -97,7 +97,7 @@ export async function presignUrl(options: PresignOptions): Promise<string> {
 		toHex(await crypto.subtle.digest('SHA-256', encoder.encode(canonicalRequest))),
 	].join('\n')
 
-	let key: ArrayBuffer = await hmac(encoder.encode(`AWS4${secretAccessKey}`), date)
+	let key: ArrayBuffer = await hmac(new Uint8Array(encoder.encode(`AWS4${secretAccessKey}`)), date)
 	for (const part of [region, 's3', 'aws4_request']) key = await hmac(key, part)
 	const signature = toHex(await hmac(key, stringToSign))
 

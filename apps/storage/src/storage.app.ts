@@ -4,6 +4,7 @@ import { useWorkersLogger } from 'workers-tagged-logger'
 
 import {
 	intVar,
+	logger,
 	SNIFFED_IMAGE_FORMATS,
 	sniffImage,
 	withCleanSpec,
@@ -17,11 +18,20 @@ import {
 	AUTHED,
 	ErrorResponse,
 	json,
+	jsonBody,
 	text,
 	UNAUTHORIZED_RESPONSE,
 	UPLOAD_REQUEST_BODY,
 	UploadResponse,
+	VideoUploadRequest,
+	VideoUploadResponse,
 } from './openapi'
+import {
+	planVideoUpload,
+	presignVideoUpload,
+	r2UploadConfig,
+	VIDEO_UPLOAD_TTL_SECONDS,
+} from './video-upload'
 
 import type { App } from './context'
 
@@ -293,6 +303,60 @@ const app = new Hono<App>()
 				uploaded.push({ Filename: name, Hash: btoa(String.fromCharCode(...new Uint8Array(hash))) })
 			}
 			return c.json(uploaded)
+		}
+	)
+	// A presigned PUT for a developer video: the browser uploads to the CDN bucket directly (the
+	// file never crosses a Worker) and `cdn` serves it at /video/<name>. Developer-only because
+	// the object is public the moment it lands.
+	.post(
+		'/upload/video',
+		describeRoute({
+			tags: ['Upload'],
+			summary: 'Get a presigned upload for a developer video',
+			security: AUTHED,
+			description: [
+				'Developer-only. Takes `{ filename }` and returns a short-lived presigned `PUT` URL for',
+				'the CDN R2 bucket, the `key` it lands under (`video/<name>-<id>.<ext>`, served by the',
+				'`cdn` worker at `/video/<name>`) and the `Content-Type` the `PUT` must send. The file',
+				'itself goes browser → R2, never through this worker. `.mp4`, `.m4v`, `.webm` and `.mov`',
+				'are accepted. 503 until the operator configures the R2 credentials.',
+			].join(' '),
+			requestBody: jsonBody(VideoUploadRequest, 'The name of the file about to be uploaded'),
+			responses: {
+				200: json(VideoUploadResponse, 'The presigned upload'),
+				400: json(ErrorResponse, 'A filename that is not an accepted video type'),
+				401: UNAUTHORIZED_RESPONSE,
+				403: json(ErrorResponse, 'A valid token without the `developer` role'),
+				503: json(ErrorResponse, 'The R2 credentials are not configured'),
+			},
+		}),
+		async (c) => {
+			const secret = await c.env.JWT_SECRET.get()
+			const id = await validateAndGetAccountId(c.req.raw, secret)
+			if (id === null) return c.body(null, 401)
+			const roles = await validateAndGetRoles(c.req.raw, secret)
+			if (!roles?.includes('developer')) return c.json({ error: 'Forbidden' }, 403)
+
+			const body = (await c.req.json().catch(() => ({}))) as { filename?: unknown }
+			const filename = typeof body.filename === 'string' ? body.filename.trim() : ''
+			const plan = planVideoUpload(filename)
+			if (plan === null) {
+				return c.json({ error: 'Choose an .mp4, .m4v, .webm or .mov video' }, 400)
+			}
+			const config = await r2UploadConfig(c.env)
+			if (config === null) {
+				return c.json({ error: 'Video uploads are not set up on this server' }, 503)
+			}
+
+			const uploadUrl = await presignVideoUpload(config, plan)
+			// No audit table here (storage has no database), so the log line is the record.
+			logger.info('developer issued a video upload url', { accountId: id, key: plan.key })
+			return c.json({
+				uploadUrl,
+				key: plan.key,
+				contentType: plan.contentType,
+				expiresIn: VIDEO_UPLOAD_TTL_SECONDS,
+			})
 		}
 	)
 	.post(

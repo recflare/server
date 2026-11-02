@@ -21,6 +21,28 @@
 			"binding": "JWT_SECRET",
 			"store_id": "local",
 			"secret_name": "JWT_SECRET"
+		},
+		// The R2 API token that signs the developer video upload (src/video-upload.ts): create one
+		// in the dashboard (R2 → Manage API tokens, Object Read & Write on recflare-cdn), then
+		//
+		//   wrangler secrets-store secret create <store-id> --name R2_ACCESS_KEY_ID \
+		//     --scopes workers --remote
+		//   wrangler secrets-store secret create <store-id> --name R2_SECRET_ACCESS_KEY \
+		//     --scopes workers --remote
+		//
+		// plus RECFLARE_R2_ACCOUNT_ID in `.env`, and a CORS rule on the bucket allowing PUT from
+		// the www origin (the browser uploads to R2 directly). The bindings have to resolve for the
+		// deploy: an operator who wants no video uploads creates both with any placeholder value,
+		// and `POST /upload/video` answers 503.
+		{
+			"binding": "R2_ACCESS_KEY_ID",
+			"store_id": "local",
+			"secret_name": "R2_ACCESS_KEY_ID"
+		},
+		{
+			"binding": "R2_SECRET_ACCESS_KEY",
+			"store_id": "local",
+			"secret_name": "R2_SECRET_ACCESS_KEY"
 		}
 	],
 	"upload_source_maps": true,

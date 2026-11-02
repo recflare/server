@@ -5,9 +5,9 @@ import { call, useAction, where } from './api'
 /**
  * Developer-only: upload a video for the developer remote-video screen.
  *
- * www only SIGNS the upload (`POST /api/staff/video-uploads`); the file goes from this page
- * straight to R2 with the presigned `PUT` it hands back, so a large video never crosses a
- * Worker. The `cdn` worker then serves it at `/video/<name>`, which is the URL shown here.
+ * `storage` only SIGNS the upload (`POST /upload/video`, developer tokens only); the file goes
+ * from this page straight to R2 with the presigned `PUT` it hands back, so a large video never
+ * crosses a Worker. The `cdn` worker then serves it at `/video/<name>`, the URL shown here.
  * `XMLHttpRequest` rather than `fetch` because only it reports upload progress.
  */
 
@@ -70,12 +70,12 @@ export function VideoUploadForm() {
 					void run(async () => {
 						try {
 							setProgress(0)
-							const issued = await call<Issued>('/api/staff/video-uploads', {
+							const issued = await call<Issued>(`${where().storage}/upload/video`, {
 								authed: true,
 								json: { filename: file.name },
 							})
 							await putFile(issued.uploadUrl, file, issued.contentType, setProgress)
-							const link = `https://${where().cdn}/${issued.key}`
+							const link = `${where().cdn}/${issued.key}`
 							setUrl(link)
 							setFile(null)
 							return 'Uploaded.'

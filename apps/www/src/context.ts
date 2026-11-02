@@ -164,22 +164,6 @@ export type Env = SharedHonoEnv & {
 	 * sweep off. The claim never reads it.
 	 */
 	DISCORD_BOT_TOKEN: SecretsStoreSecret
-	/**
-	 * Cloudflare account id for the R2 S3 endpoint (`<id>.r2.cloudflarestorage.com`), which the
-	 * developer video upload presigns against (src/video-upload.ts). OPTIONAL: unset closes the
-	 * upload (503) rather than signing against nothing.
-	 */
-	R2_ACCOUNT_ID?: string
-	/** The bucket the video upload writes to. Unset means `recflare-cdn`, the one `cdn` serves. */
-	CDN_BUCKET_NAME?: string
-	/**
-	 * An R2 API token's access key id and secret, scoped to Object Read & Write on the CDN
-	 * bucket — what signs the upload URL. Same account-level Secrets Store as the rest; the
-	 * bindings must resolve for the deploy, so an operator who wants no uploads creates them
-	 * with any placeholder value, which leaves the upload closed.
-	 */
-	R2_ACCESS_KEY_ID: SecretsStoreSecret
-	R2_SECRET_ACCESS_KEY: SecretsStoreSecret
 }
 
 /** Variables can be extended */

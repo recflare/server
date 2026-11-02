@@ -3,19 +3,23 @@ import { presignUrl } from './r2-presign'
 import type { Env } from './context'
 
 /**
- * Developer video uploads: a staff member picks a video, www hands back a short-lived presigned
- * `PUT` for the shared `recflare-cdn` bucket, and the browser sends the file straight to R2. The
- * bytes never pass through a Worker, whose request body limit is far below a video's size.
+ * Developer video uploads: a developer picks a video on the website, `POST /upload/video`
+ * hands back a short-lived presigned `PUT` for the shared `recflare-cdn` bucket, and the
+ * browser sends the file straight to R2. The bytes never pass through a Worker, whose request
+ * body limit is far below a video's size.
  *
  * The `cdn` worker serves the result at `/video/<name>` (the developer remote-video screen's
- * source). This module only plans the key and signs; the handler (src/staff.ts) gates and audits.
+ * source). This module only plans the key and signs; the route (src/storage.app.ts) gates it.
  */
 
 /** How long the presigned URL stays valid. The upload starts the moment it is issued. */
 export const VIDEO_UPLOAD_TTL_SECONDS = 900
 
-/** The bucket's default name — the one every worker binds as `CDN_ASSETS` (wrangler.jsonc). */
-const DEFAULT_BUCKET = 'recflare-cdn'
+/**
+ * The bucket `CDN_ASSETS` is bound to (wrangler.jsonc `bucket_name`) — the S3 endpoint names it
+ * where the binding does not. Keep the two in step.
+ */
+const CDN_BUCKET = 'recflare-cdn'
 
 /**
  * What the form accepts, by extension. The server — not the browser's guess at a `File.type`,
@@ -59,7 +63,6 @@ export function planVideoUpload(filename: string): VideoUploadPlan | null {
 
 export interface R2UploadConfig {
 	accountId: string
-	bucket: string
 	accessKeyId: string
 	secretAccessKey: string
 }
@@ -69,6 +72,9 @@ export interface R2UploadConfig {
  * upload then answers 503 rather than signing with nothing. A Secrets Store binding that has no
  * value throws on `get()`, and a placeholder (the deploy needs the binding to resolve) reads as
  * empty; both mean "not configured".
+ *
+ * The account id is the one thing the `CDN_ASSETS` binding cannot tell us: the S3 endpoint is
+ * `<account id>.r2.cloudflarestorage.com`.
  */
 export async function r2UploadConfig(env: Env): Promise<R2UploadConfig | null> {
 	const accountId = env.R2_ACCOUNT_ID?.trim()
@@ -77,12 +83,7 @@ export async function r2UploadConfig(env: Env): Promise<R2UploadConfig | null> {
 		const accessKeyId = (await env.R2_ACCESS_KEY_ID.get()).trim()
 		const secretAccessKey = (await env.R2_SECRET_ACCESS_KEY.get()).trim()
 		if (!accessKeyId || !secretAccessKey) return null
-		return {
-			accountId,
-			bucket: env.CDN_BUCKET_NAME?.trim() || DEFAULT_BUCKET,
-			accessKeyId,
-			secretAccessKey,
-		}
+		return { accountId, accessKeyId, secretAccessKey }
 	} catch {
 		return null
 	}
@@ -93,7 +94,7 @@ export function presignVideoUpload(config: R2UploadConfig, plan: VideoUploadPlan
 	return presignUrl({
 		method: 'PUT',
 		host: `${config.accountId}.r2.cloudflarestorage.com`,
-		path: `/${config.bucket}/${plan.key}`,
+		path: `/${CDN_BUCKET}/${plan.key}`,
 		region: 'auto',
 		accessKeyId: config.accessKeyId,
 		secretAccessKey: config.secretAccessKey,
