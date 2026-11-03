@@ -162,7 +162,10 @@ just cai-load --remote
 ```
 
 The script rewrites the export in place with the base token price (`CurrencyType` 2),
-ignoring any sale. It warns about every price it changes that wasn't 0 before. The
+ignoring any sale. It warns about every price it changes that wasn't 0 before. It also
+replaces each item's `Name` with the storefront's `GiftDrop.FriendlyName`, because the
+export often has the asset's machine name (`AnimeFiendHunter_Shirt` instead of
+"Fiend Hunter Trench Coat (Gothic)"). The
 storefront only prices items already in the export; nothing is added from it. An item the
 storefront doesn't list keeps its old price, unless that price is 0, which would make it
 free to buy. Those items (the Cryptid Creek event rewards and the Evergrown Hip Pack) get the

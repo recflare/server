@@ -240,7 +240,9 @@ inconsistency here without checking the client first.
   so first-party prices are written into the export from the storefront dump
   (`apps/econ/static/db/Watch_EnumValue_3.json`, joined on
   `AvatarItemInfo.DownloadableAvatarItemId`) by `apps/api/scripts/price-custom-avatar-items.ts`
-  before loading. Every row names the `CurrencyType` its `Price` is in as a server-side
+  before loading. That script also replaces the export's `Name` with the dump's `FriendlyName`
+  (the export often has the asset's machine name, e.g. `AnimeFiendHunter_Shirt`, and the client
+  shows `Name`). Every row names the `CurrencyType` its `Price` is in as a server-side
   `PurchaseCurrencyType`: 2 (tokens) on everything the token store sells, and the token store
   (search, featured, hot) lists ONLY those (`TOKEN_PURCHASABLE`) — so every write must set it
   (the creates do; 0036 backfilled older rows). A TICKET REWARD — an item the

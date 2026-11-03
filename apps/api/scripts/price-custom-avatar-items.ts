@@ -1,6 +1,6 @@
 /**
- * Fills in `Price` on an export of first-party custom avatar items from a storefront dump,
- * rewriting the export in place so `import-custom-avatar-items.ts` / `just admin cai-load`
+ * Fills in `Price` and `Name` on an export of first-party custom avatar items from a storefront
+ * dump, rewriting the export in place so `import-custom-avatar-items.ts` / `just admin cai-load`
  * carry the price into the table.
  *
  *   bun apps/api/scripts/price-custom-avatar-items.ts <export.json> <storefront.json>
@@ -10,6 +10,10 @@
  * items, joined on `GiftDrop.AvatarItemInfo.DownloadableAvatarItemId` = `CustomAvatarItemId`.
  * The price taken is the base token price (`CurrencyType` 2), ignoring any sale. The storefront
  * only prices what the export already holds: nothing is added from it.
+ *
+ * The export's `Name` is often the asset's machine name (`AnimeFiendHunter_Shirt`), which is what
+ * the client shows; the storefront's `GiftDrop.FriendlyName` ("Fiend Hunter Trench Coat (Gothic)")
+ * replaces it. An item the storefront doesn't list keeps its name.
  *
  * An item the storefront doesn't list keeps the price it had, unless that price is 0, which
  * would make it free to buy. Those are the Cryptid Creek event items and the Evergrown Hip Pack,
@@ -26,7 +30,10 @@ const TOKENS = 2
 const UNLISTED_RARITY = 50
 
 interface StoreItem {
-	GiftDrop?: { AvatarItemInfo?: { DownloadableAvatarItemId?: string | null } | null }
+	GiftDrop?: {
+		FriendlyName?: string | null
+		AvatarItemInfo?: { DownloadableAvatarItemId?: string | null } | null
+	}
 	Prices?: Array<{ CurrencyType: number; Price: number }>
 }
 
@@ -46,18 +53,30 @@ const items: Array<{ CustomAvatarItemId: string; Name: string; Price: number }> 
 const storefront: { StoreItems: StoreItem[] } = readJson(storefrontPath)
 
 const prices = new Map<string, number>()
+const names = new Map<string, string>()
 for (const storeItem of storefront.StoreItems) {
 	const id = storeItem.GiftDrop?.AvatarItemInfo?.DownloadableAvatarItemId?.toLowerCase()
+	if (!id) continue
 	const price = storeItem.Prices?.find((p) => p.CurrencyType === TOKENS)?.Price
-	if (id && price !== undefined && !prices.has(id)) {
+	if (price !== undefined && !prices.has(id)) {
 		prices.set(id, price)
+	}
+	const name = storeItem.GiftDrop?.FriendlyName?.trim()
+	if (name && !names.has(id)) {
+		names.set(id, name)
 	}
 }
 
 let priced = 0
 let changed = 0
+let renamed = 0
 const unmatched: string[] = []
 for (const item of items) {
+	const name = names.get(item.CustomAvatarItemId.toLowerCase())
+	if (name && item.Name !== name) {
+		item.Name = name
+		renamed++
+	}
 	let price = prices.get(item.CustomAvatarItemId.toLowerCase())
 	if (price === undefined) {
 		unmatched.push(item.Name)
@@ -75,7 +94,9 @@ for (const item of items) {
 }
 
 writeFileSync(exportPath, JSON.stringify(items, null, 2) + '\n')
-console.log(`priced ${priced}/${items.length} items (${changed} changed) in ${exportPath}`)
+console.log(
+	`priced ${priced}/${items.length} items (${changed} changed), renamed ${renamed}, in ${exportPath}`
+)
 if (unmatched.length) {
 	console.log(
 		`not in the storefront (kept their price, or rarity ${UNLISTED_RARITY} if free): ${unmatched.join(', ')}`

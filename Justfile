@@ -128,7 +128,7 @@ reload-plus *args:
 # Load the first-party custom avatar items (apps/econ/static/db/2025-1-cai.json, then
 # studio87-extras.json, by default) into the custom_avatar_item table. Merges: existing ids are replaced, nothing is deleted.
 # Defaults to --local; pass --remote for production, --dry-run to only validate. Prices come
-# from the storefront dump via apps/api/scripts/price-custom-avatar-items.ts. See CLI.md.
+# (and friendly names) from the storefront dump via apps/api/scripts/price-custom-avatar-items.ts. See CLI.md.
 [group('4. utility')]
 [positional-arguments]
 [no-cd]
