@@ -52,6 +52,7 @@ import questRewards from '../../../static/quest-rewards.json'
 // build, and these assertions are about each file's CONTENTS.
 import sf32025 from '../../../static/storefronts/sf3-2025.json'
 import sf3 from '../../../static/storefronts/sf3.json'
+import sf101 from '../../../static/storefronts/sf101.json'
 import { SCHEMA_DDL } from '../../avatar-db'
 import {
 	BALANCE_SCHEMA_DDL,
@@ -107,6 +108,11 @@ import {
 	ownedCustomAvatarItemIds,
 } from '../../inventory-custom-db'
 import { INVENTORY_SCHEMA_DDL } from '../../inventory-db'
+import {
+	legacyAvatarItemMap,
+	legacyGrantPreviewStatements,
+	legacyGrantStatements,
+} from '../../legacy-avatar-item-grants'
 import { REWARD_STATUS_SCHEMA_DDL } from '../../reward-db'
 import {
 	ROOM_CONSUMABLE_SCHEMA_DDL,
@@ -9372,5 +9378,119 @@ test('2026 current subscription season supplies a nonempty disabled-season DTO',
 		StartAt: '0001-01-01T00:00:00Z',
 		NextSeasonStart: null,
 		Milestones: [],
+	})
+})
+
+describe('cai-grant-legacy', () => {
+	// The Aristocrat Jacket (Midnight), as sf101 lists it.
+	const jacketDesc = 'QCtqxbvYOkan79YFugH_Cw,IzkFARlv6EenmrfcNkcOuw,xnxDimLvVUCI9tEJqWDDcA'
+	const jacketId = '2e60a7a3-12e8-49b6-a1c5-547226a46d1b'
+	// The Aristocrat Necklace (Amethyst), also in sf101 — but NOT loaded into the catalog below.
+	const necklaceDesc = 'jiBzrzDPkkuL6DqIFKpcCw,poqpmOloPUKotHH9p0YAyw,StxMBEprVkqMa_IoDG-Q9A'
+
+	const ownedIds = async (accountId: number) =>
+		(
+			await env.DB.prepare(
+				'SELECT custom_avatar_item_id AS id FROM inventory_custom WHERE account_id = ?1'
+			)
+				.bind(accountId)
+				.all<{ id: string }>()
+		).results.map((r) => r.id)
+
+	const runGrant = async () => {
+		for (const sql of legacyGrantStatements(legacyAvatarItemMap([sf101, sf32025, sf3]))) {
+			await env.DB.prepare(sql).run()
+		}
+	}
+
+	test('maps each legacy descriptor to its replacement, and splits under the D1 statement limit', () => {
+		const map = legacyAvatarItemMap([sf101])
+		expect(map.get(jacketDesc)).toBe(jacketId)
+		const statements = legacyGrantStatements(legacyAvatarItemMap([sf101, sf32025]))
+		expect(statements.length).toBeGreaterThan(1)
+		for (const sql of statements) expect(new TextEncoder().encode(sql).length).toBeLessThan(100_000)
+	})
+
+	test('refuses a descriptor two listings map to different items', () => {
+		const listing = (id: string) => ({
+			StoreItems: [
+				{
+					GiftDrop: {
+						AvatarItemInfo: { LegacyAvatarItemDesc: 'a,b,c', DownloadableAvatarItemId: id },
+					},
+				},
+			],
+		})
+		expect(() => legacyAvatarItemMap([listing('x'), listing('y')])).toThrow(/maps to both/)
+	})
+
+	test('grants the replacement for an owned legacy item, once, only if the catalog holds it', async () => {
+		await env.DB.prepare('INSERT INTO custom_avatar_item (data) VALUES (?1)')
+			.bind(
+				JSON.stringify({
+					CustomAvatarItemId: jacketId,
+					CreatorAccountId: 1,
+					Name: 'Aristocrat Jacket',
+				})
+			)
+			.run()
+		// The inventory keeps the client's trailing commas.
+		for (const [account, desc] of [
+			[9501, `${jacketDesc},`],
+			[9501, `${necklaceDesc},`],
+			[9502, `${necklaceDesc},`],
+		] as const) {
+			await env.DB.prepare(
+				"INSERT INTO inventory (account_id, avatar_item_desc, data) VALUES (?1, ?2, '{}')"
+			)
+				.bind(account, desc)
+				.run()
+		}
+
+		const preview = async (accountId?: number) => {
+			const rows: Array<{ account_id: number; custom_avatar_item_id: string; name: string }> = []
+			for (const sql of legacyGrantPreviewStatements(
+				legacyAvatarItemMap([sf101, sf32025, sf3]),
+				accountId
+			)) {
+				rows.push(...(await env.DB.prepare(sql).all<(typeof rows)[number]>()).results)
+			}
+			return rows.length
+		}
+		expect(await preview(9502)).toBe(0)
+		expect(
+			(
+				await env.DB.prepare(
+					legacyGrantPreviewStatements(legacyAvatarItemMap([sf101]), 9501)[0]!
+				).all()
+			).results
+		).toEqual([
+			{
+				account_id: 9501,
+				custom_avatar_item_id: jacketId,
+				name: 'Aristocrat Jacket',
+				avatar_item_desc: `${jacketDesc},`,
+			},
+		])
+		expect(await preview()).toBe(1)
+		expect(await ownedIds(9501)).toEqual([])
+
+		await runGrant()
+		expect(await ownedIds(9501)).toEqual([jacketId])
+		expect(await ownedIds(9502)).toEqual([])
+		expect(await preview()).toBe(0)
+
+		// Re-running grants nothing new and keeps the original acquired_at.
+		const first = await env.DB.prepare(
+			'SELECT acquired_at FROM inventory_custom WHERE account_id = 9501'
+		).first<{ acquired_at: string }>()
+		await runGrant()
+		expect(await ownedIds(9501)).toEqual([jacketId])
+		expect(
+			await env.DB.prepare(
+				'SELECT acquired_at FROM inventory_custom WHERE account_id = 9501'
+			).first()
+		).toEqual(first)
+		expect(first!.acquired_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
 	})
 })

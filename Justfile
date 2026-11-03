@@ -135,6 +135,15 @@ reload-plus *args:
 cai-load *args:
   bun runx admin cai-load "$@"
 
+# Grant each player the custom avatar item that replaced a legacy avatar item they own (the
+# LegacyAvatarItemDesc → DownloadableAvatarItemId pairs in the sf*.json dumps). Re-runnable:
+# skips what's already owned. Run after cai-load. Defaults to --local; --remote for production.
+[group('4. utility')]
+[positional-arguments]
+[no-cd]
+cai-grant-legacy *args:
+  bun runx admin cai-grant-legacy "$@"
+
 # Merges by default; --replace drops rows the file no longer lists. Defaults to --local; pass
 # --remote for production, --dry-run to only validate. Run it whenever sf3-2025.json changes.
 # Reload the item catalog (econ `catalog` table) from apps/econ/static/storefronts/sf3-2025.json

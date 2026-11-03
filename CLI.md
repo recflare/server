@@ -174,6 +174,28 @@ script names every item the storefront doesn't list. The
 committed `2025-1-cai.json` is already priced. Rarity isn't carried over, since the record
 has no field for it.
 
+### `cai-grant-legacy` — grant the custom items that replaced owned legacy items
+
+```sh
+bun runx admin cai-grant-legacy              # local
+bun runx admin cai-grant-legacy --remote
+just cai-grant-legacy --remote --dry-run     # the same, as a recipe
+just cai-grant-legacy --remote --dry-run --username alice   # what alice would get
+```
+
+The storefront dumps (`apps/econ/static/storefronts/sf*.json`) pair a baked avatar item with
+the custom avatar item that replaced it: `GiftDrop.AvatarItemInfo.LegacyAvatarItemDesc` beside
+`DownloadableAvatarItemId`. Every player whose `inventory` holds a legacy descriptor (matched
+ignoring trailing commas) is granted that custom item in `inventory_custom` — provided
+`custom_avatar_item` holds it, so run `cai-load` first. The pairs are read from the dumps on
+every run. Re-run it whenever you like: what a player already owns is skipped, nothing is
+removed, and no gift box is sent. It prints how many items it granted.
+
+`--dry-run` writes nothing and lists the players who would get items, most first, with the
+total, the largest and the median (`--limit <n>`, default 50). With `--account <id>` or
+`--username <name>` it lists that player's missing items instead: name, custom avatar item
+id, and the inventory row that earns each one.
+
 ### `lookup` — print an account
 
 ```sh
@@ -188,7 +210,7 @@ the account has a password, the developer role, and the moderator role.
 
 ### Selecting an account
 
-Every command except `reload-plus` and `cai-load` targets exactly one account, by **either**:
+Every command except `reload-plus`, `cai-load` and `cai-grant-legacy` targets exactly one account, by **either**:
 
 - `--account <id>` — numeric account id
 - `--username <name>` — username (case-insensitive)

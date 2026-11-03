@@ -13,10 +13,16 @@ import {
 	PLUS_MEMBERS_SQL,
 	plusReloadSql,
 } from '../../../../apps/econ/src/currency'
+import {
+	legacyAvatarItemMap,
+	legacyGrantPreviewStatements,
+	legacyGrantStatements,
+} from '../../../../apps/econ/src/legacy-avatar-item-grants'
 import { execSql, execSqlFile, readRootEnv, resolveRemote, sqlStr, target } from '../d1'
 import { hashPassword } from '../password'
 import { getRepoRoot } from '../path'
 
+import type { LegacyGrantPreviewRow } from '../../../../apps/econ/src/legacy-avatar-item-grants'
 import type { D1ExecResult } from '../d1'
 
 /**
@@ -34,6 +40,7 @@ import type { D1ExecResult } from '../d1'
  *   runx admin grant-plus      --username alice [--revoke] [--remote]
  *   runx admin reload-plus     <amount> [--dry-run] [--remote]
  *   runx admin cai-load        [--file <export.json>] [--dry-run] [--remote]
+ *   runx admin cai-grant-legacy [--dry-run [--account <id> | --username <name>]] [--remote]
  */
 
 /**
@@ -427,6 +434,141 @@ const caiLoad = new Command('cai-load')
 		console.log(chalk.green(`✓ custom avatar items loaded into ${target(remote)}`))
 	})
 
+/**
+ * Grant every player the custom avatar item that replaced an avatar item they own: an
+ * `inventory` row whose descriptor a storefront dump lists as a `LegacyAvatarItemDesc` earns
+ * its `DownloadableAvatarItemId` in `inventory_custom`, when `custom_avatar_item` holds it (so
+ * run `cai-load` first). The pairs are read from the dumps on every run, so a changed dump
+ * needs no regeneration. Re-runnable: what a player already owns is skipped, nothing is
+ * removed, and no gift box is sent — the item simply appears in what they own.
+ */
+const caiGrantLegacy = new Command('cai-grant-legacy')
+	.description(
+		'Grant the custom avatar items that replaced legacy avatar items players own (re-runnable)'
+	)
+	.option('--dry-run', 'List what would be granted, per player (read-only), change nothing', false)
+	.option('--account <id>', "With --dry-run: list one player's missing items")
+	.option('--username <name>', 'With --dry-run: the same, by username')
+	.option('--limit <n>', 'With --dry-run: how many players the summary lists', '50')
+	.option('--local', 'Target the local dev database (the default).', false)
+	.option('--remote', 'Target the deployed database instead of the local dev database.', false)
+	.action(async (opts) => {
+		const remote = resolveRemote(opts)
+		const onePlayer = opts.account != null || opts.username != null
+		if (onePlayer && !opts.dryRun) {
+			throw new Error('--account / --username only narrow a --dry-run; the grant covers everyone')
+		}
+		const storefrontsDir = path.join(getRepoRoot(), STOREFRONTS_DIR)
+		const names = (await fs.readdir(storefrontsDir)).filter((n) => /^sf.*\.json$/.test(n))
+		const storefronts: unknown[] = []
+		for (const name of names) {
+			const text = await fs.readFile(path.join(storefrontsDir, name), 'utf8')
+			storefronts.push(JSON.parse(text.replace(/^\uFEFF/, '')) as unknown)
+		}
+		const map = legacyAvatarItemMap(storefronts)
+		if (map.size === 0) throw new Error(`no LegacyAvatarItemDesc pairs in ${STOREFRONTS_DIR}`)
+		const statements = legacyGrantStatements(map)
+		console.log(
+			`${map.size} legacy → custom avatar item pairs from ${names.length} storefronts, as ${statements.length} statement(s), against ${target(remote)}`
+		)
+		if (opts.dryRun) {
+			let accountId: number | undefined
+			if (onePlayer) {
+				const { where, label } = whereClause(opts.account, opts.username)
+				const found = (
+					await execSql<{ account_id: number }>(
+						`SELECT account_id FROM account WHERE ${where}`,
+						remote
+					)
+				).results[0]
+				if (!found) throw new Error(`no account found for ${label} on ${target(remote)}`)
+				accountId = found.account_id
+			}
+
+			// Deduped on (account, item): two inventory rows can earn the same item.
+			const grants = new Map<string, LegacyGrantPreviewRow & { descs: string[] }>()
+			for (const sql of legacyGrantPreviewStatements(map, accountId)) {
+				for (const row of (await execSql<LegacyGrantPreviewRow>(sql, remote, 'econ')).results) {
+					const key = `${row.account_id}:${row.custom_avatar_item_id}`
+					const seen = grants.get(key)
+					if (seen) seen.descs.push(row.avatar_item_desc)
+					else grants.set(key, { ...row, descs: [row.avatar_item_desc] })
+				}
+			}
+			const perAccount = new Map<number, Array<LegacyGrantPreviewRow & { descs: string[] }>>()
+			for (const grant of grants.values()) {
+				const list = perAccount.get(grant.account_id) ?? []
+				list.push(grant)
+				perAccount.set(grant.account_id, list)
+			}
+
+			if (accountId !== undefined) {
+				const items = perAccount.get(accountId) ?? []
+				const table = new Table({ head: ['item', 'custom avatar item id', 'from inventory'] })
+				for (const item of items.sort((a, b) => (a.name ?? '').localeCompare(b.name ?? ''))) {
+					table.push([item.name ?? '', item.custom_avatar_item_id, item.descs.join('\n')])
+				}
+				if (items.length > 0) console.log(table.toString())
+				console.log(
+					chalk.cyan(
+						`--dry-run: account ${accountId} would get ${items.length} item(s); nothing was written.`
+					)
+				)
+				return
+			}
+
+			const limit = Number(opts.limit)
+			if (!Number.isInteger(limit) || limit < 1)
+				throw new Error('--limit must be a positive integer')
+			const ranked = [...perAccount].sort(([a, x], [b, y]) => y.length - x.length || a - b)
+			const shown = ranked.slice(0, limit)
+			const usernames = new Map<number, string>()
+			if (shown.length > 0) {
+				const rows = (
+					await execSql<{ account_id: number; username: string | null }>(
+						`SELECT account_id, json_extract(data, '$.username') AS username FROM account
+						 WHERE account_id IN (${shown.map(([id]) => id).join(', ')})`,
+						remote
+					)
+				).results
+				for (const r of rows) usernames.set(r.account_id, r.username ?? '')
+			}
+			const table = new Table({ head: ['account', 'username', 'items to grant'] })
+			for (const [id, items] of shown) {
+				table.push([String(id), usernames.get(id) ?? '', String(items.length)])
+			}
+			if (shown.length > 0) console.log(table.toString())
+			const counts = ranked.map(([, items]) => items.length)
+			const median = counts.length === 0 ? 0 : counts[Math.floor(counts.length / 2)]
+			console.log(
+				`${grants.size} item(s) for ${perAccount.size} player(s); most ${counts[0] ?? 0}, median ${median}` +
+					(ranked.length > shown.length ? ` (top ${shown.length} shown; --limit for more)` : '')
+			)
+			console.log(
+				chalk.cyan(
+					"--dry-run: nothing was written. --account <id> / --username <name> lists one player's items."
+				)
+			)
+			return
+		}
+
+		const count = async (): Promise<number> =>
+			Number(
+				(await execSql('SELECT COUNT(*) AS n FROM inventory_custom', remote, 'econ')).results[0]
+					?.n ?? 0
+			)
+		const before = await count()
+		const file = path.join(os.tmpdir(), `recflare-cai-grant-legacy-${Date.now()}.sql`)
+		await fs.writeFile(file, statements.join('\n'))
+		try {
+			await execSqlFile(file, remote, 'econ')
+		} finally {
+			await fs.remove(file)
+		}
+		const granted = (await count()) - before
+		console.log(chalk.green(`✓ ${granted} custom avatar item(s) granted on ${target(remote)}`))
+	})
+
 const lookup = new Command('lookup')
 	.description('Print an account by id or username')
 	.option('--account <id>', 'Account id to look up')
@@ -490,6 +632,7 @@ export const adminCmd = new Command('admin')
 	.addCommand(grantStudio)
 	.addCommand(reloadPlus)
 	.addCommand(caiLoad)
+	.addCommand(caiGrantLegacy)
 	.addCommand(lookup)
 	.addHelpText(
 		'after',
@@ -509,5 +652,7 @@ Examples:
   $ runx admin reload-plus 1000 --dry-run           # just list them
   $ runx admin cai-load                             # merge every committed first-party export (local)
   $ runx admin cai-load --remote --file path/to/export.json
+  $ runx admin cai-grant-legacy --remote            # owned legacy items → their custom avatar items
+  $ runx admin cai-grant-legacy --remote --dry-run --username alice   # what alice would get
   $ runx admin lookup --username alice --remote`
 	)
