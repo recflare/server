@@ -20,6 +20,8 @@ import {
 	NOTIFICATION_SCHEMA_DDL,
 	PRESENCE_SCHEMA_DDL,
 	publicStudioBundleFilename,
+	RELATIONSHIP_SCHEMA_DDL,
+	RelationshipType,
 	putUnityAsset,
 	recordRoomVisit,
 	removeRoomRole,
@@ -125,6 +127,8 @@ beforeAll(async () => {
 	for (const stmt of ROOM_INSTANCE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	// Presence table (read by the photon access-token handler).
 	for (const stmt of PRESENCE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	// Friend graph — a friend in an unpublished room lets the caller read that room.
+	for (const stmt of RELATIONSHIP_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	// Message store (owned by the api worker) — a room-role invite is written there before
 	// it is pushed, so the invited player can read it back from their inbox.
 	for (const stmt of NOTIFICATION_SCHEMA_DDL) await env.DB.prepare(stmt).run()
@@ -166,7 +170,9 @@ describe('rooms endpoints', () => {
 	})
 
 	it('GET /rooms/1 returns the seeded dorm with its SubRoom scene', async () => {
-		const res = await SELF.fetch(`${ORIGIN}/rooms/1?include=1325`)
+		const res = await SELF.fetch(`${ORIGIN}/rooms/1?include=1325`, {
+			headers: await bearer('1', ['developer']),
+		})
 		expect(res.status).toBe(200)
 		const body = (await res.json()) as {
 			RoomId: number
@@ -183,7 +189,7 @@ describe('rooms endpoints', () => {
 	// zero/null one to its parser. `FriendlyName` is deliberately NOT among them: this server
 	// does not serve a display name apart from `Name`, and migration 0017 strips any stored one.
 	it('GET /rooms/:id carries BoostCount, CurrentSnapshotId and CCU, and no FriendlyName', async () => {
-		const res = await SELF.fetch(`${ORIGIN}/rooms/1`)
+		const res = await SELF.fetch(`${ORIGIN}/rooms/1`, { headers: await bearer('1', ['developer']) })
 		expect(res.status).toBe(200)
 		const body = (await res.json()) as Record<string, unknown>
 		expect(body).toHaveProperty('BoostCount', 0)
@@ -235,8 +241,53 @@ describe('rooms endpoints', () => {
 		expect((await SELF.fetch(`${ORIGIN}/showcase/abc`)).status).toBe(404)
 	})
 
+	// The friends list resolves each friend's room through GET /rooms/:id, and a friend is
+	// usually in their dorm, which is Private. A 404 there blanked the whole list.
+	it('GET /rooms/:id serves an unpublished room to a friend of someone in it, and nobody else', async () => {
+		await env.DB.prepare('INSERT INTO room (data) VALUES (?1)')
+			.bind(
+				JSON.stringify({
+					RoomId: 30951,
+					Name: 'FriendsDorm',
+					CreatorAccountId: 901,
+					Accessibility: 0,
+					IsDorm: true,
+					SubRooms: [],
+				})
+			)
+			.run()
+		// 902 is friends with the owner (the row runs either way); 903 has only a pending request.
+		await env.DB.prepare(
+			`INSERT INTO relationship (requester_id, target_id, relationship_type)
+			 VALUES (902, 901, ?1), (901, 903, ?2)`
+		)
+			.bind(RelationshipType.Friend, RelationshipType.FriendRequestSent)
+			.run()
+		const read = async (player: string) =>
+			(await SELF.fetch(`${ORIGIN}/rooms/30951?include=767277`, { headers: await bearer(player) }))
+				.status
+
+		// Owner not online: nobody but the owner sees it.
+		expect(await read('901')).toBe(200)
+		expect(await read('902')).toBe(404)
+		expect(await read('904')).toBe(404)
+
+		// Owner in their dorm: their friend sees it; a pending request and a stranger don't.
+		await putInRoom(901, 30951)
+		expect(await read('902')).toBe(200)
+		expect(await read('903')).toBe(404)
+		expect(await read('904')).toBe(404)
+
+		// A lapsed presence row grants nothing.
+		await putInRoom(901, 30951, { expired: true })
+		expect(await read('902')).toBe(404)
+		await clearPresence(901)
+	})
+
 	it('GET /rooms/:id 404s for a room not in D1', async () => {
-		const res = await SELF.fetch(`${ORIGIN}/rooms/99999`)
+		const res = await SELF.fetch(`${ORIGIN}/rooms/99999`, {
+			headers: await bearer('1', ['developer']),
+		})
 		expect(res.status).toBe(404)
 	})
 
@@ -368,7 +419,9 @@ describe('rooms endpoints', () => {
 
 		// It is the id of a room that really is the caller's dorm — the caller fetches the
 		// room itself from /rooms/{id}.
-		const room = (await (await SELF.fetch(`${ORIGIN}/rooms/1`)).json()) as {
+		const room = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/1`, { headers: await bearer('1', ['developer']) })
+		).json()) as {
 			RoomId: number
 			IsDorm: boolean
 			CreatorAccountId: number
@@ -384,7 +437,9 @@ describe('rooms endpoints', () => {
 		expect(typeof fresh).toBe('number')
 		expect(fresh).not.toBe(1)
 
-		const provisioned = (await (await SELF.fetch(`${ORIGIN}/rooms/${fresh}`)).json()) as {
+		const provisioned = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/${fresh}`, { headers: await bearer('1', ['developer']) })
+		).json()) as {
 			IsDorm: boolean
 			CreatorAccountId: number
 		}
@@ -690,7 +745,11 @@ describe('rooms endpoints', () => {
 		// from it — and the stored room keeps the entry for the accept.
 		type Served = { Roles: Array<{ AccountId: number; Role: number; InvitedRole: number }> }
 		const servedRoles = async () =>
-			((await (await SELF.fetch(`${ORIGIN}/rooms/30408`)).json()) as Served).Roles
+			(
+				(await (
+					await SELF.fetch(`${ORIGIN}/rooms/30408`, { headers: await bearer('1', ['developer']) })
+				).json()) as Served
+			).Roles
 		expect(await servedRoles()).toEqual([
 			{ AccountId: 821, Role: 255, LastChangedByAccountId: null, InvitedRole: 0 },
 		])
@@ -1705,7 +1764,11 @@ describe('rooms endpoints', () => {
 		])
 
 		// It persists and is fetchable by its new id.
-		const fetched = (await (await SELF.fetch(`${ORIGIN}/rooms/${ok.value!.RoomId}`)).json()) as {
+		const fetched = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/${ok.value!.RoomId}`, {
+				headers: await bearer('1', ['developer']),
+			})
+		).json()) as {
 			Name: string
 			Tags: unknown[]
 			IsDeveloperOwned: boolean
@@ -1971,7 +2034,9 @@ describe('rooms endpoints', () => {
 		roomId: number,
 		subRoomId: number
 	): Promise<Record<string, unknown> | undefined> => {
-		const res = await SELF.fetch(`${ORIGIN}/rooms/${roomId}`)
+		const res = await SELF.fetch(`${ORIGIN}/rooms/${roomId}`, {
+			headers: await bearer('1', ['developer']),
+		})
 		if (res.status !== 200) return undefined
 		const room = (await res.json()) as { SubRooms?: Array<Record<string, unknown>> }
 		return (room.SubRooms ?? []).find((s) => s.SubRoomId === subRoomId)
@@ -2002,7 +2067,9 @@ describe('rooms endpoints', () => {
 			ErrorId: null,
 			Error: null,
 		})
-		const room = (await (await SELF.fetch(`${ORIGIN}/rooms/2`)).json()) as { Description: string }
+		const room = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/2`, { headers: await bearer('1', ['developer']) })
+		).json()) as { Description: string }
 		expect(room.Description).toBe('blah blah blah')
 	})
 
@@ -2030,7 +2097,9 @@ describe('rooms endpoints', () => {
 		const ok = await putForm('/rooms/2/image', { imageName }, '1')
 		expect(ok.status).toBe(200)
 		expect(await bodyOf(ok)).toMatchObject({ Success: true })
-		const room = (await (await SELF.fetch(`${ORIGIN}/rooms/2`)).json()) as { ImageName: string }
+		const room = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/2`, { headers: await bearer('1', ['developer']) })
+		).json()) as { ImageName: string }
 		expect(room.ImageName).toBe(imageName)
 	})
 
@@ -2463,7 +2532,9 @@ describe('rooms endpoints', () => {
 		expect((await putForm('/rooms/2/roles/850/invite', { role: '30' }, '1')).status).toBe(200)
 		expect(await storedRoleOf(2, 850)).toMatchObject({ Role: 0, InvitedRole: 30 })
 		expect(await roleOf(850)).toMatchObject({ Role: 0, InvitedRole: 30 })
-		const room2 = (await (await SELF.fetch(`${ORIGIN}/rooms/2`)).json()) as { Roles: Role[] }
+		const room2 = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/2`, { headers: await bearer('1', ['developer']) })
+		).json()) as { Roles: Role[] }
 		expect(room2.Roles.some((r) => r.AccountId === 850)).toBe(false)
 
 		// No token → 401 (auth gate).
@@ -2648,7 +2719,9 @@ describe('rooms endpoints', () => {
 	it('PUT /rooms/:id/creator hands the room over, and only the owner may', async () => {
 		type Role = { AccountId: number; Role: number; LastChangedByAccountId: number | null }
 		const roomOf = async (roomId: number) =>
-			(await (await SELF.fetch(`${ORIGIN}/rooms/${roomId}`)).json()) as {
+			(await (
+				await SELF.fetch(`${ORIGIN}/rooms/${roomId}`, { headers: await bearer('1', ['developer']) })
+			).json()) as {
 				CreatorAccountId: number
 				Roles: Role[]
 			}
@@ -2740,7 +2813,9 @@ describe('rooms endpoints', () => {
 		expect(
 			await envOf(await putForm('/rooms/30702/creator', { accountId: '891' }, '890'))
 		).toMatchObject({ success: false, error: 'A dorm cannot be given away!' })
-		const dorm = (await (await SELF.fetch(`${ORIGIN}/rooms/30702`)).json()) as {
+		const dorm = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/30702`, { headers: await bearer('1', ['developer']) })
+		).json()) as {
 			CreatorAccountId: number
 		}
 		expect(dorm.CreatorAccountId).toBe(890)
@@ -2823,7 +2898,9 @@ describe('rooms endpoints', () => {
 			InvitedRole: 30,
 			LastChangedByAccountId: 1,
 		})
-		const room2 = (await (await SELF.fetch(`${ORIGIN}/rooms/2`)).json()) as {
+		const room2 = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/2`, { headers: await bearer('1', ['developer']) })
+		).json()) as {
 			Roles: Array<{ AccountId: number }>
 		}
 		expect(room2.Roles.some((r) => r.AccountId === 187)).toBe(false)
@@ -3253,7 +3330,9 @@ describe('rooms endpoints', () => {
 			DailyLimit: 1000,
 		})
 		// It lands on the room blob under the names the room DTO carries.
-		const room = (await (await SELF.fetch(`${ORIGIN}/rooms/2`)).json()) as Record<string, unknown>
+		const room = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/2`, { headers: await bearer('1', ['developer']) })
+		).json()) as Record<string, unknown>
 		expect(room).toMatchObject({ progressionEnabled: true, progressionDailyLimit: 1000 })
 
 		// The per-player read is auth-gated, 404 for no such room, and echoes the switch. A
@@ -3489,7 +3568,9 @@ describe('rooms endpoints', () => {
 			(await (await hub().fetch('http://do/all')).json()) as Sent[]
 
 		// The room's current name, read rather than hardcoded — earlier tests rename it.
-		const { Name } = (await (await SELF.fetch(`${ORIGIN}/rooms/2`)).json()) as { Name: string }
+		const { Name } = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/2`, { headers: await bearer('1', ['developer']) })
+		).json()) as { Name: string }
 
 		await putInRoom(207, 2)
 		await hub().fetch('http://do/all', { method: 'DELETE' })
@@ -3904,7 +3985,9 @@ describe('rooms endpoints', () => {
 			.first<{ data: string }>()
 		expect(raw!.data).toContain('"WarningMask":2')
 		expect(raw!.data).not.toContain('"WarningMask":2.0')
-		const room = (await (await SELF.fetch(`${ORIGIN}/rooms/2`)).json()) as { WarningMask: number }
+		const room = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/2`, { headers: await bearer('1', ['developer']) })
+		).json()) as { WarningMask: number }
 		expect(room.WarningMask).toBe(2)
 
 		// The mask can carry an optional free-text CustomWarning alongside it.
@@ -3913,7 +3996,9 @@ describe('rooms endpoints', () => {
 		)
 		expect(custom).toMatchObject({ success: true })
 		expect(custom.value).toMatchObject({ WarningMask: 63, CustomWarning: 'slfkjsdf' })
-		const withCustom = (await (await SELF.fetch(`${ORIGIN}/rooms/2`)).json()) as {
+		const withCustom = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/2`, { headers: await bearer('1', ['developer']) })
+		).json()) as {
 			WarningMask: number
 			CustomWarning: string
 		}
@@ -3921,7 +4006,9 @@ describe('rooms endpoints', () => {
 
 		// Omitting customWarning leaves the existing text untouched (partial update).
 		await putForm('/rooms/2/warning', { warningMask: '7' }, '1')
-		const kept = (await (await SELF.fetch(`${ORIGIN}/rooms/2`)).json()) as { CustomWarning: string }
+		const kept = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/2`, { headers: await bearer('1', ['developer']) })
+		).json()) as { CustomWarning: string }
 		expect(kept.CustomWarning).toBe('slfkjsdf')
 
 		// The co-owner (account 2, Role 30) may also set it.
@@ -3949,14 +4036,18 @@ describe('rooms endpoints', () => {
 			.bind(2)
 			.first<{ data: string }>()
 		expect(raw!.data).toContain('"CloningAllowed":false')
-		const room = (await (await SELF.fetch(`${ORIGIN}/rooms/2`)).json()) as {
+		const room = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/2`, { headers: await bearer('1', ['developer']) })
+		).json()) as {
 			CloningAllowed: boolean
 		}
 		expect(room.CloningAllowed).toBe(false)
 
 		// The co-owner (account 2) may re-enable it.
 		await putForm('/rooms/2/cloning', { cloningAllowed: 'True' }, '2')
-		const reenabled = (await (await SELF.fetch(`${ORIGIN}/rooms/2`)).json()) as {
+		const reenabled = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/2`, { headers: await bearer('1', ['developer']) })
+		).json()) as {
 			CloningAllowed: boolean
 		}
 		expect(reenabled.CloningAllowed).toBe(true)
@@ -3986,7 +4077,9 @@ describe('rooms endpoints', () => {
 			SupportsJuniors: true,
 		})
 
-		const room = (await (await SELF.fetch(`${ORIGIN}/rooms/2`)).json()) as {
+		const room = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/2`, { headers: await bearer('1', ['developer']) })
+		).json()) as {
 			SupportsScreens: boolean
 			SupportsWalkVR: boolean
 			SupportsTeleportVR: boolean
@@ -4003,7 +4096,9 @@ describe('rooms endpoints', () => {
 
 	it('PUT /rooms/:id/loadscreen replaces the load screen (auth-gated, owner/co-owner-only)', async () => {
 		const screensOf = async (): Promise<Array<Record<string, unknown>>> => {
-			const room = (await (await SELF.fetch(`${ORIGIN}/rooms/2`)).json()) as {
+			const room = (await (
+				await SELF.fetch(`${ORIGIN}/rooms/2`, { headers: await bearer('1', ['developer']) })
+			).json()) as {
 				LoadScreens?: Array<Record<string, unknown>>
 			}
 			return room.LoadScreens ?? []
@@ -4063,7 +4158,9 @@ describe('rooms endpoints', () => {
 		const priv = await envOf(await putForm('/rooms/2/accessibility', { accessibility: '0' }, '1'))
 		expect(priv).toMatchObject({ success: true, error: '' })
 		expect(priv.value?.Accessibility).toBe(0)
-		const room = (await (await SELF.fetch(`${ORIGIN}/rooms/2`)).json()) as { Accessibility: number }
+		const room = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/2`, { headers: await bearer('1', ['developer']) })
+		).json()) as { Accessibility: number }
 		expect(room.Accessibility).toBe(0)
 
 		// The co-owner (account 2) may set it back to public (1).
@@ -4083,7 +4180,9 @@ describe('rooms endpoints', () => {
 					body: new URLSearchParams({ accessibility }).toString(),
 				})
 			)
-		const before = (await (await SELF.fetch(`${ORIGIN}/rooms/2`)).json()) as {
+		const before = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/2`, { headers: await bearer('1', ['developer']) })
+		).json()) as {
 			Accessibility: number
 		}
 
@@ -4157,7 +4256,9 @@ describe('rooms endpoints', () => {
 		// The room's own fields are read first: a save is a revision of a SUBROOM and must
 		// leave them alone. `Description` in the body is the save comment, not the room's
 		// description — that is `PUT /rooms/:id/description`'s to set.
-		const before = (await (await SELF.fetch(`${ORIGIN}/rooms/2`)).json()) as {
+		const before = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/2`, { headers: await bearer('1', ['developer']) })
+		).json()) as {
 			Description: string
 			PersistenceVersion: number
 		}
@@ -4213,7 +4314,11 @@ describe('rooms endpoints', () => {
 			DataBlob: '5c618c920f6247efb8327e327d0b4417',
 			DataBlobHash: null,
 		})
-		expect(await (await SELF.fetch(`${ORIGIN}/rooms/2`)).json()).toMatchObject({
+		expect(
+			await (
+				await SELF.fetch(`${ORIGIN}/rooms/2`, { headers: await bearer('1', ['developer']) })
+			).json()
+		).toMatchObject({
 			DataBlob: '5c618c920f6247efb8327e327d0b4417',
 			DataBlobHash: null,
 		})
@@ -4251,7 +4356,9 @@ describe('rooms endpoints', () => {
 		// room's own fields are untouched — a save must never rewrite the room.
 		expect(sub.CurrentSave.Description).toBe('mydescription here')
 		expect(sub).toMatchObject({ PersistenceVersion: 41, InventionUsage: 'CAE=' })
-		const room = (await (await SELF.fetch(`${ORIGIN}/rooms/2`)).json()) as {
+		const room = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/2`, { headers: await bearer('1', ['developer']) })
+		).json()) as {
 			Description: string
 			PersistenceVersion: number
 			InventionUsage?: string
@@ -4281,7 +4388,9 @@ describe('rooms endpoints', () => {
 		// the key must be PRESENT — the seeded rooms predate it and have no such field in
 		// their stored blob. `in` rather than a value check: absent and null differ here.
 		// Room 3 is seeded and never saved by another test (room 2 is the save fixture).
-		const room = (await (await SELF.fetch(`${ORIGIN}/rooms/3`)).json()) as {
+		const room = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/3`, { headers: await bearer('1', ['developer']) })
+		).json()) as {
 			SubRooms: Array<Record<string, unknown>>
 		}
 		expect(room.SubRooms.length).toBeGreaterThan(0)
@@ -4408,7 +4517,9 @@ describe('rooms endpoints', () => {
 		expect('UnityAssetId' in live.CurrentSave!).toBe(false)
 
 		// It's on the room read too — that's what the loader actually fetches.
-		const room = (await (await SELF.fetch(`${ORIGIN}/rooms/5`)).json()) as {
+		const room = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/5`, { headers: await bearer('1', ['developer']) })
+		).json()) as {
 			SubRooms: Array<{ SubRoomId: number; CurrentSave: { SubRoomDataSaveId: number } | null }>
 		}
 		expect(room.SubRooms.find((s) => s.SubRoomId === 5)!.CurrentSave!.SubRoomDataSaveId).toBe(
@@ -4664,7 +4775,9 @@ describe('rooms endpoints', () => {
 				'SELECT tag, is_primary_genre FROM room_tag WHERE room_id = 4 AND is_primary_genre = 1'
 			).all<{ tag: string; is_primary_genre: number }>()
 		).toMatchObject({ results: [{ tag: 'rro', is_primary_genre: 1 }] })
-		const read = (await (await SELF.fetch(`${ORIGIN}/rooms/4`)).json()) as {
+		const read = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/4`, { headers: await bearer('1', ['developer']) })
+		).json()) as {
 			Tags: Array<{ Tag: string; IsPrimaryGenre?: boolean }>
 		}
 		expect(read.Tags.filter((t) => t.IsPrimaryGenre).map((t) => t.Tag)).toEqual(['rro'])
@@ -4816,7 +4929,9 @@ describe('rooms endpoints', () => {
 		expect(tagRow).toEqual({ tag: 'ghostly', type: 0 })
 
 		// And the read re-attaches it, so the client sees an unchanged DTO.
-		const room = (await (await SELF.fetch(`${ORIGIN}/rooms/2`)).json()) as {
+		const room = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/2`, { headers: await bearer('1', ['developer']) })
+		).json()) as {
 			Tags: Array<{ Tag: string; Type: number }>
 		}
 		expect(room.Tags).toContainEqual({ Tag: 'ghostly', Type: 0 })
@@ -5190,7 +5305,11 @@ describe('rooms endpoints', () => {
 			return body.Results[0]!.Stats
 		}
 		const direct = async (): Promise<Stats> =>
-			((await (await SELF.fetch(`${ORIGIN}/rooms/15`)).json()) as { Stats: Stats }).Stats
+			(
+				(await (
+					await SELF.fetch(`${ORIGIN}/rooms/15`, { headers: await bearer('1', ['developer']) })
+				).json()) as { Stats: Stats }
+			).Stats
 		const interact = async (player: string, action: string, method: string) =>
 			SELF.fetch(`${ORIGIN}/rooms/15/interactionby/me/${action}`, {
 				method,
@@ -5822,7 +5941,9 @@ describe('rooms endpoints', () => {
 
 		const before = new Set(
 			(
-				(await (await SELF.fetch(`${ORIGIN}/rooms/2`)).json()) as { SubRooms: SubRoom[] }
+				(await (
+					await SELF.fetch(`${ORIGIN}/rooms/2`, { headers: await bearer('1', ['developer']) })
+				).json()) as { SubRooms: SubRoom[] }
 			).SubRooms.map((s) => s.SubRoomId)
 		)
 
@@ -5892,7 +6013,9 @@ describe('rooms endpoints', () => {
 		const body = await envelope(res)
 		expect(body).toMatchObject({ Success: true, Error: null, error_id: null })
 		expect(body.Value).toMatchObject({ RoomId: 720, MaxPlayerCalculationMode: 1, MaxPlayers: 12 })
-		const stored = (await (await SELF.fetch(`${ORIGIN}/rooms/720`)).json()) as {
+		const stored = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/720`, { headers: await bearer('1', ['developer']) })
+		).json()) as {
 			MaxPlayerCalculationMode: number
 			MaxPlayers: number
 		}
@@ -6527,6 +6650,7 @@ describe('rooms endpoints', () => {
 			'GET /rooms/search',
 			'GET /rooms/search/name',
 			'GET /rooms/visitedby/me',
+			'GET /rooms/visitedby/me/count',
 			'GET /rooms/visitedby/{playerId}',
 			'GET /rooms/{roomId}',
 			'GET /rooms/{roomId}/bans',
@@ -6735,7 +6859,9 @@ describe('studio room bundles', () => {
 			}
 		}
 		for (const target of [0, 2]) {
-			const response = await SELF.fetch(`${ORIGIN}/rooms/9901?unityAssetTarget=${target}`)
+			const response = await SELF.fetch(`${ORIGIN}/rooms/9901?unityAssetTarget=${target}`, {
+				headers: await bearer('1', ['developer']),
+			})
 			const room = (await response.json()) as {
 				SubRooms: Array<{
 					CurrentSave: {
@@ -6802,7 +6928,9 @@ describe('studio room bundles', () => {
 	it('loads baked bundles onto the room and serves the unity asset', async () => {
 		await reset()
 
-		const before = (await (await SELF.fetch(`${ORIGIN}/rooms/9901`)).json()) as {
+		const before = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/9901`, { headers: await bearer('1', ['developer']) })
+		).json()) as {
 			SubRooms: Array<{ CurrentSave: { UnitySubAssets: unknown[] } }>
 		}
 		expect(before.SubRooms[0]!.CurrentSave.UnitySubAssets).toEqual([])
@@ -6810,7 +6938,9 @@ describe('studio room bundles', () => {
 		await storeFiles()
 
 		type Baked = { Target: number; Filename: string; Hash: string; Version: number }
-		const loaded = (await (await SELF.fetch(`${ORIGIN}/rooms/9901`)).json()) as {
+		const loaded = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/9901`, { headers: await bearer('1', ['developer']) })
+		).json()) as {
 			SubRooms: Array<{
 				CurrentSave: {
 					UnitySubAssets: Baked[]
@@ -6839,18 +6969,24 @@ describe('studio room bundles', () => {
 		])
 
 		const quest = (await (
-			await SELF.fetch(`${ORIGIN}/rooms/9901?unityAssetTarget=2`)
+			await SELF.fetch(`${ORIGIN}/rooms/9901?unityAssetTarget=2`, {
+				headers: await bearer('1', ['developer']),
+			})
 		).json()) as typeof loaded
 		expect(quest.SubRooms[0]!.CurrentSave.UnitySubAssets.map((asset) => asset.Target)).toEqual([2])
 
 		const pc = (await (
-			await SELF.fetch(`${ORIGIN}/rooms/9901?unityAssetTarget=0`)
+			await SELF.fetch(`${ORIGIN}/rooms/9901?unityAssetTarget=0`, {
+				headers: await bearer('1', ['developer']),
+			})
 		).json()) as typeof loaded
 		expect(pc.SubRooms[0]!.CurrentSave.UnitySubAssets.map((asset) => asset.Filename)).toEqual([
 			winName,
 		])
 
-		const maker = (await (await SELF.fetch(`${ORIGIN}/rooms/9902`)).json()) as typeof loaded
+		const maker = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/9902`, { headers: await bearer('1', ['developer']) })
+		).json()) as typeof loaded
 		expect(maker.SubRooms[0]!.CurrentSave.UnitySubAssets).toEqual([])
 
 		const meta = await SELF.fetch(
@@ -6981,8 +7117,11 @@ describe('studio room bundles', () => {
 			expect(room.SubRooms[0]!.CurrentSave.UnitySubAssets, query).toEqual([])
 		}
 
-		const saveId = ((await (await SELF.fetch(`${ORIGIN}/rooms/9901`)).json()) as Loaded)
-			.SubRooms[0]!.CurrentSave.SubRoomDataSaveId
+		const saveId = (
+			(await (
+				await SELF.fetch(`${ORIGIN}/rooms/9901`, { headers: await bearer('1', ['developer']) })
+			).json()) as Loaded
+		).SubRooms[0]!.CurrentSave.SubRoomDataSaveId
 		const detail = await SELF.fetch(`${ORIGIN}/rooms/9901/subrooms/99011/saves/${saveId}`, {
 			headers: await bearer('1'),
 		})
@@ -7056,7 +7195,9 @@ describe('room name validation', () => {
 		}
 
 		// Unchanged: the refusals above never reached the write.
-		const room = (await (await SELF.fetch(`${ORIGIN}/rooms/2`)).json()) as { Name: string }
+		const room = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/2`, { headers: await bearer('1', ['developer']) })
+		).json()) as { Name: string }
 		expect(room.Name).not.toMatch(/[^A-Za-z0-9_,-]/)
 	})
 
@@ -7357,7 +7498,9 @@ describe('Studio room management contracts', () => {
 			body: 'name=Second',
 		})
 		expect(added.status).toBe(200)
-		const lookup = await SELF.fetch(`${ORIGIN}/rooms/${Number(room.RoomId)}?include=525581`)
+		const lookup = await SELF.fetch(`${ORIGIN}/rooms/${Number(room.RoomId)}?include=525581`, {
+			headers: await bearer('1', ['developer']),
+		})
 		const refreshed = await lookup.json<
 			Room & { SubRooms: Array<{ SubRoomId: number; CurrentSave: unknown }> }
 		>()
@@ -7384,7 +7527,9 @@ describe('Studio room management contracts', () => {
 			)
 			expect(saved.status).toBe(200)
 			const updated = await (
-				await SELF.fetch(`${ORIGIN}/rooms/${Number(room.RoomId)}?include=525581`)
+				await SELF.fetch(`${ORIGIN}/rooms/${Number(room.RoomId)}?include=525581`, {
+					headers: await bearer('1', ['developer']),
+				})
 			).json<Room & { SubRooms: Array<{ CurrentSave: unknown }> }>()
 			expect(updated.SubRooms[0]!.CurrentSave).toMatchObject({ OMVersion: 197, UgcSubVersion: 3 })
 		}
@@ -7415,7 +7560,18 @@ describe('Studio room management contracts', () => {
 			body: 'name=Second',
 		})
 		expect(added.status).toBe(200)
-		const lookup = await SELF.fetch(`${ORIGIN}/rooms?name=StudioFreshR1&include=525581`)
+		// Unpublished: a name lookup finds it for its owner, not for anyone else.
+		const anonymous = await SELF.fetch(`${ORIGIN}/rooms?name=StudioFreshR1&include=525581`)
+		expect(await anonymous.json()).toBeNull()
+		expect((await SELF.fetch(`${ORIGIN}/rooms/${roomId}`)).status).toBe(404)
+		const stranger = { headers: await bearer('999') }
+		expect((await SELF.fetch(`${ORIGIN}/rooms/${roomId}`, stranger)).status).toBe(404)
+		expect(
+			(await SELF.fetch(`${ORIGIN}/rooms/${roomId}`, { headers: await bearer('880') })).status
+		).toBe(200)
+		const lookup = await SELF.fetch(`${ORIGIN}/rooms?name=StudioFreshR1&include=525581`, {
+			headers: await bearer('880'),
+		})
 		const room = await lookup.json<Room & { SubRooms: Array<{ SubRoomId: number }> }>()
 		expect(room.SubRooms).toEqual([
 			expect.objectContaining({
@@ -7452,7 +7608,9 @@ describe('Studio room management contracts', () => {
 	})
 
 	it('saves the Studio age rating through v2 restrictions with ownership checks', async () => {
-		const before = await (await SELF.fetch(`${ORIGIN}/rooms/2`)).json<Room>()
+		const before = await (
+			await SELF.fetch(`${ORIGIN}/rooms/2`, { headers: await bearer('1', ['developer']) })
+		).json<Room>()
 		const update = async (body: string, account?: string) =>
 			SELF.fetch(`${ORIGIN}/rooms/2/v2/restrictions`, {
 				method: 'PUT',
@@ -7482,7 +7640,13 @@ describe('Studio room management contracts', () => {
 			Error: 'Invalid age rating.',
 			Value: null,
 		})
-		expect((await (await SELF.fetch(`${ORIGIN}/rooms/2`)).json<Room>()).AgeRating).toBe(1)
+		expect(
+			(
+				await (
+					await SELF.fetch(`${ORIGIN}/rooms/2`, { headers: await bearer('1', ['developer']) })
+				).json<Room>()
+			).AgeRating
+		).toBe(1)
 		await update('ageRating=2&supportsWalkVR=True', '1')
 	})
 
@@ -7520,7 +7684,9 @@ describe('Studio room management contracts', () => {
 			(await SELF.fetch(`${ORIGIN}/rooms/91004/subrooms/91004/unityasset?unityAssetId=${id}`))
 				.status
 		).toBe(404)
-		const original = (await (await SELF.fetch(`${ORIGIN}/rooms/91004`)).json()) as {
+		const original = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/91004`, { headers: await bearer('1', ['developer']) })
+		).json()) as {
 			SubRooms: Array<{ CurrentSave: Record<string, unknown> }>
 		}
 		expect(original.SubRooms[0]!.CurrentSave.UnityAssetId).toBe(id)
@@ -7715,7 +7881,9 @@ it("GET /rooms/:id hydrates the room's published badges", async () => {
 	])
 	// Twice: the second read takes the path that remembers the table exists.
 	for (let i = 0; i < 2; i++) {
-		const res = await SELF.fetch(`${ORIGIN}/rooms/987671`)
+		const res = await SELF.fetch(`${ORIGIN}/rooms/987671`, {
+			headers: await bearer('1', ['developer']),
+		})
 		expect(res.status).toBe(200)
 		const room = (await res.json()) as { Badges: Array<{ CustomAvatarItemId: string }> }
 		expect(room.Badges.map((b) => b.CustomAvatarItemId)).toEqual(['badge-published'])

@@ -54,6 +54,8 @@ import {
 	getSubRoomSaves,
 	getTrendingRooms,
 	getVisitedRooms,
+	hasFriendInRoom,
+	hasRoomInviteTo,
 	incrementRoomExperience,
 	inviteRoomRole,
 	isPickableDorm,
@@ -523,6 +525,39 @@ const FEATURED_ROOMS_VERSIONS: ReadonlySet<string> = new Set(['20250718'])
 async function isStaff(c: Context<App>): Promise<boolean> {
 	const roles = await validateAndGetRoles(c.req.raw, await c.env.JWT_SECRET.get())
 	return hasStaffRole(roles)
+}
+
+/**
+ * Whether a room may be served to the caller by the single-room reads (`GET /rooms/:id`,
+ * and `GET /rooms` / `GET /rooms/bulk` by name). A PUBLISHED room (Public, or Unlisted —
+ * reachable, just not listed) is served to anyone. Any other accessibility (Private and the
+ * two Dev_ ones) is a room its owner hasn't released, served only to the people `match`'s
+ * `canEnterRoom` lets in — its creator, a role holder, a player with a live invite into it —
+ * plus anyone whose live `presence` puts them in it (an invite is swept while its guest is
+ * still inside), anyone with a FRIEND whose live presence puts them in it, and staff. Anyone
+ * else is answered as if the room didn't exist. The friend grant is what the friends list
+ * needs: a friend's presence names their room (usually their dorm, which is Private) and the
+ * client resolves it through `GET /rooms/:id`, rendering nothing when that 404s. It reveals
+ * no more than presence already did, and can't enumerate rooms.
+ *
+ * The id-list reads (`/rooms/bulk` by id, `/rooms?id=`) stay unfiltered: they back a player's
+ * own room lists, which must resolve their unpublished rooms.
+ */
+async function canSeeRoom(c: Context<App>, room: Room): Promise<boolean> {
+	if (room.Accessibility === Accessibility.Public || room.Accessibility === Accessibility.Unlisted)
+		return true
+	const accountId = await authedAccountId(c)
+	if (accountId !== null) {
+		if (room.CreatorAccountId === accountId) return true
+		if (roomRoles(room).some((r) => r.AccountId === accountId && r.Role !== Role.None)) return true
+	}
+	if (await isStaff(c)) return true
+	if (accountId === null) return false
+	const roomId = Number(room.RoomId)
+	if (await hasRoomInviteTo(c.env.DB, accountId, roomId)) return true
+	if ((await getPresence<PresenceView>(c.env.DB, accountId))?.roomInstance?.roomId === roomId)
+		return true
+	return hasFriendInRoom(c.env.DB, accountId, roomId)
 }
 
 /**
@@ -1337,7 +1372,8 @@ const app = new Hono<App>()
 			description: [
 				'A single room by `id` or `name`. `id` may be a comma-separated list — the first',
 				'valid integer wins. An unknown room is `{}`, not a 404: the client reads an empty',
-				'object as “no such room”.',
+				'object as “no such room”. A `name` lookup finds an unpublished room (not Public or',
+				'Unlisted) only for those `GET /rooms/{roomId}` serves it to; to anyone else it is `{}`.',
 			].join(' '),
 			parameters: [
 				stringQuery('id', 'Room id (comma-separated; the first valid one is used)'),
@@ -1359,7 +1395,8 @@ const app = new Hono<App>()
 				const room = id === undefined ? null : await getRoomById(c.env.DB, id)
 				return c.json(room ? serveRoom(room) : c.req.query('include') === '525581' ? null : {})
 			}
-			const room = await getRoomByName(c.env.DB, nameParam ?? '')
+			const found = await getRoomByName(c.env.DB, nameParam ?? '')
+			const room = found && (await canSeeRoom(c, found)) ? found : null
 			return c.json(room ? serveRoom(room) : c.req.query('include') === '525581' ? null : {})
 		}
 	)
@@ -1716,7 +1753,8 @@ const app = new Hono<App>()
 				'Rooms by `id` — repeated `id` params, a comma-separated list, or both — or a single',
 				'`name`. Ids that aren’t in D1 are simply absent from the result rather than an error —',
 				'the client reads an empty result as NoSuchRoom. `excludePrivateRooms=True` drops rooms',
-				'that are not publicly visible, as on the POST.',
+				'that are not publicly visible, as on the POST. A `name` lookup finds an unpublished room',
+				'only for those `GET /rooms/{roomId}` serves it to.',
 			].join(' '),
 			parameters: [
 				stringQuery('id', 'Room ids — repeated `id` fields, comma-separated, or both'),
@@ -1752,7 +1790,7 @@ const app = new Hono<App>()
 				)
 			}
 			const room = await getRoomByName(c.env.DB, nameParam ?? '')
-			return c.json(room ? [serveRoom(room)] : [])
+			return c.json(room && (await canSeeRoom(c, room)) ? [serveRoom(room)] : [])
 		}
 	)
 
@@ -5325,7 +5363,9 @@ const app = new Hono<App>()
 				'Android/Quest, `Filename` downloaded from the CDN at `/unityasset/{filename}`).',
 				'A maker-pen save keeps those arrays empty. An integer `unityAssetTarget` leaves',
 				'only the matching target, so a PC client is not also handed the Android bundle.',
-				'`include` and `unityAssetVersion` are accepted and ignored.',
+				'`include` and `unityAssetVersion` are accepted and ignored. An unpublished room (not',
+				'Public or Unlisted) is a 404 except to its creator, a role holder, an invitee, a player',
+				'present in it, a friend of a player present in it, or staff.',
 			].join(' '),
 			parameters: [
 				roomIdParam,
@@ -5340,7 +5380,7 @@ const app = new Hono<App>()
 		}),
 		async (c) => {
 			const room = await getRoomById(c.env.DB, Number.parseInt(c.req.param('roomId'), 10))
-			if (!room) return c.notFound()
+			if (!room || !(await canSeeRoom(c, room))) return c.notFound()
 			filterRoomUnityAssets(room, unityAssetTargetQuery(c))
 			return c.json(serveRoom(room))
 		}

@@ -234,6 +234,36 @@ export async function countOnlineFriends(
 	return row?.n ?? 0
 }
 
+/**
+ * Whether any of a player's friends is in a room right now — live presence with an
+ * instance of `roomId`. This is what lets the friends list resolve a friend's unpublished
+ * room (their dorm, most often): presence has already told the caller that room id, so
+ * serving it reveals nothing new, and it can't be used to enumerate rooms — the caller only
+ * ever resolves rooms their own friends are standing in.
+ */
+export async function hasFriendInRoom(
+	db: D1Database,
+	playerId: number,
+	roomId: number,
+	now = Math.floor(Date.now() / 1000)
+): Promise<boolean> {
+	const row = await db
+		.prepare(
+			`SELECT 1 AS ok FROM relationship r
+			 JOIN presence p
+			   ON p.account_id = CASE WHEN r.requester_id = ?1 THEN r.target_id ELSE r.requester_id END
+			 WHERE r.relationship_type = ?2
+			   AND (r.requester_id = ?1 OR r.target_id = ?1)
+			   AND p.room_id = ?3
+			   AND p.room_instance_id IS NOT NULL
+			   AND p.expires_at > ?4
+			 LIMIT 1`
+		)
+		.bind(playerId, RelationshipType.Friend, roomId, now)
+		.first<{ ok: number }>()
+	return row !== null
+}
+
 /** How many mutual friends the mutual-friends lookup will return at most. */
 export const MUTUAL_FRIENDS_LIMIT = 100
 
