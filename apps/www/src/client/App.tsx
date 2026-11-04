@@ -1243,7 +1243,7 @@ async function fetchPublicRoom(roomId: number): Promise<OwnedRoom | null> {
  * the raw `SavedImage` record (`Id`, not `SavedImageId` — see the api worker's note on
  * why the two lists differ), so it's narrowed here to the shape the photo grid draws.
  */
-const fetchRoomPhotos = (roomId: number): Promise<PublicPhoto[]> =>
+const fetchRoomPhotos = (roomId: number, skip: number, take: number): Promise<PublicPhoto[]> =>
 	call<
 		Array<{
 			Id: number
@@ -1252,14 +1252,15 @@ const fetchRoomPhotos = (roomId: number): Promise<PublicPhoto[]> =>
 			CheerCount: number
 			Accessibility: number
 		}>
-	>(`${where().api}/api/images/v4/room/${roomId}?filter=1`).then((images) =>
-		images.map((i) => ({
-			SavedImageId: i.Id,
-			ImageName: i.ImageName,
-			CreatedAt: i.CreatedAt,
-			CheerCount: i.CheerCount,
-			Accessibility: i.Accessibility,
-		}))
+	>(`${where().api}/api/images/v4/room/${roomId}?filter=1&skip=${skip}&take=${take}`).then(
+		(images) =>
+			images.map((i) => ({
+				SavedImageId: i.Id,
+				ImageName: i.ImageName,
+				CreatedAt: i.CreatedAt,
+				CheerCount: i.CheerCount,
+				Accessibility: i.Accessibility,
+			}))
 	)
 
 /**
@@ -1310,8 +1311,13 @@ async function setRoomAccessibility(roomId: number, accessibility: number): Prom
 
 /** The `/user/<username>` path (or the old `/u/<username>`), or null for any other path. */
 function usernameFromPath(path: string): string | null {
-	const match = /^\/(?:user|u)\/([^/]+)$/.exec(path)
+	const match = /^\/(?:user|u)\/([^/]+)(?:\/edit)?$/.exec(path)
 	return match ? decodeURIComponent(match[1]) : null
+}
+
+/** Whether a profile path (see usernameFromPath) asks for the staff edit page rather than the profile. */
+function isUserEditPath(path: string): boolean {
+	return /^\/(?:user|u)\/[^/]+\/edit$/.test(path)
 }
 
 // The nav's search. `/user/:name` and `/rooms/:id` stay reachable by URL either way; this
@@ -1530,11 +1536,20 @@ function PhotoGrid({ photos }: { photos: PublicPhoto[] }) {
 	return (
 		<>
 			<div className="photo-grid">
+				{/* A real link to the photo's own page (`/image/<id>`, where it can be reported or
+				    deleted), so middle-click and "open in new tab" land there. A plain click is
+				    kept on this page and opens the lightbox instead; a click with a modifier (or
+				    not the main button) is the browser's, and goes where the href says. */}
 				{photos.map((p) => (
-					<button
+					<a
 						key={p.SavedImageId}
 						className="photo-button"
-						onClick={() => setOpen(p)}
+						href={`/image/${p.SavedImageId}`}
+						onClick={(e) => {
+							if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+							e.preventDefault()
+							setOpen(p)
+						}}
 						aria-label={
 							p.Accessibility === Accessibility.Public ? 'View photo' : 'View private photo'
 						}
@@ -1551,7 +1566,7 @@ function PhotoGrid({ photos }: { photos: PublicPhoto[] }) {
 						{p.Accessibility !== Accessibility.Public && (
 							<span className="badge photo-private">Private</span>
 						)}
-					</button>
+					</a>
 				))}
 			</div>
 			{/* Mounted only while open, so the full-size image isn't fetched until asked for.
@@ -1678,13 +1693,21 @@ function ImagePage({ imageId, config }: { imageId: number; config: SiteConfig | 
  * info, their public rooms, and their public photos. Read-only: this is the
  * "rec.net-style profile" other players browse to, not the owner's own dashboard
  * (that stays on `/account`).
+ *
+ * Staff get a second page, `/user/<username>/edit`: the same hero (so the panel is never
+ * about the wrong account) and the staff actions, which used to sit under the photos at
+ * the foot of the profile. The two are switched with the View | Edit tabs a room has; for
+ * anyone who isn't staff `/edit` is just the profile.
  */
 function PlayerPage({
 	username,
+	edit,
 	config,
 	navigate,
 }: {
 	username: string
+	/** The `/edit` path: the staff page rather than the profile. */
+	edit: boolean
 	config: SiteConfig | undefined
 	navigate: Navigate
 }) {
@@ -1740,9 +1763,20 @@ function PlayerPage({
 	}
 
 	const created = new Date(account.createdAt)
+	const staff = isAdmin()
+	const editing = staff && edit
+	const profilePath = `/user/${encodeURIComponent(account.username)}`
 
 	return (
 		<main className="shell wide">
+			{staff && (
+				<ViewEditTabs
+					viewTo={profilePath}
+					editTo={`${profilePath}/edit`}
+					edit={editing}
+					navigate={navigate}
+				/>
+			)}
 			<section className="card player-hero">
 				{account.bannerImage && (
 					<img
@@ -1767,48 +1801,54 @@ function PlayerPage({
 				</div>
 			</section>
 
-			<section className="card">
-				<h2>Rooms</h2>
-				{rooms === null ? (
-					<p className="muted">Loading…</p>
-				) : rooms.length === 0 ? (
-					<p className="muted">No public rooms.</p>
-				) : (
-					<ul className="rooms">
-						{rooms.map((room) => (
-							<li className="room" key={room.RoomId}>
-								<Link to={`/rooms/${room.RoomId}`} navigate={navigate} className="room-link">
-									<img
-										className="room-thumb"
-										src={`${where().img}/${room.ImageName}?width=256`}
-										alt=""
-										loading="lazy"
-									/>
-									<div className="room-body">
-										<span className="room-name">^{room.Name}</span>
-										<p className="room-stats">{room.Stats.VisitCount.toLocaleString()} visits</p>
-									</div>
-								</Link>
-							</li>
-						))}
-					</ul>
-				)}
-			</section>
+			{editing ? (
+				// Every endpoint behind the staff actions is gated by `requireStaff`; `staff` here
+				// only decides what to show.
+				<StaffPlayerActions account={account} navigate={navigate} />
+			) : (
+				<>
+					<section className="card">
+						<h2>Rooms</h2>
+						{rooms === null ? (
+							<p className="muted">Loading…</p>
+						) : rooms.length === 0 ? (
+							<p className="muted">No public rooms.</p>
+						) : (
+							<ul className="rooms">
+								{rooms.map((room) => (
+									<li className="room" key={room.RoomId}>
+										<Link to={`/rooms/${room.RoomId}`} navigate={navigate} className="room-link">
+											<img
+												className="room-thumb"
+												src={`${where().img}/${room.ImageName}?width=256`}
+												alt=""
+												loading="lazy"
+											/>
+											<div className="room-body">
+												<span className="room-name">^{room.Name}</span>
+												<p className="room-stats">
+													{room.Stats.VisitCount.toLocaleString()} visits
+												</p>
+											</div>
+										</Link>
+									</li>
+								))}
+							</ul>
+						)}
+					</section>
 
-			<section className="card">
-				<h2>Photos</h2>
-				{photos === null ? (
-					<p className="muted">Loading…</p>
-				) : photos.length === 0 ? (
-					<p className="muted">No public photos.</p>
-				) : (
-					<PhotoGrid photos={photos} />
-				)}
-			</section>
-
-			{/* Staff only, and cosmetic: hidden for everyone else, but every endpoint behind it
-			    is gated by `requireStaff`. */}
-			{isAdmin() && <StaffPlayerActions account={account} navigate={navigate} />}
+					<section className="card">
+						<h2>Photos</h2>
+						{photos === null ? (
+							<p className="muted">Loading…</p>
+						) : photos.length === 0 ? (
+							<p className="muted">No public photos.</p>
+						) : (
+							<PhotoGrid photos={photos} />
+						)}
+					</section>
+				</>
+			)}
 		</main>
 	)
 }
@@ -2829,7 +2869,12 @@ export function App() {
 				// ImagePage); a client-side route, so a cold load falls through to the SPA shell.
 				<ImagePage imageId={imageId} config={config} />
 			) : lookupUsername !== null ? (
-				<PlayerPage username={lookupUsername} config={config} navigate={navigate} />
+				<PlayerPage
+					username={lookupUsername}
+					edit={isUserEditPath(path)}
+					config={config}
+					navigate={navigate}
+				/>
 			) : roomId !== null ? (
 				<RoomPage
 					account={account}
@@ -3853,26 +3898,28 @@ function RoomPage({
 	if (owned && edit) {
 		return (
 			<main className="shell wide">
-				<p className="backlink">
-					<Link to="/account" navigate={navigate}>
-						← My rooms
-					</Link>
-					{' · '}
-					<Link to={`/rooms/${roomId}`} navigate={navigate}>
-						View room
-					</Link>
-				</p>
+				<ViewEditTabs
+					viewTo={`/rooms/${roomId}`}
+					editTo={`/rooms/${roomId}/edit`}
+					edit
+					back={{ to: '/account', label: 'My rooms' }}
+					navigate={navigate}
+				/>
 				<RoomDetail
 					room={owned}
 					imgHost={where().img}
 					cdnHost={where().cdn}
 					onRoomChange={replaceOwned}
 				/>
+				{/* Every owner may clear their room's instances; `ownedby/me` is the managers'
+				    list (creator and co-owners), the same set the endpoint admits. */}
+				<ClearInstances room={owned} />
 				{/* The staff tools sit with the rest of the controls on the edit page, so the
 				    view stays the one everyone else sees. */}
 				{isAdmin() && (
 					<StaffRoomTools
 						room={owned}
+						clearInstances={false}
 						onTakenDown={() => setTakenDown(owned.Name)}
 						onRoomChange={replaceOwned}
 					/>
@@ -3886,15 +3933,13 @@ function RoomPage({
 		// missing" about a room the owner has unpublished, and an edit is reflected on return.
 		return (
 			<main className="shell wide">
-				<p className="backlink">
-					<Link to="/account" navigate={navigate}>
-						← My rooms
-					</Link>
-					{' · '}
-					<Link to={`/rooms/${roomId}/edit`} navigate={navigate}>
-						Edit
-					</Link>
-				</p>
+				<ViewEditTabs
+					viewTo={`/rooms/${roomId}`}
+					editTo={`/rooms/${roomId}/edit`}
+					edit={false}
+					back={{ to: '/account', label: 'My rooms' }}
+					navigate={navigate}
+				/>
 				<PublicRoomView
 					room={owned}
 					staffTools={false}
@@ -3935,6 +3980,49 @@ function RoomPage({
 }
 
 /**
+ * The way between a thing's two pages — a room's (RoomPage) or a player's (PlayerPage): an
+ * optional breadcrumb on the left, and a View | Edit pair on the right with the current page
+ * lit. A tab, not a word in the breadcrumb, since switching pages is the thing the reader
+ * who sees it comes here to do.
+ */
+function ViewEditTabs({
+	viewTo,
+	editTo,
+	edit,
+	back,
+	navigate,
+}: {
+	viewTo: string
+	editTo: string
+	/** Which of the two is the current page. */
+	edit: boolean
+	back?: { to: string; label: string }
+	navigate: Navigate
+}) {
+	return (
+		<div className="page-nav">
+			{back ? (
+				<p className="backlink">
+					<Link to={back.to} navigate={navigate}>
+						← {back.label}
+					</Link>
+				</p>
+			) : (
+				<span />
+			)}
+			<nav className="page-tabs" aria-label="Pages">
+				<Link to={viewTo} navigate={navigate} className={edit ? '' : 'active'}>
+					View
+				</Link>
+				<Link to={editTo} navigate={navigate} className={edit ? 'active' : ''}>
+					Edit
+				</Link>
+			</nav>
+		</div>
+	)
+}
+
+/**
  * A room as anyone sees it: the same hero the owner's page draws, with the creator linked
  * to their profile in place of the upload control, then the room's public facts and the
  * photos players took in it — read-only, since nothing here is the viewer's to change.
@@ -3959,19 +4047,14 @@ function PublicRoomView({
 	onRoomChange: (room: OwnedRoom) => void
 }) {
 	const [creator, setCreator] = useState<{ username: string; displayName: string } | null>(null)
-	const [photos, setPhotos] = useState<PublicPhoto[] | null>(null)
 	const created = new Date(room.CreatedAt)
 
 	useEffect(() => {
 		setCreator(null)
-		setPhotos(null)
 		void usernamesFor([room.CreatorAccountId]).then((names) =>
 			setCreator(names.get(room.CreatorAccountId) ?? null)
 		)
-		void fetchRoomPhotos(room.RoomId)
-			.then(setPhotos)
-			.catch(() => setPhotos([]))
-	}, [room.RoomId, room.CreatorAccountId])
+	}, [room.CreatorAccountId])
 
 	return (
 		<>
@@ -4021,17 +4104,117 @@ function PublicRoomView({
 
 			<section className="card">
 				<h2>Photos taken here</h2>
-				{photos === null ? (
-					<p className="muted">Loading…</p>
-				) : photos.length === 0 ? (
-					<p className="muted">Nobody has taken a photo here yet.</p>
-				) : (
-					<PhotoGrid photos={photos} />
-				)}
+				<RoomPhotos roomId={room.RoomId} />
 			</section>
 
 			{staffTools && isAdmin() && (
 				<StaffRoomTools room={room} onTakenDown={onTakenDown} onRoomChange={onRoomChange} />
+			)}
+		</>
+	)
+}
+
+/**
+ * How many photos a room's feed asks for at once: a full three-by-three grid to open on,
+ * then eight rows at a time as the reader scrolls — the first page decides how fast the
+ * room appears, the rest how often the feed goes back to the api.
+ */
+const ROOM_PHOTO_FIRST_PAGE = 9
+const ROOM_PHOTO_PAGE = 24
+
+/** The `skip`/`take` of the feed's n-th page (from 1), given the smaller first page. */
+function roomPhotoPage(page: number): { skip: number; take: number } {
+	return page === 1
+		? { skip: 0, take: ROOM_PHOTO_FIRST_PAGE }
+		: { skip: ROOM_PHOTO_FIRST_PAGE + (page - 2) * ROOM_PHOTO_PAGE, take: ROOM_PHOTO_PAGE }
+}
+
+/**
+ * A room's photo feed, newest first, loaded a page at a time as the reader scrolls: a busy
+ * room has thousands of photos, and the feed used to fetch them all (well, the api's first
+ * hundred) up front and lay every thumbnail out at once. A sentinel under the grid asks for
+ * the next page when it comes within a screen of view, until a page comes back short.
+ */
+function RoomPhotos({ roomId }: { roomId: number }) {
+	// null = the first page hasn't landed. Later pages are appended.
+	const [photos, setPhotos] = useState<PublicPhoto[] | null>(null)
+	// How many pages the reader has scrolled for; each increment fetches one.
+	const [pages, setPages] = useState(1)
+	// Set by a short page: there's nothing after it, so stop watching the sentinel.
+	const [exhausted, setExhausted] = useState(false)
+	const [failed, setFailed] = useState(false)
+	const sentinel = useRef<HTMLParagraphElement>(null)
+
+	useEffect(() => {
+		// A different room: start the feed over.
+		setPhotos(null)
+		setPages(1)
+		setExhausted(false)
+		setFailed(false)
+	}, [roomId])
+
+	useEffect(() => {
+		// A page that lands after the room changed (or after this page was re-requested)
+		// is dropped: appending it would mix two rooms' photos.
+		let stale = false
+		const { skip, take } = roomPhotoPage(pages)
+		void fetchRoomPhotos(roomId, skip, take)
+			.then((page) => {
+				if (stale) return
+				setPhotos((current) => {
+					// A photo taken between two page loads shifts the feed by one, so the
+					// next page's first row repeats the last one's; keep one of each.
+					const seen = new Set((current ?? []).map((p) => p.SavedImageId))
+					return [...(current ?? []), ...page.filter((p) => !seen.has(p.SavedImageId))]
+				})
+				if (page.length < take) setExhausted(true)
+			})
+			.catch(() => {
+				if (!stale) setFailed(true)
+			})
+		return () => {
+			stale = true
+		}
+	}, [roomId, pages])
+
+	useEffect(() => {
+		// Watch the sentinel only between pages: while one is in flight `photos` is
+		// unchanged, so this doesn't re-run and can't ask for the same page twice. Once it
+		// lands the observer is remade, and a sentinel still in view asks for the next.
+		const el = sentinel.current
+		if (el === null || photos === null || exhausted || failed) return
+		const observer = new IntersectionObserver(
+			(entries) => {
+				if (entries.some((e) => e.isIntersecting)) setPages((n) => n + 1)
+			},
+			// Start the fetch a screen early, so the reader rarely meets the sentinel itself.
+			{ rootMargin: '100% 0px' }
+		)
+		observer.observe(el)
+		return () => observer.disconnect()
+	}, [photos, exhausted, failed])
+
+	if (photos === null) {
+		return failed ? (
+			<p className="error">The photos couldn&apos;t be loaded.</p>
+		) : (
+			<p className="muted">Loading…</p>
+		)
+	}
+	if (photos.length === 0) {
+		return <p className="muted">Nobody has taken a photo here yet.</p>
+	}
+	return (
+		<>
+			<PhotoGrid photos={photos} />
+			{failed ? (
+				<p className="error">The rest of the photos couldn&apos;t be loaded.</p>
+			) : (
+				!exhausted && (
+					<p className="muted" ref={sentinel}>
+						Loading more…
+					</p>
+				)
 			)}
 		</>
 	)
@@ -4045,10 +4228,13 @@ function PublicRoomView({
  */
 function StaffRoomTools({
 	room,
+	clearInstances = true,
 	onTakenDown,
 	onRoomChange,
 }: {
 	room: OwnedRoom
+	/** False where the page already shows the owner's own Instances card (the edit page). */
+	clearInstances?: boolean
 	onTakenDown: () => void
 	onRoomChange: (room: OwnedRoom) => void
 }) {
@@ -4057,7 +4243,7 @@ function StaffRoomTools({
 			{isDeveloper() && <StaffRoomTokens room={room} />}
 			<StaffListing room={room} onRoomChange={onRoomChange} />
 			<StaffUnpublish room={room} onRoomChange={onRoomChange} />
-			<StaffClearInstances room={room} />
+			{clearInstances && <ClearInstances room={room} />}
 			<StaffTakedown room={room} onTakenDown={onTakenDown} />
 		</>
 	)
@@ -4265,7 +4451,12 @@ function StaffUnpublish({
  * Delete every instance of the room, for one whose sessions are stuck. Two steps, like the
  * dorm clear: nothing is lost for good, but anyone inside is cut off from their session.
  */
-function StaffClearInstances({ room }: { room: OwnedRoom }) {
+/**
+ * Clear a room's live instances — the one room control shared by staff and the room's own
+ * managers (`www` `POST /api/rooms/:roomId/clear-instances` checks which the caller is), so
+ * an owner can unstick their room from the edit page without asking a moderator.
+ */
+function ClearInstances({ room }: { room: OwnedRoom }) {
 	const [confirming, setConfirming] = useState(false)
 	const { pending, error, done, run } = useAction()
 
@@ -4274,7 +4465,7 @@ function StaffClearInstances({ room }: { room: OwnedRoom }) {
 			<h2>Instances</h2>
 			<p className="hint">
 				Deletes every instance of this room, including ones with players in them. The next player to
-				join gets a fresh instance.
+				join gets a fresh instance — the fix for a room whose sessions are stuck.
 			</p>
 			<div className="mod-filter-actions">
 				{confirming ? (
@@ -4285,7 +4476,7 @@ function StaffClearInstances({ room }: { room: OwnedRoom }) {
 							onClick={() =>
 								void run(async () => {
 									const res = await call<{ deleted: number[] }>(
-										`/api/staff/rooms/${room.RoomId}/clear-instances`,
+										`/api/rooms/${room.RoomId}/clear-instances`,
 										{ authed: true, method: 'POST' }
 									)
 									setConfirming(false)

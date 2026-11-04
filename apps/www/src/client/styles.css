@@ -788,6 +788,49 @@ h2 {
 	color: var(--text);
 }
 
+/* The header over a thing with two pages (a room's owner, a profile's staff): the
+   breadcrumb on the left, and on the right the View | Edit pair — the stats ranges'
+   segmented control, built of links. The lit one is the page you're on; it stays
+   clickable so the pair reads the same on both pages. */
+.page-nav {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	margin-bottom: 16px;
+}
+
+.page-nav .backlink {
+	margin: 0;
+}
+
+.page-tabs {
+	display: inline-flex;
+	gap: 4px;
+	padding: 4px;
+	background: var(--surface);
+	border: 1px solid var(--line);
+	border-radius: 8px;
+}
+
+.page-tabs a {
+	color: var(--muted);
+	text-decoration: none;
+	padding: 7px 14px;
+	border-radius: 6px;
+	font-size: 0.9rem;
+}
+
+.page-tabs a:hover {
+	color: var(--text);
+}
+
+.page-tabs a.active {
+	background: var(--surface-hi);
+	color: var(--text);
+	font-weight: 600;
+}
+
 /* Wider thumbnail than the list's, and the name beside it rather than under: this is
    the page about this one room, so the photo can carry some of the weight. */
 .room-hero {

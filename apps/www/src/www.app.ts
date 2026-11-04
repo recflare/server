@@ -820,6 +820,11 @@ const app = new Hono<App>()
 	// existing `/api/*` entry in wrangler.jsonc's `run_worker_first`, so no routing change
 	// was needed. `/moderation` itself is deliberately NOT in that allowlist: it is a
 	// client-side route, so it must fall through to the SPA shell.
+	// Delete every live instance of a room — for one whose sessions are stuck. Staff, or the
+	// room's own managers (creator and co-owners): the handler checks the token itself, which
+	// is why it sits outside the staff group below.
+	.post('/api/rooms/:roomId/clear-instances', clearRoomInstancesHandler)
+
 	.use('/api/staff/*', requireStaff)
 
 	// Registered before `/api/staff/reports/:id` so the literal path isn't captured as an
@@ -841,8 +846,6 @@ const app = new Hono<App>()
 	.post('/api/staff/players/:id/gift-xp', requireDeveloper, giftXpHandler)
 	// Everyone standing in a room, across all of its instances.
 	.post('/api/staff/rooms/:roomId/gift-tokens', requireDeveloper, giftRoomTokensHandler)
-	// Delete every live instance of a room — for one whose sessions are stuck. All staff.
-	.post('/api/staff/rooms/:roomId/clear-instances', clearRoomInstancesHandler)
 	// The account page's token drop: the same gift to everyone online at once.
 	.post('/api/staff/online/gift-tokens', requireDeveloper, giftOnlineTokensHandler)
 	// Its sibling: the same gift to every account whose Discord link holds a role, offline

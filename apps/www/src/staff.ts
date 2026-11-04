@@ -1,6 +1,7 @@
 import {
 	addUsernameChange,
 	addXp,
+	canManageRoomById,
 	clearDormSaveBlob,
 	clearPasswordHash,
 	createGift,
@@ -1017,6 +1018,14 @@ export async function giftRoomTokensHandler(c: Context<App>) {
  * Delete every instance of a room from `room_instance`, from the room's own page. For a
  * room whose sessions have gone bad: the next player to matchmake in gets a fresh one.
  * Clearing a room with no instances succeeds and deletes nothing.
+ *
+ * Open to the room's MANAGERS as well as staff — the creator and co-owners, `canManageRoom`,
+ * the same gate `rooms` puts on editing the room — so an owner can unstick their own room
+ * without asking. That is why this one lives OUTSIDE the `/api/staff/*` group and checks the
+ * token itself: `requireStaff` would turn every owner away. The refusals follow that gate's
+ * shape (401 no token, 403 someone else's room) with a 404 for a room that doesn't exist;
+ * staff skip the ownership read and may clear any id, as before. The audit row names the
+ * actor either way, and says which hat they wore.
  */
 export async function clearRoomInstancesHandler(c: Context<App>) {
 	const roomId = Number(c.req.param('roomId'))
@@ -1024,14 +1033,34 @@ export async function clearRoomInstancesHandler(c: Context<App>) {
 		return c.json({ error: 'A numeric room id is required' }, 400)
 	}
 
+	const secret = await c.env.JWT_SECRET.get()
+	const roles = await validateAndGetRoles(c.req.raw, secret)
+	const accountId = await validateAndGetAccountId(c.req.raw, secret)
+	if (roles === null || accountId === null) return c.json({ error: 'Unauthorized' }, 401)
+	const staff = isStaff(roles)
+	if (!staff) {
+		const manages = await canManageRoomById(c.env.DB, roomId, accountId)
+		if (manages === null) return c.json({ error: 'No such room' }, 404)
+		if (!manages) return c.json({ error: 'Forbidden' }, 403)
+	}
+
 	const deleted = await deleteRoomInstancesByRoom(c.env.DB, roomId)
 
-	await recordPlayerAudit(c, 'clear_room_instances', { roomId, deleted })
-	logger.info('staff cleared room instances', {
-		moderatorId: staffId(c),
-		roomId,
-		deletedCount: deleted.length,
-	})
+	const via = staff ? 'staff' : 'manager'
+	try {
+		await writeAuditLog(c.env.DB, {
+			playerId: accountId,
+			action: 'clear_room_instances',
+			data: { roomId, deleted, via },
+		})
+	} catch (err) {
+		logger.error('could not write an audit log row', {
+			action: 'clear_room_instances',
+			accountId,
+			error: err instanceof Error ? err.message : String(err),
+		})
+	}
+	logger.info('cleared room instances', { accountId, via, roomId, deletedCount: deleted.length })
 	return c.json({ roomId, deleted })
 }
 
