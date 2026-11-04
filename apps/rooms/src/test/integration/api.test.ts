@@ -1028,7 +1028,9 @@ describe('rooms endpoints', () => {
 	it('GET /rooms/visitedby/me/count answers the number of distinct rooms visited, as a bare int', async () => {
 		const headers = await bearer('785')
 		const count = async (h: HeadersInit) =>
-			(await (await SELF.fetch(`${ORIGIN}/rooms/visitedby/me/count`, { headers: h })).json()) as unknown
+			(await (
+				await SELF.fetch(`${ORIGIN}/rooms/visitedby/me/count`, { headers: h })
+			).json()) as unknown
 
 		expect(await count(headers)).toBe(0)
 
@@ -7002,9 +7004,9 @@ describe('studio room bundles', () => {
 	})
 })
 
-// Room and subroom names take letters, digits and underscores, at most 32 (see
-// `roomNameRejection` in @repo/domain — usernames are held to the narrower rule, with no
-// underscore). All four routes that take a player-supplied name enforce it, and each
+// Room and subroom names take letters, digits, dashes, underscores and commas, at most 32
+// (see `roomNameRejection` in @repo/domain — usernames are held to the narrower rule, with
+// none of the punctuation). All four routes that take a player-supplied name enforce it, and each
 // keeps its OWN refusal shape: the create
 // paths answer the lowercase `{ success, error, value }` envelope, the two settings
 // routes answer `{ Success, ErrorId, Error }` with the same `Rooms.InvalidName` id they
@@ -7035,7 +7037,9 @@ describe('room name validation', () => {
 			const res = await post('/rooms/2/clone', { name }, '1')
 			const body = (await res.json()) as { success: boolean; error: string; value: unknown }
 			expect(body.success, name).toBe(false)
-			expect(body.error).toMatch(/letters, numbers and underscores|at most 32 characters/)
+			expect(body.error).toMatch(
+				/letters, numbers, dashes, underscores and commas|at most 32 characters/
+			)
 			expect(body.value).toBeNull()
 		}
 	})
@@ -7046,12 +7050,14 @@ describe('room name validation', () => {
 			const body = (await res.json()) as { Success: boolean; ErrorId: string; Error: string }
 			expect(body.Success, name).toBe(false)
 			expect(body.ErrorId).toBe('Rooms.InvalidName')
-			expect(body.Error).toMatch(/letters, numbers and underscores|at most 32 characters/)
+			expect(body.Error).toMatch(
+				/letters, numbers, dashes, underscores and commas|at most 32 characters/
+			)
 		}
 
 		// Unchanged: the refusals above never reached the write.
 		const room = (await (await SELF.fetch(`${ORIGIN}/rooms/2`)).json()) as { Name: string }
-		expect(room.Name).not.toMatch(/[^A-Za-z0-9_]/)
+		expect(room.Name).not.toMatch(/[^A-Za-z0-9_,-]/)
 	})
 
 	it('refuses a bad name when creating or modifying a subroom', async () => {
@@ -7059,7 +7065,9 @@ describe('room name validation', () => {
 			const created = await post('/rooms/2/subrooms', { name }, '1')
 			const env1 = (await created.json()) as { success: boolean; error: string }
 			expect(env1.success, name).toBe(false)
-			expect(env1.error).toMatch(/letters, numbers and underscores|at most 32 characters/)
+			expect(env1.error).toMatch(
+				/letters, numbers, dashes, underscores and commas|at most 32 characters/
+			)
 
 			const modified = await put(
 				'/rooms/2/subrooms/2/modify',
@@ -7072,8 +7080,8 @@ describe('room name validation', () => {
 		}
 	})
 
-	it('accepts a 32-character name, and an underscore where a space is refused', async () => {
-		for (const name of ['a'.repeat(32), 'Laser_Tag']) {
+	it('accepts a 32-character name, and a dash, underscore or comma where a space is refused', async () => {
+		for (const name of ['a'.repeat(32), 'Laser_Tag', 'Laser-Tag', 'Lasers,Tags']) {
 			const res = await post('/rooms/2/subrooms', { name }, '1')
 			const body = (await res.json()) as {
 				success: boolean

@@ -144,13 +144,14 @@ export function displayNameRejection(value: string): string | null {
 }
 
 /**
- * Letters, digits and underscores — `NAME_PATTERN` plus the one separator a room name is
- * allowed. A room name is a label other players read in a browse tile rather than
- * something typed into a sign-in box, and the underscore is how players write the space
- * the rule still refuses (`Laser_Tag`). It carries none of the homoglyph or
- * right-to-left risk that widening to arbitrary Unicode would.
+ * Letters, digits, dashes, underscores and commas — `NAME_PATTERN` plus the separators a
+ * room name is allowed. A room name is a label other players read in a browse tile rather
+ * than something typed into a sign-in box, and the dash and underscore are how players
+ * write the space the rule still refuses (`Laser_Tag`, `Laser-Tag`). It carries none of
+ * the homoglyph or right-to-left risk that widening to arbitrary Unicode would. The dash
+ * stays last in the class so it reads as a literal rather than a range.
  */
-const ROOM_NAME_PATTERN = /^[A-Za-z0-9_]+$/
+const ROOM_NAME_PATTERN = /^[A-Za-z0-9_,-]+$/
 
 /**
  * Why a player-supplied room or subroom name is unacceptable, or `null` when it's fine.
@@ -164,7 +165,7 @@ export function roomNameRejection(value: string, label: string): string | null {
 		return `Your ${label} can be at most ${MAX_ROOM_NAME_LENGTH} characters.`
 	}
 	if (!ROOM_NAME_PATTERN.test(value)) {
-		return `Your ${label} can only contain letters, numbers and underscores.`
+		return `Your ${label} can only contain letters, numbers, dashes, underscores and commas.`
 	}
 	return null
 }
