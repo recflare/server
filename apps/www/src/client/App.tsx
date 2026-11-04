@@ -1714,16 +1714,24 @@ function ImagePage({ imageId, config }: { imageId: number; config: SiteConfig | 
  * about the wrong account) and the staff actions, which used to sit under the photos at
  * the foot of the profile. The two are switched with the View | Edit tabs a room has; for
  * anyone who isn't staff `/edit` is just the profile.
+ *
+ * On the viewer's OWN profile the same tabs appear with Edit leading to `/account`, the
+ * dashboard — the one place their profile is changed — and the dashboard shows the pair
+ * the other way round. A staff member on their own profile gets that too; the staff page
+ * for their own account is still reachable at its URL.
  */
 function PlayerPage({
 	username,
 	edit,
+	viewer,
 	config,
 	navigate,
 }: {
 	username: string
 	/** The `/edit` path: the staff page rather than the profile. */
 	edit: boolean
+	/** The signed-in account, to tell the viewer's own profile from anyone else's. */
+	viewer: SelfAccount | null | undefined
 	config: SiteConfig | undefined
 	navigate: Navigate
 }) {
@@ -1776,17 +1784,22 @@ function PlayerPage({
 	const created = new Date(account.createdAt)
 	const staff = isAdmin()
 	const editing = staff && edit
+	const own = viewer != null && viewer.accountId === account.accountId
 	const profilePath = `/user/${encodeURIComponent(account.username)}`
 
 	return (
 		<main className="shell wide">
-			{staff && (
-				<ViewEditTabs
-					viewTo={profilePath}
-					editTo={`${profilePath}/edit`}
-					edit={editing}
-					navigate={navigate}
-				/>
+			{own && !editing ? (
+				<ViewEditTabs viewTo={profilePath} editTo="/account" edit={false} navigate={navigate} />
+			) : (
+				staff && (
+					<ViewEditTabs
+						viewTo={profilePath}
+						editTo={`${profilePath}/edit`}
+						edit={editing}
+						navigate={navigate}
+					/>
+				)
 			)}
 			<section className="card player-hero">
 				{account.bannerImage && (
@@ -2883,6 +2896,7 @@ export function App() {
 				<PlayerPage
 					username={lookupUsername}
 					edit={isUserEditPath(path)}
+					viewer={account}
 					config={config}
 					navigate={navigate}
 				/>
@@ -2945,6 +2959,8 @@ function NavBar({
 	navigate: Navigate
 	onLogout: () => void
 }) {
+	// The signed-in player's own profile, which the avatar at the row's end opens.
+	const profilePath = account ? `/user/${encodeURIComponent(account.username)}` : null
 	return (
 		<header className="nav">
 			<Link to="/" navigate={navigate} className="brand">
@@ -2990,9 +3006,6 @@ function NavBar({
 								Admin
 							</Link>
 						)}
-						<Link to="/account" navigate={navigate} className={path === '/account' ? 'active' : ''}>
-							My account
-						</Link>
 						<button className="linkish" onClick={onLogout}>
 							Sign out
 						</button>
@@ -3003,6 +3016,22 @@ function NavBar({
 					</Link>
 				)}
 				{SHOW_SEARCH && <SiteSearch navigate={navigate} />}
+				{/* The signed-in player's face, last in the row: their profile (the View side,
+				    with the photo feed; the dashboard is a tab away from there). `where()` is safe
+				    here because `account` only exists once `/account/me` answered through it. */}
+				{account && profilePath && (
+					<Link
+						to={profilePath}
+						navigate={navigate}
+						className={`nav-avatar${path === profilePath || path === '/account' ? ' active' : ''}`}
+					>
+						<img
+							src={`${where().img}/${account.profileImage}?width=96`}
+							alt={`@${account.username}`}
+							title="Your profile"
+						/>
+					</Link>
+				)}
 			</nav>
 		</header>
 	)
@@ -3816,6 +3845,14 @@ function AccountPage({
 
 	return (
 		<main className="shell wide">
+			{/* The same View | Edit pair the player's own profile shows, the other way round:
+			    this is the Edit side, the profile (with the photo feed) the View. */}
+			<ViewEditTabs
+				viewTo={`/user/${encodeURIComponent(account.username)}`}
+				editTo="/account"
+				edit
+				navigate={navigate}
+			/>
 			<h1>My account</h1>
 			<Dashboard account={account} config={config} navigate={navigate} onChange={onChange} />
 		</main>

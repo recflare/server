@@ -1870,6 +1870,33 @@ button[type='submit'].danger:not(:disabled):hover {
 	flex-wrap: wrap;
 }
 
+/* The signed-in player's avatar, the row's last item: a circle the search button's size,
+   so the two read as a pair of round controls. The ring brightens on hover and on the
+   player's own pages, the way the text links go from muted to text. */
+.nav-avatar {
+	display: inline-flex;
+	flex: none;
+	width: 38px;
+	height: 38px;
+	border: 1px solid var(--line);
+	border-radius: 999px;
+	overflow: hidden;
+	background: var(--surface);
+	transition: border-color 0.15s ease;
+}
+
+.nav-avatar img {
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	display: block;
+}
+
+.nav-avatar:hover,
+.nav-avatar.active {
+	border-color: var(--muted);
+}
+
 .site-search-toggle {
 	display: inline-flex;
 	align-items: center;
