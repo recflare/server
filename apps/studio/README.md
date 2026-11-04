@@ -118,3 +118,29 @@ worker for prefab support; restricted validation credentials grant no account ro
 The SDK's access override reads the target account's entitlement. Build-validation
 credentials can inspect only the current owners of their active job's room; peers
 can inspect grants only while they currently manage the same room.
+
+
+## Direct multipart artifact uploads
+
+Requires recflare/server#153. Its storage signer is shared through
+`@repo/hono-helpers`; storage keeps its existing import path via a re-export.
+Rebase after #153 merges, retaining this re-export when resolving the added file.
+No video routes are changed here.
+
+Apply `migrations/0005_cloud_artifact_upload.sql` before deploying Studio. Configure
+`RECFLARE_R2_ACCOUNT_ID` using the same account as the `CDN_ASSETS` binding and
+create `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` in the shared Secrets Store.
+These are the credentials used by #153, scoped to the CDN bucket. All bindings
+must exist before deployment; literal `off` secrets disable signed uploads.
+`RECFLARE_R2_CDN_BUCKET` optionally overrides `recflare-cdn` and must match the
+binding's bucket. Keep credentials out of vars and the build worker.
+
+Deploy this server support before updating `recflare/cloud-building`. The worker
+uses its existing authenticated control connection to start an upload, request
+part URLs, and complete it. Each URL expires after 120 seconds and signs the exact
+part number, upload ID, content type, and byte length. Bundle size is capped at
+128 MiB; parts are 16 MiB (at most eight). R2 receives the bytes directly.
+Studio verifies the assembled size, UnityFS header, and SHA-256 before staging it;
+`finish` publishes only the current lease's complete artifact set. Claiming work
+cleans up abandoned sessions without deleting published artifacts. The earlier
+buffered artifact and finish routes remain available for older workers.
