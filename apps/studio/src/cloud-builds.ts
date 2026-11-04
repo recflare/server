@@ -21,6 +21,7 @@ import {
 	validateAndGetRoles,
 } from '@repo/jwt'
 
+import { cleanupUploads, multipartArtifacts } from './artifact-multipart'
 import { parseMultipart } from './multipart'
 
 import type { Context } from 'hono'
@@ -30,7 +31,7 @@ export const CLOUD_JOB_SCHEMA = `CREATE TABLE IF NOT EXISTS studio_cloud_build_j
  cloud_build_id TEXT PRIMARY KEY, payload TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued',
  lease_token TEXT, lease_until TEXT, attempts INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
 )`
-interface Job {
+export interface Job {
 	kind?: 'avatar'
 	avatarItemId?: string
 	avatar?: {
@@ -75,7 +76,7 @@ const fail = (error: string) => ({ success: false, error, value: null })
 const ID = /^[1-9]\d*$/
 const guid = () => crypto.randomUUID()
 const textField = (value: unknown, fallback = '') => (typeof value === 'string' ? value : fallback)
-interface Artifact {
+export interface Artifact {
 	field: string
 	unityAssetId: string
 	target: number
@@ -92,6 +93,32 @@ function isArtifact(value: unknown): value is Artifact {
 		typeof entry.kind === 'string' &&
 		typeof entry.version === 'number'
 	)
+}
+function artifactAllowed(job: Job, entry: Artifact) {
+	return (
+		[job.unityAssetId, ...job.exports.map((item) => item.u)].includes(entry.unityAssetId) &&
+		job.targets.includes(entry.target) &&
+		(job.kind === 'avatar' ? ['main', 'stripped', 'material'] : ['main', 'stripped']).includes(
+			entry.kind
+		) &&
+		entry.version === (job.kind === 'avatar' && entry.kind === 'material' ? 6 : 5)
+	)
+}
+function artifactLocation(job: Job, leaseToken: string, entry: Artifact) {
+	const base = publicStudioBundleFilename(
+		job.roomId,
+		entry.unityAssetId,
+		entry.target === 2 ? 'android' : 'windows',
+		entry.kind
+	)
+	const filename =
+		job.kind === 'avatar'
+			? `${entry.target === 2 ? 'quest/' : ''}studio-avatar/${job.avatarItemId}/${entry.unityAssetId}/${leaseToken}.${entry.kind}.assetbundle`
+			: base.replace('.assetbundle', `.${leaseToken}.assetbundle`)
+	return {
+		filename,
+		key: job.kind === 'avatar' ? `avatar/${filename}` : studioBundleR2Key(filename),
+	}
 }
 function numericId() {
 	return (
@@ -376,6 +403,7 @@ const app = new Hono<App>()
 		return next()
 	})
 	.post('/internal/cloud-builds/claim', async (c) => {
+		await cleanupUploads(c.env)
 		const now = new Date().toISOString()
 		await c.env.DB.batch([
 			c.env.DB.prepare(
@@ -415,6 +443,40 @@ const app = new Hono<App>()
 			.bind(leaseUntil, c.req.param('id'), leaseToken, new Date().toISOString())
 			.run()
 		return c.json(result.meta.changes > 0 ? { active: true, leaseUntil } : { active: false })
+	})
+	.route('/internal/cloud-builds', multipartArtifacts(artifactAllowed, artifactLocation))
+	.post('/internal/cloud-builds/:id/artifacts', async (c) => {
+		const lease = await c.env.DB.prepare(
+			"SELECT payload,lease_token,lease_until FROM studio_cloud_build_job WHERE cloud_build_id=? AND lease_token=? AND status='building' AND lease_until>?"
+		)
+			.bind(c.req.param('id'), c.req.header('X-Studio-Lease'), new Date().toISOString())
+			.first<Lease>()
+		if (!lease) return c.json(fail('Build lease expired or cancelled.'), 409)
+		const job = JSON.parse(lease.payload) as Job
+		let entry: unknown
+		try {
+			entry = JSON.parse(c.req.header('X-Studio-Artifact') ?? 'null')
+		} catch {
+			entry = null
+		}
+		if (!isArtifact(entry) || !artifactAllowed(job, entry))
+			return c.json(fail('Invalid build artifact.'), 400)
+		// Bound each upload independently of the total size of a multi-target build.
+		const length = Number(c.req.header('Content-Length'))
+		if (!Number.isSafeInteger(length) || length < 8 || length > 64 * 1024 * 1024)
+			return c.json(
+				fail('Artifact upload requires a Content-Length between 8 bytes and 64 MiB.'),
+				413
+			)
+		const bytes = await c.req.arrayBuffer()
+		if (bytes.byteLength !== length || new TextDecoder().decode(bytes.slice(0, 8)) !== 'UnityFS\0')
+			return c.json(fail('Artifact is not a UnityFS asset bundle.'), 400)
+		const hash = btoa(
+			String.fromCharCode(...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)))
+		)
+		const { key } = artifactLocation(job, lease.lease_token, entry)
+		await c.env.CDN_ASSETS.put(key, bytes, { customMetadata: { studioHash: hash } })
+		return c.json(ok(null))
 	})
 	.post('/internal/cloud-builds/:id/finish', async (c) => {
 		const form = await parseMultipart(c.req.raw)
@@ -473,9 +535,18 @@ const app = new Hono<App>()
 		)
 			return c.json(fail('Missing build artifacts.'), 400)
 		const seen = new Set<string>()
+		const staged = form.staged === 'true'
+		const stagedHashes = new Map<string, string>()
 		for (const entry of entries) {
 			const file = form[entry.field]
 			const key = `${entry.unityAssetId}:${entry.target}:${entry.kind}`
+			if (staged && artifactAllowed(job, entry)) {
+				const object = await c.env.CDN_ASSETS.head(
+					artifactLocation(job, lease.lease_token, entry).key
+				)
+				if (object?.size && object.customMetadata?.studioHash)
+					stagedHashes.set(key, object.customMetadata.studioHash)
+			}
 			if (
 				!assets.has(entry.unityAssetId) ||
 				!job.targets.includes(entry.target) ||
@@ -483,8 +554,7 @@ const app = new Hono<App>()
 					entry.kind
 				) ||
 				entry.version !== (job.kind === 'avatar' && entry.kind === 'material' ? 6 : 5) ||
-				!(file instanceof File) ||
-				file.size === 0 ||
+				(staged ? !stagedHashes.has(key) : !(file instanceof File) || file.size === 0) ||
 				seen.has(key)
 			)
 				return c.json(fail('Invalid build artifact.'), 400)
@@ -500,7 +570,7 @@ const app = new Hono<App>()
 		)
 			return c.json(fail('An avatar material bundle is missing.'), 400)
 		const writes: D1PreparedStatement[] = []
-		for (const entry of entries) {
+		for (const entry of staged ? [] : entries) {
 			const file = form[entry.field] as File
 			if (new TextDecoder().decode(await file.slice(0, 8).arrayBuffer()) !== 'UnityFS\0')
 				return c.json(fail('Artifact is not a UnityFS asset bundle.'), 400)
@@ -514,23 +584,15 @@ const app = new Hono<App>()
 		const keys: string[] = []
 		try {
 			for (const entry of entries) {
-				const file = form[entry.field] as File
-				const bytes = await file.arrayBuffer()
-				const hash = btoa(
-					String.fromCharCode(...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)))
-				)
-				const baseFilename = publicStudioBundleFilename(
-					job.roomId,
-					entry.unityAssetId,
-					entry.target === 2 ? 'android' : 'windows',
-					entry.kind
-				)
-				const filename =
-					job.kind === 'avatar'
-						? `${entry.target === 2 ? 'quest/' : ''}studio-avatar/${job.avatarItemId}/${entry.unityAssetId}/${lease.lease_token}.${entry.kind}.assetbundle`
-						: baseFilename.replace('.assetbundle', `.${lease.lease_token}.assetbundle`)
-				const key = job.kind === 'avatar' ? `avatar/${filename}` : studioBundleR2Key(filename)
-				await c.env.CDN_ASSETS.put(key, bytes)
+				const { filename, key } = artifactLocation(job, lease.lease_token, entry)
+				let hash = stagedHashes.get(`${entry.unityAssetId}:${entry.target}:${entry.kind}`)!
+				if (!staged) {
+					const bytes = await (form[entry.field] as File).arrayBuffer()
+					hash = btoa(
+						String.fromCharCode(...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)))
+					)
+					await c.env.CDN_ASSETS.put(key, bytes)
+				}
 				keys.push(key)
 				writes.push(
 					c.env.DB.prepare(
