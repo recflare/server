@@ -1168,13 +1168,18 @@ function ClaimPage({
 }
 
 /**
- * The room id in `/rooms/<id>`, or null for any other path. Numeric rather than the
- * room's name: a name is renameable (`PUT /rooms/{id}/name`), so a link someone
- * bookmarked would rot the moment they renamed the room.
+ * The room id in `/rooms/<id>` or `/rooms/<id>/edit`, or null for any other path. Numeric
+ * rather than the room's name: a name is renameable (`PUT /rooms/{id}/name`), so a link
+ * someone bookmarked would rot the moment they renamed the room.
  */
 function roomIdFromPath(path: string): number | null {
-	const match = /^\/rooms\/(\d+)$/.exec(path)
+	const match = /^\/rooms\/(\d+)(\/edit)?$/.exec(path)
 	return match ? Number.parseInt(match[1], 10) : null
+}
+
+/** Whether a room path (see roomIdFromPath) asks for the owner's editor rather than the view. */
+function isRoomEditPath(path: string): boolean {
+	return /^\/rooms\/\d+\/edit$/.test(path)
 }
 
 /**
@@ -2826,7 +2831,13 @@ export function App() {
 			) : lookupUsername !== null ? (
 				<PlayerPage username={lookupUsername} config={config} navigate={navigate} />
 			) : roomId !== null ? (
-				<RoomPage account={account} config={config} roomId={roomId} navigate={navigate} />
+				<RoomPage
+					account={account}
+					config={config}
+					roomId={roomId}
+					edit={isRoomEditPath(path)}
+					navigate={navigate}
+				/>
 			) : (
 				// Frozen until the countdown to November 1st ends; then it is the homepage again.
 				<XmasHome>
@@ -3743,23 +3754,32 @@ function AccountPage({
 }
 
 /**
- * One room's own page — what it is, how it's set up, and the subrooms inside it.
+ * One room's pages: the VIEW at `/rooms/<id>` — what the room is, and the photos taken in
+ * it, the same for everyone including its owner — and the owner's EDIT at
+ * `/rooms/<id>/edit`: the image upload, the settings and the subrooms with their saves,
+ * plus the staff tools when the owner is also staff. The two used to be one page that
+ * picked by ownership, which left an owner with no way to see their own room as a visitor
+ * does (the photo feed is only on the view) and a staff owner with no staff tools (only on
+ * the view, which they never got).
  *
- * The room is found in the caller's OWN list rather than read from the public
- * `GET /rooms?id=`, which is unfiltered by design (the game looks any room up that way).
- * Going through `ownedby/me` is what makes this the owner's page: a room that isn't
- * yours simply isn't in the list, so there's no second ownership rule here to drift out
- * of step with the one the mutating endpoints enforce.
+ * Ownership is decided by the caller's OWN list rather than the public `GET /rooms?id=`,
+ * which is unfiltered by design (the game looks any room up that way). A room that isn't
+ * yours simply isn't in the list, so there's no second ownership rule here to drift out of
+ * step with the one the mutating endpoints enforce — and `/edit` on someone else's room is
+ * just the view.
  */
 function RoomPage({
 	account,
 	config,
 	roomId,
+	edit,
 	navigate,
 }: {
 	account: SelfAccount | null | undefined
 	config: SiteConfig | undefined
 	roomId: number
+	/** The `/edit` path: the owner's editor rather than the view. */
+	edit: boolean
 	navigate: Navigate
 }) {
 	// undefined = not fetched yet; null = no such room.
@@ -3798,6 +3818,10 @@ function RoomPage({
 	const owned = mine?.find((r) => r.RoomId === roomId)
 	const settled =
 		room !== undefined && (account === null || (account !== undefined && mine !== null))
+	// Edits (the owner's and the staff tools') answer with the whole updated room, so
+	// swapping it into the list is enough — no re-fetch, and the other rooms keep their place.
+	const replaceOwned = (updated: OwnedRoom) =>
+		setMine((current) => (current ?? []).map((r) => (r.RoomId === updated.RoomId ? updated : r)))
 
 	if (takenDown !== null) {
 		return (
@@ -3826,25 +3850,57 @@ function RoomPage({
 		)
 	}
 
-	if (owned) {
+	if (owned && edit) {
 		return (
 			<main className="shell wide">
 				<p className="backlink">
 					<Link to="/account" navigate={navigate}>
 						← My rooms
 					</Link>
+					{' · '}
+					<Link to={`/rooms/${roomId}`} navigate={navigate}>
+						View room
+					</Link>
 				</p>
 				<RoomDetail
 					room={owned}
 					imgHost={where().img}
 					cdnHost={where().cdn}
-					// A save answers with the whole updated room, so swapping it into the list
-					// is enough — no re-fetch, and the other rooms keep their place.
-					onRoomChange={(updated) =>
-						setMine((current) =>
-							(current ?? []).map((r) => (r.RoomId === updated.RoomId ? updated : r))
-						)
-					}
+					onRoomChange={replaceOwned}
+				/>
+				{/* The staff tools sit with the rest of the controls on the edit page, so the
+				    view stays the one everyone else sees. */}
+				{isAdmin() && (
+					<StaffRoomTools
+						room={owned}
+						onTakenDown={() => setTakenDown(owned.Name)}
+						onRoomChange={replaceOwned}
+					/>
+				)}
+			</main>
+		)
+	}
+
+	if (owned) {
+		// The owner's own list is the copy shown, so the view can't be told "private or
+		// missing" about a room the owner has unpublished, and an edit is reflected on return.
+		return (
+			<main className="shell wide">
+				<p className="backlink">
+					<Link to="/account" navigate={navigate}>
+						← My rooms
+					</Link>
+					{' · '}
+					<Link to={`/rooms/${roomId}/edit`} navigate={navigate}>
+						Edit
+					</Link>
+				</p>
+				<PublicRoomView
+					room={owned}
+					staffTools={false}
+					navigate={navigate}
+					onTakenDown={() => setTakenDown(owned.Name)}
+					onRoomChange={replaceOwned}
 				/>
 			</main>
 		)
@@ -3884,14 +3940,19 @@ function RoomPage({
  * photos players took in it — read-only, since nothing here is the viewer's to change.
  * No subroom list: a visitor has no use for the room's internals, and the owner gets them
  * (with the scene-data tool) on their own page instead.
+ *
+ * The staff tools are appended for staff unless `staffTools` is false — the owner's view
+ * of their own room, where they sit on the edit page instead.
  */
 function PublicRoomView({
 	room,
+	staffTools = true,
 	navigate,
 	onTakenDown,
 	onRoomChange,
 }: {
 	room: OwnedRoom
+	staffTools?: boolean
 	navigate: Navigate
 	onTakenDown: () => void
 	/** A staff edit answers with the updated room; the page re-renders from it. */
@@ -3969,17 +4030,35 @@ function PublicRoomView({
 				)}
 			</section>
 
-			{/* Staff only, and cosmetic: hidden for everyone else, but `rooms` checks the token's
-			    role itself on the DELETE, the accessibility PUT and the listing PUT. */}
-			{isAdmin() && (
-				<>
-					{isDeveloper() && <StaffRoomTokens room={room} />}
-					<StaffListing room={room} onRoomChange={onRoomChange} />
-					<StaffUnpublish room={room} onRoomChange={onRoomChange} />
-					<StaffClearInstances room={room} />
-					<StaffTakedown room={room} onTakenDown={onTakenDown} />
-				</>
+			{staffTools && isAdmin() && (
+				<StaffRoomTools room={room} onTakenDown={onTakenDown} onRoomChange={onRoomChange} />
 			)}
+		</>
+	)
+}
+
+/**
+ * The staff cards at the foot of a room page — the public view of someone else's room, or
+ * the edit page of a staff member's own. Staff only, and cosmetic: hidden for everyone
+ * else, but `rooms` checks the token's role itself on the DELETE, the accessibility PUT and
+ * the listing PUT.
+ */
+function StaffRoomTools({
+	room,
+	onTakenDown,
+	onRoomChange,
+}: {
+	room: OwnedRoom
+	onTakenDown: () => void
+	onRoomChange: (room: OwnedRoom) => void
+}) {
+	return (
+		<>
+			{isDeveloper() && <StaffRoomTokens room={room} />}
+			<StaffListing room={room} onRoomChange={onRoomChange} />
+			<StaffUnpublish room={room} onRoomChange={onRoomChange} />
+			<StaffClearInstances room={room} />
+			<StaffTakedown room={room} onTakenDown={onTakenDown} />
 		</>
 	)
 }
