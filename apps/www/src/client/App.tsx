@@ -1222,8 +1222,13 @@ const fetchPublicAccount = (username: string): Promise<PublicAccount | null> =>
  * `/user/<name>`, while everyone else's profile is the public list either way. Nothing
  * here decides who the viewer is; the worker does, from the token.
  */
-const fetchPlayerPhotos = (accountId: number): Promise<PublicPhoto[]> =>
-	call<PublicPhoto[]>(`${where().api}/api/images/v4/player/${accountId}`, { authed: true })
+const fetchPlayerPhotos = (accountId: number, skip: number, take: number): Promise<PublicPhoto[]> =>
+	call<PublicPhoto[]>(
+		`${where().api}/api/images/v4/player/${accountId}?skip=${skip}&take=${take}`,
+		{
+			authed: true,
+		}
+	)
 
 const fetchPublicRooms = (accountId: number): Promise<PublicRoom[]> =>
 	call<PublicRoom[]>(`${where().rooms}/rooms/ownedby/${accountId}`)
@@ -1713,7 +1718,6 @@ function PlayerPage({
 }) {
 	const [account, setAccount] = useState<PublicAccount | null | undefined>(undefined)
 	const [rooms, setRooms] = useState<PublicRoom[] | null>(null)
-	const [photos, setPhotos] = useState<PublicPhoto[] | null>(null)
 	const [error, setError] = useState('')
 
 	useEffect(() => {
@@ -1724,7 +1728,6 @@ function PlayerPage({
 		if (config === undefined) return
 		setAccount(undefined)
 		setRooms(null)
-		setPhotos(null)
 		void fetchPublicAccount(username)
 			.then((a) => {
 				setAccount(a)
@@ -1732,9 +1735,6 @@ function PlayerPage({
 					void fetchPublicRooms(a.accountId)
 						.then(setRooms)
 						.catch(() => setRooms([]))
-					void fetchPlayerPhotos(a.accountId)
-						.then(setPhotos)
-						.catch(() => setPhotos([]))
 				}
 			})
 			.catch((e) => setError(e instanceof Error ? e.message : String(e)))
@@ -1839,13 +1839,11 @@ function PlayerPage({
 
 					<section className="card">
 						<h2>Photos</h2>
-						{photos === null ? (
-							<p className="muted">Loading…</p>
-						) : photos.length === 0 ? (
-							<p className="muted">No public photos.</p>
-						) : (
-							<PhotoGrid photos={photos} />
-						)}
+						<PhotoFeed
+							feedKey={`player:${account.accountId}`}
+							loadPage={(skip, take) => fetchPlayerPhotos(account.accountId, skip, take)}
+							empty="No public photos."
+						/>
 					</section>
 				</>
 			)}
@@ -4104,7 +4102,11 @@ function PublicRoomView({
 
 			<section className="card">
 				<h2>Photos taken here</h2>
-				<RoomPhotos roomId={room.RoomId} />
+				<PhotoFeed
+					feedKey={`room:${room.RoomId}`}
+					loadPage={(skip, take) => fetchRoomPhotos(room.RoomId, skip, take)}
+					empty="Nobody has taken a photo here yet."
+				/>
 			</section>
 
 			{staffTools && isAdmin() && (
@@ -4115,27 +4117,43 @@ function PublicRoomView({
 }
 
 /**
- * How many photos a room's feed asks for at once: a full three-by-three grid to open on,
- * then eight rows at a time as the reader scrolls — the first page decides how fast the
- * room appears, the rest how often the feed goes back to the api.
+ * How many photos a feed asks for at once: a full three-by-three grid to open on, then
+ * eight rows at a time as the reader scrolls — the first page decides how fast the page
+ * appears, the rest how often the feed goes back to the api.
  */
-const ROOM_PHOTO_FIRST_PAGE = 9
-const ROOM_PHOTO_PAGE = 24
+const PHOTO_FIRST_PAGE = 9
+const PHOTO_PAGE = 24
 
-/** The `skip`/`take` of the feed's n-th page (from 1), given the smaller first page. */
-function roomPhotoPage(page: number): { skip: number; take: number } {
+/** The `skip`/`take` of a feed's n-th page (from 1), given the smaller first page. */
+function photoPage(page: number): { skip: number; take: number } {
 	return page === 1
-		? { skip: 0, take: ROOM_PHOTO_FIRST_PAGE }
-		: { skip: ROOM_PHOTO_FIRST_PAGE + (page - 2) * ROOM_PHOTO_PAGE, take: ROOM_PHOTO_PAGE }
+		? { skip: 0, take: PHOTO_FIRST_PAGE }
+		: { skip: PHOTO_FIRST_PAGE + (page - 2) * PHOTO_PAGE, take: PHOTO_PAGE }
 }
 
 /**
- * A room's photo feed, newest first, loaded a page at a time as the reader scrolls: a busy
- * room has thousands of photos, and the feed used to fetch them all (well, the api's first
- * hundred) up front and lay every thumbnail out at once. A sentinel under the grid asks for
- * the next page when it comes within a screen of view, until a page comes back short.
+ * A photo feed — a room's, or a player's — newest first, loaded a page at a time as the
+ * reader scrolls: a busy room or a keen photographer has thousands, and the feeds used to
+ * fetch them all (well, the api's first hundred) up front and lay every thumbnail out at
+ * once. A sentinel under the grid asks for the next page when it comes within a screen of
+ * view, until a page comes back short.
+ *
+ * `loadPage` is the api call for one page (`skip`, `take`); `feedKey` names what's being
+ * listed, and a change to it starts the feed over. The function itself may be a fresh
+ * closure every render — it's read when a page is fetched, not depended on.
  */
-function RoomPhotos({ roomId }: { roomId: number }) {
+function PhotoFeed({
+	feedKey,
+	loadPage,
+	empty,
+}: {
+	feedKey: string
+	loadPage: (skip: number, take: number) => Promise<PublicPhoto[]>
+	/** The line shown when the first page is empty. */
+	empty: string
+}) {
+	const load = useRef(loadPage)
+	load.current = loadPage
 	// null = the first page hasn't landed. Later pages are appended.
 	const [photos, setPhotos] = useState<PublicPhoto[] | null>(null)
 	// How many pages the reader has scrolled for; each increment fetches one.
@@ -4146,19 +4164,20 @@ function RoomPhotos({ roomId }: { roomId: number }) {
 	const sentinel = useRef<HTMLParagraphElement>(null)
 
 	useEffect(() => {
-		// A different room: start the feed over.
+		// A different room or player: start the feed over.
 		setPhotos(null)
 		setPages(1)
 		setExhausted(false)
 		setFailed(false)
-	}, [roomId])
+	}, [feedKey])
 
 	useEffect(() => {
-		// A page that lands after the room changed (or after this page was re-requested)
-		// is dropped: appending it would mix two rooms' photos.
+		// A page that lands after the feed changed (or after this page was re-requested)
+		// is dropped: appending it would mix two feeds' photos.
 		let stale = false
-		const { skip, take } = roomPhotoPage(pages)
-		void fetchRoomPhotos(roomId, skip, take)
+		const { skip, take } = photoPage(pages)
+		void load
+			.current(skip, take)
 			.then((page) => {
 				if (stale) return
 				setPhotos((current) => {
@@ -4175,7 +4194,7 @@ function RoomPhotos({ roomId }: { roomId: number }) {
 		return () => {
 			stale = true
 		}
-	}, [roomId, pages])
+	}, [feedKey, pages])
 
 	useEffect(() => {
 		// Watch the sentinel only between pages: while one is in flight `photos` is
@@ -4202,7 +4221,7 @@ function RoomPhotos({ roomId }: { roomId: number }) {
 		)
 	}
 	if (photos.length === 0) {
-		return <p className="muted">Nobody has taken a photo here yet.</p>
+		return <p className="muted">{empty}</p>
 	}
 	return (
 		<>
@@ -5579,15 +5598,6 @@ function MyRooms({ navigate }: { navigate: Navigate }) {
  * way to change a photo's privacy here yet — that's still done in game.
  */
 function MyPhotos({ accountId }: { accountId: number }) {
-	const [photos, setPhotos] = useState<PublicPhoto[] | null>(null)
-	const [error, setError] = useState('')
-
-	useEffect(() => {
-		void fetchPlayerPhotos(accountId)
-			.then(setPhotos)
-			.catch((e) => setError(e instanceof Error ? e.message : String(e)))
-	}, [accountId])
-
 	return (
 		<section className="card">
 			<h2>My photos</h2>
@@ -5595,15 +5605,11 @@ function MyPhotos({ accountId }: { accountId: number }) {
 				The photos you&apos;ve taken in game, newest first. Ones you keep private are marked; only
 				you can see them here.
 			</p>
-			{error ? (
-				<p className="error">{error}</p>
-			) : photos === null ? (
-				<p className="muted">Loading…</p>
-			) : photos.length === 0 ? (
-				<p className="muted">No photos yet. Photos you take in game show up here.</p>
-			) : (
-				<PhotoGrid photos={photos} />
-			)}
+			<PhotoFeed
+				feedKey={`mine:${accountId}`}
+				loadPage={(skip, take) => fetchPlayerPhotos(accountId, skip, take)}
+				empty="No photos yet. Photos you take in game show up here."
+			/>
 		</section>
 	)
 }
