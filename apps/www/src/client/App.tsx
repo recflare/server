@@ -43,8 +43,8 @@ import { ModerationPage, PlayerBanStatus } from './Moderation'
 import { PumpleBossFight } from './PumpleBossFight'
 import { RoomsPage } from './Rooms'
 import { StatsPage } from './Stats'
-import { AvatarUploadPage } from './AvatarUpload'
-import { StudioAccessPage } from './StudioAccess'
+import { AvatarUploadPanel } from './AvatarUpload'
+import { STUDIO_ACCESS_KINDS, StudioAccessPage, StudioAccessPanel } from './StudioAccess'
 
 import type { ReactNode } from 'react'
 import type { Hosts, PublicAccount } from './api'
@@ -1218,8 +1218,8 @@ const fetchPublicAccount = (username: string): Promise<PublicAccount | null> =>
 /**
  * The photos a player has taken. Sent WITH the session token when there is one: `api`
  * reads it and, only when the list is the caller's own, includes the photos they keep
- * private — so a signed-in player sees all of theirs, on `/account` and on their own
- * `/user/<name>`, while everyone else's profile is the public list either way. Nothing
+ * private — so a signed-in player sees all of theirs on their own `/user/<name>`, while
+ * everyone else's profile is the public list either way. Nothing
  * here decides who the viewer is; the worker does, from the token.
  */
 const fetchPlayerPhotos = (accountId: number, skip: number, take: number): Promise<PublicPhoto[]> =>
@@ -1586,8 +1586,8 @@ function PhotoGrid({ photos }: { photos: PublicPhoto[] }) {
 							loading="lazy"
 						/>
 						{/* Only the owner's own list ever carries a private photo (see
-						    fetchPlayerPhotos), so this is the mark that tells them which of theirs
-						    nobody else can see. */}
+						    fetchPlayerPhotos), so this is the mark on their own profile that tells
+						    them which of theirs nobody else can see. */}
 						{p.Accessibility !== Accessibility.Public && (
 							<span className="badge photo-private">Private</span>
 						)}
@@ -2810,6 +2810,12 @@ export function App() {
 				<DeviceLinkPage account={account} search={search} navigate={navigate} />
 			) : path === '/account' ? (
 				<AccountPage account={account} config={config} navigate={navigate} onChange={setAccount} />
+			) : path === '/admin' || path === '/admin/' ? (
+				// The server-wide staff controls, out of the account dashboard so a staff
+				// member's own settings aren't buried under them. Same gating as /moderation:
+				// a plain client-side route, the page checks the token's role and so does every
+				// endpoint behind it.
+				<AdminPage account={account} navigate={navigate} />
 			) : path === '/claim' ? (
 				// Its own page rather than a dashboard tab: this path is Discord's registered
 				// redirect URI, so it has to be one stable URL a cold load can land on.
@@ -2829,12 +2835,8 @@ export function App() {
 				// The URL Studio already opens from the "not authorized to upload" dialog.
 				// A client-side route like /moderation: not in run_worker_first, so a cold
 				// load falls through to the SPA shell. The page shows one account's own
-				// status to whoever is signed in, and the whitelist editor only to staff.
+				// status to whoever is signed in; the whitelist editors are on /admin.
 				<StudioAccessPage account={account} navigate={navigate} />
-			) : path === '/studio/avatar-upload' || path === '/studio/avatar-upload/' ? (
-				// Studio-access holders only; the page asks `/api/studio-access` and the upload
-				// endpoint re-checks. A client-side route, so a cold load falls through to the SPA shell.
-				<AvatarUploadPage account={account} navigate={navigate} />
 			) : path === '/events' || path === '/events/' ? (
 				// Public, and a client-side route like /stats: not in `run_worker_first`, so a
 				// cold load falls through to the SPA shell. Waits on the config because its
@@ -2949,9 +2951,6 @@ function NavBar({
 				RecFlare
 			</Link>
 			<nav className="nav-links">
-				<a href={DISCORD_INVITE} target="_blank" rel="noreferrer">
-					Discord
-				</a>
 				<Link
 					to="/rooms"
 					navigate={navigate}
@@ -2984,24 +2983,13 @@ function NavBar({
 						)}
 						{isAdmin() && (
 							<Link
-								to="/settings/recroomstudio"
+								to="/admin"
 								navigate={navigate}
-								className={
-									path === '/settings/recroomstudio' || path === '/settings/recroomstudio/'
-										? 'active'
-										: ''
-								}
+								className={path === '/admin' || path === '/admin/' ? 'active' : ''}
 							>
-								Studio access
+								Admin
 							</Link>
 						)}
-						<Link
-							to="/studio/avatar-upload"
-							navigate={navigate}
-							className={path === '/studio/avatar-upload' ? 'active' : ''}
-						>
-							Upload avatar items
-						</Link>
 						<Link to="/account" navigate={navigate} className={path === '/account' ? 'active' : ''}>
 							My account
 						</Link>
@@ -3831,6 +3819,121 @@ function AccountPage({
 			<h1>My account</h1>
 			<Dashboard account={account} config={config} navigate={navigate} onChange={onChange} />
 		</main>
+	)
+}
+
+/**
+ * `/admin`: the server-wide staff controls, in the account dashboard's tab rail but on
+ * their own page. They used to be the dashboard's last tabs, where a staff member's own
+ * settings and the server's switches shared one crowded rail. The split between the roles
+ * is unchanged: every staff member gets the maintenance notice, the coach message, their
+ * own sandbox switch and the Studio access whitelists (a tab per kind); the token drop,
+ * which mints currency, is developers only — and
+ * `isAdmin()`/`isDeveloper()` only decide what's SHOWN, every endpoint behind a tab checks
+ * the token's role itself (`requireStaff`, `requireDeveloper`).
+ *
+ * Gated like /moderation: a session still being checked waits, a signed-out visitor is
+ * sent to sign in, and a signed-in player who isn't staff is told so plainly.
+ */
+function AdminPage({
+	account,
+	navigate,
+}: {
+	account: SelfAccount | null | undefined
+	navigate: Navigate
+}) {
+	if (account === undefined) {
+		return (
+			<main className="shell wide">
+				<section className="card">
+					<p className="muted">Checking your session…</p>
+				</section>
+			</main>
+		)
+	}
+	if (account === null) {
+		return (
+			<main className="shell">
+				<section className="card">
+					<h1>Admin</h1>
+					<p className="muted">You need to be signed in to use the admin tools.</p>
+					<button onClick={() => navigate('/login')}>Sign in</button>
+				</section>
+			</main>
+		)
+	}
+	if (!isAdmin()) {
+		return (
+			<main className="shell">
+				<section className="card">
+					<h1>Admin</h1>
+					<p className="muted">
+						This area is for staff. Your account doesn&apos;t have the moderator or developer role.
+					</p>
+				</section>
+			</main>
+		)
+	}
+	return (
+		<main className="shell wide">
+			<h1>Admin</h1>
+			<AdminTabs account={account} navigate={navigate} />
+		</main>
+	)
+}
+
+/** The admin page's rail and panels; only rendered for staff (see AdminPage). */
+function AdminTabs({ account, navigate }: { account: SelfAccount; navigate: Navigate }) {
+	const sections = [
+		{ id: 'maintenance', label: 'Server maintenance', render: () => <MaintenanceForm /> },
+		{ id: 'coach', label: 'Coach message', render: () => <CoachMessageForm /> },
+		// The staff member's OWN voice-server pool, not a thing done to anyone else.
+		{ id: 'sandbox', label: 'Sandbox', render: () => <SandboxForm /> },
+		// The Studio / Avatar Studio / screen-share whitelists, a tab each. Their public
+		// face — one account's own status — stays at /settings/recroomstudio, the URL Studio
+		// opens.
+		...STUDIO_ACCESS_KINDS.map(({ kind, label }) => ({
+			id: `access:${kind}`,
+			label,
+			render: () => <StudioAccessPanel kind={kind} account={account} navigate={navigate} />,
+		})),
+		// Narrower than the three above: the drop mints tokens, and www's route is developer-only.
+		...(isDeveloper()
+			? [
+					{
+						id: 'tokens',
+						label: 'Token drop',
+						// Two audiences for one gift: whoever is online now, or whoever holds a Discord role.
+						render: () => (
+							<>
+								<TokenDropForm />
+								<RoleTokenDropForm />
+								<SupporterBonusCard />
+								<DiscordRoleSyncCard />
+							</>
+						),
+					},
+				]
+			: []),
+	]
+	const [active, setActive] = useState(sections[0].id)
+	const current = sections.find((s) => s.id === active) ?? sections[0]
+
+	return (
+		<div className="workspace">
+			<nav className="vtabs">
+				{sections.map((s) => (
+					<button
+						key={s.id}
+						className={s.id === active ? 'active' : ''}
+						onClick={() => setActive(s.id)}
+					>
+						{s.label}
+					</button>
+				))}
+			</nav>
+			<div className="panel">{current.render()}</div>
+		</div>
 	)
 }
 
@@ -5468,13 +5571,13 @@ function Dashboard({
 	navigate: Navigate
 	onChange: (a: SelfAccount) => void
 }) {
-	// The dashboard sections, shown one at a time via the left tab rail. Admin-only
-	// sections are appended when the session carries an admin role.
+	// The dashboard sections, shown one at a time via the left tab rail. A staff member's
+	// server-wide controls are NOT here — they have their own page, /admin (AdminPage), so
+	// that this stays the player's own settings whoever they are.
 	const sections = [
 		// First, so a player who just signed in lands on what they made rather than on a
 		// settings form they opened the page to avoid.
 		{ id: 'rooms', label: 'My rooms', render: () => <MyRooms navigate={navigate} /> },
-		{ id: 'photos', label: 'My photos', render: () => <MyPhotos accountId={account.accountId} /> },
 		{
 			id: 'banner',
 			label: 'Profile banner',
@@ -5496,6 +5599,13 @@ function Dashboard({
 			render: () => <EmailForm account={account} onChange={onChange} />,
 		},
 		{ id: 'password', label: 'Password', render: () => <PasswordForm /> },
+		// Shown to everyone: the panel itself tells an account without Studio access how to
+		// get it, and `studio` re-checks on upload.
+		{
+			id: 'avatar-upload',
+			label: 'Upload avatar items',
+			render: () => <AvatarUploadPanel account={account} navigate={navigate} />,
+		},
 		// Only when the operator has Discord configured — otherwise the panel has nothing to
 		// offer and the tab is a promise the server can't keep. The claim also still lives at
 		// /claim, because that URL is Discord's registered redirect and has to keep working.
@@ -5508,34 +5618,8 @@ function Dashboard({
 					},
 				]
 			: []),
-		...(isAdmin()
-			? [
-					{ id: 'maintenance', label: 'Server maintenance', render: () => <MaintenanceForm /> },
-					{ id: 'coach', label: 'Coach message', render: () => <CoachMessageForm /> },
-					// The staff member's OWN voice-server pool, not a thing done to anyone else.
-					{ id: 'sandbox', label: 'Sandbox', render: () => <SandboxForm /> },
-				]
-			: []),
-		// Narrower than the two above: the drop mints tokens, and www's route is developer-only.
-		...(isDeveloper()
-			? [
-					{
-						id: 'tokens',
-						label: 'Token drop',
-						// Two audiences for one gift: whoever is online now, or whoever holds a Discord role.
-						render: () => (
-							<>
-								<TokenDropForm />
-								<RoleTokenDropForm />
-								<SupporterBonusCard />
-								<DiscordRoleSyncCard />
-							</>
-						),
-					},
-				]
-			: []),
-		// Last, below even the staff tabs: the way out sits at the bottom of the rail, where
-		// nobody reaches it by accident while looking for a setting.
+		// Last: the way out sits at the bottom of the rail, where nobody reaches it by
+		// accident while looking for a setting.
 		{
 			id: 'delete',
 			label: 'Delete account',
@@ -5622,32 +5706,6 @@ function MyRooms({ navigate }: { navigate: Navigate }) {
 					))}
 				</ul>
 			)}
-		</section>
-	)
-}
-
-/**
- * The photos the signed-in player has taken — the same grid their profile shows, private
- * ones included.
- *
- * It reads the same list the profile does (`/api/images/v4/player/:id`); what makes it the
- * owner's view is the session token going with the request, which `api` matches against
- * the id (see fetchPlayerPhotos). The private ones are marked in the grid; there is no
- * way to change a photo's privacy here yet — that's still done in game.
- */
-function MyPhotos({ accountId }: { accountId: number }) {
-	return (
-		<section className="card">
-			<h2>My photos</h2>
-			<p className="muted">
-				The photos you&apos;ve taken in game, newest first. Ones you keep private are marked; only
-				you can see them here.
-			</p>
-			<PhotoFeed
-				feedKey={`mine:${accountId}`}
-				loadPage={(skip, take) => fetchPlayerPhotos(accountId, skip, take)}
-				empty="No photos yet. Photos you take in game show up here."
-			/>
 		</section>
 	)
 }
@@ -5877,7 +5935,7 @@ function MaintenanceForm() {
  * Staff only: opt the signed-in account in to or out of the SANDBOX — the separate Tachyon
  * (voice) server pool `match` hands a sandbox account on every connection-info read. It is
  * the account's `isSandbox` flag, and www's route only ever sets the caller's own, so this
- * lives on the account page rather than the staff card on a profile. The current state is
+ * lives on the admin page rather than the staff card on a profile. The current state is
  * read on mount; one button flips it. `match` reads the flag per room join, so the switch
  * lands the next time they join a room, not in the instance they are standing in.
  */

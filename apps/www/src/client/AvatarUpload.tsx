@@ -5,15 +5,14 @@ import { call, useAction, where } from './api'
 import type { FormEvent } from 'react'
 
 /**
- * Upload finished avatar asset bundles and publish them as a custom avatar item.
+ * Upload finished avatar asset bundles and publish them as a custom avatar item — the
+ * "Upload avatar items" tab of the account dashboard.
  *
  * Open to accounts with Studio access (the `hasStudio` flag or the rollout role) and the
  * avatar access bit; `/api/studio-access` says which. That is a courtesy that hides the
  * form — `POST <studio>/avatar-items` checks the same things itself. An item goes
  * live on upload, so there is no draft state to show.
  */
-
-const PAGE = '/studio/avatar-upload'
 
 /** The `OutfitType` ordinals the upload accepts. Badges (1000) are images, not bundles. */
 const OUTFIT_TYPES = [
@@ -41,12 +40,12 @@ interface Access {
 	avatar: boolean
 }
 
-export function AvatarUploadPage({
+export function AvatarUploadPanel({
 	account,
 	navigate,
 }: {
-	/** undefined while the session is still being checked, null when signed out. */
-	account: { accountId: number; username: string } | null | undefined
+	/** The signed-in account — the dashboard only renders once there is one. */
+	account: { accountId: number; username: string }
 	navigate: (to: string) => void
 }) {
 	const [access, setAccess] = useState<Access | null>(null)
@@ -58,37 +57,23 @@ export function AvatarUploadPage({
 	])
 
 	useEffect(() => {
-		if (!account) return
 		call<Access & Record<string, unknown>>('/api/studio-access', { authed: true })
 			.then(setAccess)
 			.catch(() => setAccess({ granted: false, avatar: false }))
-	}, [account])
+	}, [account.accountId])
 
-	if (account === undefined) return <main className="shell wide" />
-	if (account === null) {
+	if (access === null) {
 		return (
-			<main className="shell wide">
-				<h1>Upload avatar items</h1>
-				<p>
-					<a
-						href="/login"
-						onClick={(e) => {
-							e.preventDefault()
-							navigate('/login')
-						}}
-					>
-						Sign in
-					</a>{' '}
-					to upload.
-				</p>
-			</main>
+			<section className="card">
+				<h2>Upload avatar items</h2>
+				<p className="muted">Loading…</p>
+			</section>
 		)
 	}
-	if (access === null) return <main className="shell wide" />
 	if (!access.granted || !access.avatar) {
 		return (
-			<main className="shell wide">
-				<h1>Upload avatar items</h1>
+			<section className="card">
+				<h2>Upload avatar items</h2>
 				<p>
 					This account is not on the avatar upload list. Ask staff to add you — see{' '}
 					<a
@@ -102,7 +87,7 @@ export function AvatarUploadPage({
 					</a>
 					.
 				</p>
-			</main>
+			</section>
 		)
 	}
 
@@ -123,9 +108,9 @@ export function AvatarUploadPage({
 	}
 
 	return (
-		<main className="shell wide">
-			<h1>Upload avatar items</h1>
-			<p>
+		<section className="card">
+			<h2>Upload avatar items</h2>
+			<p className="muted">
 				Upload a finished Windows and Android bundle pair for each body type the item has. The item
 				is published as soon as the upload completes.
 			</p>
@@ -200,8 +185,6 @@ export function AvatarUploadPage({
 				{upload.error && <p className="error">{upload.error}</p>}
 				{upload.done && <p className="ok">{upload.done}</p>}
 			</form>
-		</main>
+		</section>
 	)
 }
-
-export { PAGE as AVATAR_UPLOAD_PAGE }

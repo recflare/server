@@ -3,18 +3,21 @@ import { useCallback, useEffect, useState } from 'react'
 import { call, isAdmin, useAction } from './api'
 
 /**
- * The page RecFlare Studio opens when an account cannot upload.
+ * Studio access: who may upload from RecFlare Studio (and use the Avatar Studio features
+ * and screen sharing), in two places.
  *
- * The editor's dialog links to `/settings/recroomstudio`. Anyone can land here
- * and, once signed in, see whether this account is on the upload list. Staff
- * also get the list itself: adding a player puts `betastudio` on their next
- * Studio sign-in or token refresh. A session already open in the editor keeps
- * its old access until then.
+ * `/settings/recroomstudio` (StudioAccessPage) is the page the editor's "not authorized to
+ * upload" dialog links to. Anyone can land there and, once signed in, see whether THIS
+ * account is on each list — that URL has to keep working, since Studio opens it. The lists
+ * themselves — the whitelist editors, staff only — are a tab on `/admin` (StudioAccessPanel,
+ * see App.tsx's AdminPage), beside the other server-wide controls; the settings page points
+ * staff there. Adding a player puts `betastudio` on their next Studio sign-in or token
+ * refresh; a session already open in the editor keeps its old access until then.
  */
 
 const PAGE = '/settings/recroomstudio'
 
-type AccessKind = keyof typeof accessLabels
+export type AccessKind = keyof typeof accessLabels
 const accessLabels = {
 	studio: 'Studio uploads',
 	'avatar-items': 'Avatar Studio items',
@@ -34,14 +37,17 @@ interface AccessRow {
 function AccessPage({
 	kind,
 	account,
+	manage,
 	navigate,
 }: {
 	kind: AccessKind
 	/** undefined while the session is still being checked, null when signed out. */
 	account: { accountId: number; username: string } | null | undefined
+	/** Show the whitelist editor (staff only, and only on the admin page). */
+	manage: boolean
 	navigate: (to: string) => void
 }) {
-	const staff = account !== undefined && account !== null && isAdmin()
+	const staff = manage && account !== undefined && account !== null && isAdmin()
 	const [granted, setGranted] = useState(false)
 	const [rows, setRows] = useState<AccessRow[]>([])
 	const [loading, setLoading] = useState(false)
@@ -56,13 +62,13 @@ function AccessPage({
 			authed: true,
 		})
 		setGranted((kind === 'studio' ? me.granted : me[kind]) === true)
-		if (isAdmin()) {
+		if (manage && isAdmin()) {
 			const page = await call<{ accounts: AccessRow[] }>(`/api/staff/studio-access?kind=${kind}`, {
 				authed: true,
 			})
 			setRows(page.accounts ?? [])
 		}
-	}, [kind])
+	}, [kind, manage])
 
 	const accountId = account?.accountId
 	useEffect(() => {
@@ -236,16 +242,45 @@ function AccessPage({
 	)
 }
 
-export function StudioAccessPage(props: {
+type Props = {
 	account: { accountId: number; username: string } | null | undefined
 	navigate: (to: string) => void
-}) {
+}
+
+/** The `/settings/recroomstudio` page: this account's own access, one card per kind. */
+export function StudioAccessPage(props: Props) {
+	const staff = props.account != null && isAdmin()
 	return (
 		<main className="shell wide">
 			<h1>RecFlare Studio access</h1>
+			{staff && (
+				<p className="muted">
+					This page shows your own access. The whitelists are on the{' '}
+					<a
+						href="/admin"
+						onClick={(e) => {
+							e.preventDefault()
+							props.navigate('/admin')
+						}}
+					>
+						admin page
+					</a>
+					, one tab per kind.
+				</p>
+			)}
 			{(Object.keys(accessLabels) as AccessKind[]).map((kind) => (
-				<AccessPage key={kind} kind={kind} {...props} />
+				<AccessPage key={kind} kind={kind} manage={false} {...props} />
 			))}
 		</main>
 	)
+}
+
+/** Every access kind with its label, in display order — the admin page makes one tab of each. */
+export const STUDIO_ACCESS_KINDS: ReadonlyArray<{ kind: AccessKind; label: string }> = (
+	Object.keys(accessLabels) as AccessKind[]
+).map((kind) => ({ kind, label: accessLabels[kind] }))
+
+/** One kind's admin tab: the staff member's own status for it, with its whitelist editor. */
+export function StudioAccessPanel({ kind, ...props }: Props & { kind: AccessKind }) {
+	return <AccessPage kind={kind} manage {...props} />
 }

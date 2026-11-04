@@ -846,7 +846,7 @@ const app = new Hono<App>()
 	.post('/api/staff/players/:id/gift-xp', requireDeveloper, giftXpHandler)
 	// Everyone standing in a room, across all of its instances.
 	.post('/api/staff/rooms/:roomId/gift-tokens', requireDeveloper, giftRoomTokensHandler)
-	// The account page's token drop: the same gift to everyone online at once.
+	// The admin page's token drop: the same gift to everyone online at once.
 	.post('/api/staff/online/gift-tokens', requireDeveloper, giftOnlineTokensHandler)
 	// Its sibling: the same gift to every account whose Discord link holds a role, offline
 	// included — the supporter cron's audience, with an operator's amount and message.

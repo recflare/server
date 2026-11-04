@@ -1065,7 +1065,7 @@ export async function clearRoomInstancesHandler(c: Context<App>) {
 }
 
 /**
- * Send tokens to EVERYONE ONLINE right now — the server-wide drop behind the account page's
+ * Send tokens to EVERYONE ONLINE right now — the server-wide drop behind the admin page's
  * "Token drop" tab, beside the coach broadcast and the maintenance notice.
  *
  * The audience is every unexpired `presence` row, lobby included (see `getOnlinePlayerIds`),
@@ -1117,7 +1117,7 @@ export async function giftOnlineTokensHandler(c: Context<App>) {
 }
 
 /**
- * Send tokens to EVERYONE HOLDING A DISCORD ROLE — online or not. The account page's second
+ * Send tokens to EVERYONE HOLDING A DISCORD ROLE — online or not. The admin page's second
  * drop, beside the one to everyone online: the same box, the same cap, a different audience.
  *
  * The audience is every account whose Discord link records the role: the snapshot the
@@ -1668,7 +1668,7 @@ export async function grantPlusHandler(c: Context<App>) {
 /**
  * Whether the acting staff member's OWN account is a sandbox account — the `isSandbox`
  * flag `match` reads on every `GET /player/connection-info` to pick the sandbox Tachyon
- * pool over the live one. Self-only: the toggle on the account page is how a moderator or
+ * pool over the live one. Self-only: the toggle on the admin page is how a moderator or
  * developer moves THEMSELVES onto the test servers, not how anyone is moved by someone else
  * (an operator does that with `runx admin`, if at all).
  */
