@@ -1530,13 +1530,33 @@ function SiteSearch({ navigate }: { navigate: Navigate }) {
  * Safe to call `where()` in render: a caller only has photos to pass once a fetch that
  * went through it has resolved (see MyRooms).
  */
+/**
+ * Whether a click on a link should stay on this page: the main button with no modifier.
+ * Anything else — middle-click, ctrl/cmd/shift-click — is the browser's own "open in a new
+ * tab/window", and is left to go where the href says.
+ */
+const isPlainClick = (e: React.MouseEvent): boolean =>
+	e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey
+
+/**
+ * One photo, full size, over the page. Mounted only while open, so the full-size image
+ * isn't fetched until asked for; `onClose` covers Escape, which closes the dialog without
+ * going through us, and a click anywhere (the backdrop or the picture) closes it too.
+ */
+function PhotoLightbox({ src, onClose }: { src: string; onClose: () => void }) {
+	const dialogRef = useRef<HTMLDialogElement>(null)
+	useEffect(() => {
+		dialogRef.current?.showModal()
+	}, [])
+	return (
+		<dialog ref={dialogRef} className="photo-modal" onClose={onClose} onClick={onClose}>
+			<img src={src} alt="" />
+		</dialog>
+	)
+}
+
 function PhotoGrid({ photos }: { photos: PublicPhoto[] }) {
 	const [open, setOpen] = useState<PublicPhoto | null>(null)
-	const dialogRef = useRef<HTMLDialogElement>(null)
-
-	useEffect(() => {
-		if (open) dialogRef.current?.showModal()
-	}, [open])
 
 	return (
 		<>
@@ -1551,7 +1571,7 @@ function PhotoGrid({ photos }: { photos: PublicPhoto[] }) {
 						className="photo-button"
 						href={`/image/${p.SavedImageId}`}
 						onClick={(e) => {
-							if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+							if (!isPlainClick(e)) return
 							e.preventDefault()
 							setOpen(p)
 						}}
@@ -1574,17 +1594,8 @@ function PhotoGrid({ photos }: { photos: PublicPhoto[] }) {
 					</a>
 				))}
 			</div>
-			{/* Mounted only while open, so the full-size image isn't fetched until asked for.
-			    `onClose` covers Escape, which closes the dialog without going through us. */}
 			{open && (
-				<dialog
-					ref={dialogRef}
-					className="photo-modal"
-					onClose={() => setOpen(null)}
-					onClick={() => setOpen(null)}
-				>
-					<img src={`${where().img}/${open.ImageName}`} alt="" />
-				</dialog>
+				<PhotoLightbox src={`${where().img}/${open.ImageName}`} onClose={() => setOpen(null)} />
 			)}
 		</>
 	)
@@ -3019,6 +3030,8 @@ const SLIDESHOW_TAKE = 10
 
 /** One of the last two weeks' most-cheered public photos plus who took it and where. */
 interface Slide {
+	/** The `SavedImageId` — the photo's own page is `/image/<id>`. */
+	id: number
 	url: string
 	username: string
 	roomName: string | null
@@ -3038,7 +3051,14 @@ function useSlideshow(config: SiteConfig | undefined) {
 
 	useEffect(() => {
 		if (config === undefined) return
-		type Feed = { Images?: Array<{ ImageName: string; Username: string; RoomName: string | null }> }
+		type Feed = {
+			Images?: Array<{
+				SavedImageId: number
+				ImageName: string
+				Username: string
+				RoomName: string | null
+			}>
+		}
 		// Wrapped in an async call rather than started directly, because `where()` THROWS
 		// when the config didn't land — synchronously, which straight out of an effect
 		// would take the page down instead of leaving an empty stage behind the fold.
@@ -3047,6 +3067,7 @@ function useSlideshow(config: SiteConfig | undefined) {
 			const d = await call<Feed>(`${h.api}/api/images/v1/slideshow?take=${SLIDESHOW_TAKE}`)
 			setSlides(
 				(d.Images ?? []).map((i) => ({
+					id: i.SavedImageId,
 					url: `${h.img}/${i.ImageName}`,
 					username: i.Username,
 					roomName: i.RoomName,
@@ -3105,15 +3126,18 @@ function Stage({
 	navigate: Navigate
 }) {
 	const [idx, setIdx] = useState(0)
+	// The photo opened full size, or null. The show holds still while one is open, so the
+	// picture behind the lightbox is the one that comes back when it closes.
+	const [zoomed, setZoomed] = useState<Slide | null>(null)
 	const count = slides?.length ?? 0
 
 	// A timeout keyed on the current slide rather than one long-lived interval: steering
 	// by hand re-arms it, so a photo you just picked gets its full six seconds.
 	useEffect(() => {
-		if (count < 2) return
+		if (count < 2 || zoomed !== null) return
 		const t = setTimeout(() => setIdx((i) => (i + 1) % count), 6000)
 		return () => clearTimeout(t)
-	}, [count, idx])
+	}, [count, idx, zoomed])
 
 	const slide = slides && slides.length > 0 ? slides[idx] : null
 	const step = (by: number) => setIdx((i) => (i + by + count) % count)
@@ -3156,15 +3180,29 @@ function Stage({
 			</div>
 			<div className="stage-show">
 				<div className="stage-frame">
+					{/* The same deal as a grid thumbnail (see PhotoGrid): a real link to the photo's
+					    page, so "open in new tab" lands where it can be reported, while a plain
+					    click zooms it here. */}
 					{slide && (
-						<img
-							className="stage-photo"
-							key={slide.url}
-							src={slide.url}
-							alt={`Photo taken in game by ${slide.username}`}
-						/>
+						<a
+							className="stage-photo-link"
+							href={`/image/${slide.id}`}
+							onClick={(e) => {
+								if (!isPlainClick(e)) return
+								e.preventDefault()
+								setZoomed(slide)
+							}}
+						>
+							<img
+								className="stage-photo"
+								key={slide.url}
+								src={slide.url}
+								alt={`Photo taken in game by ${slide.username}`}
+							/>
+						</a>
 					)}
 				</div>
+				{zoomed && <PhotoLightbox src={zoomed.url} onClose={() => setZoomed(null)} />}
 				{/* Always mounted, so the frame doesn't shift down when the feed lands. */}
 				<div className="stage-foot">
 					{slide && (

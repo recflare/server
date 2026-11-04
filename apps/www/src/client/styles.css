@@ -194,6 +194,14 @@ body {
 	background: var(--surface-hi);
 }
 
+/* The photo's link fills the frame, so the picture's own rules below still hold inside it. */
+.stage-photo-link {
+	position: absolute;
+	inset: 0;
+	display: block;
+	cursor: zoom-in;
+}
+
 .stage-photo {
 	position: absolute;
 	inset: 0;
