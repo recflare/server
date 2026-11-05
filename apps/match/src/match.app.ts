@@ -12,6 +12,7 @@ import {
 	deleteEmptyRoomInstances,
 	deleteExpiredPresence,
 	deletePresence,
+	deleteRoomInstances,
 	deleteRoomInvite,
 	GAME_VERSION,
 	gameBuild,
@@ -24,6 +25,7 @@ import {
 	getLatestRoomInviteBetween,
 	getMostActiveClubhouses,
 	getPlayerDormRoom,
+	getPlayerIdsInRoom,
 	getPresence,
 	getPresences,
 	getRoomById,
@@ -50,6 +52,7 @@ import {
 	recordStat,
 	refreshInstanceFullness,
 	Role,
+	retireRoomInstances,
 	rolloutGameBuilds,
 	RoomInstanceType,
 	roomRoles,
@@ -58,9 +61,22 @@ import {
 	setRoomInstanceMatchmakingPolicy,
 	setRoomInstancePrivate,
 	subRoomDataBlob,
+	writeAuditLog,
 } from '@repo/domain'
-import { logger, withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
-import { generatePhotonAuthToken, validateAndGetAccountId, validateAndGetVersion } from '@repo/jwt'
+import {
+	logger,
+	withCleanSpec,
+	withDefaultCors,
+	withNotFound,
+	withOnError,
+} from '@repo/hono-helpers'
+import {
+	generatePhotonAuthToken,
+	isStaff,
+	validateAndGetAccountId,
+	validateAndGetRoles,
+	validateAndGetVersion,
+} from '@repo/jwt'
 
 // The account-wide ban lives on a `report` row, whose table the api worker owns; its
 // db module is plain D1 queries with no runtime deps, so it imports cleanly here (the
@@ -403,6 +419,9 @@ function unauthorized(c: Context<App>) {
  * stored row; this token says nothing about them.
  */
 async function callerVersion(c: Context<App>): Promise<string | null> {
+	// Matchmaking a player on their behalf: their build, not the token's (see `actingVersion`).
+	const acting = c.get('actingVersion')
+	if (acting !== undefined) return acting
 	return validateAndGetVersion(c.req.raw, await c.env.JWT_SECRET.get())
 }
 
@@ -668,6 +687,122 @@ async function notifyFriendsPresence(env: Env, playerId: number): Promise<void> 
 			error: err instanceof Error ? err.message : String(err),
 		})
 	}
+}
+
+/**
+ * Tell a player where THEY now are — a `SubscriptionUpdatePresence` about themselves,
+ * carrying the instance the server just put them in. Sent when the server moves a player
+ * itself (the instance clear's re-matchmake), where no matchmake response of theirs carries
+ * the new instance. Unlike the friends' frame the instance is NOT redacted: it is the
+ * player's own session, and the join coordinates are the point. Ephemeral, best-effort.
+ */
+async function notifySelfPresence(env: Env, playerId: number): Promise<void> {
+	try {
+		const presence = await getPresence<RoomInstance>(env.DB, playerId)
+		const instance = presence?.roomInstance ?? null
+		await env.RECFLARE_NOTIFICATIONS_HUB.getByName(HUB_INSTANCE).notifyPlayersEphemeral(
+			[playerId],
+			NotificationType.SubscriptionUpdatePresence,
+			{
+				...presenceUpdateMessage(
+					playerId,
+					instance,
+					presence?.appVersion,
+					presence?.statusVisibility
+				),
+				roomInstance: instance,
+			}
+		)
+	} catch (err) {
+		logger.error('failed to push SubscriptionUpdatePresence to the player', {
+			playerId,
+			error: err instanceof Error ? err.message : String(err),
+		})
+	}
+}
+
+/** One player the instance clear tried to re-matchmake. */
+type Rematchmade =
+	| { playerId: number; roomInstanceId: number }
+	| { playerId: number; errorCode: MatchmakingErrorCode }
+
+/**
+ * Clear every instance of a room and re-matchmake everyone who was in one, as though
+ * each had asked to join the room again themselves: the same `resolveRoomInstance` and
+ * `enterRoom` a matchmake runs — bans, the room's accessibility and the build split all
+ * apply — on the player's OWN build (`actingVersion`, off their presence), into the
+ * subroom they were in. Each is then told where they landed ({@link notifySelfPresence});
+ * `enterRoom` tells their friends, as any matchmake does.
+ *
+ * Who was where is read BEFORE the delete; nothing can resolve it after. A player from a
+ * PRIVATE instance asks for a private one, and the rest of that instance follow the first
+ * into it, so a private session stays one session rather than splitting into a copy each.
+ * A public instance's players simply matchmake, and land together the way any players
+ * joining the room do. A player the matchmake refuses (banned since, the room unpublished)
+ * keeps the presence they had and is reported with the code. The account-ban gate that
+ * fronts `/matchmake/*` is applied here per player, since this route isn't under it.
+ */
+async function clearAndRematchmake(
+	c: Context<App>,
+	roomId: number
+): Promise<{ deleted: number[]; players: Rematchmade[] }> {
+	const playerIds = await getPlayerIdsInRoom(c.env.DB, roomId)
+	const presences = await getPresences<RoomInstance>(c.env.DB, playerIds)
+	// Out of matchmaking now, deleted once everyone is out: deleting first would free their
+	// ids for the new instances (see retireRoomInstances), so a player could be "moved"
+	// into an instance with the id they were already in.
+	const retired = await retireRoomInstances(c.env.DB, roomId)
+
+	const players: Rematchmade[] = []
+	// Old private instance id → the private instance its first player landed in.
+	const privateSessions = new Map<number, RoomInstance>()
+	for (const playerId of playerIds) {
+		const presence = presences.get(playerId)
+		const old = presence?.roomInstance
+		const wasPrivate = old?.isPrivate === true
+		c.set('actingVersion', presence?.appVersion || null)
+		try {
+			// The account-ban gate every `/matchmake/*` call passes (minus the IP arm: this
+			// request is not theirs, so there is no address of theirs to match).
+			if (
+				await resolveBan(c.env.DB, playerId, { arms: banEvasionMatch(c.env.BAN_EVASION_MATCH) })
+			) {
+				players.push({ playerId, errorCode: BANNED_FROM_ROOM })
+				continue
+			}
+			let instance = wasPrivate && old ? (privateSessions.get(old.roomInstanceId) ?? null) : null
+			if (!instance) {
+				const resolved = await resolveRoomInstance(
+					c,
+					String(roomId),
+					wasPrivate,
+					playerId,
+					old?.subRoomId,
+					true
+				)
+				if (!resolved.instance) {
+					players.push({ playerId, errorCode: resolved.errorCode })
+					continue
+				}
+				instance = resolved.instance
+				if (wasPrivate && old) privateSessions.set(old.roomInstanceId, instance)
+			}
+			await enterRoom(c, playerId, instance)
+			await notifySelfPresence(c.env, playerId)
+			players.push({ playerId, roomInstanceId: instance.roomInstanceId })
+		} catch (err) {
+			logger.error('failed to re-matchmake a player out of a cleared room', {
+				playerId,
+				roomId,
+				error: err instanceof Error ? err.message : String(err),
+			})
+			players.push({ playerId, errorCode: NO_SUCH_ROOM })
+		} finally {
+			c.set('actingVersion', undefined)
+		}
+	}
+	const deleted = await deleteRoomInstances(c.env.DB, retired)
+	return { deleted, players }
 }
 
 /**
@@ -3610,6 +3745,82 @@ const app = new Hono<App>()
 
 			await setRoomInstancePrivate(c.env.DB, instanceId, true)
 			return c.body(null, 200)
+		}
+	)
+
+	// Clear a room's instances and re-matchmake everyone who was in them — the website's
+	// "Clear instances" (room edit page). Open to the room's managers (creator, co-owners)
+	// and to staff, who may clear any room id. CORS-open because the website calls it from
+	// the browser; nothing else on this worker is. Audited, naming which hat the actor wore.
+	.use('/room/:roomId/instances/clear', withDefaultCors())
+	.post(
+		'/room/:roomId{[0-9]+}/instances/clear',
+		describeRoute({
+			tags: ['Room instance'],
+			summary: 'Clear a room’s instances',
+			description: [
+				'Deletes every instance of the room, then re-matchmakes each player who was in one',
+				'as if they had joined the room again themselves (on their own build, into the',
+				'subroom they were in; a private instance’s players stay together), and sends each',
+				'a `PresenceUpdate` about themselves naming where they landed. A player the',
+				'matchmake refuses is listed with its `errorCode`. The room’s creator, a co-owner,',
+				'or staff (any room id); 401/403/404 as JSON `{ error }`.',
+			].join(' '),
+			security: AUTHED,
+			parameters: [
+				{
+					name: 'roomId',
+					in: 'path',
+					required: true,
+					description: 'Room id (digits only)',
+					schema: { type: 'string', pattern: '^[0-9]+$' },
+				},
+			],
+			responses: {
+				200: { description: '`{ roomId, deleted, players }`' },
+				401: { description: 'No valid token' },
+				403: { description: 'Not the room’s creator, a co-owner, or staff' },
+				404: { description: 'No such room (non-staff)' },
+			},
+		}),
+		async (c) => {
+			const secret = await c.env.JWT_SECRET.get()
+			const accountId = await validateAndGetAccountId(c.req.raw, secret)
+			const roles = await validateAndGetRoles(c.req.raw, secret)
+			if (accountId === null || roles === null) return c.json({ error: 'Unauthorized' }, 401)
+
+			const roomId = Number.parseInt(c.req.param('roomId'), 10)
+			const staff = isStaff(roles)
+			if (!staff) {
+				const room = await getRoomById(c.env.DB, roomId)
+				if (!room) return c.json({ error: 'No such room' }, 404)
+				if (!canManageRoom(room, accountId)) return c.json({ error: 'Forbidden' }, 403)
+			}
+
+			const { deleted, players } = await clearAndRematchmake(c, roomId)
+
+			const via = staff ? 'staff' : 'manager'
+			try {
+				await writeAuditLog(c.env.DB, {
+					playerId: accountId,
+					action: 'clear_room_instances',
+					data: { roomId, deleted, players, via },
+				})
+			} catch (err) {
+				logger.error('could not write an audit log row', {
+					action: 'clear_room_instances',
+					accountId,
+					error: err instanceof Error ? err.message : String(err),
+				})
+			}
+			logger.info('cleared room instances', {
+				accountId,
+				via,
+				roomId,
+				deletedCount: deleted.length,
+				playerCount: players.length,
+			})
+			return c.json({ roomId, deleted, players })
 		}
 	)
 

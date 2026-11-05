@@ -28,6 +28,7 @@ export interface Hosts {
 	img: string
 	notify: string
 	rooms: string
+	match: string
 	cdn: string
 	storage: string
 	studio: string

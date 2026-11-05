@@ -528,6 +528,34 @@ async function isStaff(c: Context<App>): Promise<boolean> {
 }
 
 /**
+ * Audit a staff edit to a room they don't manage — a moderation action, so it's logged like
+ * the takedown and the unpublish; an owner's own edit is not. Written after the fact and
+ * caught: a failed insert must not report the edit as refused.
+ */
+async function auditStaffRoomEdit(
+	c: Context<App>,
+	accountId: number,
+	action: string,
+	room: Room,
+	data: Record<string, unknown>
+): Promise<void> {
+	try {
+		await writeAuditLog(c.env.DB, {
+			playerId: accountId,
+			action,
+			data: { roomId: room.RoomId, name: room.Name, creatorAccountId: room.CreatorAccountId, ...data },
+		})
+	} catch (err) {
+		logger.error('could not write an audit log row', {
+			action,
+			playerId: accountId,
+			roomId: room.RoomId,
+			error: err instanceof Error ? err.message : String(err),
+		})
+	}
+}
+
+/**
  * Whether a room may be served to the caller by the single-room reads (`GET /rooms/:id`,
  * and `GET /rooms` / `GET /rooms/bulk` by name). A PUBLISHED room (Public, or Unlisted —
  * reachable, just not listed) is served to anyone. Any other accessibility (Private and the
@@ -2660,7 +2688,8 @@ const app = new Hono<App>()
 			tags: ['Room settings'],
 			summary: 'Set a room’s image',
 			description: [
-				'Owner-only. `imageName` is a key from the storage upload, stored un-prefixed (the',
+				'Owner or staff (a `developer` / `moderator` token; audited). `imageName` is a key',
+				'from the storage upload, stored un-prefixed (the',
 				'`cdn` worker serves it back under `room/`). Pushes a `RoomUpdate` to the owner so',
 				'their client re-renders with the new image.',
 			].join(' '),
@@ -2685,7 +2714,9 @@ const app = new Hono<App>()
 					Error: 'This room does not exist!',
 				})
 			}
-			if (room.CreatorAccountId !== accountId) {
+			// Staff may set it too, from the website's edit page; that is audited below.
+			const isOwner = room.CreatorAccountId === accountId
+			if (!isOwner && !(await isStaff(c))) {
 				return roomResult(c, {
 					Success: false,
 					ErrorId: 'Rooms.NotOwner',
@@ -2703,9 +2734,17 @@ const app = new Hono<App>()
 				})
 			}
 			await setRoomImage(c.env.DB, roomId, imageName)
+			if (!isOwner) {
+				await auditStaffRoomEdit(c, accountId, 'room_image', room, {
+					from: room.ImageName,
+					to: imageName,
+				})
+			}
 			// Notify the owner so their client refreshes the room (RoomUpdate carries the
 			// updated room). The reference sends the post-update room, so merge the change.
-			await pushRoomUpdate(c, accountId, { ...room, ImageName: imageName })
+			if (typeof room.CreatorAccountId === 'number') {
+				await pushRoomUpdate(c, room.CreatorAccountId, { ...room, ImageName: imageName })
+			}
 			return roomResult(c, { Success: true })
 		}
 	)
@@ -4444,7 +4483,8 @@ const app = new Hono<App>()
 				'through the `storage` worker. Everything the body carries describes THAT revision',
 				'and lands on the save and its subroom — `Description` is the save comment, NOT the',
 				'room’s description (only `PUT /rooms/{roomId}/description` sets that). Nothing here',
-				'writes to the room. Editable by the room’s creator or a co-owner (403 otherwise); a',
+				'writes to the room. Editable by the room’s creator, a co-owner, or staff (audited;',
+				'403 otherwise); a',
 				'missing token is an EMPTY-body 401, unlike the other room writes.',
 				'',
 				'`AutoPublish: true` makes the save live immediately. Otherwise it is STAGED: it',
@@ -4480,9 +4520,11 @@ const app = new Hono<App>()
 			if (!room) {
 				return c.json({ success: false, error: 'This room does not exist!', value: null })
 			}
-			// A valid token but not the room's owner/co-owner → 403 (the auth gate above
-			// already returned 401 for a missing/invalid token).
-			if (!canManageRoom(room, accountId)) return c.body(null, 403)
+			// A valid token but neither the room's owner/co-owner nor staff → 403 (the auth
+			// gate above already returned 401 for a missing/invalid token). Staff restore a
+			// room's scene data from the website's edit page; that is audited below.
+			const isManager = canManageRoom(room, accountId)
+			if (!isManager && !(await isStaff(c))) return c.body(null, 403)
 
 			// The client uploads BOTH blobs to `storage` first and sends their keys here:
 			// `SubRoomData` is the scene blob (what the loader downloads, onto the subroom's
@@ -4522,14 +4564,28 @@ const app = new Hono<App>()
 				omVersion: typeof body.OMVersion === 'number' ? body.OMVersion : undefined,
 				ugcSubVersion: typeof body.UgcSubVersion === 'number' ? body.UgcSubVersion : undefined,
 				inventionUsage: typeof body.InventionUsage === 'string' ? body.InventionUsage : undefined,
+				// A staff save leaves an uncreated subroom filed under the room's creator.
+				subRoomCreatorId:
+					!isManager && typeof room.CreatorAccountId === 'number' ? room.CreatorAccountId : undefined,
 			})
 			if (!result) {
 				return c.json({ success: false, error: 'This subroom does not exist!', value: null })
 			}
 
+			if (!isManager) {
+				await auditStaffRoomEdit(c, accountId, 'room_save', room, {
+					subRoomId,
+					saveId: result.save.SubRoomDataSaveId,
+				})
+			}
+
 			// `value` carries BOTH the updated room and the save just created — and `error`
-			// is null here, not the empty string the other room envelopes use.
-			await pushRoomUpdate(c, accountId, result.room)
+			// is null here, not the empty string the other room envelopes use. A staff save
+			// is pushed to the room's creator, whose open client is the one that needs it.
+			if (isManager) await pushRoomUpdate(c, accountId, result.room)
+			else if (typeof room.CreatorAccountId === 'number') {
+				await pushRoomUpdate(c, room.CreatorAccountId, result.room)
+			}
 			await attachStudioUnityAssets(c.env.DB, [result.save])
 			return c.json({
 				success: true,

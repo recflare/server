@@ -135,6 +135,13 @@ export type Variables = SharedHonoVariables & {
 	 * which for a stale row is a public room the ban must keep them out of.
 	 */
 	bannedToDorm?: boolean
+	/**
+	 * Set while the server matchmakes a player ON THEIR BEHALF (the instance clear's
+	 * re-matchmake): the build to matchmake them as, read off their presence row, in place
+	 * of the caller's token — which belongs to whoever pressed the button, not to them.
+	 * `null` means "no build known", as a token without the claim would. See `callerVersion`.
+	 */
+	actingVersion?: string | null
 }
 
 export interface App extends HonoApp {

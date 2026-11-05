@@ -4205,6 +4205,84 @@ describe('rooms endpoints', () => {
 		})
 	})
 
+	it('PUT /rooms/:id/image lets staff set a room they hold no role on (audited)', async () => {
+		const imageName = 'staffset0000000000000000000000000.jpg'
+		const put = async (roles: string[]) =>
+			bodyOf(
+				await SELF.fetch(`${ORIGIN}/rooms/2/image`, {
+					method: 'PUT',
+					headers: {
+						...(await bearer('997', ['gameClient', ...roles])),
+						'Content-Type': 'application/x-www-form-urlencoded',
+					},
+					body: new URLSearchParams({ imageName }).toString(),
+				})
+			)
+		// A plain player is still refused; a moderator isn't.
+		expect(await put([])).toMatchObject({ Success: false, ErrorId: 'Rooms.NotOwner' })
+		expect(await put(['moderator'])).toMatchObject({ Success: true })
+
+		const room = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/2`, { headers: await bearer('1', ['developer']) })
+		).json()) as { ImageName: string }
+		expect(room.ImageName).toBe(imageName)
+
+		const { results: audit } = await env.DB.prepare(
+			'SELECT player_id, data FROM audit_log WHERE action = ?1'
+		)
+			.bind('room_image')
+			.all<{ player_id: number; data: string }>()
+		expect(audit).toHaveLength(1)
+		expect(audit[0].player_id).toBe(997)
+		expect(JSON.parse(audit[0].data)).toMatchObject({ roomId: 2, to: imageName })
+	})
+
+	it('POST /rooms/:id/subrooms/:sid/data lets staff save into a room they hold no role on (audited)', async () => {
+		const save = {
+			SubRoomData: { Filename: 'b84167b16796452ab70ee8a6a5b1dc5f', Hash: null },
+			Description: 'restored by staff',
+			AutoPublish: true,
+		}
+		const post = async (roles: string[]) =>
+			SELF.fetch(`${ORIGIN}/rooms/2/subrooms/2/data`, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					...(await bearer('997', ['gameClient', ...roles])),
+				},
+				body: JSON.stringify(save),
+			})
+		expect((await post([])).status).toBe(403)
+
+		const res = await post(['developer'])
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as {
+			success: boolean
+			value: { subRoomDataSave: { subRoomDataSaveId: number } }
+		}
+		expect(body.success).toBe(true)
+		const sub = (await subRoomOf(2, 2)) as {
+			CreatorAccountId: number | null
+			CurrentSave: { DataBlob: string } | null
+		}
+		expect(sub.CurrentSave?.DataBlob).toBe(save.SubRoomData.Filename)
+		// The save doesn't make the staff member the subroom's creator.
+		expect(sub.CreatorAccountId).not.toBe(997)
+
+		const { results: audit } = await env.DB.prepare(
+			'SELECT player_id, data FROM audit_log WHERE action = ?1'
+		)
+			.bind('room_save')
+			.all<{ player_id: number; data: string }>()
+		expect(audit).toHaveLength(1)
+		expect(audit[0].player_id).toBe(997)
+		expect(JSON.parse(audit[0].data)).toMatchObject({
+			roomId: 2,
+			subRoomId: 2,
+			saveId: body.value.subRoomDataSave.subRoomDataSaveId,
+		})
+	})
+
 	it('there is no GET for a single subroom — only the room carries them', async () => {
 		// The real API has no `GET …/subrooms/{id}/data`; the client reads subrooms off the
 		// room. Only the POST (the room save) exists on that path, and it is auth-gated.

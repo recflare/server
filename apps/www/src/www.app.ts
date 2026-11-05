@@ -51,7 +51,6 @@ import {
 	bansInForceHandler,
 	clearDormHandler,
 	clearPasswordHandler,
-	clearRoomInstancesHandler,
 	createReportHandler,
 	getReportHandler,
 	giftItemHandler,
@@ -89,6 +88,7 @@ import {
 	postAuthForm,
 	readAuthError,
 	roomsBase,
+	matchBase,
 	storageBase,
 	studioBase,
 } from './upstream'
@@ -227,6 +227,7 @@ const app = new Hono<App>()
 				img: imgBase(c.env),
 				notify: notifyBase(c.env),
 				rooms: roomsBase(c.env),
+				match: matchBase(c.env),
 				cdn: cdnBase(c.env),
 				storage: storageBase(c.env),
 				studio: studioBase(c.env),
@@ -820,11 +821,6 @@ const app = new Hono<App>()
 	// existing `/api/*` entry in wrangler.jsonc's `run_worker_first`, so no routing change
 	// was needed. `/moderation` itself is deliberately NOT in that allowlist: it is a
 	// client-side route, so it must fall through to the SPA shell.
-	// Delete every live instance of a room — for one whose sessions are stuck. Staff, or the
-	// room's own managers (creator and co-owners): the handler checks the token itself, which
-	// is why it sits outside the staff group below.
-	.post('/api/rooms/:roomId/clear-instances', clearRoomInstancesHandler)
-
 	.use('/api/staff/*', requireStaff)
 
 	// Registered before `/api/staff/reports/:id` so the literal path isn't captured as an

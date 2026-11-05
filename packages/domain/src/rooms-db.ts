@@ -1612,6 +1612,12 @@ export function findSubRoom(room: Room, subRoomId: number): SubRoom | undefined 
 
 /** Fields from the client's room-save POST body. */
 export interface SaveSubRoomDataInput {
+	/**
+	 * Who a subroom that has no creator yet is filed under. Defaults to the saver; staff
+	 * saving into a room they don't manage pass the room's creator, so the save doesn't
+	 * make them the subroom's creator.
+	 */
+	subRoomCreatorId?: number
 	/** Uploaded blob key for this subroom's scene data (becomes `CurrentSave.DataBlob`). */
 	subRoomDataFilename?: string
 	/** `SubRoomData.Hash` — echoed back as the save response's `dataBlobHash`. */
@@ -1924,8 +1930,8 @@ export async function saveSubRoomData(
 	if (!sub) return null
 
 	// Populate the subroom's creator on first save — it starts null, and the
-	// client NREs on a null CreatorAccountId. Only the owner reaches this path.
-	if (sub.CreatorAccountId == null) sub.CreatorAccountId = accountId
+	// client NREs on a null CreatorAccountId.
+	if (sub.CreatorAccountId == null) sub.CreatorAccountId = input.subRoomCreatorId ?? accountId
 
 	// Append a new save row. The blob the loader downloads lives on the save — a subroom
 	// whose current_save_id resolves to nothing loads nothing — so this never touches the

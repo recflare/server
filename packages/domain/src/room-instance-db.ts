@@ -496,6 +496,38 @@ export async function deleteRoomInstancesByRoom(db: D1Database, roomId: number):
 }
 
 /**
+ * Take every instance of a room out of matchmaking, ahead of deleting it — set to `Ignore`,
+ * which both instance searches skip — and return their ids. The instance clear does this
+ * BEFORE re-matchmaking the players out of them: deleted first, their ids could be handed
+ * straight back out ({@link createRoomInstance} allocates `MAX(id) + 1`), and a player
+ * "moved" to an instance with the id they were already in looks to the client like no move.
+ */
+export async function retireRoomInstances(db: D1Database, roomId: number): Promise<number[]> {
+	const { results } = await db
+		.prepare(
+			`UPDATE room_instance SET data = json_set(data, '$.matchmakingPolicy', ?2)
+			 WHERE room_id = ?1
+			 RETURNING json_extract(data, '$.roomInstanceId') AS id`
+		)
+		.bind(roomId, MatchmakingPolicy.Ignore)
+		.all<{ id: number }>()
+	return results.map((r) => r.id)
+}
+
+/** Delete the named instances; returns the ids actually deleted. */
+export async function deleteRoomInstances(db: D1Database, ids: number[]): Promise<number[]> {
+	if (ids.length === 0) return []
+	const { results } = await db
+		.prepare(
+			`DELETE FROM room_instance WHERE id IN (SELECT value FROM json_each(?1))
+			 RETURNING json_extract(data, '$.roomInstanceId') AS id`
+		)
+		.bind(JSON.stringify(ids))
+		.all<{ id: number }>()
+	return results.map((r) => r.id)
+}
+
+/**
  * The oldest joinable public instance of a room (not private, not full, joins
  * enabled, not already in progress unless `joinInProgress`, not set to `Ignore`) that is running `gameVersion`,
  * or null when there's none to join. Used by matchmaking to reuse an existing instance

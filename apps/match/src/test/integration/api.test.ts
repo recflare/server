@@ -9,11 +9,13 @@ import { exports } from 'cloudflare:workers'
 import { beforeAll, describe, expect, test } from 'vitest'
 
 import {
+	AUDIT_LOG_SCHEMA_DDL,
 	countPlayersInInstance,
 	createRoomInstance,
 	EMPTY_INSTANCE_GRACE_SECONDS,
 	GAME_VERSION,
 	getRoomInstance,
+	getStoredRoomInstance,
 	modifySubRoom,
 	PRESENCE_SCHEMA_DDL,
 	recordRoomVisit,
@@ -172,6 +174,8 @@ beforeAll(async () => {
 	for (const stmt of ROOM_INVITE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	// Stats (owned by this worker) — the presence cron samples the online count into it.
 	for (const stmt of STAT_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	// The audit log (owned by `api`) — the instance clear writes a row to it.
+	for (const stmt of AUDIT_LOG_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 
 	// Accounts table (owned by the auth worker) — dorm creation reads the username
 	// to name the room. Seed the players the dorm tests authenticate as.
@@ -336,10 +340,19 @@ function b64url(input: ArrayBuffer | string): string {
 // `version` mints the `rn.ver` claim auth stamps from the client's posted `ver`; left
 // off, the token carries none — which is what a token issued before the claim carried the
 // client's own build looks like to presence.
-async function bearer(sub = '42', version?: string): Promise<Record<string, string>> {
+async function bearer(
+	sub = '42',
+	version?: string,
+	roles?: string[]
+): Promise<Record<string, string>> {
 	const now = Math.floor(Date.now() / 1000)
 	const signingInput = `${b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))}.${b64url(
-		JSON.stringify({ sub, exp: now + 3600, ...(version && { 'rn.ver': version }) })
+		JSON.stringify({
+			sub,
+			exp: now + 3600,
+			...(version && { 'rn.ver': version }),
+			...(roles && { role: roles }),
+		})
 	)}`
 	const key = await crypto.subtle.importKey(
 		'raw',
@@ -4403,6 +4416,7 @@ describe('auth-gated endpoints', () => {
 			'POST /player/logout',
 			'POST /player/notifydisconnect',
 			'POST /player/verifylock',
+			'POST /room/{roomId}/instances/clear',
 			'POST /roominstance/{id}/markprivate',
 			'POST /roominstance/{id}/reportjoinresult',
 			'PUT /player/avoidjuniors',
@@ -4770,5 +4784,185 @@ describe('ban evasion at matchmake', () => {
 		} finally {
 			env.BAN_EVASION_MATCH = original
 		}
+	})
+})
+
+describe('POST /room/:roomId/instances/clear', () => {
+	const CLEAR_ROOM = 8_971_000
+	// Unpublished: a player holding no role on it isn't let back in.
+	const CLEAR_UNPUBLISHED = 8_972_000
+	const CLEAR_SUBROOM = 8_971_001
+	const BUILD = '20250718.01'
+
+	beforeAll(async () => {
+		await seedRoomWithSubRooms(env.DB, {
+			RoomId: CLEAR_ROOM,
+			Name: 'ClearMe',
+			IsDorm: false,
+			Accessibility: 1,
+			CreatorAccountId: 9700,
+			Roles: [
+				{ AccountId: 9701, Role: 30, LastChangedByAccountId: null, InvitedRole: 0 },
+				{ AccountId: 9702, Role: 20, LastChangedByAccountId: null, InvitedRole: 0 },
+			],
+			SubRooms: [{ SubRoomId: CLEAR_SUBROOM, UnitySceneId: RECCENTER_SCENE, MaxPlayers: 8 }],
+		})
+		await seedRoomWithSubRooms(env.DB, {
+			RoomId: CLEAR_UNPUBLISHED,
+			Name: 'ClearUnpublished',
+			IsDorm: false,
+			Accessibility: 0,
+			CreatorAccountId: 9700,
+			SubRooms: [{ SubRoomId: 8_972_001, UnitySceneId: RECCENTER_SCENE, MaxPlayers: 8 }],
+		})
+	})
+
+	const clear = async (roomId: number, headers: Record<string, string> = {}) =>
+		exports.default.fetch(`${ORIGIN}/room/${roomId}/instances/clear`, { method: 'POST', headers })
+
+	/** Put a player in an instance, as their own matchmake would have. */
+	const placeIn = async (
+		accountId: number,
+		instance: { roomInstanceId: number; roomId: number; subRoomId: number; isPrivate: boolean }
+	) =>
+		setPresence(env.DB, {
+			accountId,
+			roomInstance: instance,
+			statusVisibility: 0,
+			deviceClass: 0,
+			vrMovementMode: 1,
+			platform: 0,
+			appVersion: BUILD,
+		})
+
+	test('is open to the room’s creator, co-owners and staff, and to the browser', async () => {
+		expect((await clear(CLEAR_ROOM)).status).toBe(401)
+		// A room moderator (20) and a stranger are refused; a non-staff caller gets a 404 for
+		// a room that doesn't exist.
+		expect((await clear(CLEAR_ROOM, await bearer('9702'))).status).toBe(403)
+		expect((await clear(CLEAR_ROOM, await bearer('9703'))).status).toBe(403)
+		expect((await clear(99_999, await bearer('9700'))).status).toBe(404)
+		// Staff may clear any id, even one with no room.
+		const staff = await clear(99_999, await bearer('9704', undefined, ['moderator']))
+		expect(staff.status).toBe(200)
+		expect(await staff.json()).toEqual({ roomId: 99_999, deleted: [], players: [] })
+		// The website calls it from the browser.
+		expect(staff.headers.get('Access-Control-Allow-Origin')).toBe('*')
+		const preflight = await exports.default.fetch(`${ORIGIN}/room/${CLEAR_ROOM}/instances/clear`, {
+			method: 'OPTIONS',
+			headers: {
+				Origin: 'https://www.example.com',
+				'Access-Control-Request-Method': 'POST',
+				'Access-Control-Request-Headers': 'authorization',
+			},
+		})
+		expect(preflight.headers.get('Access-Control-Allow-Origin')).toBe('*')
+		// The co-owner clears it too, and the audit row says which hat they wore.
+		expect((await clear(CLEAR_ROOM, await bearer('9701'))).status).toBe(200)
+		const audit = await env.DB.prepare(
+			"SELECT data FROM audit_log WHERE action = 'clear_room_instances' AND player_id = 9701"
+		).first<{ data: string }>()
+		expect(JSON.parse(audit!.data)).toMatchObject({ roomId: CLEAR_ROOM, via: 'manager' })
+	})
+
+	test('deletes the instances and re-matchmakes everyone who was in them', async () => {
+		const hub = () => env.RECFLARE_NOTIFICATIONS_HUB.getByName('global')
+		await hub().fetch('http://do/all', { method: 'DELETE' })
+		const make = (photonRoomId: string, isPrivate: boolean) =>
+			createRoomInstance(env.DB, {
+				ownerAccountId: 9700,
+				roomId: CLEAR_ROOM,
+				subRoomId: CLEAR_SUBROOM,
+				photonRoomId,
+				isPrivate,
+				maxCapacity: 8,
+				gameVersion: '20250718',
+			})
+		const pub = await make('clear-public', false)
+		const priv = await make('clear-private', true)
+		await placeIn(9710, { ...pub, isPrivate: false })
+		await placeIn(9711, { ...pub, isPrivate: false })
+		await placeIn(9712, { ...priv, isPrivate: true })
+		await placeIn(9713, { ...priv, isPrivate: true })
+		// Somebody in another room stays put.
+		await placeIn(9714, { roomInstanceId: 1_234_567, roomId: 2, subRoomId: 2, isPrivate: false })
+
+		const res = await clear(CLEAR_ROOM, await bearer('9700'))
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as {
+			deleted: number[]
+			players: Array<{ playerId: number; roomInstanceId?: number; errorCode?: number }>
+		}
+		expect(body.deleted.toSorted((a, b) => a - b)).toEqual([
+			pub.roomInstanceId,
+			priv.roomInstanceId,
+		])
+		const landed = new Map(body.players.map((p) => [p.playerId, p.roomInstanceId]))
+		expect([...landed.keys()].toSorted((a, b) => a - b)).toEqual([9710, 9711, 9712, 9713])
+
+		// The public instance's players matchmade into one fresh public instance; the private
+		// one's stayed together in a fresh PRIVATE instance of their own.
+		const publicNew = landed.get(9710)!
+		const privateNew = landed.get(9712)!
+		expect(landed.get(9711)).toBe(publicNew)
+		expect(landed.get(9713)).toBe(privateNew)
+		expect(new Set([publicNew, privateNew, pub.roomInstanceId, priv.roomInstanceId]).size).toBe(4)
+		const storedPublic = await getStoredRoomInstance(env.DB, publicNew)
+		const storedPrivate = await getStoredRoomInstance(env.DB, privateNew)
+		expect(storedPublic).toMatchObject({ isPrivate: false, subRoomId: CLEAR_SUBROOM })
+		expect(storedPrivate).toMatchObject({ isPrivate: true, subRoomId: CLEAR_SUBROOM })
+		// On the players' own build, not the caller's (whose token names none).
+		expect(storedPublic!.gameVersion).toBe('20250718')
+		expect(storedPrivate!.gameVersion).toBe('20250718')
+
+		// Presence follows; the bystander's doesn't move.
+		const instanceOf = async (accountId: number) =>
+			(
+				await env.DB.prepare(
+					"SELECT json_extract(data, '$.roomInstance.roomInstanceId') AS id FROM presence WHERE account_id = ?1"
+				)
+					.bind(accountId)
+					.first<{ id: number }>()
+			)?.id
+		expect(await instanceOf(9710)).toBe(publicNew)
+		expect(await instanceOf(9713)).toBe(privateNew)
+		expect(await instanceOf(9714)).toBe(1_234_567)
+
+		// Each player is told where THEY are, with the join coordinates intact.
+		const frames = await (
+			await hub().fetch('http://do/all')
+		).json<
+			Array<{
+				playerIds: number[]
+				notificationType: string
+				data: { playerId: number; roomInstance: { roomInstanceId: number; photonRoomId: string } }
+			}>
+		>()
+		const self = frames.filter(
+			(f) =>
+				f.notificationType === 'PresenceUpdate' &&
+				f.playerIds.length === 1 &&
+				f.playerIds[0] === f.data.playerId
+		)
+		expect(self.map((f) => f.data.playerId).toSorted((a, b) => a - b)).toEqual([
+			9710, 9711, 9712, 9713,
+		])
+		for (const f of self) {
+			expect(f.data.roomInstance.roomInstanceId).toBe(landed.get(f.data.playerId))
+			expect(f.data.roomInstance.photonRoomId).not.toBe('')
+		}
+	})
+
+	test('leaves a player the matchmake refuses where they were, and says why', async () => {
+		const stuck = await createRoomInstance(env.DB, {
+			ownerAccountId: 9720,
+			roomId: CLEAR_UNPUBLISHED,
+			photonRoomId: 'clear-unpublished',
+			gameVersion: '20250718',
+		})
+		await placeIn(9720, { ...stuck, isPrivate: false })
+		const res = await clear(CLEAR_UNPUBLISHED, await bearer('9799', undefined, ['developer']))
+		const body = (await res.json()) as { players: Array<{ playerId: number; errorCode?: number }> }
+		expect(body.players).toEqual([{ playerId: 9720, errorCode: 25 }])
 	})
 })

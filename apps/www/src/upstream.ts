@@ -16,6 +16,7 @@ export const notifyBase = (env: Env): string => `https://notify.${env.DOMAIN}`
 export const apiBase = (env: Env): string => `https://api.${env.DOMAIN}`
 export const imgBase = (env: Env): string => `https://img.${env.DOMAIN}`
 export const roomsBase = (env: Env): string => `https://rooms.${env.DOMAIN}`
+export const matchBase = (env: Env): string => `https://match.${env.DOMAIN}`
 export const cdnBase = (env: Env): string => `https://cdn.${env.DOMAIN}`
 export const storageBase = (env: Env): string => `https://storage.${env.DOMAIN}`
 export const studioBase = (env: Env): string => `https://studio.${env.DOMAIN}`

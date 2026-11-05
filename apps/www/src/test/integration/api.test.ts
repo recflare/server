@@ -24,11 +24,7 @@ import {
 	setPresence,
 } from '@repo/domain/src/presence-db'
 import { getProgression, PROGRESSION_SCHEMA_DDL } from '@repo/domain/src/progression-db'
-import {
-	createRoomInstance,
-	getRoomInstancesByRoom,
-	ROOM_INSTANCE_SCHEMA_DDL,
-} from '@repo/domain/src/room-instance-db'
+import { ROOM_INSTANCE_SCHEMA_DDL } from '@repo/domain/src/room-instance-db'
 // Banning a player moves them into their own dorm, which is a room (created on demand) with
 // a subroom — so those tables have to be here, as they are on the shared database.
 import { getOrCreateDormRoom, ROOM_SCHEMA_DDL, SUBROOM_SCHEMA_DDL } from '@repo/domain/src/rooms-db'
@@ -195,6 +191,7 @@ it('advertises signup and where the other workers live', async () => {
 			img: 'https://img.rec.example.com',
 			notify: 'https://notify.rec.example.com',
 			rooms: 'https://rooms.rec.example.com',
+			match: 'https://match.rec.example.com',
 			cdn: 'https://cdn.rec.example.com',
 			storage: 'https://storage.rec.example.com',
 			studio: 'https://studio.rec.example.com',
@@ -2581,96 +2578,6 @@ it('clears the dorm the player picked, not their provisioned one', async () => {
 	// A pick that is no longer a dorm they run falls back to the provisioned dorm.
 	await env.DB.prepare('DELETE FROM room WHERE room_id = ?1').bind(picked).run()
 	expect(await clear()).toBe(provisioned)
-})
-
-/** The `clear_room_instances` audit rows an account wrote, oldest first — the actor is the row's player. */
-async function clearAudits(actor: number): Promise<unknown[]> {
-	const { results } = await env.DB.prepare(
-		`SELECT data FROM audit_log WHERE action = 'clear_room_instances' AND player_id = ?1 ORDER BY audit_log_id`
-	)
-		.bind(actor)
-		.all<{ data: string }>()
-	return results.map((r) => JSON.parse(r.data))
-}
-
-it('clears every instance of a room, for any staff member', async () => {
-	const make = (roomId: number, photonRoomId: string) =>
-		createRoomInstance(env.DB, { ownerAccountId: 8110, roomId, photonRoomId })
-	const a = await make(7740, 'clear-a')
-	const b = await make(7740, 'clear-b')
-	const other = await make(7741, 'clear-other')
-
-	// A moderator, not only a developer, may clear a room — any room, even one that isn't
-	// in the `room` table (these aren't).
-	const res = await staffPost('/api/rooms/7740/clear-instances', 8101, {})
-	expect(res.status).toBe(200)
-	const body = (await res.json()) as { roomId: number; deleted: number[] }
-	expect(body.roomId).toBe(7740)
-	expect(body.deleted.toSorted()).toEqual([a.roomInstanceId, b.roomInstanceId].toSorted())
-	expect(await getRoomInstancesByRoom(env.DB, 7740)).toEqual([])
-	// Another room's instances are untouched.
-	expect((await getRoomInstancesByRoom(env.DB, 7741)).map((i) => i.roomInstanceId)).toEqual([
-		other.roomInstanceId,
-	])
-	expect(await clearAudits(8101)).toEqual([{ roomId: 7740, deleted: body.deleted, via: 'staff' }])
-
-	// Clearing an empty room succeeds and deletes nothing.
-	const again = await staffPost('/api/rooms/7740/clear-instances', 8101, {})
-	expect(await again.json()).toEqual({ roomId: 7740, deleted: [] })
-	expect((await staffPost('/api/rooms/abc/clear-instances', 8101, {})).status).toBe(400)
-})
-
-// The route sits outside the staff group so a room's managers can reach it: the creator and
-// co-owners (`canManageRoom`), not a host or moderator role, and not a stranger. The
-// refusals keep the staff gate's shape, plus a 404 for a room that doesn't exist.
-it('lets a room’s creator and co-owners clear its instances, and nobody else', async () => {
-	await env.DB.prepare('INSERT INTO room (data) VALUES (?1)')
-		.bind(
-			JSON.stringify({
-				RoomId: 7750,
-				Name: 'ClearMine',
-				CreatorAccountId: 8350,
-				Roles: [
-					{ AccountId: 8350, Role: 255 },
-					{ AccountId: 8351, Role: 30 },
-					{ AccountId: 8352, Role: 20 },
-				],
-			})
-		)
-		.run()
-	const clearAs = async (accountId: number, roomId = 7750) =>
-		SELF.fetch(`https://example.com/api/rooms/${roomId}/clear-instances`, {
-			method: 'POST',
-			headers: { Authorization: `Bearer ${await tokenFor(accountId)}` },
-		})
-	const make = (photonRoomId: string) =>
-		createRoomInstance(env.DB, { ownerAccountId: 8350, roomId: 7750, photonRoomId })
-
-	// No token: 401. A room moderator (20) and a stranger: 403, and nothing is deleted.
-	const kept = await make('mine-a')
-	expect(
-		(await SELF.fetch('https://example.com/api/rooms/7750/clear-instances', { method: 'POST' }))
-			.status
-	).toBe(401)
-	expect((await clearAs(8352)).status).toBe(403)
-	expect((await clearAs(8353)).status).toBe(403)
-	expect((await getRoomInstancesByRoom(env.DB, 7750)).map((i) => i.roomInstanceId)).toEqual([
-		kept.roomInstanceId,
-	])
-	// A room that doesn't exist is a 404 for a non-staff caller.
-	expect((await clearAs(8350, 7751)).status).toBe(404)
-
-	// The creator clears it; so does a co-owner (30).
-	const res = await clearAs(8350)
-	expect(res.status).toBe(200)
-	expect(await res.json()).toEqual({ roomId: 7750, deleted: [kept.roomInstanceId] })
-	const more = await make('mine-b')
-	const co = await clearAs(8351)
-	expect(co.status).toBe(200)
-	expect(await co.json()).toEqual({ roomId: 7750, deleted: [more.roomInstanceId] })
-	expect(await clearAudits(8351)).toEqual([
-		{ roomId: 7750, deleted: [more.roomInstanceId], via: 'manager' },
-	])
 })
 
 it('grants a player Plus, developers only', async () => {

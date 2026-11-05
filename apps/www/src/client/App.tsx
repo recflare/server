@@ -29,6 +29,7 @@ import {
 	usernamesFor,
 	where,
 } from './api'
+import { AvatarUploadPanel } from './AvatarUpload'
 import { ChristmasLayer, XmasHome } from './Christmas'
 import { DeviceLinkPage } from './DeviceLink'
 import { eventIdFromPath, EventPage, EventsPage } from './Events'
@@ -43,7 +44,6 @@ import { ModerationPage, PlayerBanStatus } from './Moderation'
 import { PumpleBossFight } from './PumpleBossFight'
 import { RoomsPage } from './Rooms'
 import { StatsPage } from './Stats'
-import { AvatarUploadPanel } from './AvatarUpload'
 import { STUDIO_ACCESS_KINDS, StudioAccessPage, StudioAccessPanel } from './StudioAccess'
 
 import type { ReactNode } from 'react'
@@ -3976,9 +3976,10 @@ function AdminTabs({ account, navigate }: { account: SelfAccount; navigate: Navi
 
 /**
  * One room's pages: the VIEW at `/rooms/<id>` — what the room is, and the photos taken in
- * it, the same for everyone including its owner — and the owner's EDIT at
- * `/rooms/<id>/edit`: the image upload, the settings and the subrooms with their saves,
- * plus the staff tools when the owner is also staff. The two used to be one page that
+ * it, the same for everyone including its owner — and the EDIT at `/rooms/<id>/edit`:
+ * the image upload, the settings and the subrooms with their saves, plus the staff tools
+ * for staff. Owners get the pair on their own rooms; staff on every room, since the edit
+ * page is where they act on one. The two used to be one page that
  * picked by ownership, which left an owner with no way to see their own room as a visitor
  * does (the photo feed is only on the view) and a staff owner with no staff tools (only on
  * the view, which they never got).
@@ -3987,7 +3988,7 @@ function AdminTabs({ account, navigate }: { account: SelfAccount; navigate: Navi
  * which is unfiltered by design (the game looks any room up that way). A room that isn't
  * yours simply isn't in the list, so there's no second ownership rule here to drift out of
  * step with the one the mutating endpoints enforce — and `/edit` on someone else's room is
- * just the view.
+ * just the view, unless you're staff.
  */
 function RoomPage({
 	account,
@@ -4071,57 +4072,61 @@ function RoomPage({
 		)
 	}
 
-	if (owned && edit) {
+	// The rooms with a View | Edit pair: the caller's own, and — for staff, who act on rooms
+	// from the edit page — any room at all. `rooms` checks the role itself on every write the
+	// edit page makes, and audits a staff edit to a room they don't manage.
+	const editable = owned ?? (isAdmin() && room ? room : null)
+	const replaceEditable = owned ? replaceOwned : setRoom
+	const tabs = (isEdit: boolean) => (
+		<ViewEditTabs
+			viewTo={`/rooms/${roomId}`}
+			editTo={`/rooms/${roomId}/edit`}
+			edit={isEdit}
+			back={owned ? { to: '/account', label: 'My rooms' } : undefined}
+			navigate={navigate}
+		/>
+	)
+
+	if (editable && edit) {
 		return (
 			<main className="shell wide">
-				<ViewEditTabs
-					viewTo={`/rooms/${roomId}`}
-					editTo={`/rooms/${roomId}/edit`}
-					edit
-					back={{ to: '/account', label: 'My rooms' }}
-					navigate={navigate}
-				/>
+				{tabs(true)}
 				<RoomDetail
-					room={owned}
+					room={editable}
 					imgHost={where().img}
 					cdnHost={where().cdn}
-					onRoomChange={replaceOwned}
+					onRoomChange={replaceEditable}
 				/>
 				{/* Every owner may clear their room's instances; `ownedby/me` is the managers'
-				    list (creator and co-owners), the same set the endpoint admits. */}
-				<ClearInstances room={owned} />
+				    list (creator and co-owners), the same set the endpoint admits. Staff may
+				    clear any room's. */}
+				<ClearInstances room={editable} />
 				{/* The staff tools sit with the rest of the controls on the edit page, so the
 				    view stays the one everyone else sees. */}
 				{isAdmin() && (
 					<StaffRoomTools
-						room={owned}
+						room={editable}
 						clearInstances={false}
-						onTakenDown={() => setTakenDown(owned.Name)}
-						onRoomChange={replaceOwned}
+						onTakenDown={() => setTakenDown(editable.Name)}
+						onRoomChange={replaceEditable}
 					/>
 				)}
 			</main>
 		)
 	}
 
-	if (owned) {
+	if (editable) {
 		// The owner's own list is the copy shown, so the view can't be told "private or
 		// missing" about a room the owner has unpublished, and an edit is reflected on return.
 		return (
 			<main className="shell wide">
-				<ViewEditTabs
-					viewTo={`/rooms/${roomId}`}
-					editTo={`/rooms/${roomId}/edit`}
-					edit={false}
-					back={{ to: '/account', label: 'My rooms' }}
-					navigate={navigate}
-				/>
+				{tabs(false)}
 				<PublicRoomView
-					room={owned}
+					room={editable}
 					staffTools={false}
 					navigate={navigate}
-					onTakenDown={() => setTakenDown(owned.Name)}
-					onRoomChange={replaceOwned}
+					onTakenDown={() => setTakenDown(editable.Name)}
+					onRoomChange={replaceEditable}
 				/>
 			</main>
 		)
@@ -4130,12 +4135,10 @@ function RoomPage({
 	// Unlisted rooms are reachable by link, which is what a URL is. Everything else that
 	// isn't Public is somebody's private space, and gets the same sentence a missing room
 	// does: which of the two it is answers a question a stranger has no business asking.
-	// Staff see it anyway — an unpublished room still needs its staff tools (the delete).
+	// (Staff never get here: every room is `editable` to them, above.)
 	const visible =
 		room !== null &&
-		(isAdmin() ||
-			room.Accessibility === Accessibility.Public ||
-			room.Accessibility === Accessibility.Unlisted)
+		(room.Accessibility === Accessibility.Public || room.Accessibility === Accessibility.Unlisted)
 
 	return (
 		<main className="shell wide">
@@ -4645,13 +4648,10 @@ function StaffUnpublish({
 }
 
 /**
- * Delete every instance of the room, for one whose sessions are stuck. Two steps, like the
- * dorm clear: nothing is lost for good, but anyone inside is cut off from their session.
- */
-/**
  * Clear a room's live instances — the one room control shared by staff and the room's own
- * managers (`www` `POST /api/rooms/:roomId/clear-instances` checks which the caller is), so
- * an owner can unstick their room from the edit page without asking a moderator.
+ * managers (`match` `POST /room/:roomId/instances/clear` checks which the caller is), so an
+ * owner can unstick their room from the edit page without asking a moderator. Everyone
+ * inside is re-matchmade into a fresh instance. Two steps, like the dorm clear.
  */
 function ClearInstances({ room }: { room: OwnedRoom }) {
 	const [confirming, setConfirming] = useState(false)
@@ -4661,8 +4661,8 @@ function ClearInstances({ room }: { room: OwnedRoom }) {
 		<section className="card">
 			<h2>Instances</h2>
 			<p className="hint">
-				Deletes every instance of this room, including ones with players in them. The next player to
-				join gets a fresh instance — the fix for a room whose sessions are stuck.
+				Deletes every instance of this room and matchmakes everyone who was inside into a fresh one —
+				the fix for a room whose sessions are stuck.
 			</p>
 			<div className="mod-filter-actions">
 				{confirming ? (
@@ -4672,15 +4672,29 @@ function ClearInstances({ room }: { room: OwnedRoom }) {
 							disabled={pending}
 							onClick={() =>
 								void run(async () => {
-									const res = await call<{ deleted: number[] }>(
-										`/api/rooms/${room.RoomId}/clear-instances`,
-										{ authed: true, method: 'POST' }
-									)
+									const res = await call<{
+										deleted: number[]
+										players: Array<{ playerId: number; roomInstanceId?: number }>
+									}>(`${where().match}/room/${room.RoomId}/instances/clear`, {
+										authed: true,
+										method: 'POST',
+									})
 									setConfirming(false)
 									const n = res.deleted.length
-									return n === 0
-										? `^${room.Name} had no instances.`
-										: `Cleared ${n} instance${n === 1 ? '' : 's'} of ^${room.Name}.`
+									const moved = res.players.filter((p) => p.roomInstanceId !== undefined).length
+									const refused = res.players.length - moved
+									const cleared =
+										n === 0
+											? `^${room.Name} had no instances.`
+											: `Cleared ${n} instance${n === 1 ? '' : 's'} of ^${room.Name}.`
+									const plural = (k: number) => `${k} player${k === 1 ? '' : 's'}`
+									return [
+										cleared,
+										moved > 0 && `Moved ${plural(moved)} into a fresh instance.`,
+										refused > 0 && `${plural(refused)} couldn't be re-matchmade.`,
+									]
+										.filter(Boolean)
+										.join(' ')
 								})
 							}
 						>
@@ -4954,8 +4968,8 @@ function SubRoomRow({
  * and the key it hands back is posted to the subroom's `…/data` route as
  * `SubRoomData.Filename`. So this is a room save like any other — it lands in the
  * subroom's history beside the ones the game wrote, and both endpoints are already gated
- * on the room's creator (or a co-owner), which is why there is no ownership check here:
- * the page only lists rooms that came back from `ownedby/me` in the first place.
+ * on the room's creator (or a co-owner, or staff — audited), which is why there is no
+ * ownership check here: the edit page is only drawn for rooms from `ownedby/me`, and for staff.
  *
  * Publishing is offered rather than assumed. A save normally only STAGES — players keep
  * loading the last published version until the owner publishes — and quietly making an
