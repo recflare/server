@@ -1193,6 +1193,8 @@ interface PublicPhoto {
 	CreatedAt: string
 	CheerCount: number
 	Accessibility: number
+	/** The room it was taken in; null for a photo taken outside one. */
+	RoomId: number | null
 }
 
 /** A player's public room — the narrow shape `/rooms/createdby/:id` serves. */
@@ -1256,6 +1258,7 @@ const fetchRoomPhotos = (roomId: number, skip: number, take: number): Promise<Pu
 			CreatedAt: string
 			CheerCount: number
 			Accessibility: number
+			RoomId: number | null
 		}>
 	>(`${where().api}/api/images/v4/room/${roomId}?filter=1&skip=${skip}&take=${take}`).then(
 		(images) =>
@@ -1265,6 +1268,7 @@ const fetchRoomPhotos = (roomId: number, skip: number, take: number): Promise<Pu
 				CreatedAt: i.CreatedAt,
 				CheerCount: i.CheerCount,
 				Accessibility: i.Accessibility,
+				RoomId: i.RoomId,
 			}))
 	)
 
@@ -1555,8 +1559,145 @@ function PhotoLightbox({ src, onClose }: { src: string; onClose: () => void }) {
 	)
 }
 
-function PhotoGrid({ photos }: { photos: PublicPhoto[] }) {
+/**
+ * Which of these photos the signed-in player has cheered — `api`'s `cheered/bulk`, the lookup
+ * the game fills its own photo grid's cheer buttons from. Posted as a form, as the game
+ * posts it; one comma-separated `id` carries the page, which the route splits.
+ */
+async function fetchCheered(ids: number[]): Promise<Map<number, boolean>> {
+	const entries = await call<Array<{ SavedImageId: number; IsCheered: boolean }>>(
+		`${where().api}/api/images/v5/cheered/bulk`,
+		{ method: 'POST', authed: true, form: { id: ids.join(',') } }
+	)
+	return new Map(entries.map((e) => [e.SavedImageId, e.IsCheered]))
+}
+
+/** Cheer or un-cheer a photo through the game's own `POST /api/images/v1/cheer`. */
+async function cheerPhoto(imageId: number, cheer: boolean): Promise<void> {
+	await call(`${where().api}/api/images/v1/cheer`, {
+		authed: true,
+		json: { SavedImageId: imageId, Cheer: cheer },
+	})
+}
+
+/**
+ * The cheer state of a grid's photos for the signed-in player, and the toggle. Looks up
+ * only the photos it hasn't asked about yet, so a feed loading another page asks about
+ * that page alone. Signed out it asks nothing and the toggle is never offered.
+ *
+ * The count is kept here as a DELTA on the photo's `CheerCount` rather than refetched: the
+ * cheer route answers a bare ack, and the feed's record is the count as of loading.
+ */
+function usePhotoCheers(photos: PublicPhoto[], enabled: boolean) {
+	const [cheered, setCheered] = useState<Map<number, boolean>>(new Map())
+	const [delta, setDelta] = useState<Map<number, number>>(new Map())
+	const [pending, setPending] = useState<Set<number>>(new Set())
+	const asked = useRef(new Set<number>())
+
+	useEffect(() => {
+		if (!enabled || !hasToken()) return
+		const ids = photos.map((p) => p.SavedImageId).filter((id) => !asked.current.has(id))
+		if (ids.length === 0) return
+		for (const id of ids) asked.current.add(id)
+		void fetchCheered(ids)
+			.then((found) => setCheered((current) => new Map([...current, ...found])))
+			// Unknown reads as not cheered; let a later render ask again.
+			.catch(() => {
+				for (const id of ids) asked.current.delete(id)
+			})
+	}, [photos, enabled])
+
+	const toggle = useCallback(
+		async (imageId: number) => {
+			if (pending.has(imageId)) return
+			const next = !(cheered.get(imageId) ?? false)
+			const step = next ? 1 : -1
+			const bump = (by: number) =>
+				setDelta((current) => new Map(current).set(imageId, (current.get(imageId) ?? 0) + by))
+			// Optimistic: the button moves at once, and moves back if the api refuses.
+			setPending((current) => new Set(current).add(imageId))
+			setCheered((current) => new Map(current).set(imageId, next))
+			bump(step)
+			try {
+				await cheerPhoto(imageId, next)
+			} catch {
+				setCheered((current) => new Map(current).set(imageId, !next))
+				bump(-step)
+			} finally {
+				setPending((current) => {
+					const rest = new Set(current)
+					rest.delete(imageId)
+					return rest
+				})
+			}
+		},
+		[cheered, pending]
+	)
+
+	return {
+		isCheered: (id: number) => cheered.get(id) ?? false,
+		count: (p: PublicPhoto) => Math.max(0, p.CheerCount + (delta.get(p.SavedImageId) ?? 0)),
+		isPending: (id: number) => pending.has(id),
+		toggle,
+	}
+}
+
+/**
+ * The names of the PUBLIC rooms these photos were taken in, for the captions under a
+ * player's photos — the image records carry only the `RoomId`. One `rooms/bulk` lookup
+ * per batch of rooms not yet asked about, so a feed loading another page asks only about
+ * rooms new to it. A private or unpublished room is left out by the lookup
+ * (`excludePrivateRooms`) and so gets no caption: its page would turn the visitor away.
+ */
+function usePhotoRoomNames(photos: PublicPhoto[], enabled: boolean): Map<number, string> {
+	const [names, setNames] = useState<Map<number, string>>(new Map())
+	const asked = useRef(new Set<number>())
+
+	useEffect(() => {
+		if (!enabled) return
+		const ids = [
+			...new Set(photos.map((p) => p.RoomId).filter((id): id is number => id != null && id > 0)),
+		].filter((id) => !asked.current.has(id))
+		if (ids.length === 0) return
+		for (const id of ids) asked.current.add(id)
+		void call<Array<{ RoomId: number; Name: string }>>(
+			`${where().rooms}/rooms/bulk?id=${ids.join(',')}&excludePrivateRooms=True`
+		)
+			.then((rooms) =>
+				setNames(
+					(current) => new Map([...current, ...rooms.map((r) => [r.RoomId, r.Name] as const)])
+				)
+			)
+			// No caption rather than an error under every photo; a later page may ask again.
+			.catch(() => {
+				for (const id of ids) asked.current.delete(id)
+			})
+	}, [photos, enabled])
+
+	return names
+}
+
+/**
+ * `cheerable` puts a cheer count on each photo, and for a signed-in viewer makes it a
+ * button that cheers or un-cheers the photo exactly as the game does.
+ *
+ * `navigate`, when given, captions each photo with a link to the room it was taken in —
+ * for a player's photos, which come from all over. A room's own feed leaves it out: every
+ * caption would name the page you're on.
+ */
+function PhotoGrid({
+	photos,
+	cheerable = false,
+	navigate,
+}: {
+	photos: PublicPhoto[]
+	cheerable?: boolean
+	navigate?: Navigate
+}) {
 	const [open, setOpen] = useState<PublicPhoto | null>(null)
+	const cheers = usePhotoCheers(photos, cheerable)
+	const roomNames = usePhotoRoomNames(photos, navigate !== undefined)
+	const signedIn = hasToken()
 
 	return (
 		<>
@@ -1566,32 +1707,70 @@ function PhotoGrid({ photos }: { photos: PublicPhoto[] }) {
 				    kept on this page and opens the lightbox instead; a click with a modifier (or
 				    not the main button) is the browser's, and goes where the href says. */}
 				{photos.map((p) => (
-					<a
-						key={p.SavedImageId}
-						className="photo-button"
-						href={`/image/${p.SavedImageId}`}
-						onClick={(e) => {
-							if (!isPlainClick(e)) return
-							e.preventDefault()
-							setOpen(p)
-						}}
-						aria-label={
-							p.Accessibility === Accessibility.Public ? 'View photo' : 'View private photo'
-						}
-					>
-						<img
-							className="photo-thumb"
-							src={`${where().img}/${p.ImageName}?width=256`}
-							alt=""
-							loading="lazy"
-						/>
-						{/* Only the owner's own list ever carries a private photo (see
+					<div key={p.SavedImageId} className="photo-tile">
+						{/* The photo and its cheer pill, positioned together so the pill sits on the
+						    picture even with a caption below it. */}
+						<div className="photo-frame">
+							<a
+								className="photo-button"
+								href={`/image/${p.SavedImageId}`}
+								onClick={(e) => {
+									if (!isPlainClick(e)) return
+									e.preventDefault()
+									setOpen(p)
+								}}
+								aria-label={
+									p.Accessibility === Accessibility.Public ? 'View photo' : 'View private photo'
+								}
+							>
+								<img
+									className="photo-thumb"
+									src={`${where().img}/${p.ImageName}?width=256`}
+									alt=""
+									loading="lazy"
+								/>
+								{/* Only the owner's own list ever carries a private photo (see
 						    fetchPlayerPhotos), so this is the mark on their own profile that tells
 						    them which of theirs nobody else can see. */}
-						{p.Accessibility !== Accessibility.Public && (
-							<span className="badge photo-private">Private</span>
+								{p.Accessibility !== Accessibility.Public && (
+									<span className="badge photo-private">Private</span>
+								)}
+							</a>
+							{/* A sibling of the link, not inside it: a button can't nest in an <a>. */}
+							{cheerable &&
+								(signedIn ? (
+									<button
+										type="button"
+										className={`photo-cheer${cheers.isCheered(p.SavedImageId) ? ' cheered' : ''}`}
+										aria-pressed={cheers.isCheered(p.SavedImageId)}
+										aria-label={cheers.isCheered(p.SavedImageId) ? 'Remove cheer' : 'Cheer photo'}
+										disabled={cheers.isPending(p.SavedImageId)}
+										onClick={() => void cheers.toggle(p.SavedImageId)}
+									>
+										<span aria-hidden="true">👍</span> {cheers.count(p).toLocaleString()}
+									</button>
+								) : (
+									<span
+										className="photo-cheer"
+										title="Sign in to cheer"
+										aria-label={`${cheers.count(p).toLocaleString()} cheers`}
+									>
+										<span aria-hidden="true">👍</span> {cheers.count(p).toLocaleString()}
+									</span>
+								))}
+						</div>
+						{/* Always rendered when captions are on, so a photo with no public room keeps
+						    its row the same height as the captioned ones beside it. */}
+						{navigate && (
+							<p className="photo-caption">
+								{p.RoomId != null && roomNames.has(p.RoomId) && (
+									<Link to={`/rooms/${p.RoomId}`} navigate={navigate}>
+										^{roomNames.get(p.RoomId)}
+									</Link>
+								)}
+							</p>
 						)}
-					</a>
+					</div>
 				))}
 			</div>
 			{open && (
@@ -1867,6 +2046,8 @@ function PlayerPage({
 							feedKey={`player:${account.accountId}`}
 							loadPage={(skip, take) => fetchPlayerPhotos(account.accountId, skip, take)}
 							empty="No public photos."
+							cheerable
+							navigate={navigate}
 						/>
 					</section>
 				</>
@@ -2963,6 +3144,7 @@ function NavBar({
 	const profilePath = account ? `/user/${encodeURIComponent(account.username)}` : null
 	return (
 		<header className="nav">
+			<div className="nav-backdrop" aria-hidden="true" />
 			<Link to="/" navigate={navigate} className="brand">
 				RecFlare
 			</Link>
@@ -3052,6 +3234,8 @@ interface Slide {
 	url: string
 	username: string
 	roomName: string | null
+	/** The room's page is `/rooms/<id>`; the feed only carries photos taken in a room. */
+	roomId: number | null
 }
 
 /**
@@ -3074,6 +3258,7 @@ function useSlideshow(config: SiteConfig | undefined) {
 				ImageName: string
 				Username: string
 				RoomName: string | null
+				RoomId: number | null
 			}>
 		}
 		// Wrapped in an async call rather than started directly, because `where()` THROWS
@@ -3088,6 +3273,7 @@ function useSlideshow(config: SiteConfig | undefined) {
 					url: `${h.img}/${i.ImageName}`,
 					username: i.Username,
 					roomName: i.RoomName,
+					roomId: i.RoomId,
 				}))
 			)
 		})().catch((e) => setError(e instanceof Error ? e.message : String(e)))
@@ -3224,8 +3410,19 @@ function Stage({
 				<div className="stage-foot">
 					{slide && (
 						<span className="credit">
-							Photo by @{slide.username}
-							{slide.roomName && ` in ${slide.roomName}`}
+							Photo by{' '}
+							<Link to={`/user/${encodeURIComponent(slide.username)}`} navigate={navigate}>
+								@{slide.username}
+							</Link>
+							{slide.roomName && slide.roomId != null && (
+								<>
+									{' '}
+									in{' '}
+									<Link to={`/rooms/${slide.roomId}`} navigate={navigate}>
+										^{slide.roomName}
+									</Link>
+								</>
+							)}
 						</span>
 					)}
 					{/* Arrows and a count, not a dot per photo: a dot each is wide enough to
@@ -4259,10 +4456,7 @@ function PublicRoomView({
 					)}
 					<p className="room-stats">
 						{room.Stats.VisitCount.toLocaleString()} visit
-						{room.Stats.VisitCount === 1 ? '' : 's'} · {room.Stats.FavoriteCount.toLocaleString()}{' '}
-						favourite
-						{room.Stats.FavoriteCount === 1 ? '' : 's'} · {room.Stats.CheerCount.toLocaleString()}{' '}
-						cheer{room.Stats.CheerCount === 1 ? '' : 's'}
+						{room.Stats.VisitCount === 1 ? '' : 's'} · <RoomInteractions room={room} />
 					</p>
 				</div>
 			</section>
@@ -4287,12 +4481,129 @@ function PublicRoomView({
 					feedKey={`room:${room.RoomId}`}
 					loadPage={(skip, take) => fetchRoomPhotos(room.RoomId, skip, take)}
 					empty="Nobody has taken a photo here yet."
+					cheerable
 				/>
 			</section>
 
 			{staffTools && isAdmin() && (
 				<StaffRoomTools room={room} onTakenDown={onTakenDown} onRoomChange={onRoomChange} />
 			)}
+		</>
+	)
+}
+
+/** The caller's cheer/favourite on a room — `rooms`' `InteractionDto`. */
+interface RoomInteraction {
+	Cheered: boolean
+	Favorited: boolean
+}
+
+type RoomInteractionKind = 'cheer' | 'favorite'
+
+/**
+ * Set or clear the caller's cheer or favourite on a room through the game's own endpoints.
+ * Setting is the PUT, which TOGGLES, so it's only sent when the flag is known to be clear;
+ * clearing is the DELETE, which is idempotent. Both answer the resulting interaction.
+ */
+const setRoomInteraction = (
+	roomId: number,
+	kind: RoomInteractionKind,
+	on: boolean
+): Promise<RoomInteraction> =>
+	call<RoomInteraction>(`${where().rooms}/rooms/${roomId}/interactionby/me/${kind}`, {
+		method: on ? 'PUT' : 'DELETE',
+		authed: true,
+	})
+
+/**
+ * The room's cheer and favourite counts. For a signed-in viewer each is a button that
+ * cheers (👍) or favourites (★) the room as the game does; signed out they're plain counts.
+ *
+ * The counts are the room's as of loading, moved by one when the server reports the flag
+ * changed — the interaction routes answer the flags, not the room's new totals.
+ */
+function RoomInteractions({ room }: { room: OwnedRoom }) {
+	const signedIn = hasToken()
+	// null until the viewer's state is known (or forever, signed out).
+	const [mine, setMine] = useState<RoomInteraction | null>(null)
+	const [delta, setDelta] = useState({ cheer: 0, favorite: 0 })
+	const [pending, setPending] = useState<RoomInteractionKind | null>(null)
+	const [error, setError] = useState('')
+
+	useEffect(() => {
+		setMine(null)
+		setDelta({ cheer: 0, favorite: 0 })
+		setError('')
+		if (!signedIn) return
+		let stale = false
+		void call<RoomInteraction>(`${where().rooms}/rooms/${room.RoomId}/interactionby/me`, {
+			authed: true,
+		})
+			.then((i) => {
+				if (!stale) setMine(i)
+			})
+			.catch(() => {})
+		return () => {
+			stale = true
+		}
+	}, [room.RoomId, signedIn])
+
+	const toggle = async (kind: RoomInteractionKind) => {
+		if (mine === null || pending !== null) return
+		const field = kind === 'cheer' ? 'Cheered' : 'Favorited'
+		const was = mine[field]
+		setPending(kind)
+		setError('')
+		try {
+			const next = await setRoomInteraction(room.RoomId, kind, !was)
+			setMine(next)
+			if (next[field] !== was) {
+				setDelta((d) => ({ ...d, [kind]: d[kind] + (next[field] ? 1 : -1) }))
+			}
+		} catch (err) {
+			setError(err instanceof Error ? err.message : String(err))
+		} finally {
+			setPending(null)
+		}
+	}
+
+	const favorites = Math.max(0, room.Stats.FavoriteCount + delta.favorite)
+	const cheers = Math.max(0, room.Stats.CheerCount + delta.cheer)
+	const favoriteLabel = `${favorites.toLocaleString()} favourite${favorites === 1 ? '' : 's'}`
+	const cheerLabel = `${cheers.toLocaleString()} cheer${cheers === 1 ? '' : 's'}`
+
+	if (!signedIn || mine === null) {
+		return (
+			<>
+				<span title={signedIn ? undefined : 'Sign in to cheer'}>{cheerLabel}</span> ·{' '}
+				<span title={signedIn ? undefined : 'Sign in to favourite'}>{favoriteLabel}</span>
+			</>
+		)
+	}
+	return (
+		<>
+			<button
+				type="button"
+				className={`room-interact${mine.Cheered ? ' on' : ''}`}
+				aria-pressed={mine.Cheered}
+				title={mine.Cheered ? 'Remove cheer' : 'Cheer this room'}
+				disabled={pending !== null}
+				onClick={() => void toggle('cheer')}
+			>
+				<span aria-hidden="true">👍</span> {cheerLabel}
+			</button>{' '}
+			·{' '}
+			<button
+				type="button"
+				className={`room-interact${mine.Favorited ? ' on' : ''}`}
+				aria-pressed={mine.Favorited}
+				title={mine.Favorited ? 'Remove from favourites' : 'Favourite this room'}
+				disabled={pending !== null}
+				onClick={() => void toggle('favorite')}
+			>
+				<span aria-hidden="true">{mine.Favorited ? '★' : '☆'}</span> {favoriteLabel}
+			</button>
+			{error && <span className="error"> {error}</span>}
 		</>
 	)
 }
@@ -4327,11 +4638,17 @@ function PhotoFeed({
 	feedKey,
 	loadPage,
 	empty,
+	cheerable = false,
+	navigate,
 }: {
 	feedKey: string
 	loadPage: (skip: number, take: number) => Promise<PublicPhoto[]>
 	/** The line shown when the first page is empty. */
 	empty: string
+	/** Passed to the grid: show cheer counts, and let a signed-in viewer cheer. */
+	cheerable?: boolean
+	/** Passed to the grid: caption each photo with a link to its room. */
+	navigate?: Navigate
 }) {
 	const load = useRef(loadPage)
 	load.current = loadPage
@@ -4406,7 +4723,7 @@ function PhotoFeed({
 	}
 	return (
 		<>
-			<PhotoGrid photos={photos} />
+			<PhotoGrid photos={photos} cheerable={cheerable} navigate={navigate} />
 			{failed ? (
 				<p className="error">The rest of the photos couldn&apos;t be loaded.</p>
 			) : (
@@ -4661,8 +4978,8 @@ function ClearInstances({ room }: { room: OwnedRoom }) {
 		<section className="card">
 			<h2>Instances</h2>
 			<p className="hint">
-				Deletes every instance of this room and matchmakes everyone who was inside into a fresh one —
-				the fix for a room whose sessions are stuck.
+				Deletes every instance of this room and matchmakes everyone who was inside into a fresh one
+				— the fix for a room whose sessions are stuck.
 			</p>
 			<div className="mod-filter-actions">
 				{confirming ? (

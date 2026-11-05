@@ -24,6 +24,14 @@
 	--accent-hover: #ff8c33;
 	/* Dark ink on orange: white on this orange is only ~2.9:1 and fails AA. */
 	--accent-text: #17110a;
+	/* Text on the nav banner, which is orange in BOTH schemes — so these are not redefined
+	   for light mode the way the theme's text colours are. */
+	--nav-ink: #17110a;
+	--nav-halo: rgb(255 214 170 / 85%);
+	--nav-edge: rgb(23 17 10 / 18%);
+	--nav-ring: rgb(23 17 10 / 35%);
+	--nav-wash: rgb(255 236 214 / 45%);
+	--nav-wash-strong: rgb(255 236 214 / 70%);
 	--live: #35d07f;
 	--error: #ff6b5e;
 	--ok: #35d07f;
@@ -62,6 +70,10 @@ body {
 	color: var(--text);
 	font: 400 16px/1.6 var(--body);
 	-webkit-font-smoothing: antialiased;
+	/* The sticky nav's backdrop is 100vw, which counts the scrollbar and so pokes past the
+	   page's right edge. `clip`, not `hidden`: hidden makes body a scroll container, and
+	   the nav would then stick to body instead of the viewport. */
+	overflow-x: clip;
 }
 
 /* Keyboard focus stays visible everywhere, including on the dark surfaces. */
@@ -99,8 +111,51 @@ body {
 	gap: 16px;
 	max-width: 1040px;
 	margin: 0 auto;
-	padding: 20px;
-	border-bottom: 1px solid var(--line);
+	padding: 12px 20px;
+	/* Stays at the top as the page scrolls. Under the Christmas layers (9000+), over the page. */
+	position: sticky;
+	top: 0;
+	z-index: 50;
+}
+
+/* The bar's backdrop: the nav is the content column's width, and this runs edge to edge
+   behind it, so the page scrolling under the bar is hidden right across the screen. Its
+   own element (not a pseudo-element of the nav) because it CLIPS — the rotated pattern
+   inside overflows it — and the nav itself can't, or it would clip the search panel that
+   hangs below the bar. Orange in both colour schemes, so the bar's text is dark ink in
+   both (see the nav rules below), not the theme's text colours. */
+.nav-backdrop {
+	position: absolute;
+	z-index: -1;
+	top: 0;
+	bottom: 0;
+	left: 50%;
+	width: 100vw;
+	transform: translateX(-50%);
+	overflow: hidden;
+	pointer-events: none;
+	/* The RecFlare banner's red-to-amber fade, with an ink edge where it meets the page
+	   (on the backdrop rather than the nav, so it runs the full width too). */
+	background: linear-gradient(90deg, #f87043, #f59a35);
+	box-shadow: inset 0 -1px 0 var(--nav-edge);
+}
+
+/* The logo pattern, tilted like the banner. `nav-logos.png` is ONE repeat of the
+   staggered grid (a column wide, two rows tall, cut from the full sheet on its pitch), so
+   it tiles seamlessly; drawn at half size, so a whole face fits the bar. The layer is a
+   square far bigger than the bar, centred on it, so turning it leaves no bare corner in
+   view. Its own drop shadow gives the banner's embossed look; the opacity keeps it behind
+   the text. */
+.nav-backdrop::before {
+	content: '';
+	position: absolute;
+	top: 50%;
+	left: 50%;
+	width: 150vw;
+	height: 150vw;
+	transform: translate(-50%, -50%) rotate(-45deg);
+	background: url('./nav-logos.png') 0 0 / 51px 102px repeat;
+	opacity: 0.45;
 }
 
 .brand {
@@ -111,16 +166,19 @@ body {
 	font-weight: 800;
 	font-size: 1.2rem;
 	letter-spacing: -0.015em;
-	color: var(--text);
+	color: var(--nav-ink);
 	text-decoration: none;
 }
 
+/* The mark is the logo face the bar is tiled with, one of them pulled forward and inked:
+   in its own orange it would vanish into the banner. A mask, so the ink is the theme's. */
 .brand::before {
 	content: '';
-	width: 9px;
-	height: 9px;
-	border-radius: 2px;
-	background: var(--accent);
+	width: 21px;
+	height: 28px;
+	background: var(--nav-ink);
+	-webkit-mask: url('./nav-mark.png') center / contain no-repeat;
+	mask: url('./nav-mark.png') center / contain no-repeat;
 }
 
 .nav-links {
@@ -151,6 +209,41 @@ body {
 .nav-links a.active,
 .linkish:hover {
 	color: var(--text);
+}
+
+/* On the banner: full dark ink, with a soft light halo that lifts the letters off the
+   logo pattern's edges. A faded ink read poorly there, so the current page and hover are
+   marked with an underline instead of a change of shade. */
+.brand,
+.nav-links a,
+.nav-links .linkish {
+	text-shadow: 0 0 6px var(--nav-halo);
+}
+
+.nav-links a,
+.nav-links .linkish {
+	color: var(--nav-ink);
+	font-weight: 600;
+	text-decoration: underline 2px transparent;
+	text-underline-offset: 6px;
+	transition: text-decoration-color 0.15s ease;
+}
+
+.nav-links a:hover,
+.nav-links a.active,
+.nav-links .linkish:hover {
+	color: var(--nav-ink);
+	text-decoration-color: currentColor;
+}
+
+/* The site's focus ring is the accent, which is invisible on the banner. Scoped to the
+   bar's own controls: the search panel hanging below it keeps the site's ring. */
+.nav > .brand:focus-visible,
+.nav-links > a:focus-visible,
+.nav-links > .linkish:focus-visible,
+.nav-links > .nav-avatar:focus-visible,
+.nav .site-search-toggle:focus-visible {
+	outline-color: var(--nav-ink);
 }
 
 /* ---- The stage (hero) --------------------------------------------------- */
@@ -282,6 +375,18 @@ body {
 .credit {
 	min-width: 0;
 	overflow-wrap: anywhere;
+}
+/* Who took the photo and where: links, but in the line's own muted ink, so the credit
+   still reads as a caption under the picture. */
+.credit a {
+	color: var(--text);
+	text-decoration: underline;
+	text-decoration-color: color-mix(in srgb, var(--muted) 50%, transparent);
+	text-underline-offset: 3px;
+}
+.credit a:hover {
+	color: var(--accent);
+	text-decoration-color: currentColor;
 }
 
 /* Back / forward, with the position between them. Fixed width whatever the feed
@@ -1865,20 +1970,20 @@ button[type='submit'].danger:not(:disabled):hover {
    the button, but the nav's right edge stays put — so the panel always opens flush right
    and never runs off the screen. */
 .nav {
-	position: relative;
 	/* Wraps only when the row doesn't fit (a staff account's extra links on a phone). */
 	flex-wrap: wrap;
 }
 
 /* The signed-in player's avatar, the row's last item: a circle the search button's size,
-   so the two read as a pair of round controls. The ring brightens on hover and on the
-   player's own pages, the way the text links go from muted to text. */
+   so the two read as a pair of round controls. Both are ringed in the bar's ink (they sit
+   on the banner, where the theme's surfaces read as stickers), and the ring goes from soft
+   to full ink on hover and on the player's own pages, as the links gain their underline. */
 .nav-avatar {
 	display: inline-flex;
 	flex: none;
 	width: 38px;
 	height: 38px;
-	border: 1px solid var(--line);
+	border: 2px solid var(--nav-ring);
 	border-radius: 999px;
 	overflow: hidden;
 	background: var(--surface);
@@ -1894,7 +1999,7 @@ button[type='submit'].danger:not(:disabled):hover {
 
 .nav-avatar:hover,
 .nav-avatar.active {
-	border-color: var(--muted);
+	border-color: var(--nav-ink);
 }
 
 .site-search-toggle {
@@ -1904,10 +2009,10 @@ button[type='submit'].danger:not(:disabled):hover {
 	width: 38px;
 	height: 38px;
 	padding: 0;
-	border: 1px solid var(--line);
+	border: 2px solid var(--nav-ring);
 	border-radius: 999px;
-	background: var(--surface);
-	color: var(--muted);
+	background: var(--nav-wash);
+	color: var(--nav-ink);
 	cursor: pointer;
 	transition:
 		color 0.15s ease,
@@ -1917,9 +2022,8 @@ button[type='submit'].danger:not(:disabled):hover {
 
 .site-search-toggle:hover,
 .site-search-toggle.active {
-	color: var(--text);
-	border-color: var(--accent);
-	background: var(--surface-hi);
+	border-color: var(--nav-ink);
+	background: var(--nav-wash-strong);
 }
 
 .site-search-panel {
@@ -2162,6 +2266,99 @@ button[type='submit'].danger:not(:disabled):hover {
 /* The Private mark on one of the owner's own photos, pinned to the thumbnail's corner.
    Same pill as a room's visibility badge, on a solid background so it reads over the
    picture. */
+.room-interact {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	margin: 2px 0;
+	padding: 2px 8px;
+	border: 1px solid var(--line);
+	border-radius: 999px;
+	background: none;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+}
+.room-interact:hover:not(:disabled) {
+	border-color: var(--accent);
+	color: var(--accent);
+}
+.room-interact:disabled {
+	opacity: 0.7;
+	cursor: progress;
+}
+.room-interact.on {
+	border-color: var(--accent);
+	background: var(--accent);
+	color: var(--accent-text);
+}
+.room-interact.on:hover:not(:disabled) {
+	background: var(--accent-hover);
+	border-color: var(--accent-hover);
+	color: var(--accent-text);
+}
+.photo-frame {
+	position: relative;
+}
+/* The room a player's photo was taken in, under it. One line, cut short rather than
+   wrapped, so every row of the grid keeps one height. */
+.photo-caption {
+	min-height: 1.4em;
+	margin: 6px 2px 0;
+	font-size: 0.8rem;
+	line-height: 1.4;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.photo-caption a {
+	color: var(--muted);
+	text-decoration: none;
+}
+.photo-caption a:hover {
+	color: var(--accent);
+	text-decoration: underline;
+}
+.photo-cheer {
+	position: absolute;
+	right: 6px;
+	bottom: 6px;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 2px 8px;
+	border: 1px solid var(--line);
+	border-radius: 999px;
+	background: var(--surface);
+	color: var(--muted);
+	font: inherit;
+	font-size: 0.75rem;
+	font-weight: 600;
+}
+span.photo-cheer {
+	pointer-events: none;
+}
+button.photo-cheer {
+	cursor: pointer;
+}
+button.photo-cheer:hover:not(:disabled) {
+	border-color: var(--accent);
+	color: var(--accent);
+}
+button.photo-cheer:disabled {
+	opacity: 0.7;
+	cursor: progress;
+}
+.photo-cheer.cheered {
+	border-color: var(--accent);
+	background: var(--accent);
+	color: var(--accent-text);
+}
+button.photo-cheer.cheered:hover:not(:disabled) {
+	background: var(--accent-hover);
+	border-color: var(--accent-hover);
+	color: var(--accent-text);
+}
 .photo-private {
 	position: absolute;
 	top: 6px;
