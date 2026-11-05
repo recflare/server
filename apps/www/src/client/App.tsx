@@ -1218,15 +1218,17 @@ const fetchPublicAccount = (username: string): Promise<PublicAccount | null> =>
 	accountByUsername(username)
 
 /**
- * The photos a player has taken. Sent WITH the session token when there is one: `api`
- * reads it and, only when the list is the caller's own, includes the photos they keep
- * private — so a signed-in player sees all of theirs on their own `/user/<name>`, while
- * everyone else's profile is the public list either way. Nothing
- * here decides who the viewer is; the worker does, from the token.
+ * A player's photo feed: the photos they took PLUS the ones they're tagged in, newest
+ * first — the same feed the game's profile photo tab reads. Sent WITH the session token
+ * when there is one: `api` reads it and, only when the list is the caller's own, includes
+ * the photos they TOOK and keep private — so a signed-in player sees all of theirs on
+ * their own `/user/<name>`, while everyone else's profile is the public list either way.
+ * A photo someone else took and tagged them in is public-only for everyone; its privacy
+ * is the taker's. Nothing here decides who the viewer is; the worker does, from the token.
  */
 const fetchPlayerPhotos = (accountId: number, skip: number, take: number): Promise<PublicPhoto[]> =>
 	call<PublicPhoto[]>(
-		`${where().api}/api/images/v4/player/${accountId}?skip=${skip}&take=${take}`,
+		`${where().api}/api/images/v3/feed/player/${accountId}?skip=${skip}&take=${take}`,
 		{
 			authed: true,
 		}

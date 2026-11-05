@@ -1728,10 +1728,17 @@ export const ModifyImageAccessibilityRequest = z.object({
 	Accessibility: z.int().describe('0 private, 1 public'),
 })
 
+/** Longest photo caption the game client's caption field accepts; the server holds the same line. */
+export const MAX_IMAGE_DESCRIPTION_LENGTH = 280
+
 /** `POST /api/images/v1/modifydescription` JSON body. */
 export const ModifyImageDescriptionRequest = z.object({
 	ImageName: z.string(),
-	Description: z.string().nullable().describe('The new caption; null or empty clears it'),
+	Description: z
+		.string()
+		.max(MAX_IMAGE_DESCRIPTION_LENGTH)
+		.nullable()
+		.describe('The new caption; null or empty clears it'),
 })
 
 /**

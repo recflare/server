@@ -5,7 +5,7 @@
  * JSON — the same JSON-blob pattern the rooms/accounts tables use.
  *
  * The `img` worker owns the schema/migrations (migrations/0001_image.sql,
- * 0002_image_interaction.sql and 0003_image_slideshow_index.sql, applied with its own `migrations_table` so they don't
+ * 0002_image_interaction.sql, 0003_image_slideshow_index.sql and 0004_image_tag.sql, applied with its own `migrations_table` so they don't
  * clash with the other workers' migrations on the shared database); the `api` worker
  * handles uploads, cheers and the photo feeds. Other workers (`clubs`, for a club's
  * gallery) only read: they store an image *name* but have to serve the client the
@@ -44,6 +44,23 @@ export const IMAGE_SCHEMA_DDL: string[] = [
 		PRIMARY KEY (player_id, saved_image_id)
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_image_interaction_image ON image_interaction (saved_image_id)`,
+	// Who is tagged in which photo (migrations/0004), so a player's tagged-in photos are an
+	// index lookup rather than a json_each scan of every image. The blob's TaggedPlayerIds
+	// stays the record; the triggers keep this in step with it on insert/delete (tags are
+	// only set on upload, so nothing updates them).
+	`CREATE TABLE IF NOT EXISTS image_tag (
+		player_id INTEGER NOT NULL,
+		saved_image_id INTEGER NOT NULL,
+		PRIMARY KEY (player_id, saved_image_id)
+	) WITHOUT ROWID`,
+	`CREATE INDEX IF NOT EXISTS idx_image_tag_image ON image_tag (saved_image_id)`,
+	`CREATE TRIGGER IF NOT EXISTS image_tag_after_insert AFTER INSERT ON image BEGIN
+		INSERT OR IGNORE INTO image_tag (player_id, saved_image_id)
+		SELECT value, NEW.id FROM json_each(NEW.data, '$.TaggedPlayerIds') WHERE value IS NOT NULL;
+	END`,
+	`CREATE TRIGGER IF NOT EXISTS image_tag_after_delete AFTER DELETE ON image BEGIN
+		DELETE FROM image_tag WHERE saved_image_id = OLD.id;
+	END`,
 ]
 
 /**
@@ -634,8 +651,11 @@ export async function getSlideshowImages(
 /**
  * A player's photo feed — the public camera photos ({@link isPhoto}) they took plus the
  * ones they're tagged in (TaggedPlayerIds). Newest first, paginated via skip/take; returns a
- * bare array of SavedImage. The tagged-in match uses json_each over the stored
- * TaggedPlayerIds array (there's no index for it).
+ * bare array of SavedImage. The tagged-in half reads `image_tag`, and the filtering,
+ * ordering and paging all happen in SQL, so a page reads only the player's own and
+ * tagged-in rows rather than the whole table. The unary `+` on `type`/`accessibility`
+ * keeps the planner off `idx_image_slideshow`, which it otherwise picks and which scans
+ * every photo; this way it looks up exactly the ids the subquery names.
  *
  * When `viewerId` is the player themself ({@link ownView}) the photos they TOOK come
  * through private ones included, as on {@link getImagesByPlayer}. A photo someone
@@ -652,16 +672,17 @@ export async function getPlayerFeed(
 	const { results } = await db
 		.prepare(
 			`SELECT data FROM image
-			 WHERE player_id = ?1
-			    OR EXISTS (SELECT 1 FROM json_each(image.data, '$.TaggedPlayerIds') WHERE value = ?1)`
+			 WHERE id IN (
+			         SELECT id FROM image WHERE player_id = ?1
+			         UNION
+			         SELECT saved_image_id FROM image_tag WHERE player_id = ?1
+			       )
+			   AND +type = ?2
+			   AND (+accessibility = 1 OR (?3 AND player_id = ?1))
+			 ORDER BY created_at DESC, id DESC
+			 LIMIT ?4 OFFSET ?5`
 		)
-		.bind(playerId)
+		.bind(playerId, SavedImageType.ShareCamera, ownView(playerId, viewerId) ? 1 : 0, Math.max(0, take), Math.max(0, skip))
 		.all<ImageRow>()
-	const own = ownView(playerId, viewerId)
-	return results
-		.map((r) => JSON.parse(r.data) as SavedImage)
-		.filter(isPhoto)
-		.filter((img) => img.Accessibility === 1 || (own && img.PlayerId === playerId))
-		.sort(newestFirst)
-		.slice(skip, skip + take)
+	return results.map((r) => JSON.parse(r.data) as SavedImage)
 }

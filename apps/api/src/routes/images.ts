@@ -43,6 +43,7 @@ import {
 	JsonArray,
 	jsonBody,
 	ModifyImageAccessibilityRequest,
+	MAX_IMAGE_DESCRIPTION_LENGTH,
 	ModifyImageDescriptionRequest,
 	pageParams,
 	PhotoTaggingSettingRequest,
@@ -421,7 +422,8 @@ export const imageRoutes = new Hono<App>({ strict: false })
 
 	// Set the caption on one of the caller's photos ({ ImageName, Description }).
 	// Auth-gated and owner-only, like deletesaved. An empty or null Description clears
-	// the caption (stored as null, the same as an upload without one).
+	// the caption (stored as null, the same as an upload without one). Capped at
+	// MAX_IMAGE_DESCRIPTION_LENGTH, the limit the game client's caption field enforces.
 	.post(
 		'/api/images/v1/modifydescription',
 		describeRoute({
@@ -429,12 +431,13 @@ export const imageRoutes = new Hono<App>({ strict: false })
 			summary: 'Set the caption on one of the caller’s photos',
 			description:
 				'Looks the image up by name and refuses unless the caller took it, then sets ' +
-				'`Description` on the stored record. Null or empty clears it.',
+				'`Description` on the stored record. Null or empty clears it. At most ' +
+				`${MAX_IMAGE_DESCRIPTION_LENGTH} characters, as the client allows.`,
 			security: AUTHED,
 			requestBody: jsonBody(ModifyImageDescriptionRequest, 'The image and its new caption'),
 			responses: {
 				200: json(SuccessResponse, 'Updated'),
-				400: json(ErrorResponse, 'No ImageName, or Description not a string'),
+				400: json(ErrorResponse, 'No ImageName, or Description not a string or too long'),
 				401: UNAUTHORIZED_RESPONSE,
 				403: json(ErrorResponse, 'Not the caller’s image'),
 				404: { description: 'No image by that name' },
@@ -453,6 +456,12 @@ export const imageRoutes = new Hono<App>({ strict: false })
 			const raw = body?.Description ?? null
 			if (raw !== null && typeof raw !== 'string') {
 				return c.json({ error: 'Description must be a string' }, 400)
+			}
+			if (raw !== null && raw.length > MAX_IMAGE_DESCRIPTION_LENGTH) {
+				return c.json(
+					{ error: `Description must be at most ${MAX_IMAGE_DESCRIPTION_LENGTH} characters` },
+					400
+				)
 			}
 			const description = raw === null || raw.trim() === '' ? null : raw
 

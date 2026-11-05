@@ -8204,6 +8204,15 @@ describe('images', () => {
 		// An empty description clears the caption back to null.
 		expect((await postImageJson(path, owner, { ImageName, Description: '' })).status).toBe(200)
 		expect((await getImageByName(env.DB, ImageName))!.Description).toBeNull()
+
+		// 280 characters is the client's cap: exactly 280 is stored, 281 is refused untouched.
+		const max = 'a'.repeat(280)
+		expect((await postImageJson(path, owner, { ImageName, Description: max })).status).toBe(200)
+		expect((await getImageByName(env.DB, ImageName))!.Description).toBe(max)
+		expect(
+			(await postImageJson(path, owner, { ImageName, Description: `${max}b` })).status
+		).toBe(400)
+		expect((await getImageByName(env.DB, ImageName))!.Description).toBe(max)
 	})
 
 	test('POST /api/images/v4/uploadsaved 401s without a bearer token', async () => {
