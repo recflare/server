@@ -564,6 +564,24 @@ export async function listStudioAccounts(
 }
 
 /**
+ * Every account flagged `isModerator`, `isInfluencer` or `isSandbox`, lowest id first — the
+ * admin page's account-flags list. A JSON scan like {@link listStudioAccounts}: the list is
+ * short and only staff read it.
+ */
+export async function listFlaggedAccounts(db: D1Database): Promise<Account[]> {
+	const { results } = await db
+		.prepare(
+			`SELECT data FROM account
+			WHERE json_extract(data, '$.isModerator') = 1
+				OR json_extract(data, '$.isInfluencer') = 1
+				OR json_extract(data, '$.isSandbox') = 1
+			ORDER BY account_id`
+		)
+		.all<AccountRow>()
+	return parseAll(results)
+}
+
+/**
  * Merge `overrides` into the account row for `id` and persist it. Reads the
  * current account (falling back to a synthesized default), applies the
  * overrides, and writes the whole JSON blob back — inserting the row when the

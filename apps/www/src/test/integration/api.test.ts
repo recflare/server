@@ -3520,8 +3520,7 @@ it('lets staff add, list, and remove studio upload access', async () => {
 
 // ---- Sandbox opt-in ---------------------------------------------------------
 // `match` picks the Tachyon pool off the account's `isSandbox` flag. Staff flip their OWN
-// flag from the account page; the route never takes a player id, so nobody can be moved by
-// someone else here.
+// flag from the admin page; a developer sets anyone's from the account-flags list.
 
 it('lets staff opt themselves in and out of the sandbox pool, and only themselves', async () => {
 	await updateAccount(env.DB, 8120, { username: 'SandboxMod' })
@@ -3575,6 +3574,89 @@ it('lets staff opt themselves in and out of the sandbox pool, and only themselve
 		[8121, true],
 		[8120, false],
 	])
+})
+
+it('lets a developer list and set moderator, influencer and sandbox flags from one list', async () => {
+	await updateAccount(env.DB, 8130, { username: 'FlagTester' })
+	const url = '/api/staff/account-flags'
+	const put = (body: unknown, roles = ['developer']) =>
+		tokenFor(8131, roles).then((token) =>
+			SELF.fetch(`https://example.com${url}`, {
+				method: 'PUT',
+				headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+				body: JSON.stringify(body),
+			})
+		)
+	const listed = async () =>
+		(
+			(await (await staffGet(url, 8131, ['developer'])).json()) as {
+				accounts: Array<Record<string, unknown>>
+			}
+		).accounts.find((a) => a.accountId === 8130)
+
+	// Moderators and players are refused, reading and writing; signed out is a 401.
+	expect((await staffGet(url, 8131)).status).toBe(403)
+	expect((await put({ username: 'FlagTester', isSandbox: true }, ['moderator'])).status).toBe(403)
+	expect((await put({ username: 'FlagTester', isModerator: true }, [])).status).toBe(403)
+	expect((await SELF.fetch(`https://example.com${url}`)).status).toBe(401)
+	expect(await listed()).toBeUndefined()
+
+	// Only the three flags, only booleans, at least one, and a player named.
+	expect((await put({ username: 'FlagTester', isSandbox: 'yes' })).status).toBe(400)
+	expect((await put({ username: 'FlagTester', isDeveloper: true })).status).toBe(400)
+	expect((await put({ username: 'FlagTester' })).status).toBe(400)
+	expect((await put({ isSandbox: true })).status).toBe(400)
+	expect((await getAccount(env.DB, 8130))?.isDeveloper).not.toBe(true)
+
+	// Unknown players are a 404, and no row is created for them.
+	expect((await put({ username: 'NobodyAtAll', isSandbox: true })).status).toBe(404)
+	expect((await put({ accountId: 999999, isSandbox: true })).status).toBe(404)
+	expect(await getAccount(env.DB, 999999)).toBeNull()
+
+	// Added by username (a leading @ is fine), and now on the list.
+	let res = await put({ username: '@FlagTester', isModerator: true, isSandbox: true })
+	expect(res.status).toBe(200)
+	expect(await res.json()).toEqual({
+		accountId: 8130,
+		username: 'FlagTester',
+		isModerator: true,
+		isInfluencer: false,
+		isSandbox: true,
+		changed: ['isModerator', 'isSandbox'],
+	})
+	expect(await listed()).toMatchObject({
+		username: 'FlagTester',
+		isModerator: true,
+		isInfluencer: false,
+		isSandbox: true,
+	})
+	// The developer's own account is untouched.
+	expect((await getAccount(env.DB, 8131))?.isSandbox).not.toBe(true)
+
+	// Toggled by account id from the list; flags left out stay put.
+	res = await put({ accountId: 8130, isInfluencer: true, isModerator: true })
+	expect(await res.json()).toMatchObject({
+		isModerator: true,
+		isInfluencer: true,
+		isSandbox: true,
+		changed: ['isInfluencer'],
+	})
+
+	// With every flag off they drop off the list.
+	res = await put({ accountId: 8130, isModerator: false, isInfluencer: false, isSandbox: false })
+	expect(await res.json()).toMatchObject({ changed: ['isModerator', 'isInfluencer', 'isSandbox'] })
+	const account = await getAccount(env.DB, 8130)
+	expect([account?.isModerator, account?.isInfluencer, account?.isSandbox]).toEqual([
+		false,
+		false,
+		false,
+	])
+	expect(await listed()).toBeUndefined()
+
+	const audit = await env.DB.prepare(
+		"SELECT COUNT(*) AS n FROM audit_log WHERE action = 'set_account_flags'"
+	).first<{ n: number }>()
+	expect(audit?.n).toBe(3)
 })
 
 it('manages Avatar Studio flags and screen sharing independently, with staff authorization', async () => {

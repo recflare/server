@@ -52,8 +52,8 @@ import {
 	clearDormHandler,
 	clearPasswordHandler,
 	createReportHandler,
-	getReportHandler,
 	getCuratedRowHandler,
+	getReportHandler,
 	giftItemHandler,
 	giftOnlineTokensHandler,
 	giftRoleTokensHandler,
@@ -62,6 +62,7 @@ import {
 	giftXpHandler,
 	grantPlusHandler,
 	linkedAccountsHandler,
+	listAccountFlagsHandler,
 	listCuratedRowsHandler,
 	playerHistoryHandler,
 	requireDeveloper,
@@ -69,8 +70,9 @@ import {
 	runDiscordRoleGiftHandler,
 	sandboxStatusHandler,
 	searchReportsHandler,
-	setSandboxHandler,
+	setAccountFlagsHandler,
 	setCuratedRowHandler,
+	setSandboxHandler,
 	syncDiscordRolesHandler,
 	topReportedHandler,
 } from './staff'
@@ -87,11 +89,11 @@ import {
 	authBase,
 	cdnBase,
 	imgBase,
+	matchBase,
 	notifyBase,
 	postAuthForm,
 	readAuthError,
 	roomsBase,
-	matchBase,
 	storageBase,
 	studioBase,
 } from './upstream'
@@ -861,11 +863,16 @@ const app = new Hono<App>()
 	.post('/api/staff/players/:id/clear-password', clearPasswordHandler)
 	// Blanks the dorm's newest save so a player can go back to the 2023 client.
 	.post('/api/staff/players/:id/clear-dorm', clearDormHandler)
-	// The signed-in staff member's OWN sandbox flag: read it, and opt in or out. Self-only,
-	// so plain staff (not developer-only) — it moves nobody but the caller, and `match`
-	// honours it on their next room join.
+	// The signed-in staff member's OWN sandbox flag: read it, and opt in or out. Plain staff
+	// (not developer-only) — it moves nobody but the caller, and `match` honours it on their
+	// next room join.
 	.get('/api/staff/sandbox', sandboxStatusHandler)
 	.put('/api/staff/sandbox', setSandboxHandler)
+	// The admin page's account-flags list: everyone who is a moderator, an influencer or in
+	// the sandbox, and the setter for all three. Developer-only: two are roles, and the third
+	// moves someone else onto the sandbox Tachyon servers.
+	.get('/api/staff/account-flags', requireDeveloper, listAccountFlagsHandler)
+	.put('/api/staff/account-flags', requireDeveloper, setAccountFlagsHandler)
 	// RecFlare Studio upload access. The same staff gate as moderation: a moderator
 	// decides who can upload, and the role lands on the player's next token.
 	.get('/api/staff/studio-access', listStudioAccessHandler)

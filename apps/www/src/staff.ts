@@ -8,6 +8,7 @@ import {
 	CURATED_ROW_TYPE,
 	CURATED_ROWS,
 	getAccount,
+	getAccountByUsername,
 	getImageById,
 	getOnlinePlayerIds,
 	getPlayerIdsInRoom,
@@ -15,6 +16,7 @@ import {
 	getPresences,
 	getRoomsByIds,
 	isCuratedRowSlug,
+	listFlaggedAccounts,
 	movePlayerToDorm,
 	setListItems,
 	updateAccount,
@@ -75,7 +77,7 @@ import { NotificationType } from '../../notify/src/notification-types'
 import { refreshDiscordRoles } from './discord-roles'
 
 import type { Context, MiddlewareHandler } from 'hono'
-import type { CuratedRowSlug, GiftContent } from '@repo/domain'
+import type { Account, CuratedRowSlug, GiftContent } from '@repo/domain'
 import type { CustomAvatarItem } from '../../api/src/custom-avatar-items-db'
 import type { ReportRow, ReportSearch } from '../../api/src/reports-db'
 import type { CatalogRow } from '../../econ/src/catalog-db'
@@ -1623,43 +1625,148 @@ export async function grantPlusHandler(c: Context<App>) {
 /**
  * Whether the acting staff member's OWN account is a sandbox account — the `isSandbox`
  * flag `match` reads on every `GET /player/connection-info` to pick the sandbox Tachyon
- * pool over the live one. Self-only: the toggle on the admin page is how a moderator or
- * developer moves THEMSELVES onto the test servers, not how anyone is moved by someone else
- * (an operator does that with `runx admin`, if at all).
+ * pool over the live one. The toggle on the admin page is how a moderator or developer
+ * moves THEMSELVES onto the test servers; a developer moves someone else from the admin
+ * page's account-flags list (`setAccountFlagsHandler`).
  */
 export async function sandboxStatusHandler(c: Context<App>) {
 	const account = await getAccount(c.env.DB, staffId(c))
 	return c.json({ sandbox: account?.isSandbox === true })
 }
 
+/** The `{ sandbox: boolean }` body both sandbox setters take, or null when it's malformed. */
+async function sandboxBody(c: Context<App>): Promise<boolean | null> {
+	const body = (await c.req.json().catch(() => null)) as { sandbox?: unknown } | null
+	if (body === null || typeof body !== 'object' || typeof body.sandbox !== 'boolean') return null
+	return body.sandbox
+}
+
 /**
- * Opt the acting staff member in to or out of the sandbox pool: `{ sandbox: boolean }` sets
- * `isSandbox` on their own account. Idempotent — setting what's already set succeeds,
- * changes nothing and still answers the current state. Logged on `audit_log` like every
- * other account change staff make from the website, with `changed` saying whether anything
- * moved.
+ * Set `isSandbox` on an account and log it. Idempotent — setting what's already set
+ * succeeds, changes nothing and still answers the current state. Logged on `audit_log` like
+ * every other account change staff make from the website, with `changed` saying whether
+ * anything moved.
  *
  * `match` reads the account per connection-info request, so the switch is honoured the next
  * time the player joins a room instance; the instance they're standing in keeps its server.
  */
-export async function setSandboxHandler(c: Context<App>) {
-	const body = (await c.req.json().catch(() => null)) as { sandbox?: unknown } | null
-	if (body === null || typeof body !== 'object' || typeof body.sandbox !== 'boolean') {
-		return c.json({ error: 'Expected a JSON body with a boolean `sandbox`' }, 400)
-	}
-	const playerId = staffId(c)
-	const account = await getAccount(c.env.DB, playerId)
-	const was = account?.isSandbox === true
-	const changed = was !== body.sandbox
-	if (changed) await updateAccount(c.env.DB, playerId, { isSandbox: body.sandbox })
+async function writeSandbox(
+	c: Context<App>,
+	playerId: number,
+	wasSandbox: boolean,
+	sandbox: boolean
+) {
+	const changed = wasSandbox !== sandbox
+	if (changed) await updateAccount(c.env.DB, playerId, { isSandbox: sandbox })
 
-	await recordPlayerAudit(c, 'set_sandbox', { playerId, sandbox: body.sandbox, changed })
-	logger.info('staff set their sandbox flag', {
-		moderatorId: playerId,
-		sandbox: body.sandbox,
+	await recordPlayerAudit(c, 'set_sandbox', { playerId, sandbox, changed })
+	logger.info('staff set a sandbox flag', {
+		moderatorId: staffId(c),
+		playerId,
+		sandbox,
 		changed,
 	})
-	return c.json({ sandbox: body.sandbox, changed })
+	return { sandbox, changed }
+}
+
+/** Opt the acting staff member in to or out of the sandbox pool: `{ sandbox: boolean }`. */
+export async function setSandboxHandler(c: Context<App>) {
+	const sandbox = await sandboxBody(c)
+	if (sandbox === null)
+		return c.json({ error: 'Expected a JSON body with a boolean `sandbox`' }, 400)
+	const playerId = staffId(c)
+	const account = await getAccount(c.env.DB, playerId)
+	return c.json(await writeSandbox(c, playerId, account?.isSandbox === true, sandbox))
+}
+
+/**
+ * The account flags a developer manages from the admin page's account-flags list.
+ * `isModerator` and `isInfluencer` are roles `auth` stamps into the token's `role` claim, so
+ * they take effect on the player's NEXT sign-in or token refresh; `isSandbox` is read by
+ * `match` per room join. `isDeveloper` is deliberately absent — that stays with an operator
+ * (`runx admin grant-developer`).
+ */
+const ACCOUNT_FLAGS = ['isModerator', 'isInfluencer', 'isSandbox'] as const
+type AccountFlag = (typeof ACCOUNT_FLAGS)[number]
+type AccountFlags = Record<AccountFlag, boolean>
+
+function accountFlags(account: Account): AccountFlags {
+	return {
+		isModerator: account.isModerator === true,
+		isInfluencer: account.isInfluencer === true,
+		isSandbox: account.isSandbox === true,
+	}
+}
+
+/** Every account holding any of the flags, with all three. Developer-only, like the setter. */
+export async function listAccountFlagsHandler(c: Context<App>) {
+	const accounts = await listFlaggedAccounts(c.env.DB)
+	return c.json({
+		accounts: accounts.map((a) => ({
+			accountId: a.accountId,
+			username: a.username,
+			displayName: a.displayName,
+			...accountFlags(a),
+		})),
+	})
+}
+
+/**
+ * Set any of a player's flags. The body names the player by `username` (a leading `@` is
+ * fine) or `accountId`, and some of `isModerator`, `isInfluencer`, `isSandbox` as booleans;
+ * the flags it leaves out are left alone. Developer-only — two are privileges, and the third
+ * moves someone else's voice server. An unknown player is a 404 rather than a flag on an
+ * account that doesn't exist. Idempotent; answers the player, every flag's resulting value
+ * and `changed`, the flags that moved, and logs it on `audit_log` as `set_account_flags`.
+ */
+export async function setAccountFlagsHandler(c: Context<App>) {
+	const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+	if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+		return c.json({ error: 'Expected a JSON body' }, 400)
+	}
+	const { username: rawUsername, accountId: rawAccountId, ...flags } = body
+	const wanted: Partial<AccountFlags> = {}
+	for (const [key, value] of Object.entries(flags)) {
+		if (!(ACCOUNT_FLAGS as readonly string[]).includes(key) || typeof value !== 'boolean') {
+			return c.json({ error: `Unknown flag or non-boolean value: ${key}` }, 400)
+		}
+		wanted[key as AccountFlag] = value
+	}
+	if (Object.keys(wanted).length === 0) {
+		return c.json({ error: `Set at least one of ${ACCOUNT_FLAGS.join(', ')}` }, 400)
+	}
+
+	const username = typeof rawUsername === 'string' ? rawUsername.trim().replace(/^@/, '') : ''
+	const accountId =
+		typeof rawAccountId === 'number' && Number.isInteger(rawAccountId) && rawAccountId > 0
+			? rawAccountId
+			: null
+	// Read first: `updateAccount` creates the row when there is none.
+	const account =
+		username !== ''
+			? await getAccountByUsername(c.env.DB, username)
+			: accountId !== null
+				? await getAccount(c.env.DB, accountId)
+				: undefined
+	if (account === undefined)
+		return c.json({ error: 'Name a player by username or account id' }, 400)
+	if (account === null) {
+		return c.json(
+			{ error: username !== '' ? `No player is called @${username}` : 'No such player' },
+			404
+		)
+	}
+
+	const playerId = account.accountId
+	const before = accountFlags(account)
+	const changed = ACCOUNT_FLAGS.filter((f) => wanted[f] !== undefined && wanted[f] !== before[f])
+	const overrides: Partial<AccountFlags> = {}
+	for (const f of changed) overrides[f] = wanted[f]
+	if (changed.length > 0) await updateAccount(c.env.DB, playerId, overrides)
+
+	await recordPlayerAudit(c, 'set_account_flags', { playerId, ...wanted, changed })
+	logger.info('staff set account flags', { moderatorId: staffId(c), playerId, wanted, changed })
+	return c.json({ accountId: playerId, username: account.username, ...before, ...wanted, changed })
 }
 
 /**
