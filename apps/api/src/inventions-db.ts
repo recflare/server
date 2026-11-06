@@ -84,6 +84,8 @@ export interface InventionVersion {
 	 * record is not retroactively wrong.
 	 */
 	HasBetaContent?: boolean
+	ReferencedInventions?: number[]
+	ReferencedUnityAssetIds?: string[]
 }
 
 /**
@@ -1369,7 +1371,15 @@ export async function getInventionVersion(
 			await storeInvention(db, invention)
 		}
 	}
-	return invention.CurrentVersion
+	// The spawn path fetches this version independently of the save response. Studio
+	// prefab bundles must be loaded before decoding its objects, including in rooms
+	// that have never loaded the source room's assets. Older records keep references
+	// on the invention, so project them here rather than requiring a resave.
+	return {
+		...invention.CurrentVersion,
+		ReferencedInventions: invention.ReferencedInventions,
+		ReferencedUnityAssetIds: invention.ReferencedUnityAssetIds ?? [],
+	}
 }
 
 /** Persist an edited invention record, bumping ModifiedAt. */
