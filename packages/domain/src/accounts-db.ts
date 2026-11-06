@@ -565,19 +565,17 @@ export async function listStudioAccounts(
 }
 
 /**
- * Every account flagged `isModerator`, `isInfluencer` or `isSandbox`, lowest id first — the
- * admin page's account-flags list. A JSON scan like {@link listStudioAccounts}: the list is
- * short and only staff read it.
+ * Every account with one of the flags the admin page lists — `isModerator`, `isInfluencer`
+ * or `isSandbox` — lowest id first. A JSON scan like {@link listStudioAccounts}: the lists
+ * are short and only staff read them. `flag` is one of the three literals, never caller text.
  */
-export async function listFlaggedAccounts(db: D1Database): Promise<Account[]> {
+export async function listFlaggedAccounts(
+	db: D1Database,
+	flag: 'isModerator' | 'isInfluencer' | 'isSandbox'
+): Promise<Account[]> {
 	const { results } = await db
-		.prepare(
-			`SELECT data FROM account
-			WHERE json_extract(data, '$.isModerator') = 1
-				OR json_extract(data, '$.isInfluencer') = 1
-				OR json_extract(data, '$.isSandbox') = 1
-			ORDER BY account_id`
-		)
+		.prepare(`SELECT data FROM account WHERE json_extract(data, ?1) = 1 ORDER BY account_id`)
+		.bind(`$.${flag}`)
 		.all<AccountRow>()
 	return parseAll(results)
 }

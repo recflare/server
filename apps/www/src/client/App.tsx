@@ -4121,30 +4121,13 @@ function AdminPage({
 
 /** The admin page's rail and panels; only rendered for staff (see AdminPage). */
 function AdminTabs({ account, navigate }: { account: SelfAccount; navigate: Navigate }) {
+	const developer = isDeveloper()
 	const sections = [
 		{ id: 'maintenance', label: 'Server maintenance', render: () => <MaintenanceForm /> },
 		{ id: 'coach', label: 'Coach message', render: () => <CoachMessageForm /> },
-		// The staff member's OWN voice-server pool; others are set under Account flags.
-		{ id: 'sandbox', label: 'Sandbox', render: () => <SandboxForm /> },
-		// The Studio / Avatar Studio / screen-share whitelists, a tab each. Their public
-		// face — one account's own status — stays at /settings/recroomstudio, the URL Studio
-		// opens.
-		...STUDIO_ACCESS_KINDS.map(({ kind, label }) => ({
-			id: `access:${kind}`,
-			label,
-			render: () => <StudioAccessPanel kind={kind} account={account} navigate={navigate} />,
-		})),
-		// The hand-curated discovery rows ("Featured This Week", "Rooms We Love", …).
-		{ id: 'lists', label: 'Curated lists', render: () => <CuratedListsPanel /> },
-		// Narrower than the three above: the drop mints tokens, and www's route is developer-only.
-		...(isDeveloper()
+		// Developer-only: the drop mints tokens, and www's route is developer-only.
+		...(developer
 			? [
-					// Moderator / influencer / sandbox for everyone, in one list.
-					{
-						id: 'flags',
-						label: 'Account flags',
-						render: () => <AccountFlagsPanel navigate={navigate} />,
-					},
 					{
 						id: 'tokens',
 						label: 'Token drop',
@@ -4160,6 +4143,43 @@ function AdminTabs({ account, navigate }: { account: SelfAccount; navigate: Navi
 					},
 				]
 			: []),
+		// The hand-curated discovery rows ("Featured This Week", "Rooms We Love", …).
+		{ id: 'lists', label: 'Curated lists', render: () => <CuratedListsPanel /> },
+		// The two roles a developer hands out, a list each (sandbox players are under Sandbox).
+		...(developer
+			? [
+					{
+						id: 'moderators',
+						label: 'Moderators',
+						render: () => <AccountFlagPanel flag="isModerator" navigate={navigate} />,
+					},
+					{
+						id: 'influencers',
+						label: 'Influencers',
+						render: () => <AccountFlagPanel flag="isInfluencer" navigate={navigate} />,
+					},
+				]
+			: []),
+		// The Studio / Avatar Studio / screen-share whitelists, a tab each. Their public
+		// face — one account's own status — stays at /settings/recroomstudio, the URL Studio
+		// opens.
+		...STUDIO_ACCESS_KINDS.map(({ kind, label }) => ({
+			id: `access:${kind}`,
+			label,
+			render: () => <StudioAccessPanel kind={kind} account={account} navigate={navigate} />,
+		})),
+		// The staff member's OWN voice-server pool; a developer also gets the list of everyone
+		// in it, to add and remove testers.
+		{
+			id: 'sandbox',
+			label: 'Sandbox',
+			render: () => (
+				<>
+					<SandboxForm />
+					{developer && <AccountFlagPanel flag="isSandbox" navigate={navigate} />}
+				</>
+			),
+		},
 	]
 	const [active, setActive] = useState(sections[0].id)
 	const current = sections.find((s) => s.id === active) ?? sections[0]
@@ -6310,70 +6330,77 @@ function MaintenanceForm() {
 	)
 }
 
-/** The flags `PUT /api/staff/account-flags` sets — a mirror of www's `ACCOUNT_FLAGS`. */
-const ACCOUNT_FLAG_OPTIONS = [
-	{ flag: 'isModerator', label: 'Moderator' },
-	{ flag: 'isInfluencer', label: 'Influencer' },
-	{ flag: 'isSandbox', label: 'Sandbox' },
-] as const
-type AccountFlag = (typeof ACCOUNT_FLAG_OPTIONS)[number]['flag']
-type FlaggedAccount = Record<AccountFlag, boolean> & {
-	accountId: number
-	username: string
-	displayName?: string
-}
+/** The flags `/api/staff/account-flags` manages, one admin list each — a mirror of www's `ACCOUNT_FLAGS`. */
+const ACCOUNT_FLAG_LISTS = {
+	isModerator: {
+		title: 'Moderators',
+		noun: 'a moderator',
+		about:
+			'Everyone with the moderator role. Adding or removing someone takes effect the next time they sign in.',
+	},
+	isInfluencer: {
+		title: 'Influencers',
+		noun: 'an influencer',
+		about:
+			'Everyone with the influencer role, which also lists them in the partner program. Adding or removing someone takes effect the next time they sign in.',
+	},
+	isSandbox: {
+		title: 'Sandbox players',
+		noun: 'in the sandbox',
+		about:
+			'Everyone on the sandbox voice servers instead of the live ones. Adding or removing someone takes effect the next time they join a room.',
+	},
+} as const
+type AccountFlag = keyof typeof ACCOUNT_FLAG_LISTS
+type FlaggedAccount = { accountId: number; username: string; displayName?: string }
 
 /**
- * Developer only: everyone who is a moderator, an influencer or in the sandbox, one row
- * each with a checkbox per flag that saves as soon as it's changed. A player with none left
- * drops off the list on the next load; the form adds someone by username with one flag.
+ * Developer only: everyone holding ONE account flag, with an add-by-username form and a
+ * Remove per row — the same shape as the Studio access whitelists.
  */
-function AccountFlagsPanel({ navigate }: { navigate: Navigate }) {
+function AccountFlagPanel({ flag, navigate }: { flag: AccountFlag; navigate: Navigate }) {
+	const { title, noun, about } = ACCOUNT_FLAG_LISTS[flag]
 	const [rows, setRows] = useState<FlaggedAccount[] | undefined>(undefined)
 	const [loadError, setLoadError] = useState('')
 	const [username, setUsername] = useState('')
-	const [addFlag, setAddFlag] = useState<AccountFlag>('isSandbox')
 	const add = useAction()
-	const toggle = useAction()
+	const remove = useAction()
 
 	const load = useCallback(async () => {
 		try {
-			const res = await call<{ accounts: FlaggedAccount[] }>('/api/staff/account-flags', {
-				authed: true,
-			})
+			const res = await call<{ accounts: FlaggedAccount[] }>(
+				`/api/staff/account-flags?flag=${flag}`,
+				{ authed: true }
+			)
 			setRows(res.accounts)
 			setLoadError('')
 		} catch (e) {
 			setLoadError(e instanceof Error ? e.message : String(e))
 		}
-	}, [])
+	}, [flag])
 
 	useEffect(() => {
+		setRows(undefined)
 		void load()
 	}, [load])
 
 	return (
 		<section className="card">
-			<h2>Account flags</h2>
-			<p className="muted">
-				Moderator and Influencer are roles: they take effect the next time the player signs in.
-				Sandbox puts the player on the sandbox voice servers instead of the live ones, from the next
-				time they join a room.
-			</p>
+			<h2>{title}</h2>
+			<p className="muted">{about}</p>
 			<form
 				onSubmit={(e) => {
 					e.preventDefault()
 					void add.run(async () => {
-						const label = ACCOUNT_FLAG_OPTIONS.find((o) => o.flag === addFlag)?.label
 						const res = await call<{ username: string; changed: string[] }>(
 							'/api/staff/account-flags',
-							{ authed: true, method: 'PUT', json: { username: username.trim(), [addFlag]: true } }
+							{ authed: true, method: 'PUT', json: { username: username.trim(), [flag]: true } }
 						)
 						setUsername('')
 						await load()
 						return res.changed.length === 0
-							? `@${res.username} already has ${label}.`
-							: `@${res.username} now has ${label}.`
+							? `@${res.username} is already ${noun}.`
+							: `@${res.username} is now ${noun}.`
 					})
 				}}
 			>
@@ -6388,13 +6415,6 @@ function AccountFlagsPanel({ navigate }: { navigate: Navigate }) {
 							required
 							onChange={(e) => setUsername(e.target.value)}
 						/>
-						<select value={addFlag} onChange={(e) => setAddFlag(e.target.value as AccountFlag)}>
-							{ACCOUNT_FLAG_OPTIONS.map((o) => (
-								<option key={o.flag} value={o.flag}>
-									{o.label}
-								</option>
-							))}
-						</select>
 						<button type="submit" disabled={add.pending || username.trim() === ''}>
 							{add.pending ? 'Adding…' : 'Add'}
 						</button>
@@ -6404,11 +6424,12 @@ function AccountFlagsPanel({ navigate }: { navigate: Navigate }) {
 				{add.done && <p className="ok">{add.done}</p>}
 			</form>
 			{loadError && <p className="error">{loadError}</p>}
-			{toggle.error && <p className="error">{toggle.error}</p>}
+			{remove.error && <p className="error">{remove.error}</p>}
+			{remove.done && <p className="ok">{remove.done}</p>}
 			{rows === undefined ? (
 				!loadError && <p className="muted">Loading…</p>
 			) : rows.length === 0 ? (
-				<p className="muted">Nobody has any of these flags.</p>
+				<p className="muted">Nobody yet.</p>
 			) : (
 				<ul className="studio-access-list">
 					{rows.map((row) => (
@@ -6421,44 +6442,23 @@ function AccountFlagsPanel({ navigate }: { navigate: Navigate }) {
 									<span className="muted"> · {row.displayName}</span>
 								) : null}
 							</span>
-							<span className="account-flags">
-								{ACCOUNT_FLAG_OPTIONS.map(({ flag, label }) => (
-									<label key={flag} className="check">
-										<input
-											type="checkbox"
-											checked={row[flag]}
-											disabled={toggle.pending}
-											onChange={(e) => {
-												const value = e.target.checked
-												void toggle.run(async () => {
-													const res = await call<Record<AccountFlag, boolean>>(
-														'/api/staff/account-flags',
-														{
-															authed: true,
-															method: 'PUT',
-															json: { accountId: row.accountId, [flag]: value },
-														}
-													)
-													setRows((prev) =>
-														prev?.map((r) =>
-															r.accountId === row.accountId
-																? {
-																		...r,
-																		isModerator: res.isModerator,
-																		isInfluencer: res.isInfluencer,
-																		isSandbox: res.isSandbox,
-																	}
-																: r
-														)
-													)
-													return ''
-												})
-											}}
-										/>
-										{label}
-									</label>
-								))}
-							</span>
+							<button
+								type="button"
+								disabled={remove.pending}
+								onClick={() =>
+									void remove.run(async () => {
+										await call('/api/staff/account-flags', {
+											authed: true,
+											method: 'PUT',
+											json: { accountId: row.accountId, [flag]: false },
+										})
+										await load()
+										return `@${row.username} is no longer ${noun}.`
+									})
+								}
+							>
+								Remove
+							</button>
 						</li>
 					))}
 				</ul>
@@ -6471,7 +6471,7 @@ function AccountFlagsPanel({ navigate }: { navigate: Navigate }) {
  * Staff only: opt the signed-in account in to or out of the SANDBOX — the separate Tachyon
  * (voice) server pool `match` hands a sandbox account on every connection-info read. It is
  * the account's `isSandbox` flag. This is the caller's own; a developer sets someone else's
- * from the admin page's Account flags tab (`AccountFlagsPanel`). The current state is
+ * from the list under it on the same tab (`AccountFlagPanel`). The current state is
  * read on mount; one button flips it. `match` reads the flag per room join, so the switch
  * lands the next time they join a room, not in the instance they are standing in.
  */

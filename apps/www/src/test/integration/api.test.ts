@@ -3623,7 +3623,7 @@ it('lets staff opt themselves in and out of the sandbox pool, and only themselve
 	])
 })
 
-it('lets a developer list and set moderator, influencer and sandbox flags from one list', async () => {
+it('lets a developer list and set moderators, influencers and sandbox players, a list each', async () => {
 	await updateAccount(env.DB, 8130, { username: 'FlagTester' })
 	const url = '/api/staff/account-flags'
 	const put = (body: unknown, roles = ['developer']) =>
@@ -3634,19 +3634,27 @@ it('lets a developer list and set moderator, influencer and sandbox flags from o
 				body: JSON.stringify(body),
 			})
 		)
-	const listed = async () =>
-		(
-			(await (await staffGet(url, 8131, ['developer'])).json()) as {
-				accounts: Array<Record<string, unknown>>
-			}
-		).accounts.find((a) => a.accountId === 8130)
+	// Which of the three lists name the player.
+	const listedIn = async () => {
+		const on: string[] = []
+		for (const flag of ['isModerator', 'isInfluencer', 'isSandbox']) {
+			const res = await staffGet(`${url}?flag=${flag}`, 8131, ['developer'])
+			expect(res.status).toBe(200)
+			const { accounts } = (await res.json()) as { accounts: Array<{ accountId: number }> }
+			if (accounts.some((a) => a.accountId === 8130)) on.push(flag)
+		}
+		return on
+	}
 
 	// Moderators and players are refused, reading and writing; signed out is a 401.
-	expect((await staffGet(url, 8131)).status).toBe(403)
+	expect((await staffGet(`${url}?flag=isSandbox`, 8131)).status).toBe(403)
 	expect((await put({ username: 'FlagTester', isSandbox: true }, ['moderator'])).status).toBe(403)
 	expect((await put({ username: 'FlagTester', isModerator: true }, [])).status).toBe(403)
-	expect((await SELF.fetch(`https://example.com${url}`)).status).toBe(401)
-	expect(await listed()).toBeUndefined()
+	expect((await SELF.fetch(`https://example.com${url}?flag=isSandbox`)).status).toBe(401)
+	expect(await listedIn()).toEqual([])
+	// A list names exactly one flag.
+	expect((await staffGet(url, 8131, ['developer'])).status).toBe(400)
+	expect((await staffGet(`${url}?flag=isDeveloper`, 8131, ['developer'])).status).toBe(400)
 
 	// Only the three flags, only booleans, at least one, and a player named.
 	expect((await put({ username: 'FlagTester', isSandbox: 'yes' })).status).toBe(400)
@@ -3671,12 +3679,7 @@ it('lets a developer list and set moderator, influencer and sandbox flags from o
 		isSandbox: true,
 		changed: ['isModerator', 'isSandbox'],
 	})
-	expect(await listed()).toMatchObject({
-		username: 'FlagTester',
-		isModerator: true,
-		isInfluencer: false,
-		isSandbox: true,
-	})
+	expect(await listedIn()).toEqual(['isModerator', 'isSandbox'])
 	// The developer's own account is untouched.
 	expect((await getAccount(env.DB, 8131))?.isSandbox).not.toBe(true)
 
@@ -3698,7 +3701,7 @@ it('lets a developer list and set moderator, influencer and sandbox flags from o
 		false,
 		false,
 	])
-	expect(await listed()).toBeUndefined()
+	expect(await listedIn()).toEqual([])
 
 	const audit = await env.DB.prepare(
 		"SELECT COUNT(*) AS n FROM audit_log WHERE action = 'set_account_flags'"

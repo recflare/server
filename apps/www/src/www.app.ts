@@ -917,8 +917,8 @@ const app = new Hono<App>()
 	// next room join.
 	.get('/api/staff/sandbox', sandboxStatusHandler)
 	.put('/api/staff/sandbox', setSandboxHandler)
-	// The admin page's account-flags list: everyone who is a moderator, an influencer or in
-	// the sandbox, and the setter for all three. Developer-only: two are roles, and the third
+	// The admin page's Moderators / Influencers / Sandbox lists (`?flag=` picks one), and the
+	// setter for all three. Developer-only: two are roles, and the third
 	// moves someone else onto the sandbox Tachyon servers.
 	.get('/api/staff/account-flags', requireDeveloper, listAccountFlagsHandler)
 	.put('/api/staff/account-flags', requireDeveloper, setAccountFlagsHandler)

@@ -1835,12 +1835,6 @@ button[type='submit'].danger:not(:disabled):hover {
 	max-width: 180px;
 }
 
-/* The account-flags form's flag picker, beside the username. */
-.staff-gift select {
-	margin-top: 0;
-	width: auto;
-}
-
 /* A custom item id is a GUID, far wider than a token amount. */
 .staff-gift input[type='text'] {
 	max-width: 360px;
@@ -2732,15 +2726,4 @@ button.photo-cheer.cheered:hover:not(:disabled) {
 
 .rsvp button:disabled:not(.active) {
 	opacity: 0.6;
-}
-
-/* The admin page's account-flags list: the three checkboxes on one line beside the name. */
-.account-flags {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 14px;
-}
-
-.account-flags .check {
-	margin: 0;
 }

@@ -1626,8 +1626,8 @@ export async function grantPlusHandler(c: Context<App>) {
  * Whether the acting staff member's OWN account is a sandbox account — the `isSandbox`
  * flag `match` reads on every `GET /player/connection-info` to pick the sandbox Tachyon
  * pool over the live one. The toggle on the admin page is how a moderator or developer
- * moves THEMSELVES onto the test servers; a developer moves someone else from the admin
- * page's account-flags list (`setAccountFlagsHandler`).
+ * moves THEMSELVES onto the test servers; a developer moves someone else from the sandbox
+ * list on the same tab (`setAccountFlagsHandler`).
  */
 export async function sandboxStatusHandler(c: Context<App>) {
 	const account = await getAccount(c.env.DB, staffId(c))
@@ -1680,7 +1680,7 @@ export async function setSandboxHandler(c: Context<App>) {
 }
 
 /**
- * The account flags a developer manages from the admin page's account-flags list.
+ * The account flags a developer manages from the admin page, a list each.
  * `isModerator` and `isInfluencer` are roles `auth` stamps into the token's `role` claim, so
  * they take effect on the player's NEXT sign-in or token refresh; `isSandbox` is read by
  * `match` per room join. `isDeveloper` is deliberately absent — that stays with an operator
@@ -1698,15 +1698,21 @@ function accountFlags(account: Account): AccountFlags {
 	}
 }
 
-/** Every account holding any of the flags, with all three. Developer-only, like the setter. */
+/**
+ * Everyone holding one flag, named by `?flag=` — one admin list per flag. Developer-only,
+ * like the setter.
+ */
 export async function listAccountFlagsHandler(c: Context<App>) {
-	const accounts = await listFlaggedAccounts(c.env.DB)
+	const flag = c.req.query('flag')
+	if (!(ACCOUNT_FLAGS as readonly string[]).includes(flag ?? '')) {
+		return c.json({ error: `Expected ?flag= one of ${ACCOUNT_FLAGS.join(', ')}` }, 400)
+	}
+	const accounts = await listFlaggedAccounts(c.env.DB, flag as AccountFlag)
 	return c.json({
 		accounts: accounts.map((a) => ({
 			accountId: a.accountId,
 			username: a.username,
 			displayName: a.displayName,
-			...accountFlags(a),
 		})),
 	})
 }
