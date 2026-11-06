@@ -2419,6 +2419,13 @@ const GAME_REWARD_TOKENS = 250
 const GAME_REWARD_DAILY_TOKEN_CAP = 1250
 
 /**
+ * What Rec Room Plus multiplies the game-reward tokens by — the payout AND the daily cap, so a
+ * subscriber still gets five claims' worth a day, each worth double. FirstActivityOfDay's
+ * bonus doubles too. Read from the token's `rn.plus` at claim time (`isSubscriber`).
+ */
+const PLUS_GAME_REWARD_TOKEN_MULTIPLIER = 2
+
+/**
  * The reward types whose tokens draw on the daily allowance: the client's ask after a match
  * and after a quest. {@link FIRST_ACTIVITY_OF_DAY} pays its own on top, outside the cap.
  */
@@ -2445,7 +2452,7 @@ const GAME_REWARD_TOKENS_MESSAGE = 'Activity bonus!'
  * {@link toGameRewardDrop}, `grantGiftDrop` creates only the box from it — the tokens are
  * credited to the balance separately, and the copy here is what the box displays.
  */
-function toGameRewardTokensDrop(): StoreGiftDrop {
+function toGameRewardTokensDrop(tokens: number): StoreGiftDrop {
 	return {
 		FriendlyName: '',
 		Tooltip: '',
@@ -2456,7 +2463,7 @@ function toGameRewardTokensDrop(): StoreGiftDrop {
 		EquipmentModificationGuid: '',
 		Rarity: 0,
 		Context: GIFT_CONTEXT_GAME_REWARDS_TOKENS,
-		Currency: GAME_REWARD_TOKENS,
+		Currency: tokens,
 		CurrencyType: CurrencyType.RecCenterTokens,
 		Xp: 0,
 	}
@@ -6742,6 +6749,7 @@ const app = new Hono<App>({ strict: false })
 	// GAME_REWARD_DAILY_TOKEN_CAP per player per rolling 24h across every activity, and a
 	// FirstActivityOfDay claim pays them on top of the cap — credited to the balance and
 	// delivered in a second box of its own so the player sees what the tokens were for.
+	// Rec Room Plus (`rn.plus`) doubles the tokens and the cap alike.
 	.post(
 		'/api/gamerewards/v1/request',
 		describeRoute({
@@ -6756,7 +6764,9 @@ const app = new Hono<App>({ strict: false })
 				'any other claim pays XP only. A `PostGameActivity` or `PostQuestActivity` claim also',
 				'pays 250 tokens, in a box of its own, up to 1250 per player per rolling 24 hours',
 				'whatever the activity. `FirstActivityOfDay` is once per player per 24 hours, whatever',
-				'the `giftContext`, and pays 250 tokens outside that cap. The reward rides in a gift',
+				'the `giftContext`, and pays 250 tokens outside that cap. Rec Room Plus (the token’s',
+				'`rn.plus` claim) doubles every token payout and the cap: 500 a claim, 2500 a day.',
+				'The reward rides in a gift',
 				'box, so a claim and a rejected (on-cooldown) ask both answer `[]`.',
 			].join(' '),
 			security: AUTHED,
@@ -6835,18 +6845,21 @@ const app = new Hono<App>({ strict: false })
 			// order as the currency reward above: balance first, then the box that shows it.
 			let tokensGiftId: number | null = null
 			let tokensToday: number | null = null
+			// Plus doubles both the payout and the cap.
+			const tokenMultiplier = (await isSubscriber(c)) ? PLUS_GAME_REWARD_TOKEN_MULTIPLIER : 1
+			const rewardTokens = GAME_REWARD_TOKENS * tokenMultiplier
 			if (TOKEN_REWARD_TYPES.has(rewardType)) {
 				tokensToday = await claimAllowance(
 					c.env.DB,
 					id,
 					'$tokens',
-					GAME_REWARD_TOKENS,
-					GAME_REWARD_DAILY_TOKEN_CAP
+					rewardTokens,
+					GAME_REWARD_DAILY_TOKEN_CAP * tokenMultiplier
 				)
 			}
 			// FirstActivityOfDay's claim already held it to once a day: it pays without the cap.
 			if (daily || tokensToday !== null) {
-				const tokensDrop = toGameRewardTokensDrop()
+				const tokensDrop = toGameRewardTokensDrop(rewardTokens)
 				await ensureStartingBalances(c.env.DB, id, startingTokens)
 				const tokenBalance = await creditCurrency(
 					c.env.DB,
@@ -6878,7 +6891,7 @@ const app = new Hono<App>({ strict: false })
 				levelsGained: gained?.levelsGained,
 				levelXp: gained?.progression.XP,
 				giftId: rewardGiftId,
-				tokens: tokensGiftId === null ? 0 : GAME_REWARD_TOKENS,
+				tokens: tokensGiftId === null ? 0 : rewardTokens,
 				tokensToday,
 				tokensGiftId,
 			})

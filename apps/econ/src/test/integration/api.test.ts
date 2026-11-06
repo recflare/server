@@ -7763,6 +7763,41 @@ describe('econ endpoints', () => {
 		expect((reopened?.granted_at ?? '') > (opened ?? '')).toBe(true)
 	})
 
+	test('Rec Room Plus doubles the game-reward tokens and their daily cap', async () => {
+		const request = async (body: string) =>
+			exports.default.fetch(`${ORIGIN}/api/gamerewards/v1/request`, {
+				method: 'POST',
+				headers: {
+					...(await plusBearer('86')),
+					'Content-Type': 'application/x-www-form-urlencoded',
+				},
+				body,
+			})
+		const tokens = () =>
+			getBalance(env.DB, 86, CurrencyType.RecCenterTokens, DEFAULT_STARTING_TOKENS)
+		const start = await tokens()
+
+		// FirstActivityOfDay's bonus doubles, still outside the cap.
+		expect((await request('rewardType=FirstActivityOfDay&giftContext=Soccer')).status).toBe(200)
+		expect(await tokens()).toBe(start + 500)
+		const base = start + 500
+
+		// Each claim pays 500, in a box saying so, five times over: the cap is 2500.
+		for (const ctx of ['Soccer', 'Paintball', 'Bowling', 'Basketball', 'Dodgeball']) {
+			expect((await request(`rewardType=PostGameActivity&giftContext=${ctx}`)).status).toBe(200)
+		}
+		expect(await tokens()).toBe(base + 2500)
+		const boxes = (await giftBoxes('86')).filter((b) => b.GiftContext === 51)
+		expect(boxes).toHaveLength(6)
+		expect(boxes.every((b) => b.Currency === 500)).toBe(true)
+
+		// At the doubled cap: nothing more.
+		expect((await request('rewardType=PostQuestActivity&giftContext=Quest_Goblin_S')).status).toBe(
+			200
+		)
+		expect(await tokens()).toBe(base + 2500)
+	})
+
 	test('game-reward XP stops at 150 per player per 24h, FirstActivityOfDay aside', async () => {
 		const request = async (body: string) =>
 			exports.default.fetch(`${ORIGIN}/api/gamerewards/v1/request`, {
