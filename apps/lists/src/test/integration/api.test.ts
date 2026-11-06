@@ -1555,6 +1555,25 @@ it('serves the Coach’s `staffpicks` list for /algorithmiclists/staffpicks', as
 	})
 })
 
+// "Rooms We Love" is the same kind of row, from its own list.
+it('serves the Coach’s `inkshowcase` list for /algorithmiclists/inkshowcase', async () => {
+	const empty = await SELF.fetch(`${ORIGIN}/algorithmiclists/inkshowcase?type=1`)
+	expect(await empty.json()).toEqual({ Type: 1, Entities: [] })
+
+	const { list_id } = (await env.DB.prepare(
+		`INSERT INTO list (creator_account_id, list_type, list_name, accessibility, created_at)
+		 VALUES (1, 1, 'inkshowcase', 1, ?1) RETURNING list_id`
+	)
+		.bind(new Date().toISOString())
+		.first<{ list_id: number }>())!
+	await env.DB.prepare('INSERT INTO list_item (list_id, item_id) VALUES (?1, ?2)')
+		.bind(list_id, '11')
+		.run()
+
+	const res = await SELF.fetch(`${ORIGIN}/algorithmiclists/inkshowcase?type=1`)
+	expect(await res.json()).toEqual({ Type: 1, Entities: [{ Id: '11', Context: null }] })
+})
+
 /** The client's un-save call: DELETE the item from the list by id. */
 async function removeFromList(listId: string, itemId: string, headers: Record<string, string>) {
 	return SELF.fetch(`${ORIGIN}/curatedlists/${listId}/items/${itemId}`, {

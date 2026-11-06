@@ -18,6 +18,7 @@ import { AVATAR_STUDIO_SCHEMA, avatarStudioFlags } from '@repo/domain/src/avatar
 import { PlatformType } from '@repo/domain/src/enums'
 import { getPendingGifts, RECEIVED_GIFT_SCHEMA_DDL } from '@repo/domain/src/gifts-db'
 import { IMAGE_SCHEMA_DDL } from '@repo/domain/src/images-db'
+import { CURATED_LIST_SCHEMA_DDL, getPlayerList } from '@repo/domain/src/lists-db'
 import {
 	PRESENCE_SCHEMA_DDL,
 	PRESENCE_TTL_SECONDS,
@@ -162,6 +163,8 @@ beforeAll(async () => {
 	for (const stmt of CONSUMABLE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	// And an XP gift writes `progression`.
 	for (const stmt of PROGRESSION_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	// The staff picks editor writes `list`/`list_item`, owned by `lists`.
+	for (const stmt of CURATED_LIST_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 })
 
 // Web signup is open, but only behind the Turnstile check. These pin the closed door:
@@ -3705,4 +3708,78 @@ it('grants and revokes each Avatar Studio feature without changing other permiss
 			'created_at'
 		)
 	).toBe('original')
+})
+
+// The hand-curated discovery rows are the Coach's lists of rooms that `lists` serves for
+// `/algorithmiclists/:slug` (`staffpicks`, `inkshowcase`). Staff replace one whole, in order.
+it('lets staff set a curated row, in order', async () => {
+	for (const [id, name] of [
+		[97_301, 'PickOne'],
+		[97_302, 'PickTwo'],
+	] as const) {
+		await env.DB.prepare('INSERT INTO room (data) VALUES (?1)')
+			.bind(JSON.stringify({ RoomId: id, Name: name, CreatorAccountId: 8401, Accessibility: 1 }))
+			.run()
+	}
+	const put = async (slug: string, body: unknown, roles = ['moderator']) =>
+		SELF.fetch(`https://example.com/api/staff/lists/${slug}`, {
+			method: 'PUT',
+			headers: {
+				authorization: `Bearer ${await tokenFor(8400, roles)}`,
+				'content-type': 'application/json',
+			},
+			body: JSON.stringify(body),
+		})
+
+	// Not staff: refused either way.
+	expect((await staffGet('/api/staff/lists', 8400, ['gameClient'])).status).toBe(403)
+	expect((await staffGet('/api/staff/lists/staffpicks', 8400, ['gameClient'])).status).toBe(403)
+	expect((await put('staffpicks', { roomIds: [97_301] }, ['gameClient'])).status).toBe(403)
+
+	const rows = await staffGet('/api/staff/lists', 8400)
+	expect(await rows.json()).toEqual({
+		rows: [
+			{ slug: 'staffpicks', title: 'Featured This Week' },
+			{ slug: 'inkshowcase', title: 'Rooms We Love' },
+		],
+	})
+
+	// Only a registered row is editable — not just any list name.
+	expect((await staffGet('/api/staff/lists/__SavedForLater_Rooms', 8400)).status).toBe(404)
+	expect((await put('__SavedForLater_Rooms', { roomIds: [97_301] })).status).toBe(404)
+
+	const empty = await staffGet('/api/staff/lists/staffpicks', 8400)
+	expect(await empty.json()).toEqual({ rooms: [] })
+
+	// An unknown room is refused, and nothing is written.
+	expect((await put('staffpicks', { roomIds: [97_301, 97_399] })).status).toBe(404)
+	expect((await put('staffpicks', { roomIds: ['97301'] })).status).toBe(400)
+	expect(await getPlayerList(env.DB, 1, 1, 'staffpicks')).toBeUndefined()
+
+	const set = await put('staffpicks', { roomIds: [97_302, 97_301, 97_302] })
+	expect(set.status).toBe(200)
+	const body = (await set.json()) as { rooms: Array<{ roomId: number; name: string }> }
+	expect(body.rooms.map((r) => [r.roomId, r.name])).toEqual([
+		[97_302, 'PickTwo'],
+		[97_301, 'PickOne'],
+	])
+	expect((await getPlayerList(env.DB, 1, 1, 'staffpicks'))?.ItemIds).toEqual(['97302', '97301'])
+
+	// Reorder and remove in one write.
+	await put('staffpicks', { roomIds: [97_301] })
+	expect((await getPlayerList(env.DB, 1, 1, 'staffpicks'))?.ItemIds).toEqual(['97301'])
+
+	// Each row is its own list.
+	await put('inkshowcase', { roomIds: [97_302] })
+	expect((await getPlayerList(env.DB, 1, 1, 'inkshowcase'))?.ItemIds).toEqual(['97302'])
+	expect((await getPlayerList(env.DB, 1, 1, 'staffpicks'))?.ItemIds).toEqual(['97301'])
+
+	const audit = await env.DB.prepare(
+		`SELECT player_id, data FROM audit_log WHERE action = 'set_curated_row' ORDER BY rowid`
+	).all<{ player_id: number; data: string }>()
+	expect(audit.results.map((r) => [r.player_id, JSON.parse(r.data)])).toEqual([
+		[8400, { row: 'staffpicks', roomIds: [97_302, 97_301], previous: [] }],
+		[8400, { row: 'staffpicks', roomIds: [97_301], previous: [97_302, 97_301] }],
+		[8400, { row: 'inkshowcase', roomIds: [97_302], previous: [] }],
+	])
 })

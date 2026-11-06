@@ -31,6 +31,7 @@ import {
 } from './api'
 import { AvatarUploadPanel } from './AvatarUpload'
 import { ChristmasLayer, XmasHome } from './Christmas'
+import { CuratedListsPanel } from './CuratedLists'
 import { DeviceLinkPage } from './DeviceLink'
 import { eventIdFromPath, EventPage, EventsPage } from './Events'
 import {
@@ -4133,6 +4134,8 @@ function AdminTabs({ account, navigate }: { account: SelfAccount; navigate: Navi
 			label,
 			render: () => <StudioAccessPanel kind={kind} account={account} navigate={navigate} />,
 		})),
+		// The hand-curated discovery rows ("Featured This Week", "Rooms We Love", …).
+		{ id: 'lists', label: 'Curated lists', render: () => <CuratedListsPanel /> },
 		// Narrower than the three above: the drop mints tokens, and www's route is developer-only.
 		...(isDeveloper()
 			? [

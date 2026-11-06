@@ -21,7 +21,7 @@
     "sectionSubType": "Rooms_Featured",
     "source": "CarouselEndpoint",
     "sourceMetadata": "staffpicks",
-    "displayMetadata": "{\"DisplayTitle\":\"Featured This Week\",\"supportsDedupe\":\"false\",\"numRows\":\"1\",\"sizePerPlatform\":\"all=highlight_scale_150\",\"backgroundColor\":\"\",\"horizontalScrollEnabled\":\"false\"}"
+    "displayMetadata": "{\"DisplayTitle\":\"Staff Picks\",\"supportsDedupe\":\"false\",\"numRows\":\"1\",\"sizePerPlatform\":\"all=highlight_scale_150\",\"backgroundColor\":\"\",\"horizontalScrollEnabled\":\"false\"}"
   },
   {
     "id": "Rooms_RRO_PlayHighlight",

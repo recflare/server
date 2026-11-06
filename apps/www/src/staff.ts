@@ -4,12 +4,19 @@ import {
 	clearDormSaveBlob,
 	clearPasswordHash,
 	createGift,
+	CURATED_ROW_OWNER,
+	CURATED_ROW_TYPE,
+	CURATED_ROWS,
 	getAccount,
 	getImageById,
 	getOnlinePlayerIds,
 	getPlayerIdsInRoom,
+	getPlayerList,
 	getPresences,
+	getRoomsByIds,
+	isCuratedRowSlug,
 	movePlayerToDorm,
+	setListItems,
 	updateAccount,
 	writeAuditLog,
 } from '@repo/domain'
@@ -68,7 +75,7 @@ import { NotificationType } from '../../notify/src/notification-types'
 import { refreshDiscordRoles } from './discord-roles'
 
 import type { Context, MiddlewareHandler } from 'hono'
-import type { GiftContent } from '@repo/domain'
+import type { CuratedRowSlug, GiftContent } from '@repo/domain'
 import type { CustomAvatarItem } from '../../api/src/custom-avatar-items-db'
 import type { ReportRow, ReportSearch } from '../../api/src/reports-db'
 import type { CatalogRow } from '../../econ/src/catalog-db'
@@ -1653,4 +1660,100 @@ export async function setSandboxHandler(c: Context<App>) {
 		changed,
 	})
 	return c.json({ sandbox: body.sandbox, changed })
+}
+
+/**
+ * The hand-curated discovery rows (`CURATED_ROWS` in `@repo/domain`: "Featured This Week"
+ * is `staffpicks`, "Rooms We Love" is `inkshowcase`). Each is the Coach's list of rooms that
+ * `lists` serves for `/algorithmiclists/:slug` in stored order. The game has no way to edit
+ * them, so staff do it from `/admin`.
+ */
+function curatedRowKey(slug: CuratedRowSlug) {
+	return {
+		creatorAccountId: CURATED_ROW_OWNER,
+		type: CURATED_ROW_TYPE,
+		name: CURATED_ROWS[slug].name,
+		accessibility: 1,
+	}
+}
+
+/** D1 binds at most 100 parameters, and `getRoomsByIds` binds one per id. */
+export const MAX_CURATED_ROW_ROOMS = 50
+
+/** A row's rooms with enough of each to show it; ids whose room is gone are kept and flagged. */
+async function curatedRowView(db: D1Database, itemIds: string[]) {
+	const ids = itemIds.map(Number).filter((id) => Number.isSafeInteger(id) && id > 0)
+	const rooms = new Map(
+		(await getRoomsByIds(db, ids)).map((room) => [Number(room.RoomId), room] as const)
+	)
+	return {
+		rooms: itemIds.map((itemId) => {
+			const room = rooms.get(Number(itemId))
+			return {
+				roomId: Number(itemId),
+				name: typeof room?.Name === 'string' ? room.Name : null,
+				imageName: typeof room?.ImageName === 'string' ? room.ImageName : null,
+				accessibility: typeof room?.Accessibility === 'number' ? room.Accessibility : null,
+				missing: room === undefined,
+			}
+		}),
+	}
+}
+
+/** Every curated row the editor offers, in display order. */
+export function listCuratedRowsHandler(c: Context<App>) {
+	return c.json({
+		rows: Object.entries(CURATED_ROWS).map(([slug, row]) => ({ slug, title: row.title })),
+	})
+}
+
+/** One curated row's rooms, in row order. Empty before anyone has set them. */
+export async function getCuratedRowHandler(c: Context<App>) {
+	const slug = c.req.param('slug') ?? ''
+	if (!isCuratedRowSlug(slug)) return c.json({ error: 'No curated row by that name' }, 404)
+	const key = curatedRowKey(slug)
+	const list = await getPlayerList(c.env.DB, key.creatorAccountId, key.type, key.name)
+	return c.json(await curatedRowView(c.env.DB, list?.ItemIds ?? []))
+}
+
+/**
+ * Replace a curated row's rooms: `{ roomIds: number[] }`, in the order the row should show
+ * them. One write covers add, remove and reorder. Every id must name an existing room — a
+ * typo would otherwise sit in the row as a tile the client can't resolve.
+ */
+export async function setCuratedRowHandler(c: Context<App>) {
+	const slug = c.req.param('slug') ?? ''
+	if (!isCuratedRowSlug(slug)) return c.json({ error: 'No curated row by that name' }, 404)
+	const body = (await c.req.json().catch(() => null)) as { roomIds?: unknown } | null
+	if (body === null || typeof body !== 'object' || !Array.isArray(body.roomIds)) {
+		return c.json({ error: 'Expected a JSON body with a `roomIds` array' }, 400)
+	}
+	const roomIds = [...new Set(body.roomIds)]
+	if (!roomIds.every((id): id is number => Number.isSafeInteger(id) && (id as number) > 0)) {
+		return c.json({ error: 'Every room id must be a positive integer' }, 400)
+	}
+	if (roomIds.length > MAX_CURATED_ROW_ROOMS) {
+		return c.json({ error: `At most ${MAX_CURATED_ROW_ROOMS} rooms per row` }, 400)
+	}
+	const found = new Set((await getRoomsByIds(c.env.DB, roomIds)).map((r) => Number(r.RoomId)))
+	const unknown = roomIds.filter((id) => !found.has(id))
+	if (unknown.length > 0) {
+		return c.json({ error: `No room has id ${unknown.join(', ')}` }, 404)
+	}
+
+	const key = curatedRowKey(slug)
+	const before = await getPlayerList(c.env.DB, key.creatorAccountId, key.type, key.name)
+	const list = await setListItems(c.env.DB, key, roomIds.map(String))
+
+	await recordPlayerAudit(c, 'set_curated_row', {
+		row: slug,
+		roomIds,
+		previous: (before?.ItemIds ?? []).map(Number),
+	})
+	logger.info('staff set a curated row', {
+		moderatorId: staffId(c),
+		row: slug,
+		count: roomIds.length,
+	})
+	return c.json(await curatedRowView(c.env.DB, list.ItemIds))
 }

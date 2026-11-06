@@ -198,6 +198,80 @@ export async function addPlayerListItem(
 }
 
 /**
+ * The discovery rows that are a HAND-CURATED list rather than a ranking: the row slug the
+ * client asks `lists` for (`/algorithmiclists/:slug`, a section's `sourceMetadata`) mapped
+ * to the list behind it. Each is the Coach's (account 1) list of that name, of rooms
+ * (`ListEntityType` 1), served in stored order. `lists` serves these and www's `/admin`
+ * edits them, both from this table, so a new curated row is one entry here.
+ *
+ * `title` is the row's `DisplayTitle` in the discovery captures, for the editor only.
+ */
+export const CURATED_ROWS = {
+	staffpicks: { name: 'staffpicks', title: 'Featured This Week' },
+	inkshowcase: { name: 'inkshowcase', title: 'Rooms We Love' },
+} as const satisfies Record<string, { name: string; title: string }>
+
+export type CuratedRowSlug = keyof typeof CURATED_ROWS
+
+/** Whether `slug` names a curated row (case-sensitive; the client's slugs are lowercase). */
+export function isCuratedRowSlug(slug: string): slug is CuratedRowSlug {
+	return Object.hasOwn(CURATED_ROWS, slug)
+}
+
+/** Who owns every curated row's list: the Coach. */
+export const CURATED_ROW_OWNER = 1
+
+/** What a curated row's list holds: rooms. */
+export const CURATED_ROW_TYPE = 1
+
+/**
+ * Replace a list's contents with `itemIds`, in that order, creating the list if needed —
+ * the staff editor for hand-curated rows like `staffpicks`, where the order IS the row's.
+ * Unlike {@link addPlayerListItem} this rewrites the whole set, so one call can add, remove
+ * and reorder. Duplicates keep their first position. The delete and inserts run as one
+ * batch, so a reader never sees the list half-written.
+ */
+export async function setListItems(
+	db: D1Database,
+	key: PlayerListKey,
+	itemIds: string[]
+): Promise<CuratedList> {
+	await db
+		.prepare(
+			`INSERT OR IGNORE INTO list (creator_account_id, list_type, list_name,
+			                             list_description, image_name, accessibility, created_at)
+			 VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6)`
+		)
+		.bind(
+			key.creatorAccountId,
+			key.type,
+			key.name,
+			DEFAULT_LIST_IMAGE,
+			key.accessibility,
+			new Date().toISOString()
+		)
+		.run()
+
+	const row = await db
+		.prepare(
+			`SELECT list_id FROM list
+			 WHERE creator_account_id = ?1 AND list_type = ?2 AND list_name_lower = lower(?3)`
+		)
+		.bind(key.creatorAccountId, key.type, key.name)
+		.first<{ list_id: number }>()
+	const listId = row!.list_id
+
+	await db.batch([
+		db.prepare('DELETE FROM list_item WHERE list_id = ?1').bind(listId),
+		...[...new Set(itemIds)].map((itemId) =>
+			db.prepare('INSERT INTO list_item (list_id, item_id) VALUES (?1, ?2)').bind(listId, itemId)
+		),
+	])
+
+	return (await getPlayerList(db, key.creatorAccountId, key.type, key.name))!
+}
+
+/**
  * A player's own list, looked up the way the client asks for one:
  * `?creatorAccountId=&type=&name=`. Undefined when that player has no such list — the
  * caller decides what an absent list answers, since a static capture may cover the name.

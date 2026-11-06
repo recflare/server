@@ -5,11 +5,13 @@ import { useWorkersLogger } from 'workers-tagged-logger'
 import {
 	Accessibility,
 	addPlayerListItem,
+	CURATED_ROWS,
 	getHotRooms,
 	getNewRooms,
 	getPlayerList,
 	getRecentlyUpdatedRooms,
 	getVisitedRooms,
+	isCuratedRowSlug,
 	removePlayerListItem,
 } from '@repo/domain'
 import { withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
@@ -243,18 +245,6 @@ const PERSONAL_ROW_FEEDS: Record<string, (db: D1Database, accountId: number) => 
 	// which every `match` matchmake stamps, and served straight from `getVisitedRooms` so this
 	// row and `rooms` `GET /rooms/visitedby/me` can never disagree about where someone has been.
 	recentlyvisited: (db, accountId) => getVisitedRooms(db, accountId, 0, LIST_SIZE),
-}
-
-/**
- * Rows that are a HAND-CURATED list in the `list` table, keyed by row slug and naming the
- * list behind it. The list is the Coach's (account 1), of the row's requested `type`, so
- * staff edit a row by editing that list's `list_item`s; its insertion order is the row's.
- *
- * The owner is pinned rather than matched on name alone: any player can create a list of any
- * name through `createlistifneeded`, and a name-only lookup would let one fill the row.
- */
-const LIST_ROWS: Record<string, string> = {
-	staffpicks: 'staffpicks',
 }
 
 /**
@@ -898,9 +888,10 @@ const app = new Hono<App>()
 				'`recentlyvisited` is per-caller and is the one row that reads the token; without one it',
 				'answers EMPTY rather than 401ing, since canned rooms would claim the caller visited',
 				'rooms they never did — and an empty carousel is what a brand-new account legitimately',
-				'has. A couple of store rows are hand-picked id lists. `staffpicks` serves the Coach’s',
-				'(account 1) list named `staffpicks` of the requested type from the `list` table, in',
-				'insertion order — empty until that list exists.',
+				'has. A couple of store rows are hand-picked id lists. `staffpicks` and `inkshowcase`',
+				'serve the Coach’s (account 1) list of that name and the requested type from the `list`',
+				'table, in insertion order — empty until that list exists. Staff edit them on www’s',
+				'`/admin`.',
 				'',
 				'Every other row — an unknown key included — answers an EMPTY 200 rather than a 404,',
 				'which the client renders as a row that failed to load instead of one it hides.',
@@ -977,10 +968,13 @@ const app = new Hono<App>()
 				return c.json({ Type: echoed, Entities: toEntities(rooms) })
 			}
 
-			// A hand-curated row serves its list's ids as stored. No list yet answers an empty row.
-			const listName = LIST_ROWS[key]
-			if (listName !== undefined) {
-				const list = await getPlayerList(c.env.DB, COACH_ACCOUNT_ID, echoed, listName)
+			// A hand-curated row (`CURATED_ROWS` in `@repo/domain`, which www's `/admin` edits)
+			// serves its list's ids as stored; no list yet answers an empty row. The owner is
+			// pinned to the Coach rather than matched on name alone: any player can create a list
+			// of any name through `createlistifneeded`, and a name-only lookup would let one fill
+			// the row.
+			if (isCuratedRowSlug(key)) {
+				const list = await getPlayerList(c.env.DB, COACH_ACCOUNT_ID, echoed, CURATED_ROWS[key].name)
 				return c.json({ Type: echoed, Entities: entities(list?.ItemIds ?? []) })
 			}
 

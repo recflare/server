@@ -53,6 +53,7 @@ import {
 	clearPasswordHandler,
 	createReportHandler,
 	getReportHandler,
+	getCuratedRowHandler,
 	giftItemHandler,
 	giftOnlineTokensHandler,
 	giftRoleTokensHandler,
@@ -61,6 +62,7 @@ import {
 	giftXpHandler,
 	grantPlusHandler,
 	linkedAccountsHandler,
+	listCuratedRowsHandler,
 	playerHistoryHandler,
 	requireDeveloper,
 	requireStaff,
@@ -68,6 +70,7 @@ import {
 	sandboxStatusHandler,
 	searchReportsHandler,
 	setSandboxHandler,
+	setCuratedRowHandler,
 	syncDiscordRolesHandler,
 	topReportedHandler,
 } from './staff'
@@ -868,6 +871,11 @@ const app = new Hono<App>()
 	.get('/api/staff/studio-access', listStudioAccessHandler)
 	.post('/api/staff/studio-access', grantStudioAccessHandler)
 	.delete('/api/staff/studio-access/:id', revokeStudioAccessHandler)
+	// The hand-curated discovery rows (`staffpicks`, `inkshowcase`, …) that `lists` serves
+	// for `/algorithmiclists/:slug`. All staff.
+	.get('/api/staff/lists', listCuratedRowsHandler)
+	.get('/api/staff/lists/:slug', getCuratedRowHandler)
+	.put('/api/staff/lists/:slug', setCuratedRowHandler)
 
 	// ---- Privacy policy -----------------------------------------------------
 	// Server-rendered rather than a SPA route so the page has real text without
