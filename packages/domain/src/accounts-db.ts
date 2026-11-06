@@ -227,8 +227,9 @@ export interface Account {
 	hasScreenshare?: boolean
 	/**
 	 * Whether the player has asked for this account to be deleted (`www`
-	 * `POST /api/account/delete`). A MARK, not a deletion: nothing is removed, nothing reads
-	 * it yet, and the account logs in and plays exactly as before. The intent is that a later
+	 * `POST /api/account/delete`). A MARK, not a deletion: the account row stays, nothing
+	 * reads the flag yet, and a password/email sign-in works as before. The request does
+	 * remove the account's `platform_account` links, so Steam/Meta/Discord no longer sign in. The intent is that a later
 	 * sweep compares `deletedAt` with `lastLoginTime` — a login AFTER the request is the
 	 * player changing their mind, and reverses it. Absent/false means not marked.
 	 */

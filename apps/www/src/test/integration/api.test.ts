@@ -38,6 +38,7 @@ import {
 	importCustomAvatarItem,
 } from '../../../../api/src/custom-avatar-items-db'
 import {
+	banFromReport,
 	createReport,
 	getReportById,
 	SCHEMA_DDL as REPORT_SCHEMA_DDL,
@@ -784,6 +785,52 @@ it('marks the account for deletion without deleting it, once', async () => {
 	const again = (await (await requestDeletion(token)).json()) as { deletedAt: string }
 	expect(again.deletedAt).toBe(body.deletedAt)
 	expect((await getAccount(env.DB, 4032))?.deletedAt).toBe(body.deletedAt)
+})
+
+it('removes every platform link when an account is marked for deletion', async () => {
+	const token = await tokenFor(4033)
+	await updateAccount(env.DB, 4033, { hasPlus: true })
+	await linkPlatformIdentity(env.DB, 4033, PlatformType.Steam, '76561190000004033')
+	await linkPlatformIdentity(env.DB, 4033, PlatformType.Discord, '99033', ['r1'])
+	// Another account's link is left alone.
+	await linkPlatformIdentity(env.DB, 4034, PlatformType.Steam, '76561190000004034')
+
+	expect((await requestDeletion(token)).status).toBe(200)
+	expect(await getLinksForAccount(env.DB, 4033)).toEqual([])
+	expect(await getLinksForAccount(env.DB, 4034)).toHaveLength(1)
+	// As with a Discord unlink: the claim is remembered, the Plus it carried is gone.
+	const account = await getAccount(env.DB, 4033)
+	expect(account).toMatchObject({ isDeleted: true, hasClaimedDiscord: true })
+	expect(account?.hasPlus).toBeUndefined()
+
+	// A link made after the first request goes on the next one.
+	await linkPlatformIdentity(env.DB, 4033, PlatformType.Steam, '76561190000004033')
+	expect((await requestDeletion(token)).status).toBe(200)
+	expect(await getLinksForAccount(env.DB, 4033)).toEqual([])
+})
+
+it('refuses to delete an account a ban reaches, keeping its links', async () => {
+	// 4035 is banned; 4036 shares its Steam identity, so the evasion arm reaches it too.
+	await updateAccount(env.DB, 4035, { username: 'Banned4035' })
+	await updateAccount(env.DB, 4036, { username: 'Alt4036' })
+	await linkPlatformIdentity(env.DB, 4035, PlatformType.Steam, '76561190000004035')
+	await linkPlatformIdentity(env.DB, 4036, PlatformType.Steam, '76561190000004035')
+	const report = await createReport(env.DB, {
+		reporterPlayerId: 4037,
+		reportedPlayerId: 4035,
+		reportCategory: 102,
+	})
+	await banFromReport(env.DB, report.id)
+
+	for (const id of [4035, 4036]) {
+		const res = await requestDeletion(await tokenFor(id))
+		expect(res.status).toBe(403)
+		expect(((await res.json()) as { error: string }).error).toBe(
+			'Visit the discord to appeal your ban'
+		)
+		expect(await getLinksForAccount(env.DB, id)).toHaveLength(1)
+		expect((await getAccount(env.DB, id))?.isDeleted).toBeUndefined()
+	}
 })
 
 it('requires a valid session to unlink a discord', async () => {

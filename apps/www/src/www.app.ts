@@ -8,6 +8,9 @@ import { getStatSeries } from '@repo/domain/src/stats-db'
 import { intVar, logger, withDefaultCors, withOnError } from '@repo/hono-helpers'
 import { generateIdentityAssertion, validateAndGetAccountId } from '@repo/jwt'
 
+// The ban resolution `api` enforces, so a ban that would block this account at login also
+// blocks it from being deleted (and so from shedding the platform links evasion matches on).
+import { banEvasionMatch, resolveBan } from '../../api/src/bans-db'
 // The `platform_account` link table, owned (and migrated) by the `auth` worker. A claimed
 // Discord identity is stored there as a PlatformType.Discord link — it is an account ↔
 // external identity exactly like the Steam and Meta ones, and unlike a field on the
@@ -21,6 +24,7 @@ import {
 	isPlatformIdentityLinked,
 	linkPlatformIdentity,
 	recordFirstRoles,
+	unlinkAllPlatforms,
 	unlinkPlatform,
 } from '../../auth/src/platform-db'
 // The signup grant's default and the Discord supporter gift, both `econ`'s. The gift is
@@ -790,13 +794,22 @@ const app = new Hono<App>()
 	// Studio opens (`/settings/recroomstudio`) asks this; it does not list anyone
 	// else. Staff manage the flag on the routes below.
 	/**
-	 * Mark the caller's account for deletion. A MARK only: `isDeleted` and `deletedAt` go on
-	 * the account blob and nothing else changes — no row is removed, the session stays
-	 * valid, and the game keeps serving the account. Reversal is meant to be the player
-	 * signing in again (a `lastLoginTime` later than `deletedAt`), which is why there is no
-	 * "undo" here and why this never touches `auth`. Idempotent: re-posting keeps the
-	 * ORIGINAL `deletedAt`, so a second click can't push the mark past a login that already
-	 * reversed it.
+	 * Mark the caller's account for deletion. `isDeleted` and `deletedAt` go on the account
+	 * blob, and every `platform_account` link (Steam, Meta, Discord) is removed, so those
+	 * identities can no longer sign into it and are free for another account. Nothing else
+	 * is removed and the session stays valid. Reversal is meant to be the player signing in
+	 * again (a `lastLoginTime` later than `deletedAt`) — which, with the links gone, only
+	 * a password or email sign-in can do. There is no "undo" here.
+	 *
+	 * Idempotent: re-posting keeps the ORIGINAL `deletedAt`, so a second click can't push
+	 * the mark past a login that already reversed it, but it still removes any link made
+	 * since.
+	 *
+	 * Removing a Discord link follows `/api/benefits/unlink`: the claim is remembered
+	 * (`hasClaimedDiscord`) and the Plus/Studio it carried are taken back.
+	 *
+	 * Refused (403) while any ban reaches the account — its own, or a linked account's under
+	 * `BAN_EVASION_MATCH` — so a banned player can't shed the links evasion matching uses.
 	 */
 	.post('/api/account/delete', async (c) => {
 		const accountId = await claimant(c)
@@ -805,11 +818,47 @@ const app = new Hono<App>()
 		const account = await getAccount(c.env.DB, accountId)
 		if (!account) return c.json({ error: 'No such account.' }, 404)
 
-		const deletedAt =
-			account.isDeleted === true && account.deletedAt ? account.deletedAt : new Date().toISOString()
-		if (!(account.isDeleted === true && account.deletedAt)) {
-			await updateAccount(c.env.DB, accountId, { isDeleted: true, deletedAt })
-			logger.info('a player marked their account for deletion', { accountId })
+		// A banned account — or one linked to a banned account — can't delete itself:
+		// deleting removes the platform links the ban-evasion check matches on.
+		const ban = await resolveBan(c.env.DB, accountId, {
+			arms: banEvasionMatch(c.env.BAN_EVASION_MATCH),
+		})
+		if (ban) {
+			logger.info('refused an account deletion: a ban reaches the account', {
+				accountId,
+				via: ban.via,
+				bannedAccountId: ban.bannedAccountId,
+			})
+			return c.json({ error: 'Visit the discord to appeal your ban' }, 403)
+		}
+
+		const previous = account.isDeleted === true ? account.deletedAt : undefined
+		const alreadyMarked = Boolean(previous)
+		const deletedAt = previous || new Date().toISOString()
+
+		// Asked BEFORE the links go — see `/api/benefits/unlink`.
+		const claimed = await hasRecordedRoles(c.env.DB, accountId, PlatformType.Discord)
+		const removed = await unlinkAllPlatforms(c.env.DB, accountId)
+		const hadDiscord = removed.some((l) => l.platform === PlatformType.Discord)
+
+		if (!alreadyMarked || hadDiscord) {
+			await updateAccount(c.env.DB, accountId, {
+				isDeleted: true,
+				deletedAt,
+				...(hadDiscord
+					? {
+							hasClaimedDiscord: claimed || account.hasClaimedDiscord === true ? true : undefined,
+							hasPlus: undefined,
+							hasStudio: undefined,
+						}
+					: {}),
+			})
+		}
+		if (!alreadyMarked || removed.length > 0) {
+			logger.info('a player marked their account for deletion', {
+				accountId,
+				unlinked: removed.map((l) => l.platform),
+			})
 		}
 		return c.json({ isDeleted: true, deletedAt })
 	})

@@ -524,6 +524,25 @@ export async function unlinkPlatform(
 }
 
 /**
+ * Remove EVERY platform link an account has (Steam, Meta, Discord, …) and return what was
+ * removed. Only for an account deletion (`www` `POST /api/account/delete`): without its
+ * links nothing can cached-login into the account, and each identity is free to open or
+ * link another account.
+ */
+export async function unlinkAllPlatforms(
+	db: D1Database,
+	accountId: number
+): Promise<PlatformLink[]> {
+	const { results } = await db
+		.prepare(`${SELECT_LINK} WHERE account_id = ?1 ORDER BY linked_at`)
+		.bind(accountId)
+		.all<LinkRow>()
+	if (results.length === 0) return []
+	await db.prepare(`DELETE FROM platform_account WHERE account_id = ?1`).bind(accountId).run()
+	return results.map(toLink)
+}
+
+/**
  * How many accounts one platform identity already opens — the count both signup caps
  * and link caps are enforced against, so an identity can't accumulate accounts by
  * creating them under the cap and then linking more in.

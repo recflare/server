@@ -7183,6 +7183,10 @@ function DeleteAccountForm({
 				This marks your account for deletion. Your rooms, photos and inventory are not removed right
 				away, and you can change your mind by signing in again before they are.
 			</p>
+			<p className="error">
+				You will be unable to recover this account with Steam, Meta, or Discord. Set an email or a
+				password if you think you might have second thoughts!
+			</p>
 			<form
 				onSubmit={(e) => {
 					e.preventDefault()
