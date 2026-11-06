@@ -206,9 +206,8 @@ export const ChecklistEntry = z.object({
 })
 
 /**
- * `POST /api/CampusCard/v1/UpdateAndGetSubscription` — the caller's subscription, or `{}`
- * when they have none (which is everyone without the `developer` role). `{}` rather than a
- * `Subscription: null` envelope: an absent key is how the client reads "not subscribed".
+ * `POST /api/CampusCard/v1/UpdateAndGetSubscription` — the caller's subscription, or the same
+ * envelope with `Subscription: null` when they have none (everyone without `rn.plus`).
  */
 export const SubscriptionResponse = z.union([
 	z.object({
@@ -217,7 +216,12 @@ export const SubscriptionResponse = z.union([
 			.null()
 			.describe('The platform account holding the sub, when it is shared. Never set here'),
 	}),
-	z.object({}).describe('`{}` — no subscription'),
+	z
+		.object({
+			Subscription: z.null(),
+			PlatformAccountSubscribedPlayerId: z.null(),
+		})
+		.describe('No subscription'),
 ])
 
 /**

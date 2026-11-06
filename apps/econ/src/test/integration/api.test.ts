@@ -7982,6 +7982,7 @@ describe('econ endpoints', () => {
 		expect(await res.json()).toEqual([])
 	})
 
+	const NO_SUBSCRIPTION = { Subscription: null, PlatformAccountSubscribedPlayerId: null }
 	const getSubscription = async (headers: Record<string, string> = {}) =>
 		exports.default.fetch(`${ORIGIN}/api/CampusCard/v1/UpdateAndGetSubscription`, {
 			method: 'POST',
@@ -8275,15 +8276,17 @@ describe('econ endpoints', () => {
 		expect(expires.getUTCDate()).toBe(created.getUTCDate())
 	})
 
-	test('POST /api/CampusCard/v1/UpdateAndGetSubscription is {} without the developer role', async () => {
+	test('POST /api/CampusCard/v1/UpdateAndGetSubscription is a null Subscription without Plus', async () => {
 		// A plain player's token: valid, no elevated role, and no `hasPlus` on the account.
-		expect(await (await getSubscription(await bearer('206', ['gameClient']))).json()).toEqual({})
+		expect(await (await getSubscription(await bearer('206', ['gameClient']))).json()).toEqual(
+			NO_SUBSCRIPTION
+		)
 		// A token with no `role` claim at all.
-		expect(await (await getSubscription(await bearer('206'))).json()).toEqual({})
+		expect(await (await getSubscription(await bearer('206'))).json()).toEqual(NO_SUBSCRIPTION)
 		// No token: "not subscribed" rather than 401, so a loading client isn't stalled.
 		const anon = await getSubscription()
 		expect(anon.status).toBe(200)
-		expect(await anon.json()).toEqual({})
+		expect(await anon.json()).toEqual(NO_SUBSCRIPTION)
 	})
 
 	// Plus reaches this worker as the token's `rn.plus` claim, which `auth` stamps from
@@ -8313,7 +8316,7 @@ describe('econ endpoints', () => {
 	test('the developer role alone is not a Rec Room Plus subscription', async () => {
 		const dev = await getSubscription(await bearer('9210', ['gameClient', 'developer']))
 		expect(dev.status).toBe(200)
-		expect(await dev.json()).toEqual({})
+		expect(await dev.json()).toEqual(NO_SUBSCRIPTION)
 
 		// …and it buys nothing at the subscriber price either, so the report and the buy path
 		// agree. 85 is the SubscriberPrices entry for sf300's 2089; 95 is the list price.

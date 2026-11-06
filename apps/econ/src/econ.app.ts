@@ -7562,7 +7562,7 @@ const app = new Hono<App>({ strict: false })
 	// Subscription lookup (Rec Room Plus, the client's `CampusCard`). There is no store to
 	// buy one from: Plus is claimed on the website by proving a Discord role, and reaches
 	// this worker as the token's `rn.plus` claim. A caller carrying it reports an active
-	// Gold year; everyone else reports none. Nothing about the subscription itself is
+	// Gold year; everyone else reports none — as the null-valued envelope, not `{}`. Nothing about the subscription itself is
 	// stored, and nothing here reads the database — see `isSubscriber` and `plusSubscription`.
 	//
 	// Auth is OPTIONAL, and a missing or invalid token answers "no subscription" rather than
@@ -7579,19 +7579,21 @@ const app = new Hono<App>({ strict: false })
 				'claimed on the website by proving a qualifying role in the community Discord, and',
 				'arrives as the token’s `rn.plus` claim. A token carrying it reports an active Gold',
 				'(`Level` 0) yearly (`Period` 1) subscription on `PlatformType` -1 (All), expiring a',
-				'year from the call; every other caller gets `{}`. The `developer` role does NOT',
+				'year from the call; every other caller gets `{ Subscription: null,',
+				'PlatformAccountSubscribedPlayerId: null }`. The `developer` role does NOT',
 				'confer it. Auth is optional — a missing or invalid token reads as “not subscribed”,',
 				'not 401. The subscription itself is not persisted, and because the claim is stamped',
 				'at login, a player who has just claimed must sign in again before it appears.',
 			].join(' '),
 			responses: {
-				200: json(SubscriptionResponse, 'The subscription, or `{}` for no subscription'),
+				200: json(SubscriptionResponse, 'The subscription, or null for no subscription'),
 			},
 		}),
 		async (c) => {
-			if (!(await isSubscriber(c))) return c.json({})
+			const none = { Subscription: null, PlatformAccountSubscribedPlayerId: null }
+			if (!(await isSubscriber(c))) return c.json(none)
 			const id = await authedId(c)
-			if (id === null) return c.json({})
+			if (id === null) return c.json(none)
 			return c.json({
 				Subscription: plusSubscription(id),
 				PlatformAccountSubscribedPlayerId: null,
