@@ -2769,7 +2769,8 @@ export async function setRoomTags(db: D1Database, roomId: number, tags: RoomTag[
 function roomsByTagsQuery(
 	tagSets: string[][],
 	where = '',
-	columns = ROOM_COLUMNS
+	columns = ROOM_COLUMNS,
+	derivedOnly: ReadonlySet<string> = new Set()
 ): { sql: string; binds: string[] } {
 	// `where` is the caller's row filter ({@link LISTABLE_WHERE} or {@link SEARCHABLE_WHERE}) —
 	// unqualified, which is unambiguous under either shape below. It matters most when
@@ -2779,9 +2780,18 @@ function roomsByTagsQuery(
 
 	const binds: string[] = []
 	const joins = tagSets.map((tags, i) => {
-		const placeholders = tags.map((_, j) => `?${binds.length + j + 1}`).join(', ')
+		// A tag in `derivedOnly` matches only its server-derived row (Type 2), not a user tag
+		// of the same name.
+		const matches = tags
+			.map((tag, j) => {
+				const n = `?${binds.length + j + 1}`
+				return derivedOnly.has(tag)
+					? `(tag = ${n} AND type = ${RoomTagType.derived})`
+					: `tag = ${n}`
+			})
+			.join(' OR ')
 		binds.push(...tags)
-		return `JOIN (SELECT DISTINCT room_id FROM room_tag WHERE tag IN (${placeholders})) f${i}
+		return `JOIN (SELECT DISTINCT room_id FROM room_tag WHERE ${matches}) f${i}
 		         ON f${i}.room_id = r.room_id`
 	})
 	// `data` and the counters — in {@link ROOM_COLUMNS} or the ranking stub
@@ -3669,6 +3679,12 @@ const TAG_ALIASES: Record<string, string[]> = {
 	recroomoriginal: ['rro'],
 }
 
+/**
+ * Tags the hot feed honours only in their server-derived form (Type 2). Anyone can add a
+ * user tag named `rro` to their room; that must not put it in the RRO chip's feed.
+ */
+const DERIVED_ONLY_FEED_TAGS: ReadonlySet<string> = new Set(['rro'])
+
 /** A room's tag names, lowercased (empty when it has no Tags array). */
 function roomTags(room: Room): string[] {
 	const tags = room.Tags
@@ -3946,7 +3962,8 @@ export async function getHotRooms(
 	const { sql, binds } = roomsByTagsQuery(
 		isPseudo ? [] : [[t, ...(TAG_ALIASES[t] ?? [])]],
 		LISTABLE_WHERE,
-		RANK_COLUMNS
+		RANK_COLUMNS,
+		DERIVED_ONLY_FEED_TAGS
 	)
 	const { results } = await db
 		.prepare(sql)

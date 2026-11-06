@@ -1236,6 +1236,29 @@ describe('rooms endpoints', () => {
 		expect(body.Results.some((r) => r.Name === 'RecCenter')).toBe(true)
 	})
 
+	it('GET /rooms/hot?tag=rro ignores a user-added rro tag (only Type 2 counts)', async () => {
+		const hot = async () => {
+			const res = await SELF.fetch(`${ORIGIN}/rooms/hot?tag=rro&skip=0&take=100`)
+			expect(res.status).toBe(200)
+			return ((await res.json()) as { Results: Array<{ Name: string }> }).Results
+		}
+		expect((await hot()).some((r) => r.Name === 'RecCenter')).toBe(true)
+		// Downgrade RecCenter's rro to a user tag: anyone can add one of those to their room.
+		const demote = (type: number) =>
+			env.DB.prepare(
+				`UPDATE room_tag SET type = ?1 WHERE tag = 'rro'
+				 AND room_id = (SELECT room_id FROM room WHERE name_lower = 'reccenter')`
+			)
+				.bind(type)
+				.run()
+		await demote(0)
+		try {
+			expect((await hot()).some((r) => r.Name === 'RecCenter')).toBe(false)
+		} finally {
+			await demote(2)
+		}
+	})
+
 	it('GET /rooms/hot respects take pagination (TotalResults is the full count)', async () => {
 		const res = await SELF.fetch(`${ORIGIN}/rooms/hot?tag=rro&skip=0&take=2`)
 		const body = (await res.json()) as { Results: unknown[]; TotalResults: number }
