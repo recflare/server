@@ -26,6 +26,12 @@ export type Env = SharedHonoEnv & {
 	 * directly: the value `off` (or an unreadable secret) means cloud building is disabled.
 	 */
 	CLOUD_BUILD_KEY: SecretsStoreSecret
+	/** Same signing configuration as storage's upload flow (server PR #153). */
+	R2_ACCOUNT_ID?: string
+	R2_ACCESS_KEY_ID?: SecretsStoreSecret
+	R2_SECRET_ACCESS_KEY?: SecretsStoreSecret
+	/** Optional physical bucket override; defaults to CDN_ASSETS' upstream recflare-cdn. */
+	R2_CDN_BUCKET?: string
 	CLOUD_BUILD_TARGETS?: string
 	CLOUD_BUILD_TEMPLATE_VERSION?: string
 	/** R2 key of an operator-published template catalog; unset disables downloads. */
