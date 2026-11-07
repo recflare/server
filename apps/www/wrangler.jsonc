@@ -176,6 +176,9 @@
 		// is how one client build works for any operator. For local dev, point it at a
 		// deployed domain so the page has real workers to call.
 		"DOMAIN": "rec.example.com",
+		// Per-service subdomain overrides, the same JSON `ns` applies; overridden during
+		// deployment with RECFLARE_SUBDOMAINS. The hosts `/api/config` serves follow it.
+		"SUBDOMAINS": "{}",
 		// The Discord server the benefits claim checks membership of, and the roles in it
 		// that grant Rec Room Plus. Every value here is a Discord SNOWFLAKE — all digits, no
 		// letters — copied off a client with Developer Mode on (right-click the server or the

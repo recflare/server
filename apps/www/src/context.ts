@@ -5,6 +5,12 @@ import type { NotificationsHub } from '../../notify/src/notifications-hub'
 export type Env = SharedHonoEnv & {
 	/** Base domain the auth/accounts hosts are derived from (see wrangler.jsonc). */
 	DOMAIN: string
+	/**
+	 * The same `SUBDOMAINS` JSON `ns` applies, so the hosts `/api/config` hands the SPA
+	 * follow the operator's overrides (see src/upstream.ts). An operator serving `cdn` from
+	 * `r2-cdn.<DOMAIN>` would otherwise get a site linking a host nothing is deployed on.
+	 */
+	SUBDOMAINS: string
 	/** Static-asset fetcher for the built React SPA (see wrangler.jsonc `assets`). */
 	ASSETS: Fetcher
 	/**

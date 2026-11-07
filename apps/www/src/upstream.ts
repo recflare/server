@@ -1,25 +1,32 @@
+import { buildEndpoints } from '../../ns/src/endpoints'
 import { authFailure } from './auth-messages'
 
 import type { AuthAction, AuthFailure } from './auth-messages'
 import type { Env } from './context'
 
 /**
- * Where the other workers live. Derived from the shared base domain, matching how they
- * are deployed. www serves these to the SPA (`/api/config`), which calls them DIRECTLY —
- * the same endpoints the game uses, as rec.net's own site did. The only one www still
- * calls itself is `auth`, for the Turnstile-gated signup grant (see `postAuthForm`).
+ * Where the other workers live. Resolved through the same service-discovery map `ns`
+ * serves the game (`buildEndpoints`), so an operator's `SUBDOMAINS` override — say
+ * `{"cdn":"r2-cdn"}` — moves the host www hands the SPA exactly as it moves the one the
+ * client fetches. Deriving `https://cdn.<DOMAIN>` here by hand, as this once did, left the
+ * site linking a host that nothing was deployed on. www serves these to the SPA
+ * (`/api/config`), which calls them DIRECTLY — the same endpoints the game uses, as
+ * rec.net's own site did. The only one www still calls itself is `auth`, for the
+ * Turnstile-gated signup grant (see `postAuthForm`).
  */
+const endpoints = (env: Env): Record<string, string> =>
+	buildEndpoints(env.DOMAIN, env.SUBDOMAINS)
 
-export const authBase = (env: Env): string => `https://auth.${env.DOMAIN}`
-export const accountsBase = (env: Env): string => `https://accounts.${env.DOMAIN}`
-export const notifyBase = (env: Env): string => `https://notify.${env.DOMAIN}`
-export const apiBase = (env: Env): string => `https://api.${env.DOMAIN}`
-export const imgBase = (env: Env): string => `https://img.${env.DOMAIN}`
-export const roomsBase = (env: Env): string => `https://rooms.${env.DOMAIN}`
-export const matchBase = (env: Env): string => `https://match.${env.DOMAIN}`
-export const cdnBase = (env: Env): string => `https://cdn.${env.DOMAIN}`
-export const storageBase = (env: Env): string => `https://storage.${env.DOMAIN}`
-export const studioBase = (env: Env): string => `https://studio.${env.DOMAIN}`
+export const authBase = (env: Env): string => endpoints(env).Auth
+export const accountsBase = (env: Env): string => endpoints(env).Accounts
+export const notifyBase = (env: Env): string => endpoints(env).Notifications
+export const apiBase = (env: Env): string => endpoints(env).API
+export const imgBase = (env: Env): string => endpoints(env).Images
+export const roomsBase = (env: Env): string => endpoints(env).Rooms
+export const matchBase = (env: Env): string => endpoints(env).Matchmaking
+export const cdnBase = (env: Env): string => endpoints(env).CDN
+export const storageBase = (env: Env): string => endpoints(env).Storage
+export const studioBase = (env: Env): string => endpoints(env).Studio
 
 /**
  * POST a form body to the `auth` worker, carrying the browser's real IP across.

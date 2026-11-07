@@ -87,7 +87,7 @@ import { fetchMemberRoles, refreshDiscordRoles } from '../../discord-roles'
 import { DOCUMENTED_SERVICES } from '../../docs'
 import { DISCORD_INVITE, ISSUES_URL, PRIVACY_EMAIL } from '../../links'
 import { turnstileKeys } from '../../turnstile'
-import { postAuthForm, readAuthError } from '../../upstream'
+import { cdnBase, postAuthForm, readAuthError } from '../../upstream'
 import { scheduled } from '../../www.app'
 
 import type { Env } from '../../context'
@@ -201,6 +201,21 @@ it('advertises signup and where the other workers live', async () => {
 			studio: 'https://studio.rec.example.com',
 		},
 	})
+})
+
+// The hosts above follow the operator's `SUBDOMAINS` overrides, the same JSON `ns` applies
+// for the game. Pinned on `cdn` because that is the one that bit: an operator serving the
+// CDN from `r2-cdn.<DOMAIN>` had the SPA's video-upload tab (and every scene-blob
+// download) linking `cdn.<DOMAIN>`, a host nothing was deployed on, while the game — which
+// reads `ns` — found the right one.
+it('moves a host with the SUBDOMAINS override, as ns does', () => {
+	expect(cdnBase({ ...env, SUBDOMAINS: '{"cdn":"r2-cdn"}' })).toBe(
+		'https://r2-cdn.rec.example.com'
+	)
+	// A redirect to a service www does not list leaves these alone.
+	expect(cdnBase({ ...env, SUBDOMAINS: '{"moderation":"api"}' })).toBe(
+		'https://cdn.rec.example.com'
+	)
 })
 
 // The BFF proxies are gone: the browser calls those workers itself. Pinned because
