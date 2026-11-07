@@ -602,6 +602,16 @@ const COACH_ACCOUNT_ID = 1
 export const DEFAULT_MAX_TOKEN_GIFT = 10_000
 
 /**
+ * The most one gift can carry when the caller is a DEVELOPER — ten times the operator's cap,
+ * and fixed rather than a knob. A developer is the one seeding a test account, or paying out
+ * something that cost more than a thank-you, and the typo guard above is sized for neither.
+ * Today every caller is one ({@link requireDeveloper} gates the gift), so this is the cap
+ * that binds; `MAX_TOKEN_GIFT` is what a moderator would get were the gift ever opened to
+ * them. Still a guard: a stray zero on 100,000 is 1,000,000, which is noticed.
+ */
+export const DEVELOPER_MAX_TOKEN_GIFT = 100_000
+
+/**
  * The most XP one gift can carry when the operator's `MAX_XP_GIFT` is unset — a typo guard,
  * as {@link DEFAULT_MAX_TOKEN_GIFT} is. Kept small for now: enough to cross the first few
  * levels, where every level to the top costs 15,090 in all (level 1 to 50).
@@ -609,10 +619,10 @@ export const DEFAULT_MAX_TOKEN_GIFT = 10_000
 export const DEFAULT_MAX_XP_GIFT = 100
 
 /**
- * The most a token DROP — the gift to everyone online at once — can carry per player. Fixed
- * rather than an operator knob like `MAX_TOKEN_GIFT`, and far under it: this one is multiplied
- * by however many players are on, and the drop is meant for a small thank-you to the whole
- * server, not a payout.
+ * The most a token DROP — the gift to everyone online at once, or everyone in a room — can
+ * carry per player. Fixed rather than an operator knob like `MAX_TOKEN_GIFT`, and far under
+ * it: this one is multiplied by however many players are on, and the drop is meant for a
+ * small thank-you to the whole server, not a payout.
  */
 export const MAX_TOKEN_DROP = 1_000
 
@@ -781,7 +791,7 @@ export async function giftTokensHandler(c: Context<App>) {
 
 	const body = (await c.req.json().catch(() => ({}))) as { amount?: unknown; message?: unknown }
 	const amount = Number(body.amount)
-	const refusal = tokenAmountRefusal(c, amount)
+	const refusal = tokenAmountRefusal(amount, maxTokenGift(c))
 	if (refusal !== null) return c.json({ error: refusal }, 400)
 	const message = giftMessage(body)
 	if (message === undefined) return c.json({ error: GIFT_MESSAGE_TOO_LONG }, 400)
@@ -807,16 +817,27 @@ export async function giftTokensHandler(c: Context<App>) {
 
 /**
  * Why this token amount can't be sent, or null when it can. Shared by the one-player gift
- * and the room-wide one so they agree on what an amount is: any whole number within the
- * operator's cap, in either direction (see {@link sendTokens} for what each sign does).
+ * and the room-wide one so they agree on what an amount is: any whole number within `cap`,
+ * in either direction (see {@link sendTokens} for what each sign does). The caps differ —
+ * {@link maxTokenGift} for one player, {@link MAX_TOKEN_DROP} for a room — which is why the
+ * caller names it.
  */
-function tokenAmountRefusal(c: Context<App>, amount: number): string | null {
+function tokenAmountRefusal(amount: number, cap: number): string | null {
 	if (!Number.isInteger(amount)) return 'Enter a whole number of tokens, positive or negative'
-	const maxGift = intVar(c.env.MAX_TOKEN_GIFT, DEFAULT_MAX_TOKEN_GIFT)
-	if (Math.abs(amount) > maxGift) {
-		return `A gift can carry at most ${maxGift.toLocaleString()} tokens`
+	if (Math.abs(amount) > cap) {
+		return `A gift can carry at most ${cap.toLocaleString()} tokens`
 	}
 	return null
+}
+
+/**
+ * The most the one-player gift can carry for this caller: {@link DEVELOPER_MAX_TOKEN_GIFT}
+ * for a developer, the operator's `MAX_TOKEN_GIFT` for any other staff. Reads the roles
+ * {@link requireStaff} stashed, so only valid behind it.
+ */
+function maxTokenGift(c: Context<App>): number {
+	if (c.get('staffRoles').includes('developer')) return DEVELOPER_MAX_TOKEN_GIFT
+	return intVar(c.env.MAX_TOKEN_GIFT, DEFAULT_MAX_TOKEN_GIFT)
 }
 
 /**
@@ -988,6 +1009,10 @@ async function sendTokensToMany(
  * optional `message` on it — in batches, through {@link sendTokensToMany}. A player a
  * negative amount can't be taken from is SKIPPED rather than failing the room — the ones who
  * could afford it are debited regardless — and the response says who was missed.
+ *
+ * Capped at {@link MAX_TOKEN_DROP} per player in either direction, as the server-wide drop
+ * is, not at the one-player gift's cap: this one multiplies by a room, and a room is a drop's
+ * audience, not a payout's.
  */
 export async function giftRoomTokensHandler(c: Context<App>) {
 	const roomId = Number(c.req.param('roomId'))
@@ -997,7 +1022,7 @@ export async function giftRoomTokensHandler(c: Context<App>) {
 
 	const body = (await c.req.json().catch(() => ({}))) as { amount?: unknown; message?: unknown }
 	const amount = Number(body.amount)
-	const refusal = tokenAmountRefusal(c, amount)
+	const refusal = tokenAmountRefusal(amount, MAX_TOKEN_DROP)
 	if (refusal !== null) return c.json({ error: refusal }, 400)
 	const message = giftMessage(body)
 	if (message === undefined) return c.json({ error: GIFT_MESSAGE_TOO_LONG }, 400)

@@ -1994,16 +1994,27 @@ it('gifts a player tokens in a gift box', async () => {
 it('refuses a token gift that is not a whole number, too large, or to nobody', async () => {
 	await updateAccount(env.DB, 8301, { username: 'NotGifted' })
 	// A fraction and a word are not amounts, and the cap binds in both directions, since a
-	// negative gift takes tokens away. Zero is allowed — see the empty box below.
-	for (const amount of [1.5, 'lots', 10_001, -10_001]) {
+	// negative gift takes tokens away. The cap is the developer's (100,000), not the
+	// operator's 10,000 — every caller is a developer, the gift being developer-only — so
+	// 10,001 is fine and 100,001 is not. Zero is allowed — see the empty box below.
+	for (const amount of [1.5, 'lots', 100_001, -100_001]) {
 		const res = await devPost('/api/staff/players/8301/gift-tokens', 8110, { amount })
 		expect(res.status).toBe(400)
 	}
+	const large = await devPost('/api/staff/players/8301/gift-tokens', 8110, { amount: 10_001 })
+	expect(large.status).toBe(200)
+	await expect(
+		getBalance(env.DB, 8301, CurrencyType.RecCenterTokens, DEFAULT_STARTING_TOKENS)
+	).resolves.toBe(DEFAULT_STARTING_TOKENS + 10_001)
+	// Take it back so the rest of the test sees an untouched player.
+	expect(
+		(await devPost('/api/staff/players/8301/gift-tokens', 8110, { amount: -10_001 })).status
+	).toBe(200)
 	expect((await devPost('/api/staff/players/8399/gift-tokens', 8110, { amount: 5 })).status).toBe(
 		404
 	)
-	expect(await getPendingGifts(env.DB, 8301)).toEqual([])
-	expect(await auditRows('gift_tokens', 8301)).toEqual([])
+	expect(await getPendingGifts(env.DB, 8301)).toHaveLength(2)
+	expect(await auditRows('gift_tokens', 8301)).toHaveLength(2)
 })
 
 // A negative gift takes tokens back — through the same guarded debit a purchase spends with,
@@ -2113,14 +2124,17 @@ it('sends tokens to everyone in a room, across its instances', async () => {
 })
 
 // An empty room is a 404 rather than a silent success: a staffer who pressed the button
-// expects somebody to have been paid.
+// expects somebody to have been paid. The cap is the DROP's (1,000 each, both directions),
+// not the one-player gift's: the amount multiplies by the room.
 it('refuses a room gift with nobody in the room, and a bad amount', async () => {
 	expect((await devPost('/api/staff/rooms/7799/gift-tokens', 8110, { amount: 10 })).status).toBe(
 		404
 	)
-	expect(
-		(await devPost('/api/staff/rooms/7700/gift-tokens', 8110, { amount: 10_001 })).status
-	).toBe(400)
+	for (const amount of [1_001, -1_001]) {
+		expect(
+			(await devPost('/api/staff/rooms/7700/gift-tokens', 8110, { amount })).status
+		).toBe(400)
+	}
 })
 
 // The box says what the staffer wrote, when they wrote something: the one-player and room

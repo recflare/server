@@ -70,7 +70,9 @@ export type Env = SharedHonoEnv & {
 	/**
 	 * The most RecCenterTokens one staff token gift can carry (see src/staff.ts). A typo guard
 	 * rather than a policy, since a credit can't be taken back. Unset means
-	 * DEFAULT_MAX_TOKEN_GIFT (10,000).
+	 * DEFAULT_MAX_TOKEN_GIFT (10,000). A DEVELOPER's gift is capped at the fixed
+	 * DEVELOPER_MAX_TOKEN_GIFT (100,000) instead — and since the gift is developer-only, that is
+	 * the cap in force; this one is for a moderator, should the gift ever open to them.
 	 */
 	MAX_TOKEN_GIFT?: string | number
 	/**

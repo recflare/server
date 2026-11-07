@@ -2148,7 +2148,8 @@ function StaffPlayerActions({ account, navigate }: { account: PublicAccount; nav
 							<span className="hint">
 								Arrives as a gift box, and is added to their balance right away. A negative amount
 								takes tokens back instead — it still sends a box, and it can&apos;t take more than
-								they have. Zero sends an empty box and moves nothing.
+								they have. Zero sends an empty box and moves nothing. Up to{' '}
+								{MAX_TOKEN_GIFT.toLocaleString()} either way.
 							</span>
 						</label>
 						{gift.error && <p className="error">{gift.error}</p>}
@@ -4855,7 +4856,8 @@ function StaffRoomTokens({ room }: { room: OwnedRoom }) {
 					</span>
 					<span className="hint">
 						Everyone in the room right now, across all of its instances. A negative amount takes
-						tokens back, skipping anyone who can&apos;t spare it.
+						tokens back, skipping anyone who can&apos;t spare it. Up to{' '}
+						{MAX_TOKEN_DROP.toLocaleString()} each, either way.
 					</span>
 				</label>
 				<label>
@@ -6542,6 +6544,12 @@ const MAX_TOKEN_DROP = 1_000
 
 /** The role drop's own, higher cap — a mirror of www's `MAX_ROLE_TOKEN_DROP`. */
 const MAX_ROLE_TOKEN_DROP = 10_000
+
+/**
+ * The most the one-player gift carries — a mirror of www's `DEVELOPER_MAX_TOKEN_GIFT`, the cap
+ * for the developers who are the only ones shown the form. Copy only; the server refuses more.
+ */
+const MAX_TOKEN_GIFT = 100_000
 
 /**
  * Developer-only: give every player online right now the same number of tokens, in a gift
