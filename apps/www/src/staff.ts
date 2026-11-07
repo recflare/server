@@ -9,6 +9,7 @@ import {
 	CURATED_ROWS,
 	getAccount,
 	getAccountByUsername,
+	getAccountsByIds,
 	getImageById,
 	getOnlinePlayerIds,
 	getPlayerIdsInRoom,
@@ -47,7 +48,7 @@ import {
 import { getWarningsAgainst } from '../../api/src/warnings-db'
 // The platform links, owned by `auth`: a Discord link carries the roles its member held at
 // their claim or the last daily sweep (discord-roles.ts), which is what the role drop reads.
-import { getLinksForPlatform } from '../../auth/src/platform-db'
+import { getLinksForAccount, getLinksForPlatform } from '../../auth/src/platform-db'
 // Balances, owned by `econ`. A staff token gift is the same credit econ's own faucets make.
 import {
 	ALL_PLATFORMS,
@@ -574,13 +575,42 @@ export async function playerHistoryHandler(c: Context<App>) {
  *
  * `arms` echoes the operator's `BAN_EVASION_MATCH` so the page can say which arms are live
  * — an empty list under `off` means the ban reaches exactly the one account.
+ *
+ * One row per account, not per arm as `linkedAccounts` returns them: a moderator reads
+ * "who is this and what do they log in with", so each row carries the account's username,
+ * EVERY platform identity on it (which platform, which id) and its signup and last-login
+ * IPs, with `via` saying which arm(s) matched. `self` is the player asked about in the
+ * same shape (an empty `via`), so the page can show what the matches were made on. The identities and IPs are the account's own, not just the shared
+ * one — that is what lets an IP-only match be judged (a different Steam id on the same
+ * address reads as a housemate; no platform login at all reads as a throwaway). The
+ * Discord role snapshot stays off the wire — it's a benefits record, not identity.
  */
 export async function linkedAccountsHandler(c: Context<App>) {
 	const playerId = Number.parseInt(c.req.param('id') ?? '', 10)
 	if (Number.isNaN(playerId)) return c.json({ error: 'A numeric player id is required' }, 400)
 
 	const arms = armsFor(c.env)
-	return c.json({ playerId, arms, linked: await linkedAccounts(c.env.DB, playerId, arms) })
+	const matches = await linkedAccounts(c.env.DB, playerId, arms)
+	// The player themselves heads the list — same columns, so their logins and addresses
+	// sit directly above the accounts matched on them.
+	const ids = [playerId, ...new Set(matches.map((m) => m.accountId))]
+	const [accounts, links] = await Promise.all([
+		getAccountsByIds(c.env.DB, ids),
+		Promise.all(ids.map((id) => getLinksForAccount(c.env.DB, id))),
+	])
+	const byId = new Map(accounts.map((a) => [a.accountId, a]))
+	const [self, ...linked] = ids.map((accountId, i) => {
+		const account = byId.get(accountId)
+		return {
+			accountId,
+			username: account?.username ?? null,
+			via: matches.filter((m) => m.accountId === accountId).map((m) => m.via),
+			platforms: (links[i] ?? []).map(({ platform, platformId }) => ({ platform, platformId })),
+			signupIp: account?.signupIp || null,
+			lastLoginIp: account?.lastLoginIp || null,
+		}
+	})
+	return c.json({ playerId, arms, self, linked })
 }
 
 // ---- Player actions ---------------------------------------------------------

@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 
+import { PlatformType } from '@repo/domain/src/enums'
+
 import { KickReportCategory } from '../../../notify/src/notification-payloads'
 import { accountIdForUsername, call, isAdmin, useAction, usernamesFor } from './api'
 
+import type { ReactNode } from 'react'
 import type { ReportKind } from '../../../api/src/reports-db'
 import type { PublicAccount } from './api'
 
@@ -131,12 +134,26 @@ interface ReportedPlayerTally {
 	bannedNow: boolean
 }
 
-/** An account a ban would also reach, and what links it — see `linkedAccounts`. */
+/** An account a ban would also reach, and what links it — see `linkedAccountsHandler`. */
 interface LinkedAccount {
 	accountId: number
 	username: string | null
-	via: 'platform' | 'ip'
-	value: string
+	/** Which arm(s) matched — both when the account shares a login AND an address. */
+	via: Array<'platform' | 'ip'>
+	/** Every platform identity on the account, not only the shared one. */
+	platforms: Array<{ platform: number; platformId: string }>
+	signupIp: string | null
+	lastLoginIp: string | null
+}
+
+/**
+ * A `PlatformType` as a moderator reads it. Walks the enum rather than keeping a second
+ * table, so a platform added there shows up here by name; a number the enum doesn't know
+ * is shown as itself rather than hidden.
+ */
+function platformName(platform: number): string {
+	const entry = Object.entries(PlatformType).find(([, value]) => value === platform)
+	return entry ? entry[0] : `platform ${platform}`
 }
 
 /**
@@ -220,7 +237,15 @@ const banLifted = (report: ReportRow): boolean => report.banned !== 1 && report.
  * rather than straight back to the ban button. Just the who — when it was lifted is on
  * the row (`unbanned_at`) but not worth the width in a table cell.
  */
-function LiftedBan({ report, names }: { report: ReportRow; names: Map<number, PublicAccount> }) {
+function LiftedBan({
+	report,
+	names,
+	navigate,
+}: {
+	report: ReportRow
+	names: Map<number, PublicAccount>
+	navigate?: (to: string) => void
+}) {
 	return (
 		<>
 			<span className="badge mod-lifted">lifted</span>{' '}
@@ -229,7 +254,7 @@ function LiftedBan({ report, names }: { report: ReportRow; names: Map<number, Pu
 				{report.unbanned_by_player_id === null ? (
 					'staff'
 				) : (
-					<PlayerName id={report.unbanned_by_player_id} names={names} />
+					<PlayerName id={report.unbanned_by_player_id} names={names} navigate={navigate} />
 				)}
 			</span>
 		</>
@@ -301,15 +326,62 @@ function ReportKind({ report }: { report: ReportRow }) {
 }
 
 /**
+ * A `@name` that opens the player's public profile (`/user/<username>`), routed in-app the
+ * way `App`'s `Link` does. Only the username can address a profile, so a caller with
+ * nothing but an id has nothing to link to.
+ */
+function ProfileLink({
+	username,
+	navigate,
+	children,
+}: {
+	username: string
+	navigate: (to: string) => void
+	children: ReactNode
+}) {
+	const to = `/user/${encodeURIComponent(username)}`
+	return (
+		<a
+			href={to}
+			onClick={(e) => {
+				e.preventDefault()
+				navigate(to)
+			}}
+		>
+			{children}
+		</a>
+	)
+}
+
+/**
  * A player as `@name`. The id is in the title, not on screen: it costs width in every
  * cell of every table and staff can look it up when they need it. It IS shown while the
  * name is still loading or for an account with none, so a row is never nameless.
+ *
+ * Given `navigate`, the name links to the player's profile. Callers that render the name
+ * inside a `linkish` button (which opens the player's moderation page) leave it off: an
+ * anchor inside a button is invalid, and the button already goes somewhere.
  */
-function PlayerName({ id, names }: { id: number; names: Map<number, PublicAccount> }) {
+function PlayerName({
+	id,
+	names,
+	navigate,
+}: {
+	id: number
+	names: Map<number, PublicAccount>
+	navigate?: (to: string) => void
+}) {
 	const account = names.get(id)
+	const name = account?.username ? `@${account.username}` : <span className="muted">#{id}</span>
 	return (
 		<span className="mod-player" title={`#${id}`}>
-			{account?.username ? `@${account.username}` : <span className="muted">#{id}</span>}
+			{navigate && account?.username ? (
+				<ProfileLink username={account.username} navigate={navigate}>
+					{name}
+				</ProfileLink>
+			) : (
+				name
+			)}
 		</span>
 	)
 }
@@ -412,7 +484,8 @@ function BanSummary({
 	const match = data.blockedBy!
 	return (
 		<>
-			Blocked by the ban on <PlayerName id={match.bannedAccountId} names={names} /> (
+			Blocked by the ban on{' '}
+			<PlayerName id={match.bannedAccountId} names={names} navigate={navigate} /> (
 			<ReportLink report={ban} navigate={navigate} />, {categoryLabel(ban.report_category)} —{' '}
 			{expiry}), through {VIA_LABEL[match.via]}.
 		</>
@@ -1058,12 +1131,15 @@ function ReportTable({
 	onOpenPlayer,
 	onBan,
 	onChanged,
+	navigate,
 }: {
 	reports: ReportRow[]
 	names: Map<number, PublicAccount>
 	onOpenPlayer?: (id: number) => void
 	onBan: (report: ReportRow) => void
 	onChanged: () => void
+	/** Links each name to its profile — where the table isn't already opening players. */
+	navigate?: (to: string) => void
 }) {
 	return (
 		<div className="mod-scroll">
@@ -1095,11 +1171,11 @@ function ReportTable({
 										<PlayerName id={report.reported_player_id} names={names} />
 									</button>
 								) : (
-									<PlayerName id={report.reported_player_id} names={names} />
+									<PlayerName id={report.reported_player_id} names={names} navigate={navigate} />
 								)}
 							</td>
 							<td>
-								<PlayerName id={report.reporter_player_id} names={names} />
+								<PlayerName id={report.reporter_player_id} names={names} navigate={navigate} />
 							</td>
 							<td>
 								<ReportKind report={report} />
@@ -1296,7 +1372,7 @@ function PlayerHistory({
 			<section className="card">
 				<BackLink navigate={navigate} label="Back to the tables" />
 				<h2>
-					<PlayerName id={playerId} names={names} />
+					<PlayerName id={playerId} names={names} navigate={navigate} />
 				</h2>
 				{error && <p className="error">{error}</p>}
 				{data === null ? (
@@ -1315,8 +1391,9 @@ function PlayerHistory({
 						</p>
 						{lastLifted !== undefined && (
 							<p className="mod-lifted-note">
-								<LiftedBan report={lastLifted} names={names} /> — on report #{lastLifted.id} for{' '}
-								{categoryLabel(lastLifted.report_category)}. Check with them before banning again.
+								<LiftedBan report={lastLifted} names={names} navigate={navigate} /> — on report #
+								{lastLifted.id} for {categoryLabel(lastLifted.report_category)}. Check with them
+								before banning again.
 							</p>
 						)}
 					</>
@@ -1327,7 +1404,7 @@ function PlayerHistory({
 				)}
 			</section>
 
-			<LinkedAccountsPanel playerId={playerId} />
+			<LinkedAccountsPanel playerId={playerId} navigate={navigate} />
 
 			<section className="card">
 				<h2>Reports</h2>
@@ -1339,6 +1416,7 @@ function PlayerHistory({
 						names={names}
 						onBan={onBan}
 						onChanged={() => setOwnRevision((n) => n + 1)}
+						navigate={navigate}
 					/>
 				)}
 			</section>
@@ -1368,7 +1446,11 @@ function PlayerHistory({
 									<tr key={warning.id}>
 										<td>{when(warning.created_at)}</td>
 										<td>
-											<PlayerName id={warning.moderator_player_id} names={names} />
+											<PlayerName
+												id={warning.moderator_player_id}
+												names={names}
+												navigate={navigate}
+											/>
 										</td>
 										<td>{categoryLabel(warning.report_category)}</td>
 										<td>{warning.display_reason ?? <span className="muted">—</span>}</td>
@@ -1392,9 +1474,16 @@ function PlayerHistory({
  * trade is the operator's to make, but it should be made with this list in front of them
  * rather than discovered from a support ticket.
  */
-function LinkedAccountsPanel({ playerId }: { playerId: number }) {
+function LinkedAccountsPanel({
+	playerId,
+	navigate,
+}: {
+	playerId: number
+	navigate: (to: string) => void
+}) {
 	const { data, error } = useStaffData<{
 		arms: { ip: boolean; platform: boolean }
+		self: LinkedAccount
 		linked: LinkedAccount[]
 	}>(`/api/staff/players/${playerId}/linked`)
 
@@ -1413,41 +1502,82 @@ function LinkedAccountsPanel({ playerId }: { playerId: number }) {
 	return (
 		<section className="card">
 			<h2>Who a ban would also reach</h2>
-			{arms === '' ? (
-				<p className="muted">
-					Ban-evasion matching is switched off on this server, so a ban reaches exactly the one
-					account.
-				</p>
-			) : data.linked.length === 0 ? (
-				<p className="muted">
-					No other account shares a {arms} with this one — a ban reaches only them.
-				</p>
-			) : (
-				<>
-					<p className="muted">
-						Evasion matching is on for {arms}. These accounts would be blocked too:
-					</p>
-					<ul className="mod-linked">
-						{data.linked.map((linked) => (
-							<li key={`${linked.via}-${linked.accountId}-${linked.value}`}>
-								<span className={`badge ${linked.via === 'platform' ? 'live' : ''}`}>
-									{linked.via === 'platform' ? 'Same platform login' : 'Same IP'}
-								</span>{' '}
-								{linked.username ? `@${linked.username}` : 'unknown'}
-								<span className="muted">
-									{' '}
-									#{linked.accountId} · {linked.value}
-								</span>
-							</li>
+			<p className="muted">
+				{arms === ''
+					? 'Ban-evasion matching is switched off on this server, so a ban reaches exactly the one account.'
+					: data.linked.length === 0
+						? `No other account shares a ${arms} with this one — a ban reaches only them.`
+						: `Evasion matching is on for ${arms}. The accounts below this one would be blocked too:`}
+			</p>
+			<div className="mod-scroll">
+				<table className="mod-table">
+					<thead>
+						<tr>
+							<th>Username</th>
+							<th>Platform</th>
+							<th>Platform ID</th>
+							<th>Signup IP</th>
+							<th>Last login IP</th>
+						</tr>
+					</thead>
+					<tbody>
+						{[data.self, ...data.linked].map((row, i) => (
+							<tr key={row.accountId}>
+								<td>
+									{row.username ? (
+										<ProfileLink username={row.username} navigate={navigate}>
+											@{row.username}
+										</ProfileLink>
+									) : (
+										'unknown'
+									)}
+									<span className="muted"> #{row.accountId}</span>
+									{i === 0 && <span className="badge mod-via">This account</span>}
+									{row.via.includes('platform') && (
+										<span className="badge live mod-via">Same login</span>
+									)}
+									{row.via.includes('ip') && <span className="badge mod-via">Same IP</span>}
+								</td>
+								<td>
+									{row.platforms.length === 0 ? (
+										<span className="muted">—</span>
+									) : (
+										row.platforms.map((p) => (
+											<div key={`${p.platform}-${p.platformId}`}>{platformName(p.platform)}</div>
+										))
+									)}
+								</td>
+								<td>
+									{row.platforms.length === 0 ? (
+										<span className="muted">—</span>
+									) : (
+										row.platforms.map((p) => (
+											<div key={`${p.platform}-${p.platformId}`}>
+												<code>{p.platformId}</code>
+											</div>
+										))
+									)}
+								</td>
+								<td>
+									{row.signupIp ? <code>{row.signupIp}</code> : <span className="muted">—</span>}
+								</td>
+								<td>
+									{row.lastLoginIp ? (
+										<code>{row.lastLoginIp}</code>
+									) : (
+										<span className="muted">—</span>
+									)}
+								</td>
+							</tr>
 						))}
-					</ul>
-					{data.arms.ip && (
-						<p className="muted">
-							An IP match is not proof of the same person. Households and shared networks look
-							identical to it.
-						</p>
-					)}
-				</>
+					</tbody>
+				</table>
+			</div>
+			{data.arms.ip && data.linked.length > 0 && (
+				<p className="muted">
+					An IP match is not proof of the same person. Households and shared networks look identical
+					to it.
+				</p>
 			)}
 		</section>
 	)
@@ -1630,12 +1760,12 @@ function BanDialog({ reportId, navigate }: { reportId: number; navigate: (to: st
 			    form still works — sometimes a re-ban IS the decision — but not by accident. */}
 			{banLifted(report) && (
 				<p className="mod-lifted-note">
-					<LiftedBan report={report} names={names} />. Banning again overrides that — check with
-					them first unless something new has happened.
+					<LiftedBan report={report} names={names} navigate={navigate} />. Banning again overrides
+					that — check with them first unless something new has happened.
 				</p>
 			)}
 
-			<LinkedAccountsPanel playerId={report.reported_player_id} />
+			<LinkedAccountsPanel playerId={report.reported_player_id} navigate={navigate} />
 
 			<form
 				onSubmit={(e) => {

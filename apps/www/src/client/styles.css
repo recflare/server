@@ -1916,6 +1916,11 @@ button[type='submit'].danger:not(:disabled):hover {
 	border-color: color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
+/* Which evasion arm matched a linked account, sat after the name in its row. */
+.badge.mod-via {
+	margin-left: 8px;
+}
+
 .mod-lifted-note {
 	border-left: 3px solid var(--accent);
 	padding-left: 12px;

@@ -209,9 +209,7 @@ it('advertises signup and where the other workers live', async () => {
 // download) linking `cdn.<DOMAIN>`, a host nothing was deployed on, while the game — which
 // reads `ns` — found the right one.
 it('moves a host with the SUBDOMAINS override, as ns does', () => {
-	expect(cdnBase({ ...env, SUBDOMAINS: '{"cdn":"r2-cdn"}' })).toBe(
-		'https://r2-cdn.rec.example.com'
-	)
+	expect(cdnBase({ ...env, SUBDOMAINS: '{"cdn":"r2-cdn"}' })).toBe('https://r2-cdn.rec.example.com')
 	// A redirect to a service www does not list leaves these alone.
 	expect(cdnBase({ ...env, SUBDOMAINS: '{"moderation":"api"}' })).toBe(
 		'https://cdn.rec.example.com'
@@ -1819,18 +1817,50 @@ it('previews which other accounts a ban would reach', async () => {
 
 	const preview = (await (await staffGet('/api/staff/players/8220/linked', 8110)).json()) as {
 		arms: { ip: boolean; platform: boolean }
-		linked: Array<{ accountId: number; username: string | null; via: string }>
+		self: LinkedRow
+		linked: LinkedRow[]
+	}
+	type LinkedRow = {
+		accountId: number
+		username: string | null
+		via: string[]
+		platforms: Array<{ platform: number; platformId: string }>
+		signupIp: string | null
+		lastLoginIp: string | null
 	}
 	// BAN_EVASION_MATCH is unset in the test config, so both arms are live — the default
 	// an operator who sets nothing gets.
 	expect(preview.arms).toEqual({ ip: true, platform: true })
 
-	// The platform match is the sharp one (a proven identity) and sorts first; the IP one
-	// is the coarse arm that would catch the housemate.
-	expect(preview.linked.find((l) => l.accountId === 8222)?.via).toBe('platform')
-	expect(preview.linked.find((l) => l.accountId === 8221)).toMatchObject({
-		via: 'ip',
+	// One row per account, carrying what it logs in with: the platform match is the sharp
+	// one (a proven identity) and names the platform the shared id is on; the IP one is the
+	// coarse arm that would catch the housemate, whose row shows no platform login — the
+	// detail that lets a moderator read it as a housemate rather than an alt.
+	expect(preview.linked.find((l) => l.accountId === 8222)).toEqual({
+		accountId: 8222,
+		username: null,
+		via: ['platform'],
+		platforms: [{ platform: PlatformType.Steam, platformId: 'steam-8220' }],
+		signupIp: null,
+		lastLoginIp: null,
+	})
+	expect(preview.linked.find((l) => l.accountId === 8221)).toEqual({
+		accountId: 8221,
 		username: 'Housemate',
+		via: ['ip'],
+		platforms: [],
+		signupIp: '203.0.113.9',
+		lastLoginIp: null,
+	})
+	// The player asked about heads the table in the same shape, so what the matches were
+	// made on is in view; nothing matched them to themselves.
+	expect(preview.self).toEqual({
+		accountId: 8220,
+		username: 'Evader',
+		via: [],
+		platforms: [{ platform: PlatformType.Steam, platformId: 'steam-8220' }],
+		signupIp: null,
+		lastLoginIp: '203.0.113.9',
 	})
 	// Never the account asked about: the question is who ELSE.
 	expect(preview.linked.map((l) => l.accountId)).not.toContain(8220)
@@ -2131,9 +2161,7 @@ it('refuses a room gift with nobody in the room, and a bad amount', async () => 
 		404
 	)
 	for (const amount of [1_001, -1_001]) {
-		expect(
-			(await devPost('/api/staff/rooms/7700/gift-tokens', 8110, { amount })).status
-		).toBe(400)
+		expect((await devPost('/api/staff/rooms/7700/gift-tokens', 8110, { amount })).status).toBe(400)
 	}
 })
 
