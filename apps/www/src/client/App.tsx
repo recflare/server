@@ -1790,11 +1790,38 @@ function imageIdFromPath(path: string): number | null {
 	return match ? Number(match[1]) : null
 }
 
-/** What the image page shows of a photo. */
+/** What the image page shows of a photo — the raw `SavedImage`, the keys it reads. */
 interface PageImage {
 	ImageName: string
 	Accessibility: number
+	/** Who took it. */
 	PlayerId: number
+	/** Who was in it, as the taker tagged them — may include the taker. */
+	TaggedPlayerIds: number[]
+	/** The room it was taken in; null for a photo taken outside one. */
+	RoomId: number | null
+	CreatedAt: string
+}
+
+/** The room a photo was taken in, as far as this page names it. */
+interface PhotoRoom {
+	RoomId: number
+	Name: string
+}
+
+/**
+ * The room a photo was taken in, through `rooms/bulk`. For a visitor only a PUBLIC room:
+ * the lookup answers by id whatever a room's accessibility, so without the filter a photo
+ * would name a private room its owner never published. Staff see the room either way —
+ * a reported photo's room is part of the report. A failed lookup is no room rather than an
+ * error: the photo is the page, the room a caption on it.
+ */
+async function fetchPhotoRoom(roomId: number, staff: boolean): Promise<PhotoRoom | null> {
+	const filter = staff ? '' : '&excludePrivateRooms=True'
+	const rooms = await call<PhotoRoom[]>(`${where().rooms}/rooms/bulk?id=${roomId}${filter}`).catch(
+		() => []
+	)
+	return rooms.find((r) => r.RoomId === roomId) ?? null
 }
 
 /**
@@ -1831,9 +1858,21 @@ async function deleteImage(imageName: string): Promise<void> {
 	})
 }
 
-function ImagePage({ imageId, config }: { imageId: number; config: SiteConfig | undefined }) {
+function ImagePage({
+	imageId,
+	config,
+	navigate,
+}: {
+	imageId: number
+	config: SiteConfig | undefined
+	navigate: Navigate
+}) {
 	// undefined = not fetched yet; null = no image this visitor may see.
 	const [image, setImage] = useState<PageImage | null | undefined>(undefined)
+	// Who took it and who's in it, by account id; empty until the lookup lands (or if it
+	// fails — names are a caption, and the photo shows without them).
+	const [players, setPlayers] = useState<Map<number, PublicAccount>>(new Map())
+	const [room, setRoom] = useState<PhotoRoom | null>(null)
 	const [error, setError] = useState('')
 	const [deleted, setDeleted] = useState(false)
 	const staff = isAdmin()
@@ -1841,13 +1880,47 @@ function ImagePage({ imageId, config }: { imageId: number; config: SiteConfig | 
 	useEffect(() => {
 		// Waits for the config for the hostnames, as PlayerPage does.
 		if (config === undefined) return
+		let live = true
 		setImage(undefined)
+		setPlayers(new Map())
+		setRoom(null)
 		setError('')
 		setDeleted(false)
 		void fetchPageImage(imageId, staff)
-			.then(setImage)
-			.catch((e) => setError(e instanceof Error ? e.message : String(e)))
+			.then((found) => {
+				if (!live) return
+				setImage(found)
+				if (!found) return
+				void usernamesFor([found.PlayerId, ...found.TaggedPlayerIds]).then((names) => {
+					if (live) setPlayers(names)
+				})
+				if (found.RoomId != null && found.RoomId > 0) {
+					void fetchPhotoRoom(found.RoomId, staff).then((r) => {
+						if (live) setRoom(r)
+					})
+				}
+			})
+			.catch((e) => {
+				if (live) setError(e instanceof Error ? e.message : String(e))
+			})
+		return () => {
+			live = false
+		}
 	}, [imageId, config, staff])
+
+	/** A player's name as a link to their profile; the bare id while the lookup is out. */
+	const player = (id: number): ReactNode => {
+		const found = players.get(id)
+		if (!found) return <span className="muted">Player #{id}</span>
+		return (
+			<Link to={`/user/${encodeURIComponent(found.username)}`} navigate={navigate}>
+				@{found.username}
+			</Link>
+		)
+	}
+	// Tagged once each, in the order the taker tagged them.
+	const tagged = image ? [...new Set(image.TaggedPlayerIds)] : []
+	const taken = image ? new Date(image.CreatedAt) : null
 
 	return (
 		<main className="shell wide image-page">
@@ -1864,6 +1937,34 @@ function ImagePage({ imageId, config }: { imageId: number; config: SiteConfig | 
 			) : (
 				<>
 					<img src={`${where().img}/${image.ImageName}`} alt="" />
+					<div className="image-meta">
+						<p>
+							Taken by {player(image.PlayerId)}
+							{room && (
+								<>
+									{' '}
+									in{' '}
+									<Link to={`/rooms/${room.RoomId}`} navigate={navigate}>
+										^{room.Name}
+									</Link>
+								</>
+							)}
+							{taken && !Number.isNaN(taken.getTime()) && (
+								<span className="muted"> · {taken.toLocaleDateString()}</span>
+							)}
+						</p>
+						{tagged.length > 0 && (
+							<p>
+								Tagged:{' '}
+								{tagged.map((id, i) => (
+									<span key={id}>
+										{i > 0 && ', '}
+										{player(id)}
+									</span>
+								))}
+							</p>
+						)}
+					</div>
 					{/* Staff only, and cosmetic: `api` checks the token's role on the delete. */}
 					{staff && (
 						<>
@@ -3077,7 +3178,7 @@ export function App() {
 			) : imageId !== null ? (
 				// A photo's own link. Public images only, read without the session (see
 				// ImagePage); a client-side route, so a cold load falls through to the SPA shell.
-				<ImagePage imageId={imageId} config={config} />
+				<ImagePage imageId={imageId} config={config} navigate={navigate} />
 			) : lookupUsername !== null ? (
 				<PlayerPage
 					username={lookupUsername}

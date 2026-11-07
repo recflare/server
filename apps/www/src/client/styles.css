@@ -2416,6 +2416,23 @@ button.photo-cheer.cheered:hover:not(:disabled) {
 	margin: 0 auto;
 	border-radius: 9px;
 }
+/* Who took the photo, where, and who's in it — under the picture, like a grid caption. */
+.image-meta {
+	max-width: 720px;
+	margin: 12px auto 0;
+	font-size: 0.95rem;
+	line-height: 1.5;
+}
+.image-meta p {
+	margin: 0 0 4px;
+}
+.image-meta a {
+	color: var(--accent);
+	text-decoration: none;
+}
+.image-meta a:hover {
+	text-decoration: underline;
+}
 
 .photo-modal img {
 	display: block;
