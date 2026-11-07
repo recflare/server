@@ -8,6 +8,9 @@ export default defineConfig({
 			miniflare: {
 				bindings: {
 					ENVIRONMENT: 'VITEST',
+					// Opens the developer video upload's account half; the S3 token halves come from
+					// the Secrets Store and are seeded (or deliberately not) by the tests.
+					R2_ACCOUNT_ID: 'test-account',
 				},
 			},
 		}),

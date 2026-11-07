@@ -285,6 +285,30 @@ it('answers the CORS preflight the website’s upload needs', async () => {
 	expect(res.headers.get('access-control-allow-headers')?.toLowerCase()).toContain('authorization')
 })
 
+// The form POSTs JSON with a bearer token, so the browser preflights it asking for BOTH headers —
+// and a missing one stops the request before the route runs. The same middleware covers every
+// route here; this pins it for the one that sends `Content-Type: application/json`.
+it('answers the CORS preflight the website’s video upload form needs', async () => {
+	const res = await SELF.fetch(`${ORIGIN}/upload/video`, {
+		method: 'OPTIONS',
+		headers: {
+			Origin: 'https://www.example.com',
+			'Access-Control-Request-Method': 'POST',
+			'Access-Control-Request-Headers': 'authorization,content-type',
+		},
+	})
+	expect(res.status).toBe(204)
+	expect(res.headers.get('access-control-allow-origin')).toBe('*')
+	const allowed = res.headers.get('access-control-allow-headers')?.toLowerCase() ?? ''
+	expect(allowed).toContain('authorization')
+	expect(allowed).toContain('content-type')
+})
+
+it('POST /upload/video answers with CORS headers so the page can read the signed URL', async () => {
+	const res = await videoUpload({ filename: 'intro.mp4' }, await bearer('42', ['developer']))
+	expect(res.headers.get('access-control-allow-origin')).toBe('*')
+})
+
 it('GET /openapi.json documents every route', async () => {
 	const res = await SELF.fetch(`${ORIGIN}/openapi.json`)
 	expect(res.status).toBe(200)
@@ -305,7 +329,12 @@ it('GET /openapi.json documents every route', async () => {
 			Object.keys(ops).map((method) => `${method.toUpperCase()} ${path}`)
 		)
 	)
-	expect([...documented].sort()).toEqual(['GET /', 'POST /upload', 'POST /upload/unityassets'])
+	expect([...documented].sort()).toEqual([
+		'GET /',
+		'POST /upload',
+		'POST /upload/unityassets',
+		'POST /upload/video',
+	])
 
 	// Every operation carries a summary — a path present but undescribed is not
 	// documentation.
@@ -479,4 +508,77 @@ it('rejects malformed and oversized compressed source uploads without an interna
 		if (original === undefined) delete env.MAX_UPLOAD_BYTES
 		else env.MAX_UPLOAD_BYTES = original
 	}
+})
+
+// The developer video upload: storage only SIGNS a PUT for the CDN bucket (the file goes
+// browser → R2), so what is pinned here is the gate, the closed state, and the shape of what is
+// signed. vitest.config binds R2_ACCOUNT_ID; the S3 token halves come from the Secrets Store,
+// which is NOT seeded until the last test below — so the first answers the unconfigured 503.
+const videoUpload = async (body: unknown, headers: Record<string, string>) =>
+	SELF.fetch(`${ORIGIN}/upload/video`, {
+		method: 'POST',
+		headers: { ...headers, 'content-type': 'application/json' },
+		body: JSON.stringify(body),
+	})
+
+it('POST /upload/video 401s without a token, and 403s for anyone but a developer', async () => {
+	expect((await SELF.fetch(`${ORIGIN}/upload/video`, { method: 'POST' })).status).toBe(401)
+	const body = { filename: 'intro.mp4' }
+	expect((await videoUpload(body, await bearer('42', []))).status).toBe(403)
+	// Staff, but not a developer: the object is public the moment it lands.
+	expect((await videoUpload(body, await bearer('42', ['moderator']))).status).toBe(403)
+})
+
+it('POST /upload/video 503s until the R2 credentials are set', async () => {
+	const res = await videoUpload({ filename: 'intro.mp4' }, await bearer('42', ['developer']))
+	expect(res.status).toBe(503)
+	expect(await res.json()).toMatchObject({ error: expect.stringContaining('not set up') })
+})
+
+it('POST /upload/video refuses a file that is not a video', async () => {
+	const dev = await bearer('42', ['developer'])
+	for (const filename of ['notes.txt', 'archive.mp4.zip', 'noextension', '', '.mp4x']) {
+		expect((await videoUpload({ filename }, dev)).status, filename).toBe(400)
+	}
+	expect((await videoUpload({}, dev)).status).toBe(400)
+})
+
+it('POST /upload/video issues a presigned PUT pinned to the video content type', async () => {
+	await adminSecretsStore(env.R2_ACCESS_KEY_ID).create('test-access-key')
+	await adminSecretsStore(env.R2_SECRET_ACCESS_KEY).create('test-secret-key')
+	const dev = await bearer('42', ['developer'])
+
+	const res = await videoUpload({ filename: 'My Intro Clip!.MP4' }, dev)
+	expect(res.status).toBe(200)
+	const body = await res.json<{
+		uploadUrl: string
+		key: string
+		contentType: string
+		expiresIn: number
+	}>()
+	// Reduced to a safe name and given a random suffix, so a reused filename is a new object.
+	expect(body.key).toMatch(/^video\/my-intro-clip-[0-9a-f]{8}\.mp4$/)
+	expect(body.contentType).toBe('video/mp4')
+	expect(body.expiresIn).toBe(900)
+
+	const url = new URL(body.uploadUrl)
+	expect(url.host).toBe('test-account.r2.cloudflarestorage.com')
+	expect(url.pathname).toBe(`/recflare-cdn/${body.key}`)
+	// Bound into the signature, so the browser has to send exactly this content type.
+	expect(url.searchParams.get('X-Amz-SignedHeaders')).toBe('content-type;host')
+	expect(url.searchParams.get('X-Amz-Expires')).toBe('900')
+	expect(url.searchParams.get('X-Amz-Credential')).toMatch(
+		/^test-access-key\/\d{8}\/auto\/s3\/aws4_request$/
+	)
+	expect(url.searchParams.get('X-Amz-Signature')).toMatch(/^[0-9a-f]{64}$/)
+	// The secret half never leaves the worker.
+	expect(body.uploadUrl).not.toContain('test-secret-key')
+
+	// The same filename twice is two keys.
+	const again = await (
+		await videoUpload({ filename: 'My Intro Clip!.MP4' }, dev)
+	).json<{
+		key: string
+	}>()
+	expect(again.key).not.toBe(body.key)
 })
