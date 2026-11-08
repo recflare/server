@@ -838,6 +838,11 @@ function ReportQueue({
  * `from`/`to` are the `YYYY-MM-DD` a date input gives, converted to instants only when the
  * request goes out; keeping the URL in the input's own format is what lets a bookmarked
  * search repopulate the boxes exactly as they were typed.
+ *
+ * `sinceDays` is the quick window — "the last day" — kept as a day count (the queue's
+ * spelling) rather than resolved to a date, so a bookmarked "last day" search is still the
+ * last day when it is opened tomorrow. It and the typed dates are exclusive: picking one
+ * clears the other, so the URL never says two different things about the window.
  */
 interface SearchFilters {
 	reportedPlayerId: string
@@ -845,9 +850,18 @@ interface SearchFilters {
 	reportCategory: string
 	kind: string
 	banned: string
+	sinceDays: string
 	from: string
 	to: string
 }
+
+const QUICK_WINDOWS: Array<{ label: string; days: string }> = [
+	{ label: 'Any time', days: '' },
+	{ label: 'Last day', days: '1' },
+	{ label: 'Last 7 days', days: '7' },
+	{ label: 'Last 30 days', days: '30' },
+	{ label: 'Last 90 days', days: '90' },
+]
 
 const EMPTY_FILTERS: SearchFilters = {
 	reportedPlayerId: '',
@@ -855,6 +869,7 @@ const EMPTY_FILTERS: SearchFilters = {
 	reportCategory: '',
 	kind: '',
 	banned: '',
+	sinceDays: '',
 	from: '',
 	to: '',
 }
@@ -869,6 +884,7 @@ function filtersFromSearch(search: string): SearchFilters {
 		reportCategory: read('reportCategory'),
 		kind: read('kind'),
 		banned: read('banned'),
+		sinceDays: read('sinceDays'),
 		from: read('from'),
 		to: read('to'),
 	}
@@ -937,6 +953,12 @@ function ReportSearch({
 	if (applied.reportCategory !== '') params.set('reportCategory', applied.reportCategory)
 	if (applied.kind !== '') params.set('kind', applied.kind)
 	if (applied.banned !== '') params.set('banned', applied.banned)
+	// The quick window is a rolling span back from now — "the last day" is the last 24
+	// hours, not since midnight, which is what a moderator checking in on a player means.
+	const sinceDays = Number.parseInt(applied.sinceDays, 10)
+	if (sinceDays > 0) {
+		params.set('from', new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000).toISOString())
+	}
 	// A date input gives a bare `YYYY-MM-DD`, so the window is sent as local midnights,
 	// which is what the moderator meant by it. `to` is EXCLUSIVE on the server, so the day
 	// typed there is included only by pushing the bound to the next midnight.
@@ -1045,11 +1067,24 @@ function ReportSearch({
 					</select>
 				</label>
 				<label>
+					Within
+					<select
+						value={form.sinceDays}
+						onChange={(e) => setForm({ ...form, sinceDays: e.target.value, from: '', to: '' })}
+					>
+						{QUICK_WINDOWS.map((w) => (
+							<option key={w.days} value={w.days}>
+								{w.label}
+							</option>
+						))}
+					</select>
+				</label>
+				<label>
 					From
 					<input
 						type="date"
 						value={form.from}
-						onChange={(e) => setForm({ ...form, from: e.target.value })}
+						onChange={(e) => setForm({ ...form, sinceDays: '', from: e.target.value })}
 					/>
 				</label>
 				<label>
@@ -1057,7 +1092,7 @@ function ReportSearch({
 					<input
 						type="date"
 						value={form.to}
-						onChange={(e) => setForm({ ...form, to: e.target.value })}
+						onChange={(e) => setForm({ ...form, sinceDays: '', to: e.target.value })}
 					/>
 				</label>
 				<div className="mod-filter-actions">
