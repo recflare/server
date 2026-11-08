@@ -5,6 +5,7 @@ import { beforeAll, describe, expect, test } from 'vitest'
 import '../../auth.app'
 
 import {
+	ACCOUNT_IP_SCHEMA_DDL,
 	AUDIT_LOG_SCHEMA_DDL,
 	EMAIL_CODE_SCHEMA_DDL,
 	GAME_VERSION,
@@ -12,6 +13,7 @@ import {
 	getAccountsByDeviceId,
 	getPasswordHash,
 	hashPassword,
+	listAccountIps,
 	PRESENCE_SCHEMA_DDL,
 	RATE_LIMIT_SCHEMA_DDL,
 	ROOM_SCHEMA_DDL,
@@ -82,6 +84,8 @@ beforeAll(async () => {
 	// The Meta app secret, likewise — a Meta login is refused outright without one.
 	metaSecretId = await adminSecretsStore(env.META_APP_SECRET).create(META_APP_SECRET)
 	for (const stmt of SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	// Every address an account has been seen from — written on every grant here.
+	for (const stmt of ACCOUNT_IP_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of REFRESH_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	// The pending email codes (`/account/recoverpassword` issues one as a password_reset).
 	for (const stmt of EMAIL_CODE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
@@ -1223,6 +1227,56 @@ describe('auth worker routes', () => {
 		const account = JSON.parse(row!.data) as { signupIp: string; lastLoginIp: string }
 		expect(account.signupIp).toBe('203.0.113.7')
 		expect(account.lastLoginIp).toBe('203.0.113.7')
+		// And the address opens the account's IP history.
+		expect(await listAccountIps(env.DB, sub)).toMatchObject([{ ip: '203.0.113.7', hits: 1 }])
+	})
+
+	// The blob keeps two addresses (signup, last login); the history keeps every one. A login
+	// from a new network ADDS a row rather than replacing the last, and a refresh — which
+	// moves neither blob field — still lands in the history, since it is the one grant that
+	// sees an address change mid-session.
+	test('POST /connect/token keeps every IP an account is seen from', async () => {
+		await env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
+			.bind(
+				JSON.stringify({
+					accountId: 6401,
+					username: 'Roamer',
+					passwordHash: await hashPassword(LOGIN_PASSWORD),
+				})
+			)
+			.run()
+		const login = (ip?: string) =>
+			postToken(`grant_type=password&account_id=6401&password=${LOGIN_PASSWORD}`, ip)
+
+		// Same address twice: one row, counted twice.
+		const first = await login('203.0.113.70')
+		expect(first.status).toBe(200)
+		expect((await login('203.0.113.70')).status).toBe(200)
+		// A new address from a refresh.
+		const refreshed = await postToken(
+			`grant_type=refresh_token&refresh_token=${first.json.refresh_token as string}`,
+			'198.51.100.70'
+		)
+		expect(refreshed.status).toBe(200)
+		// The edge reporting no address records nothing.
+		expect(
+			(
+				await postToken(
+					`grant_type=refresh_token&refresh_token=${refreshed.json.refresh_token as string}`
+				)
+			).status
+		).toBe(200)
+
+		const history = await listAccountIps(env.DB, 6401)
+		expect(history.map(({ ip, hits }) => ({ ip, hits }))).toEqual([
+			{ ip: '198.51.100.70', hits: 1 },
+			{ ip: '203.0.113.70', hits: 2 },
+		])
+		// `lastLoginIp` is what its name says: the refresh did not move it.
+		const row = await env.DB.prepare('SELECT data FROM account WHERE account_id = ?1')
+			.bind(6401)
+			.first<{ data: string }>()
+		expect((JSON.parse(row!.data) as { lastLoginIp: string }).lastLoginIp).toBe('203.0.113.70')
 	})
 
 	test('POST /connect/token caps the accounts created from one IP', async () => {
@@ -2747,6 +2801,20 @@ describe('ban evasion at the token endpoint', () => {
 		// Signing in from that same network is not refused — only minting a new account is.
 		expect((await login(6306, '203.0.113.31')).status).toBe(200)
 		expect((await login(6306, '198.51.100.31')).status).toBe(200)
+	})
+
+	// The arm reads the whole history, not just the blob's two ends: an address a banned
+	// account used ONCE, long since overwritten as its `lastLoginIp`, still refuses a signup.
+	test('a signup from an address in a banned account’s IP history is refused', async () => {
+		await account(6308, 'BannedRoamer', { signupIp: '203.0.113.32', lastLoginIp: '203.0.113.33' })
+		await env.DB.prepare(
+			`INSERT INTO account_ip (account_id, ip, first_seen, last_seen, hits)
+			 VALUES (6308, '203.0.113.34', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', 1)`
+		).run()
+		await banAccount(6308)
+
+		expect((await postToken('grant_type=create_account', '203.0.113.34')).status).toBe(400)
+		expect((await postToken('grant_type=create_account', '203.0.113.35')).status).toBe(200)
 	})
 
 	test('an unrelated account signs in normally', async () => {

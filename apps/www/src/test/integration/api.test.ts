@@ -8,6 +8,7 @@ import {
 } from 'cloudflare:test'
 import { beforeAll, expect, it } from 'vitest'
 
+import { ACCOUNT_IP_SCHEMA_DDL, recordAccountIp } from '@repo/domain/src/account-ip-db'
 import {
 	SCHEMA_DDL as ACCOUNT_SCHEMA_DDL,
 	getAccount,
@@ -133,6 +134,8 @@ beforeAll(async () => {
 	for (const stmt of PRESENCE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	// `account` likewise: owned by `auth`, read and (for the benefits claim) written here.
 	for (const stmt of ACCOUNT_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	// And every address an account has been seen from, which the evasion preview lists.
+	for (const stmt of ACCOUNT_IP_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of AVATAR_STUDIO_SCHEMA) await env.DB.prepare(stmt).run()
 	// And `platform_account`, where a claimed Discord identity is linked.
 	for (const stmt of PLATFORM_SCHEMA_DDL) await env.DB.prepare(stmt).run()
@@ -1814,6 +1817,13 @@ it('previews which other accounts a ban would reach', async () => {
 	await seedAccount({ accountId: 8221, username: 'Housemate', signupIp: '203.0.113.9' })
 	await linkPlatformIdentity(env.DB, 8220, PlatformType.Steam, 'steam-8220')
 	await linkPlatformIdentity(env.DB, 8222, PlatformType.Steam, 'steam-8220')
+	// An address the evader used once, kept only in the history — and a fourth account that
+	// shares nothing but that.
+	const seen = new Date('2026-02-03T04:05:06.000Z')
+	await recordAccountIp(env.DB, 8220, '203.0.113.9', seen)
+	await recordAccountIp(env.DB, 8220, '198.51.100.9', seen)
+	await seedAccount({ accountId: 8223, username: 'OldFriend', signupIp: '198.51.100.23' })
+	await recordAccountIp(env.DB, 8223, '198.51.100.9', seen)
 
 	const preview = (await (await staffGet('/api/staff/players/8220/linked', 8110)).json()) as {
 		arms: { ip: boolean; platform: boolean }
@@ -1827,6 +1837,7 @@ it('previews which other accounts a ban would reach', async () => {
 		platforms: Array<{ platform: number; platformId: string }>
 		signupIp: string | null
 		lastLoginIp: string | null
+		ips: Array<{ ip: string; firstSeen: string; lastSeen: string; hits: number }>
 	}
 	// BAN_EVASION_MATCH is unset in the test config, so both arms are live — the default
 	// an operator who sets nothing gets.
@@ -1843,6 +1854,7 @@ it('previews which other accounts a ban would reach', async () => {
 		platforms: [{ platform: PlatformType.Steam, platformId: 'steam-8220' }],
 		signupIp: null,
 		lastLoginIp: null,
+		ips: [],
 	})
 	expect(preview.linked.find((l) => l.accountId === 8221)).toEqual({
 		accountId: 8221,
@@ -1851,6 +1863,19 @@ it('previews which other accounts a ban would reach', async () => {
 		platforms: [],
 		signupIp: '203.0.113.9',
 		lastLoginIp: null,
+		ips: [],
+	})
+	// Matched on an address that lives only in the two histories — the blobs share nothing —
+	// and the row carries that history, so the moderator can see the one address it rests on.
+	const at = seen.toISOString()
+	expect(preview.linked.find((l) => l.accountId === 8223)).toEqual({
+		accountId: 8223,
+		username: 'OldFriend',
+		via: ['ip'],
+		platforms: [],
+		signupIp: '198.51.100.23',
+		lastLoginIp: null,
+		ips: [{ ip: '198.51.100.9', firstSeen: at, lastSeen: at, hits: 1 }],
 	})
 	// The player asked about heads the table in the same shape, so what the matches were
 	// made on is in view; nothing matched them to themselves.
@@ -1861,6 +1886,10 @@ it('previews which other accounts a ban would reach', async () => {
 		platforms: [{ platform: PlatformType.Steam, platformId: 'steam-8220' }],
 		signupIp: null,
 		lastLoginIp: '203.0.113.9',
+		ips: [
+			{ ip: '198.51.100.9', firstSeen: at, lastSeen: at, hits: 1 },
+			{ ip: '203.0.113.9', firstSeen: at, lastSeen: at, hits: 1 },
+		],
 	})
 	// Never the account asked about: the question is who ELSE.
 	expect(preview.linked.map((l) => l.accountId)).not.toContain(8220)

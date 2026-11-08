@@ -144,6 +144,8 @@ interface LinkedAccount {
 	platforms: Array<{ platform: number; platformId: string }>
 	signupIp: string | null
 	lastLoginIp: string | null
+	/** Every address the account has been seen from, most recent first. */
+	ips: Array<{ ip: string; firstSeen: string; lastSeen: string; hits: number }>
 }
 
 /**
@@ -1502,6 +1504,15 @@ function PlayerHistory({
 }
 
 /**
+ * " · last <date>" for an address's last-seen time, or nothing when there is none to show: a
+ * row backfilled from an account that recorded no login time carries an empty one.
+ */
+function seenOn(iso: string): string {
+	const at = new Date(iso)
+	return Number.isNaN(at.getTime()) ? '' : ` · last ${at.toLocaleDateString()}`
+}
+
+/**
  * Who ELSE a ban on this player would block.
  *
  * The IP arm is coarse by design — households, NAT, campus and carrier networks put
@@ -1534,6 +1545,10 @@ function LinkedAccountsPanel({
 		.filter(Boolean)
 		.join(' and ')
 
+	// The addresses this account has used, so a linked row's shared ones can be marked: an
+	// IP match is made on ANY address in either history, and the moderator should see which.
+	const selfIps = new Set(data.self.ips.map((entry) => entry.ip))
+
 	return (
 		<section className="card">
 			<h2>Who a ban would also reach</h2>
@@ -1553,6 +1568,7 @@ function LinkedAccountsPanel({
 							<th>Platform ID</th>
 							<th>Signup IP</th>
 							<th>Last login IP</th>
+							<th>All IPs seen</th>
 						</tr>
 					</thead>
 					<tbody>
@@ -1601,6 +1617,24 @@ function LinkedAccountsPanel({
 										<code>{row.lastLoginIp}</code>
 									) : (
 										<span className="muted">—</span>
+									)}
+								</td>
+								<td>
+									{row.ips.length === 0 ? (
+										<span className="muted">—</span>
+									) : (
+										row.ips.map((entry) => (
+											<div key={entry.ip} title={`First seen ${entry.firstSeen}`}>
+												<code>{entry.ip}</code>
+												{i > 0 && selfIps.has(entry.ip) && (
+													<span className="badge mod-via">Shared</span>
+												)}
+												<span className="muted">
+													{' '}
+													{entry.hits}×{seenOn(entry.lastSeen)}
+												</span>
+											</div>
+										))
 									)}
 								</td>
 							</tr>

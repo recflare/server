@@ -114,7 +114,12 @@ export interface Account {
 	 * their own count. Empty when the header is absent (e.g. in tests).
 	 */
 	signupIp?: string
-	/** The client IP of the most recent successful login; refreshed on every login. */
+	/**
+	 * The client IP of the most recent successful login; refreshed on every login (not on a
+	 * refresh grant). With `signupIp` it is the two ENDS of the account's address history;
+	 * the whole of it — every address, every grant — is the `account_ip` table (see
+	 * account-ip-db), which the ban-evasion IP arm reads alongside these two.
+	 */
 	lastLoginIp?: string
 	/**
 	 * Set via POST /account/me/email; absent until the player provides one. UNIQUE across

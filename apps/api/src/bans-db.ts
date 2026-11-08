@@ -12,20 +12,23 @@
  *    they PROVED to us; see the auth worker's platform-db) with a banned account. Sharp:
  *    linking only ever happens off a verified proof, so this really is the same person,
  *    modulo somebody handing over their Steam account.
- *  - IP — the caller shares a `signupIp`/`lastLoginIp` with a banned account. COARSE,
+ *  - IP — the caller shares an address with a banned account: any address EITHER account
+ *    has ever been seen from (the `account_ip` history `auth` writes on every token grant,
+ *    see @repo/domain's account-ip-db) plus the blob's `signupIp`/`lastLoginIp`. COARSE,
  *    and the one that will produce false positives: households, NAT, campus and mobile
  *    carrier networks put many unrelated players behind one address, so this arm bans a
- *    banned player's whole household along with them. It is the operator's call whether
+ *    banned player's whole household along with them — and, matching on history, a player
+ *    who once signed in from a banned friend's network. It is the operator's call whether
  *    that trade is worth it — hence `BAN_EVASION_MATCH` (see `banEvasionMatch`), which
  *    narrows or disables the linked arms without touching the direct one.
  *
  * The direct arm can never be turned off. That is the point of the split: an operator
  * dialling back evasion matching still enforces every ban they handed down.
  *
- * Reads three tables owned by three workers — `report` (api), `account` (auth, via the
- * blob) and `platform_account` (auth) — which is why this is its own module rather than
- * part of reports-db: it is the POLICY over those tables, not any one table's storage.
- * It only ever reads them.
+ * Reads four tables owned by two workers — `report` (api), and `account` (via the blob),
+ * `account_ip` and `platform_account` (all auth's) — which is why this is its own module
+ * rather than part of reports-db: it is the POLICY over those tables, not any one table's
+ * storage. It only ever reads them.
  *
  * The whole resolution is ONE statement. The alternative — fetch my ips, fetch my links,
  * then query bans — is three round trips on a path that runs on every matchmake and every
@@ -108,9 +111,17 @@ type BanMatchRow = ReportRow & {
 
 /**
  * Every ban in force, tested against the caller's account and against the identity they
- * present. `ips` and `ids` gather what the caller is known by: the account's stored IPs
- * and platform links (when there is an account) plus the IP/identity this request itself
- * carries (when there isn't one yet, or when it differs from what's stored).
+ * present. `ips` and `ids` gather what the caller is known by: every IP the account has
+ * been seen from (the `account_ip` history, and the blob's two for an account that
+ * predates it) and its platform links (when there is an account) plus the IP/identity
+ * this request itself carries (when there isn't one yet, or when it differs from what's
+ * stored).
+ *
+ * The IP arm then tests those addresses against the banned account's own history AND its
+ * blob fields. Both sides read both sources: the blob is still written on every login and
+ * is what every account carries from before the history existed (the 0016 migration
+ * backfills it, but the test seeds and any account written around the migration do not go
+ * through that), so dropping it would quietly narrow the arm.
  *
  * A NULL `?1` means "no account yet" — the `me` CTE is then empty and the account arm
  * cannot match, leaving the two linked arms to answer for a signup.
@@ -125,6 +136,7 @@ WITH me AS (
 ips AS (
 	SELECT signup_ip AS ip FROM me WHERE signup_ip IS NOT NULL
 	UNION SELECT last_login_ip FROM me WHERE last_login_ip IS NOT NULL
+	UNION SELECT ip FROM account_ip WHERE account_id = ?1
 	UNION SELECT ?3 WHERE ?3 IS NOT NULL
 ),
 ids AS (
@@ -134,14 +146,19 @@ ids AS (
 SELECT * FROM (
 	SELECT r.*,
 		(r.reported_player_id = ?1) AS via_account,
-		(?6 = 1 AND EXISTS (
-			SELECT 1 FROM account a, ips
-			WHERE a.account_id = r.reported_player_id
-				AND a.account_id <> COALESCE(?1, -1)
-				AND ips.ip IN (
-					json_extract(a.data, '$.signupIp'),
-					json_extract(a.data, '$.lastLoginIp')
-				)
+		(?6 = 1 AND r.reported_player_id <> COALESCE(?1, -1) AND (
+			EXISTS (
+				SELECT 1 FROM account a, ips
+				WHERE a.account_id = r.reported_player_id
+					AND ips.ip IN (
+						json_extract(a.data, '$.signupIp'),
+						json_extract(a.data, '$.lastLoginIp')
+					)
+			)
+			OR EXISTS (
+				SELECT 1 FROM account_ip x JOIN ips ON ips.ip = x.ip
+				WHERE x.account_id = r.reported_player_id
+			)
 		)) AS via_ip,
 		(?7 = 1 AND EXISTS (
 			SELECT 1 FROM platform_account p, ids
@@ -246,9 +263,13 @@ export interface LinkedAccount {
  * makes the preview unreadable. A missing blob yields null rather than dropping the row;
  * the block would still reach that account.
  *
- * An account matched by BOTH arms appears twice, once per arm. Deliberate: the arms are
- * separate evidence, and "shares a Steam identity AND an address" is worth seeing as two
- * lines. Platform rows sort first, being the arm that proves more.
+ * An account matched by BOTH arms appears twice, once per arm, and one matched on several
+ * addresses once per address. Deliberate: the arms are separate evidence, and "shares a
+ * Steam identity AND an address" is worth seeing as two lines. Platform rows sort first,
+ * being the arm that proves more.
+ *
+ * The IP side reads the same two sources as `resolveBan` — the `account_ip` history and the
+ * blob's two fields — on both ends, so the preview lists exactly what the arm would block.
  */
 export async function linkedAccounts(
 	db: D1Database,
@@ -268,6 +289,7 @@ export async function linkedAccounts(
 			ips AS (
 				SELECT signup_ip AS ip FROM me WHERE signup_ip IS NOT NULL
 				UNION SELECT last_login_ip FROM me WHERE last_login_ip IS NOT NULL
+				UNION SELECT ip FROM account_ip WHERE account_id = ?1
 			),
 			ids AS (
 				SELECT platform, platform_id FROM platform_account WHERE account_id = ?1
@@ -291,7 +313,16 @@ export async function linkedAccounts(
 					json_extract(a.data, '$.signupIp'),
 					json_extract(a.data, '$.lastLoginIp')
 				)
-			ORDER BY via DESC, accountId`
+			UNION
+			SELECT x.account_id AS accountId,
+				json_extract(a.data, '$.username') AS username,
+				'ip' AS via,
+				x.ip AS value
+			FROM account_ip x
+			JOIN ips ON ips.ip = x.ip
+			LEFT JOIN account a ON a.account_id = x.account_id
+			WHERE ?3 = 1 AND x.account_id <> ?1
+			ORDER BY via DESC, accountId, value`
 		)
 		.bind(accountId, arms.platform ? 1 : 0, arms.ip ? 1 : 0)
 		.all<LinkedAccount>()

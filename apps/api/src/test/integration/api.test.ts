@@ -3,6 +3,7 @@ import { exports } from 'cloudflare:workers'
 import { beforeAll, beforeEach, describe, expect, test } from 'vitest'
 
 import {
+	ACCOUNT_IP_SCHEMA_DDL,
 	addXp,
 	applyLevelUps,
 	AUDIT_LOG_SCHEMA_DDL,
@@ -21,6 +22,7 @@ import {
 	PRESENCE_SCHEMA_DDL,
 	PRESENCE_TTL_SECONDS,
 	PROGRESSION_SCHEMA_DDL,
+	recordAccountIp,
 	RELATIONSHIP_SCHEMA_DDL,
 	ROOM_INSTANCE_SCHEMA_DDL,
 	ROOM_SCHEMA_DDL,
@@ -41,7 +43,7 @@ import {
 } from '../../../../chat/src/thread-db'
 import priceCapSql from '../../../migrations/0032_custom_avatar_item_price_cap.sql?raw'
 import inventionPriceCapSql from '../../../migrations/0033_invention_price_cap.sql?raw'
-import { banEvasionMatch, resolveBan } from '../../bans-db'
+import { banEvasionMatch, linkedAccounts, resolveBan } from '../../bans-db'
 import {
 	createCustomAvatarItem,
 	SCHEMA_DDL as CUSTOM_AVATAR_ITEM_SCHEMA_DDL,
@@ -166,6 +168,9 @@ beforeAll(async () => {
 			JSON.stringify({ accountId: 42, username: 'Tester', profileImage: 'DefaultProfileImage.jpg' })
 		)
 		.run()
+	// Every address an account has been seen from (owned by auth) — the ban-evasion IP arm
+	// reads it beside the blob's two fields.
+	for (const stmt of ACCOUNT_IP_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 
 	// Images table (owned by the img worker) — uploadsaved records a row here.
 	for (const stmt of IMAGE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
@@ -8209,9 +8214,9 @@ describe('images', () => {
 		const max = 'a'.repeat(280)
 		expect((await postImageJson(path, owner, { ImageName, Description: max })).status).toBe(200)
 		expect((await getImageByName(env.DB, ImageName))!.Description).toBe(max)
-		expect(
-			(await postImageJson(path, owner, { ImageName, Description: `${max}b` })).status
-		).toBe(400)
+		expect((await postImageJson(path, owner, { ImageName, Description: `${max}b` })).status).toBe(
+			400
+		)
 		expect((await getImageByName(env.DB, ImageName))!.Description).toBe(max)
 	})
 
@@ -11293,6 +11298,41 @@ describe('ban evasion', () => {
 		await account(7013, { signupIp: '198.51.100.1', lastLoginIp: '203.0.113.20' })
 
 		expect(await resolveBan(env.DB, 7013)).toMatchObject({ via: 'ip', bannedAccountId: 7012 })
+	})
+
+	// The blob remembers two addresses; the `account_ip` history remembers every one. The
+	// arm reads both on both sides, so an address neither blob carries any more — a network
+	// the banned player used once, and the new account refreshed its token from once — still
+	// links them.
+	test('an IP in either account’s history is matched', async () => {
+		await account(7014, { signupIp: '203.0.113.14', lastLoginIp: '203.0.113.15' })
+		await recordAccountIp(env.DB, 7014, '203.0.113.16')
+		await ban(7014)
+		// Shares nothing with the banned blob; shares the history address, in its own history.
+		await account(7015, { signupIp: '198.51.100.15', lastLoginIp: '198.51.100.16' })
+		await recordAccountIp(env.DB, 7015, '203.0.113.16')
+		// Shares the banned account's history address as its own signup IP.
+		await account(7016, { signupIp: '203.0.113.16' })
+		// Shares the banned BLOB's address, through its own history only.
+		await account(7017, { signupIp: '198.51.100.17' })
+		await recordAccountIp(env.DB, 7017, '203.0.113.15')
+		// Same networks as none of them.
+		await account(7018, { signupIp: '198.51.100.18' })
+		await recordAccountIp(env.DB, 7018, '198.51.100.19')
+
+		for (const id of [7015, 7016, 7017]) {
+			expect(await resolveBan(env.DB, id), String(id)).toMatchObject({
+				via: 'ip',
+				bannedAccountId: 7014,
+			})
+		}
+		expect(await resolveBan(env.DB, 7018)).toBeNull()
+		// The preview reads the same sources, naming the address each match was made on.
+		expect(await linkedAccounts(env.DB, 7014)).toEqual([
+			{ accountId: 7015, username: 'Evader7015', via: 'ip', value: '203.0.113.16' },
+			{ accountId: 7016, username: 'Evader7016', via: 'ip', value: '203.0.113.16' },
+			{ accountId: 7017, username: 'Evader7017', via: 'ip', value: '203.0.113.15' },
+		])
 	})
 
 	test('an account sharing a platform identity with a banned account is matched', async () => {

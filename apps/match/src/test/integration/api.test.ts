@@ -9,6 +9,7 @@ import { exports } from 'cloudflare:workers'
 import { beforeAll, describe, expect, test } from 'vitest'
 
 import {
+	ACCOUNT_IP_SCHEMA_DDL,
 	AUDIT_LOG_SCHEMA_DDL,
 	countPlayersInInstance,
 	createRoomInstance,
@@ -190,6 +191,9 @@ beforeAll(async () => {
 		insertAccount.bind(JSON.stringify({ accountId: 42, username: 'Tester' })),
 		insertAccount.bind(JSON.stringify({ accountId: 43, username: 'Roomie' })),
 	])
+	// Every address an account has been seen from (owned by auth) — the ban check every
+	// matchmake runs reads it beside the blob's two fields.
+	for (const stmt of ACCOUNT_IP_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 
 	// Club tables (owned by the clubs worker) — matchmake/club reads the clubhouse
 	// room and the caller's membership from them.

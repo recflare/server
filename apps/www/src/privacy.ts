@@ -233,7 +233,7 @@ export function privacyPage(): string {
 	<ul>
 		<li>The time of your most recent sign-in.</li>
 		<li>A device identifier the game client generates for each installation, and the kind of device it is — a PC or a headset, for example.</li>
-		<li>The IP address the account was created from, and the IP address of your most recent sign-in.</li>
+		<li>The IP address the account was created from, the IP address of your most recent sign-in, and a history of every IP address the account has signed in or refreshed its session from, with when it was first and last seen there.</li>
 		<li>Session tokens. Refresh tokens are stored only as a one-way hash and are single-use.</li>
 		<li>Ordinary server request logs, held by our hosting provider, which include IP addresses, timestamps and the requests made.</li>
 	</ul>

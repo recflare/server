@@ -22,6 +22,7 @@ import {
 	isRolloutGameVersion,
 	isSupportedGameVersion,
 	isValidEmail,
+	recordAccountIp,
 	rolloutGameBuilds,
 	RoomInstanceType,
 	setLastLoginTime,
@@ -527,6 +528,7 @@ async function issueSession(
 	const refreshToken = await issueRefreshToken(c.env.DB, accountId)
 	await setLastLoginTime(c.env.DB, accountId, new Date().toISOString())
 	await setLoginContext(c.env.DB, accountId, { ip: clientIp })
+	await recordAccountIp(c.env.DB, accountId, clientIp)
 
 	const staffRoles = STAFF_ROLES.filter((role) => holdsRole(roleAccount, role))
 	if (staffRoles.length > 0) {
@@ -1267,7 +1269,9 @@ const app = new Hono<App>()
 			// The client's real IP, per Cloudflare (the client can't spoof CF-Connecting-IP —
 			// the edge sets it — unlike X-Forwarded-For, which is why we don't read that).
 			// Recorded as the immutable `signupIp` at creation and as `lastLoginIp` on every
-			// login; both feed the per-IP signup cap. Absent (empty) outside the CF edge.
+			// login; both feed the per-IP signup cap. Every grant also adds it to the account's
+			// `account_ip` history (below), which the ban-evasion IP arm matches on. Absent
+			// (empty) outside the CF edge.
 			const clientIp = c.req.header('cf-connecting-ip') ?? ''
 
 			// The support gate (see UNSUPPORTED_BUILD_DESCRIPTION): a posted build this server
@@ -1740,6 +1744,14 @@ const app = new Hono<App>()
 			// Issue a fresh, persisted refresh token (single-use; the client redeems it via
 			// grant_type=refresh_token). A refresh grant thus rotates its token.
 			const refreshToken = await issueRefreshToken(c.env.DB, Number(accountId))
+
+			// EVERY grant adds the address it came from to the account's IP history — a
+			// refresh included, unlike `lastLoginIp` (written in the login branches above),
+			// which records logins only. A refresh is the one grant that sees an address
+			// change mid-session, and the history is what the ban-evasion IP arm and the staff
+			// panel read (see @repo/domain's account-ip-db). One UPSERT, after the token is
+			// minted, so the row means a grant that actually happened.
+			await recordAccountIp(c.env.DB, Number(accountId), clientIp)
 
 			// A STAFF sign-in is an audit event in its own right. What these accounts then do is
 			// recorded against them on the `audit_log` table (`notify` files every `/internal/*`

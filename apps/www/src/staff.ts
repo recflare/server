@@ -17,6 +17,7 @@ import {
 	getPresences,
 	getRoomsByIds,
 	isCuratedRowSlug,
+	listAccountIpsFor,
 	listFlaggedAccounts,
 	movePlayerToDorm,
 	setListItems,
@@ -578,12 +579,16 @@ export async function playerHistoryHandler(c: Context<App>) {
  *
  * One row per account, not per arm as `linkedAccounts` returns them: a moderator reads
  * "who is this and what do they log in with", so each row carries the account's username,
- * EVERY platform identity on it (which platform, which id) and its signup and last-login
- * IPs, with `via` saying which arm(s) matched. `self` is the player asked about in the
- * same shape (an empty `via`), so the page can show what the matches were made on. The identities and IPs are the account's own, not just the shared
- * one — that is what lets an IP-only match be judged (a different Steam id on the same
- * address reads as a housemate; no platform login at all reads as a throwaway). The
- * Discord role snapshot stays off the wire — it's a benefits record, not identity.
+ * EVERY platform identity on it (which platform, which id), its signup and last-login IPs
+ * and `ips`, every address it has ever been seen from (the `account_ip` history, most
+ * recent first, with when and how often), with `via` saying which arm(s) matched. `self`
+ * is the player asked about in the same shape (an empty `via`), so the page can show what
+ * the matches were made on. The identities and IPs are the account's own, not just the
+ * shared one — that is what lets an IP-only match be judged (a different Steam id on the
+ * same address reads as a housemate; no platform login at all reads as a throwaway; one
+ * shared address among twenty, seen once, reads differently from the only address either
+ * account has ever used). The Discord role snapshot stays off the wire — it's a benefits
+ * record, not identity.
  */
 export async function linkedAccountsHandler(c: Context<App>) {
 	const playerId = Number.parseInt(c.req.param('id') ?? '', 10)
@@ -594,9 +599,10 @@ export async function linkedAccountsHandler(c: Context<App>) {
 	// The player themselves heads the list — same columns, so their logins and addresses
 	// sit directly above the accounts matched on them.
 	const ids = [playerId, ...new Set(matches.map((m) => m.accountId))]
-	const [accounts, links] = await Promise.all([
+	const [accounts, links, ipsByAccount] = await Promise.all([
 		getAccountsByIds(c.env.DB, ids),
 		Promise.all(ids.map((id) => getLinksForAccount(c.env.DB, id))),
+		listAccountIpsFor(c.env.DB, ids),
 	])
 	const byId = new Map(accounts.map((a) => [a.accountId, a]))
 	const [self, ...linked] = ids.map((accountId, i) => {
@@ -608,6 +614,12 @@ export async function linkedAccountsHandler(c: Context<App>) {
 			platforms: (links[i] ?? []).map(({ platform, platformId }) => ({ platform, platformId })),
 			signupIp: account?.signupIp || null,
 			lastLoginIp: account?.lastLoginIp || null,
+			ips: (ipsByAccount.get(accountId) ?? []).map(({ ip, firstSeen, lastSeen, hits }) => ({
+				ip,
+				firstSeen,
+				lastSeen,
+				hits,
+			})),
 		}
 	})
 	return c.json({ playerId, arms, self, linked })
