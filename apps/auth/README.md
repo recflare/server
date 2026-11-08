@@ -145,7 +145,9 @@ small private server, or when a shared network is being locked out.
 | `DB`                 | D1            | Shared `recflare` database; this worker owns `account`, `refresh_tokens` and `platform_account` |
 | `JWT_SECRET`         | Secrets Store | Shared HS256 signing key                                                                        |
 | `META_APP_SECRET`    | Secrets Store | Meta app secret; only used to validate a login nonce                                            |
+| `PROXYCHECK_API_KEY` | Secrets Store | proxycheck.io key for the optional VPN gate; empty means the gate is skipped                    |
 | `MAX_ACCOUNTS_PER_*` | vars          | Optional signup caps; read via `intVar`                                                         |
+| `VPN_BLOCK`          | var           | `off`/`signup`/`login` — refuse VPN, proxy and Tor addresses (see `src/proxycheck.ts`)          |
 
 Migrations live in `migrations/` and are tracked in their own `d1_migrations_auth`
 table, so they stay independent of the `rooms` worker's migrations on the same
@@ -177,6 +179,10 @@ wrangler secrets-store secret create <store-id> --name JWT_SECRET --scopes worke
 # a binding to a missing secret is a deploy error. Any placeholder will do; Meta
 # sign-ins then answer 500 until it holds the real value.
 wrangler secrets-store secret create <store-id> --name META_APP_SECRET --scopes workers --remote
+
+# The proxycheck.io key for the VPN gate (VPN_BLOCK). Same rule: it must exist for the
+# deploy; with a placeholder (or the knob unset) the gate is skipped.
+wrangler secrets-store secret create <store-id> --name PROXYCHECK_API_KEY --scopes workers --remote
 ```
 
 For local `wrangler dev`, seed local values (omit `--remote`) so `.get()` resolves:

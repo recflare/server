@@ -56,6 +56,10 @@ const AUTH_MESSAGES: Record<string, string> = {
 	// client can show the block screen), which is why there is no "banned" entry here.
 	'this device or network is blocked':
 		'This device or network is blocked. If you think that is a mistake, contact the server operator.',
+	// The operator's VPN gate (`VPN_BLOCK`, enforced by auth against proxycheck.io). One
+	// sentence for both forms: the signup and the sign-in are refused with the same description.
+	'vpn and proxy connections are not allowed':
+		'VPN and proxy connections are not allowed on this server. Turn yours off and try again.',
 }
 
 /** Fallbacks when nothing above matched, so a player never reads an OAuth code. */

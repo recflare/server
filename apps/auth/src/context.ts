@@ -20,6 +20,15 @@ export type Env = SharedHonoEnv & {
 	// logins with a 500 rather than silently trusting the client's platform_id.
 	META_APP_SECRET: SecretsStoreSecret
 	/**
+	 * The proxycheck.io API key behind the optional VPN / proxy gate (`VPN_BLOCK` below; see
+	 * proxycheck.ts). Same store as JWT_SECRET; resolve it with `.get()`. Like META_APP_SECRET
+	 * it has to EXIST in the store for the deploy to succeed — an operator who never turns the
+	 * gate on creates it with any placeholder and nothing reads it. Empty or unreadable, the
+	 * gate is BYPASSED whatever `VPN_BLOCK` says (logged, never a refusal); a free key allows
+	 * 1,000 lookups a day.
+	 */
+	PROXYCHECK_API_KEY: SecretsStoreSecret
+	/**
 	 * Cloudflare Email Sending (`send_email` in wrangler.jsonc). The one thing this worker
 	 * mails is the password-recovery code (`POST /account/recoverpassword`); `accounts` binds
 	 * the same for its email-change confirmation. The `from` address is `EMAIL_FROM` below
@@ -65,6 +74,18 @@ export type Env = SharedHonoEnv & {
 	 * Read through `banEvasionMatch`; the `match` worker reads the same knob.
 	 */
 	BAN_EVASION_MATCH?: string
+	/**
+	 * The VPN / proxy gate on `/connect/token`: `off` (the default), `signup`, or `login`.
+	 * `signup` refuses a `create_account` — the game's and the website's — from an address
+	 * proxycheck.io flags as a VPN, proxy or Tor exit; `login` refuses every fresh sign-in
+	 * from one as well (password, cached_login, the website's Discord sign-in, Studio's
+	 * device code). A `refresh_token` grant is never gated: it renews a session already
+	 * admitted, and refusing it would kick a player hourly rather than at the door. STAFF
+	 * (developer or moderator) sign in from anywhere, so an operator can't lock themselves
+	 * out. The lookup FAILS OPEN when proxycheck can't answer, and with no PROXYCHECK_API_KEY
+	 * above the check is skipped altogether. Read through `vpnBlockMode`; a typo reads as `off`.
+	 */
+	VPN_BLOCK?: string
 	/**
 	 * The Discord role ids that may sign in on a ROLLOUT-GATED client build (see
 	 * `ROLLOUT_GAME_VERSIONS` in @repo/domain) — numeric snowflakes, separated by commas

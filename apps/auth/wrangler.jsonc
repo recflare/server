@@ -44,6 +44,16 @@
 			"binding": "META_APP_SECRET",
 			"store_id": "local",
 			"secret_name": "META_APP_SECRET"
+		},
+		// The proxycheck.io key behind the OPTIONAL VPN / proxy gate (the VPN_BLOCK var, see
+		// src/proxycheck.ts). Same rule as META_APP_SECRET: the secret must exist in the store
+		// or the deploy fails, so an operator who leaves the gate off creates it with any
+		// placeholder — nothing reads it until VPN_BLOCK is set, and even then an empty value
+		// means the check is skipped rather than run keyless. See DEPLOYING.md.
+		{
+			"binding": "PROXYCHECK_API_KEY",
+			"store_id": "local",
+			"secret_name": "PROXYCHECK_API_KEY"
 		}
 	],
 	// Cloudflare Email Sending, for the password-recovery code (POST /account/recoverpassword).

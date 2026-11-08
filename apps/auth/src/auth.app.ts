@@ -91,6 +91,7 @@ import {
 	linkPlatformIdentity,
 	parseRoleIdList,
 } from './platform-db'
+import { isPrivateIp, lookupAnonymizer, vpnBlockMode } from './proxycheck'
 import { recoveryEmail } from './recovery-email'
 import { consumeRefreshToken, issueRefreshToken, revokeRefreshTokens } from './refresh-db'
 import { verifySteamTicket } from './steam-ticket'
@@ -479,6 +480,100 @@ function oauthError(
 }
 
 /**
+ * The `error_description` the VPN / proxy gate refuses with. A fixed sentence for the same
+ * reason BLOCKED_DESCRIPTION is: `www`'s auth-messages table keys on it to put a real
+ * sentence in front of a player on either form. Keep the two in sync.
+ */
+const VPN_BLOCKED_DESCRIPTION = 'vpn and proxy connections are not allowed'
+
+/**
+ * The proxycheck.io key, or '' when there isn't one. The binding is declared in
+ * wrangler.jsonc so it is always on `env`; what varies is whether the store holds a value —
+ * a `.get()` that throws (secret absent, store unreachable) reads as no key, and NO KEY
+ * MEANS NO GATE: `anonymizerRefusal` bypasses the check rather than querying keyless, so an
+ * operator who set `VPN_BLOCK` but never created the key gets a warning in the log and
+ * every grant let through, never a refusal they can't account for.
+ */
+async function proxycheckKey(env: Env): Promise<string> {
+	try {
+		return ((await env.PROXYCHECK_API_KEY.get()) ?? '').trim()
+	} catch {
+		return ''
+	}
+}
+
+/**
+ * The VPN / proxy gate (`VPN_BLOCK`, see context.ts and proxycheck.ts): the refusal to
+ * answer with, or null to let the grant proceed. Called at every point a grant is about to
+ * mint or create something, AFTER the credential checks — so, like the ban check, it can't
+ * be used to probe whether an account exists — and before anything is written.
+ *
+ * Returns null, costing nothing, when the knob is off, when it says `signup` and this is a
+ * sign-in, when the request has no address or a private one (local dev, tests), or when
+ * the account is STAFF: a developer or moderator is let in from anywhere, so an operator
+ * on a VPN can't lock themselves out of their own server. With no PROXYCHECK_API_KEY the
+ * check is BYPASSED (and the log says so) — the knob alone does nothing. Otherwise it looks
+ * the address up (cached per IP) and refuses an anonymizer. A lookup that can't answer lets
+ * the grant through with an error in the log — proxycheck being down, or the day's quota
+ * spent, must never be why nobody can sign in.
+ */
+async function anonymizerRefusal(
+	c: Context<App>,
+	opts: {
+		grantType: string
+		stage: 'signup' | 'login'
+		/** The account signing in; null on a signup, which has none yet. */
+		account: Account | null
+		ip: string
+	}
+): Promise<Response | null> {
+	const mode = vpnBlockMode(c.env.VPN_BLOCK)
+	if (mode === 'off') return null
+	if (mode === 'signup' && opts.stage !== 'signup') return null
+	if (opts.ip === '' || isPrivateIp(opts.ip)) return null
+	if (
+		opts.account &&
+		(holdsRole(opts.account, 'developer') || holdsRole(opts.account, 'moderator'))
+	) {
+		return null
+	}
+
+	const key = await proxycheckKey(c.env)
+	if (key === '') {
+		logger.warn('vpn gate: VPN_BLOCK is set but PROXYCHECK_API_KEY is empty, bypassing the check', {
+			grantType: opts.grantType,
+			stage: opts.stage,
+		})
+		return null
+	}
+
+	const verdict = await lookupAnonymizer(opts.ip, key)
+	if (verdict.kind === 'unknown') {
+		logger.error('vpn gate: proxycheck could not answer, letting the grant through', {
+			grantType: opts.grantType,
+			stage: opts.stage,
+			ip: opts.ip,
+			reason: verdict.reason,
+		})
+		return null
+	}
+	if (verdict.kind === 'clean') return null
+
+	logger.info(`${opts.stage} refused: vpn or proxy address`, {
+		grantType: opts.grantType,
+		accountId: opts.account?.accountId ?? null,
+		ip: opts.ip,
+		vpn: verdict.vpn,
+		proxy: verdict.proxy,
+		tor: verdict.tor,
+		provider: verdict.provider,
+		operator: verdict.operator,
+		risk: verdict.risk,
+	})
+	return oauthError(c, 'invalid_grant', VPN_BLOCKED_DESCRIPTION)
+}
+
+/**
  * Issue the same token body every other grant returns, for an account that has
  * already been authenticated — here, because the player approved a Studio code
  * on the website. Studio reads `expires_in` as seconds (`TimeSpan.FromSeconds`).
@@ -513,6 +608,16 @@ async function issueSession(
 
 	const roleAccount = await getAccount(c.env.DB, accountId)
 	if (!roleAccount) return oauthError(c, 'invalid_grant', 'account no longer exists')
+
+	// The VPN gate, for the two sign-ins that come through here (Studio's device code and
+	// the website's Discord sign-in). After the account resolved, so staff are recognised.
+	const vpnRefusal = await anonymizerRefusal(c, {
+		grantType,
+		stage: 'login',
+		account: roleAccount,
+		ip: clientIp,
+	})
+	if (vpnRefusal) return vpnRefusal
 
 	const accessToken = await generateToken(
 		String(accountId),
@@ -625,6 +730,14 @@ async function identityAssertionGrant(c: Context<App>, body: Record<string, unkn
 		})
 		return oauthError(c, 'invalid_grant', BLOCKED_DESCRIPTION)
 	}
+	// The VPN gate's signup arm, like create_account's: before anything is minted.
+	const vpnRefusal = await anonymizerRefusal(c, {
+		grantType: IDENTITY_ASSERTION_GRANT,
+		stage: 'signup',
+		account: null,
+		ip: clientIp,
+	})
+	if (vpnRefusal) return vpnRefusal
 	const maxPerPlatformId = intVar(
 		c.env.MAX_ACCOUNTS_PER_PLATFORM_ID,
 		DEFAULT_MAX_ACCOUNTS_PER_PLATFORM_ID
@@ -1172,6 +1285,15 @@ const app = new Hono<App>()
 				'everyone but staff. `create_account` on such a',
 				'build is refused before it mints anything, since a new account has no Discord link.',
 				'Grants posting no `ver` (a refresh, the website) and every other build are untouched.',
+				'',
+				'**VPN gate.** Optional, off by default. With the operator’s `VPN_BLOCK` set to',
+				'`signup`, a `create_account` from an address proxycheck.io flags as a VPN, proxy or',
+				'Tor exit is refused as `invalid_grant` "vpn and proxy connections are not allowed",',
+				'before anything is minted; set to `login`, every other fresh sign-in (`password`,',
+				'`cached_login`, `identity_assertion`, the Studio device code) is refused the same',
+				'way — except for staff (developer or moderator), who sign in from anywhere.',
+				'`refresh_token` is never gated. A lookup proxycheck cannot answer lets the grant',
+				'through.',
 			].join('\n'),
 			requestBody: form(
 				TokenRequest,
@@ -1184,7 +1306,8 @@ const app = new Hono<App>()
 					[
 						'Unusable grant: bad credentials, an unverifiable platform or platform_auth, an',
 						'invalid/expired refresh token, a missing account identifier, a signup cap reached,',
-						'or an account sharing a banned one’s device or network',
+						'an account sharing a banned one’s device or network, or (when the operator blocks',
+						'them) a VPN or proxy address',
 					].join(' ')
 				),
 				500: json(
@@ -1440,6 +1563,19 @@ const app = new Hono<App>()
 					})
 					return c.json({ error: 'invalid_grant', error_description: BLOCKED_DESCRIPTION }, 400)
 				}
+
+				// The VPN gate's signup arm (`VPN_BLOCK=signup` or `login`): a signup from an
+				// address proxycheck flags as a VPN, proxy or Tor exit is refused here, before
+				// anything is minted, for the same reason the evasion arms are — a refused
+				// signup must leave no row behind and burn no cap slot. The one external call
+				// on this path, so it sits after every check that costs nothing.
+				const vpnRefusal = await anonymizerRefusal(c, {
+					grantType,
+					stage: 'signup',
+					account: null,
+					ip: clientIp,
+				})
+				if (vpnRefusal) return vpnRefusal
 
 				// Signup caps. Checked before minting anything, so a rejected signup leaves no
 				// account behind. Each arm is skipped when it's disabled (var <= 0) or when its
@@ -1718,6 +1854,23 @@ const app = new Hono<App>()
 			if (grantType === 'refresh_token' && roleAccount) {
 				platform = accountPlatform(roleAccount)
 				platformId = roleAccount.platformId ?? ''
+			}
+
+			// The VPN gate's sign-in arm (`VPN_BLOCK=login`): a password or cached_login from an
+			// anonymizer is refused here — after the credential checks, like the ban read above,
+			// so it probes nothing; after the account read, so staff are recognised; and before
+			// anything is minted, so a refused sign-in leaves no refresh token behind. A
+			// create_account was judged before it minted (above) and is not judged twice. A
+			// refresh_token grant is never gated: it renews a session this gate already
+			// admitted, and refusing it would kick a player hourly rather than at the door.
+			if (grantType !== 'refresh_token' && grantType !== 'create_account') {
+				const vpnRefusal = await anonymizerRefusal(c, {
+					grantType,
+					stage: 'login',
+					account: roleAccount,
+					ip: clientIp,
+				})
+				if (vpnRefusal) return vpnRefusal
 			}
 			const accessToken = await generateToken(
 				accountId,

@@ -132,7 +132,16 @@ it. Create it too:
 wrangler secrets-store secret create <store-id> --name META_APP_SECRET --scopes workers --remote
 ```
 
-> ⚠️ Both secrets must **exist** in the store or `just deploy` fails on the `auth`
+`auth` also binds `PROXYCHECK_API_KEY`, the key behind the optional VPN gate
+([below](#blocking-vpns-and-proxies-proxycheckio)). Same rule: it must exist for the
+deploy to succeed, so create it with any placeholder if you don't want the gate — nothing
+reads it until `RECFLARE_VPN_BLOCK` is set.
+
+```bash
+wrangler secrets-store secret create <store-id> --name PROXYCHECK_API_KEY --scopes workers --remote
+```
+
+> ⚠️ All three secrets must **exist** in the store or `just deploy` fails on the `auth`
 > worker — a binding to a missing secret is a deploy error. If you have no Meta app,
 > create `META_APP_SECRET` with any placeholder value: Meta sign-ins then fail with a
 > 500 ("Meta platform verification is not configured") and nothing else is affected.
@@ -234,6 +243,7 @@ edit the value, then re-deploy the worker that reads them.
 | --------------------------------------- | --------- | ---------- | -------------------------------------------------------------- |
 | `RECFLARE_MAX_ACCOUNTS_PER_PLATFORM_ID` | `auth`    | `3`        | Accounts one Steam-verified identity may create. `0` disables. |
 | `RECFLARE_MAX_ACCOUNTS_PER_IP`          | `auth`    | `3`        | Accounts one signup IP may create. `0` disables.               |
+| `RECFLARE_VPN_BLOCK`                    | `auth`    | `off`      | Refuse VPN/proxy addresses: `signup` or `login`. Needs a key.  |
 | `RECFLARE_STARTING_TOKENS`              | `econ`    | `10000`    | RecCenterTokens a new player is granted.                       |
 | `RECFLARE_MAX_UPLOAD_BYTES`             | `storage` | `67108864` | Maximum binary upload size; larger files receive HTTP 413.     |
 | `RECFLARE_ROOM_REDIRECTS`               | `match`   | unset      | Rooms to switch out on matchmake, e.g. `2=MyHub`.              |
@@ -270,6 +280,43 @@ single address, so raise it (or set it to `0`) if real players report being lock
 > worker's variables wholesale, so a dashboard-set value is wiped by your next
 > `just deploy`. `.env` is the durable place. Real secrets don't belong there either — they
 > go in the Cloudflare Secrets Store, like the shared `JWT_SECRET` above.
+
+### Blocking VPNs and proxies (proxycheck.io)
+
+Off by default. `auth` can refuse `/connect/token` grants from an address that
+[proxycheck.io](https://proxycheck.io) flags as a VPN, proxy or Tor exit — the usual way a
+banned player comes back, or one player makes a hundred accounts. Two steps:
+
+1. Get a key: a free proxycheck.io account gives 1,000 lookups a day, and `auth` caches
+   each address's verdict for six hours, so that covers a busy server's sign-ins. Put it in
+   the shared Secrets Store:
+
+   ```bash
+   wrangler secrets-store secret create <store-id> --name PROXYCHECK_API_KEY \
+     --scopes workers --remote
+   ```
+
+2. Pick what to refuse in `.env` and redeploy `auth`:
+
+   ```bash
+   RECFLARE_VPN_BLOCK=signup   # creating an account from a VPN (game and website)
+   RECFLARE_VPN_BLOCK=login    # that, and every fresh sign-in from one
+   ```
+
+**Both are needed.** With the knob set and no key, the check is skipped and `auth` logs a
+warning on each sign-in it would have judged — never a refusal you can't account for. The
+secret must exist for the deploy to succeed (the same rule as `META_APP_SECRET`), so an
+operator who never wants this still creates it, with any placeholder value, and leaves
+`RECFLARE_VPN_BLOCK` unset.
+
+What the gate does and doesn't do: a `refresh_token` grant is never refused, so a player
+who turns a VPN on mid-session plays until they next sign in; staff accounts (developer or
+moderator) sign in from anywhere; a lookup proxycheck can't answer — it is down, the day's
+quota is spent, the key is wrong — lets the grant through and is logged, so this never
+fails closed. The refusal reads "VPN and proxy connections are not allowed on this server"
+on the website and as an `invalid_grant` in the game. It catches commercial VPNs, Tor and
+datacenter proxies; it does not catch residential proxies or a phone's hotspot, and some
+corporate, campus and carrier networks are flagged, so `signup` is the lower-risk setting.
 
 ### Signing up on the website (Turnstile)
 

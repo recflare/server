@@ -3067,3 +3067,269 @@ describe('identity_assertion grant', () => {
 		expect(existing.status).toBe(200)
 	})
 })
+
+describe('VPN gate (VPN_BLOCK, proxycheck.io)', () => {
+	// The key the gate needs before it does anything; seeded here, blanked in the bypass test.
+	const PROXYCHECK_KEY = 'test-proxycheck-key'
+	let proxycheckSecretId: string
+	beforeAll(async () => {
+		proxycheckSecretId = await adminSecretsStore(env.PROXYCHECK_API_KEY).create(PROXYCHECK_KEY)
+		// A developer, for the staff exemption.
+		await env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
+			.bind(
+				JSON.stringify({
+					accountId: 9701,
+					username: 'DevOnVpn',
+					passwordHash: await hashPassword(LOGIN_PASSWORD),
+					isDeveloper: true,
+				})
+			)
+			.run()
+	})
+
+	/** What the stand-in proxycheck says about an address. Unlisted addresses are clean. */
+	type Answer = 'clean' | 'vpn' | 'tor' | 'denied' | 'unreachable' | 'garbage'
+
+	/**
+	 * Run `fn` with proxycheck.io stubbed, the way `metaLogin` stubs Meta: the gate resolves
+	 * `globalThis.fetch` per call. Returns the addresses the worker asked about alongside the
+	 * result, so a test can assert that a path made NO lookup, or exactly one. The reply
+	 * mirrors the v3 response shape (`status`, then the address as a key).
+	 */
+	async function withProxycheck<T>(
+		answers: Record<string, Answer>,
+		fn: () => Promise<T>
+	): Promise<{ result: T; asked: string[]; keys: Array<string | null> }> {
+		const asked: string[] = []
+		const keys: Array<string | null> = []
+		const realFetch = globalThis.fetch
+		globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+			if (!url.startsWith('https://proxycheck.io/v3/')) return realFetch(input, init)
+			const parsed = new URL(url)
+			const ip = decodeURIComponent(parsed.pathname.slice('/v3/'.length))
+			asked.push(ip)
+			keys.push(parsed.searchParams.get('key'))
+			const answer = answers[ip] ?? 'clean'
+			if (answer === 'unreachable') throw new Error('connection reset')
+			if (answer === 'garbage') return new Response('<html>busy</html>', { status: 200 })
+			if (answer === 'denied') {
+				return Response.json(
+					{ status: 'denied', message: '1,000 Free queries exhausted.' },
+					{ status: 429 }
+				)
+			}
+			const flagged = answer !== 'clean'
+			return Response.json({
+				status: 'ok',
+				[ip]: {
+					network: { asn: 'AS64496', provider: flagged ? 'Example Hosting' : 'Example ISP' },
+					detections: {
+						proxy: answer === 'tor',
+						vpn: answer === 'vpn',
+						tor: answer === 'tor',
+						hosting: flagged,
+						anonymous: flagged,
+						risk: flagged ? 100 : 0,
+					},
+					...(flagged ? { operator: { name: 'ExampleVPN' } } : {}),
+				},
+				query_time: 1,
+			})
+		}) as unknown as typeof fetch
+		try {
+			return { result: await fn(), asked, keys }
+		} finally {
+			globalThis.fetch = realFetch
+		}
+	}
+
+	/** Run `fn` with the knob set, restoring it after. */
+	async function withMode<T>(mode: string | undefined, fn: () => Promise<T>): Promise<T> {
+		const original = env.VPN_BLOCK
+		try {
+			if (mode === undefined) delete env.VPN_BLOCK
+			else env.VPN_BLOCK = mode
+			return await fn()
+		} finally {
+			if (original === undefined) delete env.VPN_BLOCK
+			else env.VPN_BLOCK = original
+		}
+	}
+
+	const login = (accountId: number, ip?: string) =>
+		postToken(`grant_type=password&account_id=${accountId}&password=${LOGIN_PASSWORD}`, ip)
+	const signup = (ip?: string) => postToken('grant_type=create_account&password=hunter22', ip)
+	const accountCount = async () =>
+		(await env.DB.prepare('SELECT COUNT(*) AS n FROM account').first<{ n: number }>())!.n
+
+	const REFUSED = 'vpn and proxy connections are not allowed'
+
+	test('is off by default: nothing is looked up and a VPN address signs in', async () => {
+		const { result, asked } = await withProxycheck({ '192.0.2.10': 'vpn' }, () =>
+			withMode(undefined, () => login(42, '192.0.2.10'))
+		)
+		expect(result.status).toBe(200)
+		expect(asked).toEqual([])
+	})
+
+	test('login: refuses a password sign-in from a VPN with the shared description, and caches the verdict', async () => {
+		const { result, asked, keys } = await withProxycheck({ '192.0.2.11': 'vpn' }, () =>
+			withMode('login', async () => [await login(42, '192.0.2.11'), await login(42, '192.0.2.11')])
+		)
+		for (const res of result) {
+			expect(res.status).toBe(400)
+			expect(res.json.error).toBe('invalid_grant')
+			expect(res.json.error_description).toBe(REFUSED)
+		}
+		// One lookup for two attempts — the verdict is cached per address — made with the
+		// operator's key.
+		expect(asked).toEqual(['192.0.2.11'])
+		expect(keys).toEqual([PROXYCHECK_KEY])
+	})
+
+	test('login: a Tor exit is refused like a VPN; a clean address signs in', async () => {
+		const { result } = await withProxycheck({ '192.0.2.12': 'tor', '192.0.2.13': 'clean' }, () =>
+			withMode('login', async () => ({
+				tor: await login(42, '192.0.2.12'),
+				clean: await login(42, '192.0.2.13'),
+			}))
+		)
+		expect(result.tor.status).toBe(400)
+		expect(result.tor.json.error_description).toBe(REFUSED)
+		expect(result.clean.status).toBe(200)
+	})
+
+	test('login: a signup from a VPN is refused too, and mints nothing', async () => {
+		const before = await accountCount()
+		const { result } = await withProxycheck({ '192.0.2.14': 'vpn' }, () =>
+			withMode('login', () => signup('192.0.2.14'))
+		)
+		expect(result.status).toBe(400)
+		expect(result.json.error_description).toBe(REFUSED)
+		expect(await accountCount()).toBe(before)
+	})
+
+	test('signup: gates create_account only — a sign-in from a VPN is not even looked up', async () => {
+		const { result, asked } = await withProxycheck(
+			{ '192.0.2.15': 'vpn', '192.0.2.16': 'vpn' },
+			() =>
+				withMode('signup', async () => ({
+					signup: await signup('192.0.2.15'),
+					login: await login(42, '192.0.2.16'),
+				}))
+		)
+		expect(result.signup.status).toBe(400)
+		expect(result.signup.json.error_description).toBe(REFUSED)
+		expect(result.login.status).toBe(200)
+		expect(asked).toEqual(['192.0.2.15'])
+	})
+
+	test('staff sign in from anywhere, without a lookup', async () => {
+		const { result, asked } = await withProxycheck({ '192.0.2.17': 'vpn' }, () =>
+			withMode('login', () => login(9701, '192.0.2.17'))
+		)
+		expect(result.status).toBe(200)
+		expect(asked).toEqual([])
+	})
+
+	test('refresh_token is never gated', async () => {
+		const { result, asked } = await withProxycheck(
+			{ '192.0.2.18': 'clean', '192.0.2.19': 'vpn' },
+			() =>
+				withMode('login', async () => {
+					const first = await login(42, '192.0.2.18')
+					expect(first.status).toBe(200)
+					// The same session renews from a VPN: the player turned one on mid-session.
+					return postToken(
+						`grant_type=refresh_token&refresh_token=${first.json.refresh_token as string}`,
+						'192.0.2.19'
+					)
+				})
+		)
+		expect(result.status).toBe(200)
+		expect(asked).toEqual(['192.0.2.18'])
+	})
+
+	test('fails open when proxycheck cannot answer: quota denied, unreachable, or not JSON', async () => {
+		const { result } = await withProxycheck(
+			{ '192.0.2.20': 'denied', '192.0.2.21': 'unreachable', '192.0.2.22': 'garbage' },
+			() =>
+				withMode('login', () =>
+					Promise.all([login(42, '192.0.2.20'), login(42, '192.0.2.21'), login(42, '192.0.2.22')])
+				)
+		)
+		for (const res of result) expect(res.status).toBe(200)
+	})
+
+	test('a failed lookup is not cached: the next attempt asks again', async () => {
+		const { asked } = await withProxycheck({ '192.0.2.23': 'denied' }, () =>
+			withMode('login', async () => [await login(42, '192.0.2.23'), await login(42, '192.0.2.23')])
+		)
+		expect(asked).toEqual(['192.0.2.23', '192.0.2.23'])
+	})
+
+	test('skips an absent or private address without a lookup', async () => {
+		const { result, asked } = await withProxycheck({}, () =>
+			withMode('login', () =>
+				Promise.all([login(42), login(42, '10.0.0.5'), login(42, '127.0.0.1')])
+			)
+		)
+		for (const res of result) expect(res.status).toBe(200)
+		expect(asked).toEqual([])
+	})
+
+	test('an unrecognised VPN_BLOCK value reads as off', async () => {
+		const { result, asked } = await withProxycheck({ '192.0.2.24': 'vpn' }, () =>
+			withMode('yes please', () => login(42, '192.0.2.24'))
+		)
+		expect(result.status).toBe(200)
+		expect(asked).toEqual([])
+	})
+
+	test('with no PROXYCHECK_API_KEY the check is bypassed, whatever the knob says', async () => {
+		const admin = adminSecretsStore(env.PROXYCHECK_API_KEY)
+		await admin.update('', proxycheckSecretId)
+		try {
+			const { result, asked } = await withProxycheck({ '192.0.2.25': 'vpn' }, () =>
+				withMode('login', () => login(42, '192.0.2.25'))
+			)
+			expect(result.status).toBe(200)
+			expect(asked).toEqual([])
+		} finally {
+			await admin.update(PROXYCHECK_KEY, proxycheckSecretId)
+		}
+	})
+
+	test('the identity_assertion grant is gated on both arms', async () => {
+		const jwtSecret = 'test-signing-key'
+		const discordId = '700000000000009701'
+		const redeem = async (id: string, ip: string) =>
+			postToken(
+				`grant_type=identity_assertion&assertion=${encodeURIComponent(
+					await generateIdentityAssertion(
+						{ platform: PlatformType.Discord, platformId: id },
+						jwtSecret
+					)
+				)}`,
+				ip
+			)
+		// A Discord user with no account yet: the signup arm.
+		const created = await withProxycheck({ '192.0.2.26': 'vpn' }, () =>
+			withMode('signup', () => redeem(discordId, '192.0.2.26'))
+		)
+		expect(created.result.status).toBe(400)
+		expect(created.result.json.error_description).toBe(REFUSED)
+		// Made from a clean address, then signed into from a VPN: the login arm.
+		const made = await withProxycheck({}, () =>
+			withMode('login', () => redeem(discordId, '192.0.2.27'))
+		)
+		expect(made.result.status).toBe(200)
+		expect(made.result.json.created).toBe(true)
+		const again = await withProxycheck({ '192.0.2.28': 'vpn' }, () =>
+			withMode('login', () => redeem(discordId, '192.0.2.28'))
+		)
+		expect(again.result.status).toBe(400)
+		expect(again.result.json.error_description).toBe(REFUSED)
+	})
+})
