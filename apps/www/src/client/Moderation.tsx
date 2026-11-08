@@ -764,6 +764,7 @@ function ReportQueue({
 						value={sinceDays}
 						onChange={(e) => navigate(queueUrl({ sinceDays: e.target.value }))}
 					>
+						<option value="1">Last day</option>
 						<option value="7">Last 7 days</option>
 						<option value="30">Last 30 days</option>
 						<option value="90">Last 90 days</option>
