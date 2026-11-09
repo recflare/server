@@ -49,6 +49,18 @@ const AUTH_MESSAGES: Record<string, string> = {
 	'invalid or expired identity assertion':
 		'Sign-in is unavailable right now. This is a problem on our end — please try again later.',
 	'refresh_token is invalid or expired': 'Your session has expired. Please sign in again.',
+	// Two-factor sign-in (auth's two-factor.ts). The challenges themselves (`continue_2fa`,
+	// `security_code required`) never reach this table — the sign-in form asks for the code —
+	// but the refusals of a code do.
+	'incorrect 2FA code': 'That code is incorrect. Check your authenticator app and try again.',
+	'incorrect security code; a new one has been emailed':
+		'That code is incorrect. A new code has been emailed to you — enter that one.',
+	'too many attempts; wait a few minutes and sign in again':
+		'Too many incorrect codes. Wait a few minutes, then sign in again.',
+	'too many security codes sent today; try again tomorrow':
+		'Too many security codes have been sent today. Try again tomorrow.',
+	'no email address to send a security code to':
+		'Your account has emailed sign-in codes turned on, but no email address to send them to. Contact the server operator.',
 	// An account that shares a device or network with a BANNED one. Phrased for BOTH the
 	// person evading a ban and the housemate of one — the IP arm cannot tell them apart —
 	// and for both forms, since signup and sign-in send the same description. A directly

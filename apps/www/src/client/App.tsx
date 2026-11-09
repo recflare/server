@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { renderSVG } from 'uqr'
 
 import { Accessibility } from '@repo/domain/src/enums'
 import { GAME_VERSION } from '@repo/domain/src/presence-db'
@@ -513,8 +514,27 @@ async function previousUnityAssetId(roomId: number, sub: SubRoom): Promise<strin
  * A refusal is translated through the table shared with the worker (see
  * `auth-messages.ts`): auth's `error` is always a machine code, and the reason in
  * `error_description` is written for an operator, not a player.
+ *
+ * An account with two-factor sign-in on answers the password with a CHALLENGE instead of a
+ * token — resolved here as the kind of code wanted, with no session set. The form then
+ * posts the same username and password again with the code as `second`; auth re-checks the
+ * password every time, and `loginContext` (one per attempt at signing in) ties the retries
+ * to the same pending sign-in. A wrong code throws like any other refusal.
  */
-async function signIn(username: string, password: string): Promise<void> {
+/** The second factor auth asked a sign-in for: an authenticator app, or an emailed code. */
+type SignInChallenge = 'totp' | 'email'
+
+interface SecondFactor {
+	kind: SignInChallenge
+	code: string
+	loginContext: string
+}
+
+async function signIn(
+	username: string,
+	password: string,
+	second?: SecondFactor
+): Promise<SignInChallenge | null> {
 	const res = await fetch(`${where().auth}/connect/token`, {
 		method: 'POST',
 		headers: { 'content-type': 'application/x-www-form-urlencoded' },
@@ -523,6 +543,12 @@ async function signIn(username: string, password: string): Promise<void> {
 			username,
 			platform: WEB_PLATFORM,
 			password,
+			...(second
+				? {
+						login_context: second.loginContext,
+						[second.kind === 'totp' ? '2fa_code' : 'security_code']: second.code,
+					}
+				: {}),
 		}).toString(),
 	}).catch(() => null)
 	if (res === null) throw new Error(authUnreachable('login'))
@@ -530,11 +556,16 @@ async function signIn(username: string, password: string): Promise<void> {
 	const data = (await res.json().catch(() => ({}))) as Record<string, unknown>
 	if (!res.ok) {
 		const code = typeof data.error === 'string' ? data.error : ''
+		// The account has two-factor sign-in on: the password was right, and auth now wants
+		// the second factor — the form asks for it and posts this again with the code.
+		if (code === 'continue_2fa') return 'totp'
+		if (code === 'security_code required') return 'email'
 		const description = typeof data.error_description === 'string' ? data.error_description : ''
 		throw new Error(authFailure('login', res.status, code, description).message)
 	}
 	if (typeof data.access_token !== 'string') throw new Error(authUnreachable('login'))
 	setToken(data.access_token)
+	return null
 }
 
 /**
@@ -628,6 +659,33 @@ const confirmEmail = (code: string): Promise<PendingEmail & { applied: boolean }
 		form: { code },
 		authed: true,
 	})
+
+/**
+ * Two-factor sign-in settings, on `auth` (`/account/me/2fa*`). The factor guards the
+ * PASSWORD sign-in — the game's and this site's — so turning one on, and off, takes the
+ * password; turning an authenticator off takes a current code from it too. One at a time.
+ */
+interface TwoFactorStatus {
+	method: 'none' | 'totp' | 'email'
+	totpPending: boolean
+	hasEmail: boolean
+	hasPassword: boolean
+}
+const fetchTwoFactor = (): Promise<TwoFactorStatus> =>
+	call<TwoFactorStatus>(`${where().auth}/account/me/2fa`, { authed: true })
+
+/** Start setting up an authenticator: the secret to load into it, and its `otpauth://` URI. */
+const beginTotp = (): Promise<{ secret: string; uri: string }> =>
+	call(`${where().auth}/account/me/2fa/totp`, { method: 'POST', authed: true })
+
+const confirmTotp = (password: string, code: string): Promise<unknown> =>
+	call(`${where().auth}/account/me/2fa/totp/confirm`, { form: { password, code }, authed: true })
+
+const enableEmailTwoFactor = (password: string): Promise<unknown> =>
+	call(`${where().auth}/account/me/2fa/email`, { form: { password }, authed: true })
+
+const disableTwoFactor = (password: string, code: string): Promise<unknown> =>
+	call(`${where().auth}/account/me/2fa/disable`, { form: { password, code }, authed: true })
 
 /** Change the account's password. Lives on `auth`, not `accounts`. */
 const changePassword = (oldPassword: string, newPassword: string): Promise<unknown> =>
@@ -6024,43 +6082,93 @@ function SignupForm({
 function LoginForm({ onAuthed }: { onAuthed: (a: SelfAccount) => void }) {
 	const [username, setUsername] = useState('')
 	const [password, setPassword] = useState('')
-	const { pending, error, run } = useAction()
+	// Set once auth has accepted the password and asked for a second factor. The context is
+	// minted with it, so every code posted for this sign-in is counted against the same one.
+	const [challenge, setChallenge] = useState<{ kind: SignInChallenge; context: string } | null>(
+		null
+	)
+	const [code, setCode] = useState('')
+	const { pending, error, done, run } = useAction()
+
+	const reset = () => {
+		setChallenge(null)
+		setCode('')
+	}
 
 	return (
 		<form
 			onSubmit={(e) => {
 				e.preventDefault()
 				void run(async () => {
-					await signIn(username, password)
+					const second = challenge
+						? { kind: challenge.kind, code: code.trim(), loginContext: challenge.context }
+						: undefined
+					const asked = await signIn(username, password, second)
+					if (asked !== null) {
+						setChallenge({ kind: asked, context: challenge?.context ?? crypto.randomUUID() })
+						setCode('')
+						return asked === 'email' ? 'A security code was emailed to you.' : ''
+					}
 					onAuthed(await fetchMe())
 					return ''
 				})
 			}}
 		>
-			<label>
-				Username
-				<input
-					type="text"
-					value={username}
-					autoComplete="username"
-					onChange={(e) => setUsername(e.target.value)}
-					required
-				/>
-			</label>
-			<label>
-				Password
-				<input
-					type="password"
-					value={password}
-					autoComplete="current-password"
-					onChange={(e) => setPassword(e.target.value)}
-					required
-				/>
-			</label>
+			{challenge === null ? (
+				<>
+					<label>
+						Username
+						<input
+							type="text"
+							value={username}
+							autoComplete="username"
+							onChange={(e) => setUsername(e.target.value)}
+							required
+						/>
+					</label>
+					<label>
+						Password
+						<input
+							type="password"
+							value={password}
+							autoComplete="current-password"
+							onChange={(e) => setPassword(e.target.value)}
+							required
+						/>
+					</label>
+				</>
+			) : (
+				<>
+					<p className="muted">
+						{challenge.kind === 'totp'
+							? 'Enter the six-digit code from your authenticator app.'
+							: 'Enter the six-digit security code emailed to you. It works once, for 30 minutes.'}
+					</p>
+					<label>
+						Code
+						<input
+							type="text"
+							inputMode="numeric"
+							pattern="[0-9 ]{6,7}"
+							value={code}
+							autoComplete="one-time-code"
+							autoFocus
+							onChange={(e) => setCode(e.target.value)}
+							required
+						/>
+					</label>
+				</>
+			)}
 			{error && <p className="error">{error}</p>}
+			{done && <p className="ok">{done}</p>}
 			<button type="submit" disabled={pending}>
-				{pending ? 'Signing in…' : 'Sign in'}
+				{pending ? 'Signing in…' : challenge ? 'Verify' : 'Sign in'}
 			</button>
+			{challenge && (
+				<button type="button" className="link" onClick={reset} disabled={pending}>
+					Use a different account
+				</button>
+			)}
 		</form>
 	)
 }
@@ -6104,6 +6212,7 @@ function Dashboard({
 			render: () => <EmailForm account={account} onChange={onChange} />,
 		},
 		{ id: 'password', label: 'Password', render: () => <PasswordForm /> },
+		{ id: 'two-factor', label: 'Two-factor sign-in', render: () => <TwoFactorForm /> },
 		// Shown to everyone: the panel itself tells an account without Studio access how to
 		// get it, and `studio` re-checks on upload.
 		{
@@ -7251,6 +7360,200 @@ function PasswordForm() {
 					{pending ? 'Updating…' : 'Change password'}
 				</button>
 			</form>
+		</section>
+	)
+}
+
+/**
+ * Two-factor sign-in: a second step after the password, in the game and on this site. An
+ * authenticator app (scan the QR code, or type the secret, then confirm with a code) or a
+ * code emailed at each sign-in. Discord and the game's remembered devices (cached logins)
+ * don't ask for it: it guards the PASSWORD, which is why an account needs one first.
+ */
+function TwoFactorForm() {
+	const [status, setStatus] = useState<TwoFactorStatus | null>(null)
+	const [setup, setSetup] = useState<{ secret: string; uri: string } | null>(null)
+	const [password, setPassword] = useState('')
+	const [code, setCode] = useState('')
+	const load = useAction()
+	const act = useAction()
+
+	const { run: runLoad } = load
+	useEffect(() => {
+		void runLoad(async () => {
+			setStatus(await fetchTwoFactor())
+			return ''
+		})
+	}, [runLoad])
+	const clear = () => {
+		setPassword('')
+		setCode('')
+	}
+
+	const passwordField = (
+		<label>
+			Password
+			<input
+				type="password"
+				value={password}
+				autoComplete="current-password"
+				onChange={(e) => setPassword(e.target.value)}
+				required
+			/>
+		</label>
+	)
+	const codeField = (label: string) => (
+		<label>
+			{label}
+			<input
+				type="text"
+				inputMode="numeric"
+				pattern="[0-9 ]{6,7}"
+				value={code}
+				autoComplete="one-time-code"
+				onChange={(e) => setCode(e.target.value)}
+				required
+			/>
+		</label>
+	)
+	const feedback = (
+		<>
+			{act.error && <p className="error">{act.error}</p>}
+			{act.done && <p className="ok">{act.done}</p>}
+		</>
+	)
+
+	let body: React.ReactNode
+	if (status === null) {
+		body = load.error ? <p className="error">{load.error}</p> : <p className="muted">Loading…</p>
+	} else if (!status.hasPassword) {
+		body = (
+			<p className="muted">
+				Two-factor sign-in protects your password, and this account has none yet. Set one under
+				Password first.
+			</p>
+		)
+	} else if (status.method !== 'none') {
+		body = (
+			<form
+				onSubmit={(e) => {
+					e.preventDefault()
+					void act.run(async () => {
+						await disableTwoFactor(password, code.trim())
+						clear()
+						setStatus({ ...status, method: 'none', totpPending: false })
+						return 'Two-factor sign-in is off.'
+					})
+				}}
+			>
+				<p>
+					<strong>On</strong> —{' '}
+					{status.method === 'totp'
+						? 'signing in with your password also asks for a code from your authenticator app.'
+						: 'signing in with your password also asks for a code emailed to you.'}
+				</p>
+				{passwordField}
+				{status.method === 'totp' && codeField('Current code from the app')}
+				{feedback}
+				<button type="submit" disabled={act.pending}>
+					{act.pending ? 'Turning off…' : 'Turn off'}
+				</button>
+			</form>
+		)
+	} else if (setup !== null) {
+		const qr = `data:image/svg+xml;utf8,${encodeURIComponent(renderSVG(setup.uri, { border: 2 }))}`
+		body = (
+			<form
+				onSubmit={(e) => {
+					e.preventDefault()
+					void act.run(async () => {
+						await confirmTotp(password, code.trim())
+						clear()
+						setSetup(null)
+						setStatus({ ...status, method: 'totp', totpPending: false })
+						return 'Authenticator sign-in is on.'
+					})
+				}}
+			>
+				<p className="muted">
+					Scan this with your authenticator app (Google Authenticator, Authy, 1Password…), or
+					on this device <a href={setup.uri}>open it in the app</a>.
+				</p>
+				<img
+					src={qr}
+					alt="QR code for your authenticator app"
+					width={192}
+					height={192}
+					className="totp-qr"
+				/>
+				<p className="muted">
+					Can't scan? Enter this key: <code>{setup.secret.replace(/(.{4})/g, '$1 ').trim()}</code>
+				</p>
+				{codeField('Code from the app')}
+				{passwordField}
+				{feedback}
+				<button type="submit" disabled={act.pending}>
+					{act.pending ? 'Confirming…' : 'Turn on'}
+				</button>
+				<button
+					type="button"
+					className="link"
+					onClick={() => {
+						setSetup(null)
+						clear()
+					}}
+				>
+					Cancel
+				</button>
+			</form>
+		)
+	} else {
+		body = (
+			<>
+				<p className="muted">Off. Choose a second step for signing in with your password:</p>
+				<form
+					onSubmit={(e) => {
+						e.preventDefault()
+						void act.run(async () => {
+							setSetup(await beginTotp())
+							clear()
+							return ''
+						})
+					}}
+				>
+					<button type="submit" disabled={act.pending}>
+						Use an authenticator app
+					</button>
+				</form>
+				<form
+					onSubmit={(e) => {
+						e.preventDefault()
+						void act.run(async () => {
+							await enableEmailTwoFactor(password)
+							clear()
+							setStatus({ ...status, method: 'email' })
+							return 'Emailed sign-in codes are on.'
+						})
+					}}
+				>
+					<p className="muted">
+						Or get a code by email each time you sign in
+						{status.hasEmail ? '.' : ' — add an email address under Email first.'}
+					</p>
+					{status.hasEmail && passwordField}
+					{feedback}
+					<button type="submit" disabled={act.pending || !status.hasEmail}>
+						Use emailed codes
+					</button>
+				</form>
+			</>
+		)
+	}
+
+	return (
+		<section className="card">
+			<h2>Two-factor sign-in</h2>
+			{body}
 		</section>
 	)
 }

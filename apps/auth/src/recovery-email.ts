@@ -64,3 +64,46 @@ export function recoveryEmail(input: RecoveryEmailInput) {
 		html,
 	}
 }
+
+export interface LoginCodeEmailInput {
+	/** Where the email goes — the address on the account, exactly as stored. */
+	to: string
+	/** The address it comes from; must be on a domain enabled for Email Sending. */
+	from: string
+	/** The server's base domain, named as the sender and in the copy. */
+	domain: string
+	/** The six-digit code, in plaintext — the only place it is written down. */
+	code: string
+	/** How long the code is good for, in minutes, for the copy. */
+	validMinutes: number
+}
+
+/**
+ * The sign-in security code, for an account whose second factor is emailed codes (see
+ * two-factor.ts). Typed into the game's own prompt, so — unlike the recovery email — it
+ * carries no link.
+ */
+export function loginCodeEmail(input: LoginCodeEmailInput) {
+	const subject = `Your ${input.domain} sign-in code`
+	const warning =
+		"If this wasn't you, someone has your password: change it now. Without this code they can't sign in."
+	const text = [
+		`Someone is signing in to the ${input.domain} account under this email address.`,
+		'',
+		`Your security code is: ${input.code}`,
+		'',
+		`The code works once and for ${input.validMinutes} minutes. ${warning}`,
+	].join('\n')
+	const html = [
+		`<p>Someone is signing in to the <strong>${escapeHtml(input.domain)}</strong> account under this email address.</p>`,
+		`<p>Your security code is: <strong style="font-size:1.5em;letter-spacing:0.15em">${input.code}</strong></p>`,
+		`<p>The code works once and for ${input.validMinutes} minutes. ${escapeHtml(warning)}</p>`,
+	].join('\n')
+	return {
+		to: input.to,
+		from: { email: input.from, name: input.domain },
+		subject,
+		text,
+		html,
+	}
+}

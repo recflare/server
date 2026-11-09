@@ -9,6 +9,8 @@
  *    new address. Spending it issues the next:
  *  - `email_verify` — the NEW address confirming it is reachable, and the step that applies
  *    the change; the only step for an account with no address yet. Payload: the new address.
+ *  - `login` — the second factor of a sign-in for an account that chose emailed codes (`auth`
+ *    `/connect/token` issues and spends it, see its two-factor.ts). Payload: none.
  *
  * The rules, all of which exist because a six-digit code is guessable:
  *
@@ -34,7 +36,7 @@ import { hashPassword, verifyPassword } from './password'
 import { takeRateLimit } from './rate-limit-db'
 
 /** What a code is for; one pending code per account and purpose. */
-export type EmailCodePurpose = 'password_reset' | 'email_change' | 'email_verify'
+export type EmailCodePurpose = 'password_reset' | 'email_change' | 'email_verify' | 'login'
 
 /** A code is good for this long (s) after the email is sent. */
 export const EMAIL_CODE_TTL_SECONDS = 30 * 60

@@ -5,6 +5,7 @@ import { z } from 'zod'
 
 import {
 	beginEmailCode,
+	cancelEmailCode,
 	completeEmailCode,
 	countAccountsByDeviceId,
 	countAccountsBySignupIp,
@@ -80,6 +81,9 @@ import {
 	roleLookup,
 	TokenRequest,
 	TokenResponse,
+	TotpSetupResponse,
+	TwoFactorChangeRequest,
+	TwoFactorStatus,
 } from './openapi'
 import {
 	accountHoldsDiscordRole,
@@ -92,7 +96,7 @@ import {
 	linkPlatformIdentity,
 	parseRoleIdList,
 } from './platform-db'
-import { recoveryEmail } from './recovery-email'
+import { loginCodeEmail, recoveryEmail } from './recovery-email'
 import { consumeRefreshToken, issueRefreshToken, revokeRefreshTokens } from './refresh-db'
 import { verifySteamTicket } from './steam-ticket'
 import {
@@ -103,6 +107,22 @@ import {
 	pollDeviceGrant,
 	studioClientMatches,
 } from './studio-device'
+import {
+	beginTotpSetup,
+	closeLoginChallenge,
+	confirmTotp,
+	countLoginChallengeAttempt,
+	disableTwoFactor,
+	enableEmailTwoFactor,
+	getTwoFactor,
+	LOGIN_CHALLENGE_MAX_ATTEMPTS,
+	loginChallengeKey,
+	matchTotp,
+	openLoginChallenge,
+	otpauthUri,
+	spendTotpCode,
+	TWO_FACTOR_ERRORS,
+} from './two-factor'
 
 import type { Context } from 'hono'
 import type { Account } from '@repo/domain'
@@ -477,6 +497,176 @@ function oauthError(
 	status: 400 | 500 = 400
 ) {
 	return c.json({ error, error_description }, status)
+}
+
+/**
+ * Second-factor guesses one account may make per window, across every pending sign-in —
+ * the per-challenge cap alone resets with each new `login_context`. A guesser already holds
+ * the password (the grant re-proves it on every retry), so this is what stands between them
+ * and a million-code search: 10 per 15 minutes is ~1,000 a day against 10^6 codes.
+ */
+const TWO_FACTOR_GUESSES_PER_ACCOUNT = 10
+const TWO_FACTOR_GUESS_WINDOW_SECONDS = 15 * 60
+
+/**
+ * Hold a password grant for its second factor, when the account has one (two-factor.ts).
+ * Called once the password has verified and before anything about the sign-in is recorded
+ * (no link, no login time), so a sign-in that never passes leaves no trace on the account.
+ * Answers null when the sign-in may proceed — no second factor, or it was just passed — and
+ * otherwise the response to send instead: one of the client's challenge codes
+ * (TWO_FACTOR_ERRORS), which it answers by re-POSTing the whole form plus `2fa_code` or
+ * `security_code`, echoing `login_context`.
+ *
+ * The codes are the client's exact strings; anything else would read as a plain failure.
+ */
+async function secondFactorChallenge(
+	c: Context<App>,
+	body: Record<string, unknown>,
+	accountId: number
+): Promise<Response | null> {
+	const settings = await getTwoFactor(c.env.DB, accountId)
+	if (settings.method === 'none') return null
+	const method = settings.method
+	const loginContext = typeof body.login_context === 'string' ? body.login_context : ''
+	const key = await loginChallengeKey(loginContext, accountId)
+	const fieldName = method === 'totp' ? '2fa_code' : 'security_code'
+	const posted = typeof body[fieldName] === 'string' ? (body[fieldName] as string).trim() : ''
+	const required =
+		method === 'totp' ? TWO_FACTOR_ERRORS.totpRequired : TWO_FACTOR_ERRORS.emailRequired
+	const wrong = method === 'totp' ? TWO_FACTOR_ERRORS.totpWrong : TWO_FACTOR_ERRORS.emailWrong
+
+	// An emailed code needs an address to go to. `method: email` is only set while the
+	// account has one, but the address can be changed after; with none on file there is no
+	// way to deliver the factor, so the sign-in is refused rather than waved through.
+	const account = method === 'email' ? await getAccount(c.env.DB, accountId) : null
+	if (method === 'email' && !account?.email) {
+		logger.warn('email two-factor on an account with no address; sign-in refused', { accountId })
+		return oauthError(c, 'invalid_grant', 'no email address to send a security code to')
+	}
+
+	/** Mail a fresh login code. `force` skips the resend cooldown (the last one was spent). */
+	const sendCode = async (force: boolean): Promise<'sent' | 'pending' | 'quota' | 'failed'> => {
+		const issue = await beginEmailCode(c.env.DB, 'login', accountId, null, { force })
+		// Within the cooldown the code already mailed is still live: nothing new to send.
+		if (issue.refused === 'cooldown') return 'pending'
+		if (issue.refused === 'quota') return 'quota'
+		try {
+			await c.env.EMAIL.send(
+				loginCodeEmail({
+					to: account!.email!,
+					from: emailSender(c.env),
+					domain: c.env.DOMAIN,
+					code: issue.code!,
+					validMinutes: Math.round(EMAIL_CODE_TTL_SECONDS / 60),
+				})
+			)
+		} catch (err) {
+			logger.error('could not send the sign-in security code', {
+				accountId,
+				error: err instanceof Error ? err.message : String(err),
+			})
+			await cancelEmailCode(c.env.DB, 'login', accountId)
+			return 'failed'
+		}
+		logger.info('sign-in security code sent', { accountId })
+		return 'sent'
+	}
+	const deliveryFailure = (sent: 'quota' | 'failed') =>
+		sent === 'quota'
+			? oauthError(c, 'invalid_grant', 'too many security codes sent today; try again tomorrow')
+			: oauthError(c, 'server_error', 'the security code email could not be sent', 500)
+
+	// First leg: no code posted. Open the pending sign-in and ask for one.
+	if (posted === '') {
+		await openLoginChallenge(c.env.DB, key, accountId, method)
+		if (method === 'email') {
+			const sent = await sendCode(false)
+			if (sent === 'quota' || sent === 'failed') return deliveryFailure(sent)
+		}
+		logger.info('sign-in held for a second factor', { accountId, method })
+		return oauthError(
+			c,
+			required,
+			method === 'totp'
+				? 'enter the code from your authenticator app'
+				: 'enter the security code emailed to you'
+		)
+	}
+
+	// Retry: a code was posted. Counted before it is checked, per sign-in and per account.
+	const attempts = await countLoginChallengeAttempt(c.env.DB, key, accountId, method)
+	const quota = await takeRateLimit(
+		c.env.DB,
+		`login_2fa:${accountId}`,
+		TWO_FACTOR_GUESSES_PER_ACCOUNT,
+		TWO_FACTOR_GUESS_WINDOW_SECONDS
+	)
+	if (attempts > LOGIN_CHALLENGE_MAX_ATTEMPTS || !quota.allowed) {
+		// Refused UNCHECKED and answered like a wrong code: a guesser learns nothing from it.
+		logger.warn('second-factor guess refused: too many attempts', {
+			accountId,
+			method,
+			attempts,
+			accountGuesses: quota.count,
+		})
+		return oauthError(c, wrong, 'too many attempts; wait a few minutes and sign in again')
+	}
+
+	if (method === 'totp') {
+		if (await spendTotpCode(c.env.DB, accountId, settings, posted)) {
+			await closeLoginChallenge(c.env.DB, key)
+			return null
+		}
+		logger.info('sign-in refused: wrong authenticator code', { accountId, attempts })
+		return oauthError(c, wrong, 'incorrect 2FA code')
+	}
+
+	const { outcome } = await completeEmailCode(c.env.DB, 'login', accountId, posted)
+	if (outcome === 'ok') {
+		await closeLoginChallenge(c.env.DB, key)
+		return null
+	}
+	// One guess per emailed code (the row is burned), so a wrong one is followed by a fresh
+	// email straight away — otherwise the re-prompt would ask for a code that can no longer
+	// work. The daily cap still bounds how many go out.
+	logger.info('sign-in refused: wrong security code', { accountId, outcome, attempts })
+	const sent = await sendCode(true)
+	if (sent === 'quota' || sent === 'failed') return deliveryFailure(sent)
+	return oauthError(c, wrong, 'incorrect security code; a new one has been emailed')
+}
+
+/**
+ * The shared gate on changing two-factor settings: the account must have a password (the
+ * factor guards the password grant; without one it would guard nothing) and the request must
+ * re-prove it. Null when the change may go ahead. Wrong guesses count against the same
+ * per-account budget as sign-in codes, so this isn't a side door for testing passwords.
+ */
+async function refuseTwoFactorChange(
+	c: Context<App>,
+	accountId: number,
+	body: Record<string, unknown>
+): Promise<Response | null> {
+	const hash = await getPasswordHash(c.env.DB, accountId)
+	if (!hash) {
+		return c.json(
+			{ success: false, error: 'Set a password first: two-factor sign-in protects it.' },
+			400
+		)
+	}
+	const quota = await takeRateLimit(
+		c.env.DB,
+		`2fa_settings:${accountId}`,
+		TWO_FACTOR_GUESSES_PER_ACCOUNT,
+		TWO_FACTOR_GUESS_WINDOW_SECONDS
+	)
+	if (!quota.allowed) {
+		return c.json({ success: false, error: 'Too many attempts. Wait a few minutes.' }, 400)
+	}
+	const password = typeof body.password === 'string' ? body.password : ''
+	if (!(await verifyPassword(password, hash))) {
+		return c.json({ success: false, error: 'Your password is incorrect.' }, 400)
+	}
+	return null
 }
 
 /**
@@ -1111,6 +1301,19 @@ const app = new Hono<App>()
 				'never failed over the link: an unverifiable proof (or one over the per-identity',
 				'cap) just leaves the account without a cached login there.',
 				'',
+				'**Two-factor sign-in** (opt-in per account, set on the website through',
+				'`/account/me/2fa/*`). A `password` grant on an account with a second factor is held',
+				'once the password verifies, answered with an OAuth `error` the client acts on:',
+				'`continue_2fa` (authenticator app) or `security_code required` (a code emailed to the',
+				'account). The client re-POSTs the same form plus `2fa_code` / `security_code`,',
+				'echoing `login_context`; the password is re-proven every time. A wrong code answers',
+				'`invalid 2fa_code` / `invalid security_code` (a wrong emailed code is spent, and a',
+				'fresh one mailed). TOTP is RFC 6238 (SHA-1, 6 digits, 30 s, ±1 step), and a code is',
+				'never accepted twice. Guesses are capped per pending sign-in (5) and per account (10',
+				'per 15 minutes). Only the password grant is held: `cached_login` is a device the',
+				'player linked by passing a password sign-in, `refresh_token` continues a session that',
+				'already passed, and the website’s Discord sign-in vouches for itself.',
+				'',
 				'**Platform identity.** An account can be reached from several platform identities;',
 				'the links are the one thing both the picker and `cached_login` consult, and only a',
 				'VERIFIED identity is ever linked. Two platforms can be verified. Steam (`0`) posts a',
@@ -1614,6 +1817,12 @@ const app = new Hono<App>()
 						400
 					)
 				}
+				// Two-factor sign-in (opt-in, two-factor.ts): held here, after the password and
+				// before the link and the login are recorded below. Only this grant is held —
+				// see the route description for why cached_login, refresh_token and the
+				// website's identity_assertion are not.
+				const challenge = await secondFactorChallenge(c, body, resolvedId)
+				if (challenge) return challenge
 				accountId = String(resolvedId)
 				// The password proved the account; the platform proof (when the client sent one
 				// and it verified) proves the device's platform identity. Linking the two is
@@ -1858,6 +2067,204 @@ const app = new Hono<App>()
 
 			const ok = await setPasswordHash(c.env.DB, id, await hashPassword(newPassword))
 			if (!ok) return c.body(null, 404)
+			return c.json({ success: true })
+		}
+	)
+
+	// Two-factor sign-in settings (two-factor.ts). Auth-gated, for the website's account page:
+	// the game has no screen for them. Two-factor guards the PASSWORD grant, so every change
+	// needs a password on the account and re-proves it — a stolen session alone can't turn it
+	// off, or swap in an authenticator of its own. Only one factor at a time; switching means
+	// turning the current one off first. Answers `{ success, error }`, like the other forms.
+	.get(
+		'/account/me/2fa',
+		describeRoute({
+			tags: ['Account'],
+			summary: 'The caller’s two-factor sign-in settings',
+			security: [{ bearerAuth: [] }],
+			responses: {
+				200: json(TwoFactorStatus, 'Which second factor, if any, the password grant asks for'),
+				401: { description: 'Missing or invalid bearer token (empty body)' },
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return c.body(null, 401)
+			const [settings, account, hash] = await Promise.all([
+				getTwoFactor(c.env.DB, id),
+				getAccount(c.env.DB, id),
+				getPasswordHash(c.env.DB, id),
+			])
+			return c.json({
+				method: settings.method,
+				totpPending: settings.totpPendingSecret !== null,
+				hasEmail: Boolean(account?.email),
+				hasPassword: Boolean(hash),
+			})
+		}
+	)
+
+	.post(
+		'/account/me/2fa/totp',
+		describeRoute({
+			tags: ['Account'],
+			summary: 'Start setting up an authenticator app',
+			description: [
+				'Generates a secret and returns it with its `otpauth://` URI. Nothing changes about',
+				'sign-in until `POST /account/me/2fa/totp/confirm` posts a code from it. Refused while',
+				'any second factor is on. Calling again replaces the pending secret.',
+			].join(' '),
+			security: [{ bearerAuth: [] }],
+			responses: {
+				200: json(TotpSetupResponse, 'The secret to load into the app'),
+				400: json(ChangePasswordResponse, 'A second factor is already on'),
+				401: { description: 'Missing or invalid bearer token (empty body)' },
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return c.body(null, 401)
+			const settings = await getTwoFactor(c.env.DB, id)
+			if (settings.method !== 'none') {
+				return c.json(
+					{ success: false, error: 'Turn off your current two-factor method first.' },
+					400
+				)
+			}
+			const account = await getAccount(c.env.DB, id)
+			const secret = await beginTotpSetup(c.env.DB, id)
+			return c.json({
+				success: true as const,
+				secret,
+				uri: otpauthUri(secret, c.env.DOMAIN, account?.username ?? String(id)),
+			})
+		}
+	)
+
+	.post(
+		'/account/me/2fa/totp/confirm',
+		describeRoute({
+			tags: ['Account'],
+			summary: 'Turn on authenticator-app sign-in',
+			description: [
+				'Confirms the pending secret with a `code` from the app and the account `password`;',
+				'from then on the password grant answers `continue_2fa` until it is re-posted with a',
+				'`2fa_code`.',
+			].join(' '),
+			security: [{ bearerAuth: [] }],
+			requestBody: form(TwoFactorChangeRequest, 'Password and a code from the app'),
+			responses: {
+				200: json(ChangePasswordResponse, 'Authenticator sign-in is on'),
+				400: json(ChangePasswordResponse, 'Wrong password or code, or nothing pending'),
+				401: { description: 'Missing or invalid bearer token (empty body)' },
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return c.body(null, 401)
+			const body = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>)
+			const refused = await refuseTwoFactorChange(c, id, body)
+			if (refused) return refused
+			const settings = await getTwoFactor(c.env.DB, id)
+			if (settings.method !== 'none') {
+				return c.json(
+					{ success: false, error: 'Turn off your current two-factor method first.' },
+					400
+				)
+			}
+			if (settings.totpPendingSecret === null) {
+				return c.json({ success: false, error: 'Start setting up the authenticator first.' }, 400)
+			}
+			const code = typeof body.code === 'string' ? body.code : ''
+			if (!(await confirmTotp(c.env.DB, id, code))) {
+				return c.json(
+					{ success: false, error: 'That code is incorrect. Check the app and try again.' },
+					400
+				)
+			}
+			logger.info('two-factor sign-in turned on', { accountId: id, method: 'totp' })
+			return c.json({ success: true })
+		}
+	)
+
+	.post(
+		'/account/me/2fa/email',
+		describeRoute({
+			tags: ['Account'],
+			summary: 'Turn on emailed security codes at sign-in',
+			description: [
+				'Needs a confirmed address on the account and its `password`. From then on the',
+				'password grant emails a code and answers `security_code required` until it is',
+				're-posted with a `security_code`.',
+			].join(' '),
+			security: [{ bearerAuth: [] }],
+			requestBody: form(TwoFactorChangeRequest, 'The account password'),
+			responses: {
+				200: json(ChangePasswordResponse, 'Emailed codes are on'),
+				400: json(ChangePasswordResponse, 'Wrong password, no address, or a factor is already on'),
+				401: { description: 'Missing or invalid bearer token (empty body)' },
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return c.body(null, 401)
+			const body = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>)
+			const refused = await refuseTwoFactorChange(c, id, body)
+			if (refused) return refused
+			if ((await getTwoFactor(c.env.DB, id)).method !== 'none') {
+				return c.json(
+					{ success: false, error: 'Turn off your current two-factor method first.' },
+					400
+				)
+			}
+			const account = await getAccount(c.env.DB, id)
+			if (!account?.email) {
+				return c.json({ success: false, error: 'Add an email address to your account first.' }, 400)
+			}
+			await enableEmailTwoFactor(c.env.DB, id)
+			logger.info('two-factor sign-in turned on', { accountId: id, method: 'email' })
+			return c.json({ success: true })
+		}
+	)
+
+	.post(
+		'/account/me/2fa/disable',
+		describeRoute({
+			tags: ['Account'],
+			summary: 'Turn two-factor sign-in off',
+			description: [
+				'Needs the account `password`, and with an authenticator on, a current `code` from it.',
+				'Forgets the authenticator secret.',
+			].join(' '),
+			security: [{ bearerAuth: [] }],
+			requestBody: form(
+				TwoFactorChangeRequest,
+				'Password, plus an authenticator code if one is on'
+			),
+			responses: {
+				200: json(ChangePasswordResponse, 'Two-factor sign-in is off'),
+				400: json(ChangePasswordResponse, 'Wrong password or code'),
+				401: { description: 'Missing or invalid bearer token (empty body)' },
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return c.body(null, 401)
+			const body = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>)
+			const refused = await refuseTwoFactorChange(c, id, body)
+			if (refused) return refused
+			const settings = await getTwoFactor(c.env.DB, id)
+			if (settings.method === 'totp') {
+				const code = typeof body.code === 'string' ? body.code : ''
+				if (settings.totpSecret === null || (await matchTotp(settings.totpSecret, code)) === null) {
+					return c.json(
+						{ success: false, error: 'Enter a current code from your authenticator app.' },
+						400
+					)
+				}
+			}
+			await disableTwoFactor(c.env.DB, id)
+			logger.info('two-factor sign-in turned off', { accountId: id, was: settings.method })
 			return c.json({ success: true })
 		}
 	)

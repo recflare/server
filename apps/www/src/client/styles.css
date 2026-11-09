@@ -1375,6 +1375,32 @@ button[type='submit'].danger:not(:disabled):hover {
 	background: var(--text);
 }
 
+/* A secondary action beside a submit ("Cancel", "Use a different account"): reads as a link
+   so it never competes with the submit it sits next to. */
+button.link {
+	border: none;
+	background: none;
+	padding: 11px 0 11px 14px;
+	font-family: var(--body);
+	font-size: 0.95rem;
+	color: var(--muted);
+	text-decoration: underline;
+	cursor: pointer;
+}
+
+button.link:not(:disabled):hover {
+	color: var(--text);
+}
+
+/* The authenticator QR code: always dark-on-white, which is what the apps' cameras read. */
+.totp-qr {
+	display: block;
+	margin: 0 0 14px;
+	background: #fff;
+	border-radius: 8px;
+	image-rendering: pixelated;
+}
+
 /* The cross-link under an auth form ("Don't have an account? Create one"). Sits under
    the submit button, which hugs its label, so it needs its own separation from it. */
 .swap {

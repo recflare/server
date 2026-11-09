@@ -50,6 +50,7 @@ import {
 	STUDIO_CLIENT_SECRET,
 	STUDIO_DEVICE_SCHEMA_DDL,
 } from '../../studio-device'
+import { base32Decode, hotp, totpStep, TWO_FACTOR_SCHEMA_DDL } from '../../two-factor'
 
 import type { Env } from '../../context'
 
@@ -125,6 +126,7 @@ beforeAll(async () => {
 	// room badges from this table.
 	for (const stmt of CUSTOM_AVATAR_ITEM_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of STUDIO_DEVICE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	for (const stmt of TWO_FACTOR_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 })
 
 /**
@@ -2572,6 +2574,7 @@ describe('auth worker routes', () => {
 			)
 		)
 		expect([...documented].sort()).toEqual([
+			'GET /account/me/2fa',
 			'GET /cachedlogin/forplatformid/{platform}/{id}',
 			'GET /eac/challenge',
 			'GET /oculus/nonce',
@@ -2581,6 +2584,10 @@ describe('auth worker routes', () => {
 			'GET /role/moderator',
 			'GET /role/moderator/{id}',
 			'GET /role/screenshare/{id}',
+			'POST /account/me/2fa/disable',
+			'POST /account/me/2fa/email',
+			'POST /account/me/2fa/totp',
+			'POST /account/me/2fa/totp/confirm',
 			'POST /account/me/changepassword',
 			'POST /account/recoverpassword',
 			'POST /account/resetpassword',
@@ -3133,5 +3140,170 @@ describe('identity_assertion grant', () => {
 		// Signing IN from that network is untouched: the cap is on creation.
 		const existing = await redeem(await assertionFor('700000000000009500'), ip)
 		expect(existing.status).toBe(200)
+	})
+})
+
+describe('two-factor sign-in', () => {
+	/** POST a form to an auth-gated route as `token`. */
+	const authedForm = (path: string, token: string, body = '') =>
+		exports.default.fetch(`${ORIGIN}${path}`, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/x-www-form-urlencoded',
+				Authorization: `Bearer ${token}`,
+			},
+			body,
+		})
+
+	const login = (username: string, extra = '') =>
+		postToken(
+			`grant_type=password&username=${username}&password=${LOGIN_PASSWORD}&login_context=ctx-${username}${extra}`
+		)
+
+	/** The code an authenticator would show `offset` steps from now. */
+	const totpCode = (secret: string, offset = 0) => hotp(base32Decode(secret)!, totpStep() + offset)
+
+	/** A fresh password account with an authenticator turned on; returns the secret. */
+	async function withTotp(id: number, username: string): Promise<string> {
+		await seedAccount(id, username)
+		const token = await accessTokenFor(
+			`grant_type=password&username=${username}&password=${LOGIN_PASSWORD}`
+		)
+		const setup = await authedForm('/account/me/2fa/totp', token)
+		expect(setup.status).toBe(200)
+		const { secret, uri } = (await setup.json()) as { secret: string; uri: string }
+		expect(uri).toMatch(/^otpauth:\/\/totp\//)
+		const confirm = await authedForm(
+			'/account/me/2fa/totp/confirm',
+			token,
+			`password=${LOGIN_PASSWORD}&code=${await totpCode(secret)}`
+		)
+		expect(await confirm.json()).toEqual({ success: true })
+		return secret
+	}
+
+	test('TOTP matches the RFC 6238 SHA-1 test vectors', async () => {
+		// Appendix B: key "12345678901234567890", 8-digit codes; ours are the low 6 digits.
+		const key = new TextEncoder().encode('12345678901234567890')
+		expect(await hotp(key, totpStep(59_000))).toBe('287082')
+		expect(await hotp(key, totpStep(1_111_111_109_000))).toBe('081804')
+		expect(await hotp(key, totpStep(20_000_000_000_000))).toBe('353130')
+	})
+
+	test('an account with no second factor signs in without a challenge', async () => {
+		await seedAccount(9100, 'NoTwoFactor')
+		const res = await login('NoTwoFactor')
+		expect(res.status).toBe(200)
+		expect(typeof res.json.access_token).toBe('string')
+	})
+
+	test('an authenticator holds the password grant until a valid 2fa_code is posted', async () => {
+		const secret = await withTotp(9101, 'TotpPlayer')
+
+		const first = await login('TotpPlayer')
+		expect(first.status).toBe(400)
+		expect(first.json.error).toBe('continue_2fa')
+		expect(first.json.access_token).toBeUndefined()
+
+		const wrong = await login('TotpPlayer', '&2fa_code=000000')
+		expect(wrong.json.error).toBe('invalid 2fa_code')
+
+		// The confirming code spent the current step, so the next one is what signs in.
+		const code = await totpCode(secret, 1)
+		const ok = await login('TotpPlayer', `&2fa_code=${code}`)
+		expect(ok.status).toBe(200)
+		expect(decodePayload(ok.json.access_token as string).sub).toBe('9101')
+
+		// A code is never accepted twice.
+		const replay = await login('TotpPlayer', `&2fa_code=${code}`)
+		expect(replay.json.error).toBe('invalid 2fa_code')
+	})
+
+	test('a wrong password is still a wrong password, with or without a code', async () => {
+		const secret = await withTotp(9102, 'TotpWrongPass')
+		const res = await postToken(
+			`grant_type=password&username=TotpWrongPass&password=nope&2fa_code=${await totpCode(secret, 1)}`
+		)
+		expect(res.json.error).toBe('invalid_grant')
+		expect(res.json.error_description).toBe('invalid account_id or password')
+	})
+
+	test('guesses against one pending sign-in are capped', async () => {
+		const secret = await withTotp(9103, 'TotpCapped')
+		for (let i = 0; i < 5; i++) {
+			expect((await login('TotpCapped', '&2fa_code=000000')).json.error).toBe('invalid 2fa_code')
+		}
+		// Past the cap even the right code is refused, unchecked.
+		const res = await login('TotpCapped', `&2fa_code=${await totpCode(secret, 1)}`)
+		expect(res.json.error).toBe('invalid 2fa_code')
+	})
+
+	test('emailed codes: security_code required, then the mailed code signs in', async () => {
+		await seedAccount(9110, 'EmailPlayer')
+		await updateAccount(env.DB, 9110, { email: 'email2fa@example.com' })
+		const token = await accessTokenFor(
+			`grant_type=password&username=EmailPlayer&password=${LOGIN_PASSWORD}`
+		)
+		const on = await authedForm('/account/me/2fa/email', token, `password=${LOGIN_PASSWORD}`)
+		expect(await on.json()).toEqual({ success: true })
+
+		const first = await login('EmailPlayer')
+		expect(first.json.error).toBe('security_code required')
+		const pending = () =>
+			env.DB.prepare(
+				"SELECT code_hash AS codeHash FROM email_code WHERE account_id = 9110 AND purpose = 'login'"
+			).first<{ codeHash: string | null }>()
+		expect((await pending())?.codeHash).toBeTruthy()
+
+		// A wrong guess spends the code and a fresh one is mailed straight away.
+		const before = (await pending())!.codeHash
+		const wrong = await login('EmailPlayer', '&security_code=000000')
+		expect(wrong.json.error).toBe('invalid security_code')
+		const after = (await pending())!.codeHash
+		expect(after).toBeTruthy()
+		expect(after).not.toBe(before)
+
+		// Plant a known code (only its hash is stored; the mail goes to the local log).
+		await env.DB.prepare(
+			"UPDATE email_code SET code_hash = ?1 WHERE account_id = 9110 AND purpose = 'login'"
+		)
+			.bind(await hashPassword('123456'))
+			.run()
+		const ok = await login('EmailPlayer', '&security_code=123456')
+		expect(ok.status).toBe(200)
+		expect(typeof ok.json.access_token).toBe('string')
+	})
+
+	test('email two-factor needs an address on the account', async () => {
+		await seedAccount(9111, 'NoAddress')
+		const token = await accessTokenFor(
+			`grant_type=password&username=NoAddress&password=${LOGIN_PASSWORD}`
+		)
+		const res = await authedForm('/account/me/2fa/email', token, `password=${LOGIN_PASSWORD}`)
+		expect(res.status).toBe(400)
+		expect(((await res.json()) as { success: boolean }).success).toBe(false)
+	})
+
+	test('turning it off needs the password and a current code', async () => {
+		const secret = await withTotp(9120, 'TotpOff')
+		const token = (await login('TotpOff', `&2fa_code=${await totpCode(secret, 1)}`)).json
+			.access_token as string
+
+		const noCode = await authedForm('/account/me/2fa/disable', token, `password=${LOGIN_PASSWORD}`)
+		expect(noCode.status).toBe(400)
+		const badPass = await authedForm(
+			'/account/me/2fa/disable',
+			token,
+			`password=nope&code=${await totpCode(secret)}`
+		)
+		expect(badPass.status).toBe(400)
+
+		const off = await authedForm(
+			'/account/me/2fa/disable',
+			token,
+			`password=${LOGIN_PASSWORD}&code=${await totpCode(secret)}`
+		)
+		expect(await off.json()).toEqual({ success: true })
+		expect((await login('TotpOff')).status).toBe(200)
 	})
 })

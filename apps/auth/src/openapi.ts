@@ -192,6 +192,25 @@ export const TokenRequest = z.object({
 			'identity_assertion grant: the HS256 assertion `www` minted with the shared JWT_SECRET ' +
 				'after completing a Discord OAuth2 exchange, naming the platform and platform_id it proved'
 		),
+	login_context: z
+		.string()
+		.optional()
+		.describe(
+			'Opaque, client-chosen; echoed on every retry of a sign-in held for a second factor, ' +
+				'so the retries are counted against the same pending sign-in'
+		),
+	'2fa_code': z
+		.string()
+		.optional()
+		.describe('Password grant retry after `continue_2fa`: the authenticator app’s 6 digits'),
+	security_code: z
+		.string()
+		.optional()
+		.describe('Password grant retry after `security_code required`: the emailed 6 digits'),
+	require_password: z
+		.string()
+		.optional()
+		.describe('`true` when the client insists on a password grant; accepted and unused'),
 	device_id: z
 		.string()
 		.optional()
@@ -247,6 +266,36 @@ export const ChangePasswordRequest = z.object({
 export const ChangePasswordResponse = z.object({
 	success: z.boolean(),
 	error: z.string().optional(),
+})
+
+/** `GET /account/me/2fa`. */
+export const TwoFactorStatus = z.object({
+	method: z
+		.enum(['none', 'totp', 'email'])
+		.describe('The second factor the password grant asks for; `none` when it asks for none'),
+	totpPending: z
+		.boolean()
+		.describe('An authenticator is being set up and waits on a code to confirm it'),
+	hasEmail: z.boolean().describe('The account has a confirmed address, which `email` needs'),
+	hasPassword: z.boolean().describe('Two-factor guards the password grant, so it needs one'),
+})
+
+/** `POST /account/me/2fa/totp` — the secret to load into the authenticator app. */
+export const TotpSetupResponse = z.object({
+	success: z.literal(true),
+	secret: z.string().describe('Base32 secret, for typing in by hand'),
+	uri: z.string().describe('`otpauth://totp/…` — render as a QR code for the app to scan'),
+})
+
+/** Form body for the two-factor settings changes. */
+export const TwoFactorChangeRequest = z.object({
+	password: z.string().describe('The account’s current password'),
+	code: z
+		.string()
+		.optional()
+		.describe(
+			'Confirming an authenticator: a code from it. Turning off an authenticator: a current code'
+		),
 })
 
 /** `POST /account/recoverpassword` form body — the one thing the client sends. */
