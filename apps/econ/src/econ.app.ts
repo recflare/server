@@ -5756,7 +5756,8 @@ const app = new Hono<App>({ strict: false })
 			description: [
 				'Reduces the given consumable instance’s count by `DeltaCount` (default 1), deleting',
 				'the row at zero. Scoped to the caller. Pushes a ConsumableMappingRemoved socket',
-				'notification. Envelope mirrors the gift-consume ack.',
+				'notification only when the row is deleted — the client drops the whole instance on',
+				'that frame. Envelope mirrors the gift-consume ack.',
 			].join(' '),
 			security: AUTHED,
 			requestBody: jsonBody(ConsumeConsumableRequest, 'The consumable id and delta'),
@@ -5775,8 +5776,13 @@ const app = new Hono<App>({ strict: false })
 			const delta = typeof body.DeltaCount === 'number' ? body.DeltaCount : 1
 			if (!Number.isNaN(consumableId) && delta > 0) {
 				const consumed = await consumeConsumable(c.env.DB, id, consumableId, delta)
-				// Notify the player so their client removes/updates the item in inventory.
-				if (consumed !== null) await pushConsumableRemoved(c, id, consumed)
+				// ConsumableMappingRemoved drops the whole INSTANCE on the client, whatever `Count`
+				// it carries: sent for a partial consume (10 popcorn → 9), it showed 0 until the
+				// next reload. So it goes out only when the row is gone; a partial consume sends
+				// nothing, as the client already counts the one it just used.
+				if (consumed !== null && consumed.remaining === 0) {
+					await pushConsumableRemoved(c, id, consumed)
+				}
 			}
 			return c.json({ error: '', success: true, value: null })
 		}
