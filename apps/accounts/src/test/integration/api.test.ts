@@ -186,6 +186,19 @@ describe('public endpoints', () => {
 		expect(await missing.json()).toEqual({ error: "There's no player called @zzzznope." })
 	})
 
+	test('GET /account?username= answers the raw account DTO', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/account?username=coach`)
+		expect(res.status).toBe(200)
+		const account = await res.json()
+		expect(Array.isArray(account)).toBe(false)
+		const bulk = await exports.default.fetch(`${ORIGIN}/account/bulk?id=1`)
+		expect(account).toEqual(((await bulk.json()) as unknown[])[0])
+		const missing = await exports.default.fetch(`${ORIGIN}/account?username=zzzznope`)
+		expect(missing.status).toBe(404)
+		const none = await exports.default.fetch(`${ORIGIN}/account`)
+		expect(none.status).toBe(404)
+	})
+
 	test('GET /account/:id/bio returns an empty bio', async () => {
 		const res = await exports.default.fetch(`${ORIGIN}/account/7/bio`)
 		expect(await res.json()).toEqual({ accountId: 7, bio: '' })
@@ -1013,6 +1026,7 @@ describe('auth-gated endpoints', () => {
 		)
 		expect([...documented].sort()).toEqual([
 			'GET /',
+			'GET /account',
 			'GET /account/bulk',
 			'GET /account/me',
 			'GET /account/me/email/pending',

@@ -181,6 +181,17 @@ async function bulkAccounts(c: Context<App>) {
 }
 
 /**
+ * Exact, case-insensitive username lookup (a leading `@` is ignored) answering the public
+ * account DTO, or 404.
+ */
+async function accountByUsername(c: Context<App>, raw: string) {
+	const name = raw.trim().replace(/^@/, '')
+	const account = name === '' ? null : await getAccountByUsername(c.env.DB, name)
+	if (!account) return c.json({ error: `There's no player called @${name}.` }, 404)
+	return c.json(toAccountDto(account))
+}
+
+/**
  * Project a stored account into the public account DTO — the client's camelCase
  * shape, excluding private fields like `email` (surfaced only by /account/me).
  */
@@ -489,12 +500,32 @@ const app = new Hono<App>()
 				404: { description: 'No account has that username' },
 			},
 		}),
-		async (c) => {
-			const name = c.req.param('name').trim().replace(/^@/, '')
-			const account = name === '' ? null : await getAccountByUsername(c.env.DB, name)
-			if (!account) return c.json({ error: `There's no player called @${name}.` }, 404)
-			return c.json(toAccountDto(account))
-		}
+		(c) => accountByUsername(c, c.req.param('name'))
+	)
+	// The same exact lookup with the name as `?username=` — the raw DTO, not the
+	// one-element array `/account/bulk` answers.
+	.get(
+		'/account',
+		describeRoute({
+			tags: ['Lookup'],
+			summary: 'A single public account, by exact username (query form)',
+			description:
+				'Same as `/account/username/:name`, with the name as `?username=`. 404 when no account has the name.',
+			parameters: [
+				{
+					name: 'username',
+					in: 'query',
+					required: true,
+					description: 'The username, exactly (case-insensitive)',
+					schema: { type: 'string' },
+				},
+			],
+			responses: {
+				200: json(AccountDto, 'The public account'),
+				404: { description: 'No account has that username' },
+			},
+		}),
+		(c) => accountByUsername(c, c.req.query('username') ?? '')
 	)
 
 	// ---- Bulk / single lookup ------------------------------------------------
