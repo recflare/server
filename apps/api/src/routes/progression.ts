@@ -27,7 +27,7 @@ import progressionEvent14 from '../../static/progression-events/Summer_Party_Eve
 import progressionEvent16 from '../../static/progression-events/Treat_Collection_Challenge_EventId_16.json'
 import progressionEvent17 from '../../static/progression-events/Tricks_Challenge_EventId_17.json'
 import progressionEvent18 from '../../static/progression-events/Yetis_Challenge_EventId_18.json'
-import { authedId, parseFormIds, queryIds, unauthorized } from '../http'
+import { authedId, authedRoles, parseFormIds, queryIds, unauthorized } from '../http'
 import {
 	AUTHED,
 	BareInteger,
@@ -515,9 +515,22 @@ export const progressionRoutes = new Hono<App>({ strict: false })
 
 			const body = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>)
 			const category = asInt(formField(body, c, 'CheerCategory'))
-			if (category === null || !(category === CheerCategory.None || isCheerCategory(category))) {
+			if (
+				category === null ||
+				!(
+					category === CheerCategory.None ||
+					category === CheerCategory.RecRoomDeveloper ||
+					isCheerCategory(category)
+				)
+			) {
 				return cheerResult(c, 'CheerCategory is not a cheer category')
 			}
+			// Employee is a selectable staff badge, not a cheer that players can give.
+			if (
+				category === CheerCategory.RecRoomDeveloper &&
+				!(await authedRoles(c))?.includes('developer')
+			)
+				return cheerResult(c, 'Developer access is required for the employee badge')
 
 			const reputation = await setSelectedCheer(c.env.DB, id, category)
 			await pushReputation(c, id, reputationFrame(reputation))
