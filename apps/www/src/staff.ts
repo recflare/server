@@ -74,6 +74,7 @@ import { getEquipment, grantEquipment } from '../../econ/src/equipment-db'
 import { grantCustomAvatarItem, ownedCustomAvatarItemIds } from '../../econ/src/inventory-custom-db'
 // The notification ids and the kick frame's recovered shape, owned by `notify`. Both are
 // imported as values/types with no runtime dependencies.
+import { KickReportCategory } from '../../notify/src/notification-payloads'
 import { NotificationType } from '../../notify/src/notification-types'
 // The sweep itself, so a developer can run it on demand instead of waiting for the cron.
 import { refreshDiscordRoles } from './discord-roles'
@@ -297,6 +298,86 @@ async function kickBannedPlayer(c: Context<App>, report: ReportRow, moderatorId:
 }
 
 /**
+ * Throw the accounts a new ban reaches through the evasion arms (a shared platform identity
+ * or IP — see bans-db's `linkedAccounts`) out of whatever live instance they are in.
+ *
+ * `match` refuses those accounts every matchmake from now on, but an alt already standing in
+ * a room keeps its presence row there, and heartbeats keep that row alive. Tachyon admits a
+ * player only to the instance `match`'s `/tachyon?id=` reports from presence, so the stale row
+ * is what would keep vouching for the alt. Moving it to the dorm is the enforcement; the frame
+ * only makes a stock client actually leave.
+ *
+ * Only accounts in a REAL instance (positive id) are touched — the dorm and Orientation
+ * sentinels are negative, and a player in a menu has nothing to leave.
+ *
+ * The frame is a plain kick (`IsBan: false`, no duration), like `api`'s instant kick — NOT the
+ * ban screen `kickBannedPlayer` sends. A linked account may be a housemate behind the same
+ * address, and the ban screen would describe someone else's moderation record. The message
+ * names nobody.
+ *
+ * Best-effort per account, like `kickBannedPlayer`: the ban has already committed.
+ */
+async function kickLinkedAccounts(c: Context<App>, report: ReportRow, moderatorId: number) {
+	const bannedId = report.reported_player_id
+	let presences: Awaited<ReturnType<typeof getPresences<{ roomInstanceId?: number }>>>
+	try {
+		const linkedIds = [
+			...new Set(
+				(await linkedAccounts(c.env.DB, bannedId, armsFor(c.env))).map((l) => l.accountId)
+			),
+		]
+		if (linkedIds.length === 0) return
+		presences = await getPresences<{ roomInstanceId?: number }>(c.env.DB, linkedIds)
+	} catch (err) {
+		logger.error('failed to resolve accounts linked to a banned player', {
+			bannedPlayerId: bannedId,
+			moderatorId,
+			error: err instanceof Error ? err.message : String(err),
+		})
+		return
+	}
+
+	for (const [accountId, presence] of presences) {
+		const gameSessionId = presence.roomInstance?.roomInstanceId ?? 0
+		if (gameSessionId <= 0) continue
+		try {
+			await movePlayerToDorm(c.env.DB, accountId)
+			logger.info('moved a linked account out of its instance after a ban', {
+				accountId,
+				bannedPlayerId: bannedId,
+				gameSessionId,
+				reportId: report.id,
+			})
+			const frame: ModerationKickPayload = {
+				ReportCategory: KickReportCategory.Moderator,
+				Duration: 0,
+				GameSessionId: gameSessionId,
+				IsHostKick: false,
+				Message: 'You have been removed from this session.',
+				PlayerIdReporter: null,
+				IsBan: false,
+				IsVoiceModAutoban: false,
+				IsWarning: false,
+				VoteKickReason: '',
+				TimeoutStartedAt: null,
+			}
+			await c.env.RECFLARE_NOTIFICATIONS_HUB.getByName(HUB_INSTANCE).notifyPlayersEphemeral(
+				[accountId],
+				NotificationType.ModerationKick,
+				{ ...frame }
+			)
+		} catch (err) {
+			logger.error('failed to move a linked account out of its instance', {
+				accountId,
+				bannedPlayerId: bannedId,
+				moderatorId,
+				error: err instanceof Error ? err.message : String(err),
+			})
+		}
+	}
+}
+
+/**
  * Record a ban or a lift on the `audit_log` table, against the moderator who made it.
  *
  * The report row only ever holds the ban's CURRENT state: a lift clears `banned_by` and
@@ -507,7 +588,10 @@ export async function banReportHandler(c: Context<App>) {
 
 	await recordBanAudit(c, moderatorId, existing, report)
 
-	if (banned) await kickBannedPlayer(c, report, moderatorId)
+	if (banned) {
+		await kickBannedPlayer(c, report, moderatorId)
+		await kickLinkedAccounts(c, report, moderatorId)
+	}
 	return c.json(report)
 }
 

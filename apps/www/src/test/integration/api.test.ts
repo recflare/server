@@ -1758,6 +1758,71 @@ it('bans an offline player without a kick to push', async () => {
 	expect(frames).toHaveLength(0)
 })
 
+// An alt already standing in a room when its main is banned keeps a presence row there, and
+// Tachyon admits whoever `match` reports in an instance — so the ban has to move it out too.
+it('moves accounts a ban reaches through a link out of their instance', async () => {
+	const hub = () => env.RECFLARE_NOTIFICATIONS_HUB.getByName('global')
+	await hub().fetch('http://do/all', { method: 'DELETE' })
+
+	const seedAccount = (data: Record<string, unknown>) =>
+		env.DB.prepare('INSERT OR REPLACE INTO account (data) VALUES (?1)')
+			.bind(JSON.stringify(data))
+			.run()
+	await seedAccount({ accountId: 8240, username: 'Main', lastLoginIp: '203.0.113.40' })
+	// In a live room on the same address — the one that must be moved.
+	await seedAccount({ accountId: 8241, username: 'AltInRoom', signupIp: '203.0.113.40' })
+	// Same address but already in the offline dorm — nothing to leave.
+	await seedAccount({ accountId: 8242, username: 'AltInDorm', signupIp: '203.0.113.40' })
+	// In a live room but sharing nothing — untouched.
+	await seedAccount({ accountId: 8243, username: 'Stranger', signupIp: '203.0.113.41' })
+	const present = (accountId: number, roomInstanceId: number) =>
+		setPresence(env.DB, {
+			accountId,
+			roomInstance: { roomInstanceId },
+			statusVisibility: 0,
+			deviceClass: 0,
+			vrMovementMode: 0,
+			platform: 4,
+			appVersion: 'test',
+		})
+	await present(8241, 77101)
+	await present(8242, -2)
+	await present(8243, 77102)
+
+	const report = await createReport(env.DB, { reporterPlayerId: 8244, reportedPlayerId: 8240 })
+	expect((await staffPost(`/api/staff/reports/${report.id}/ban`, 8110, { days: 1 })).status).toBe(
+		200
+	)
+
+	const instanceOf = async (accountId: number) =>
+		(
+			await env.DB.prepare(
+				"SELECT json_extract(data, '$.roomInstance.roomInstanceId') AS instance FROM presence WHERE json_extract(data, '$.accountId') = ?1"
+			)
+				.bind(accountId)
+				.first<{ instance: number | null }>()
+		)?.instance
+	expect(await instanceOf(8241)).toBe(-2)
+	expect(await instanceOf(8242)).toBe(-2)
+	expect(await instanceOf(8243)).toBe(77102)
+
+	// The main is offline, so the only frame is the alt's — a plain kick, never the ban screen:
+	// the account may be a housemate, and that screen would describe someone else's ban.
+	const frames = (await (await hub().fetch('http://do/all')).json()) as Array<{
+		playerIds?: number[]
+		ephemeral?: boolean
+		data: Record<string, unknown>
+	}>
+	expect(frames).toHaveLength(1)
+	expect(frames[0]).toMatchObject({ playerIds: [8241], ephemeral: true })
+	expect(frames[0].data).toMatchObject({
+		IsBan: false,
+		Duration: 0,
+		GameSessionId: 77101,
+		PlayerIdReporter: null,
+	})
+})
+
 // One screen, one call: a moderator deciding what to do about an account reads the
 // reports, the warnings and the ban together, and three round trips would let the page
 // render a decision out of a half-loaded history.
