@@ -2378,6 +2378,25 @@ describe('auth-gated endpoints', () => {
 		expect(player.appVersion).toBe('20250718.01')
 	})
 
+	// An offline player has no stored build, so the batch lookup shows them on the
+	// VIEWER's build (their token's `rn.ver`) rather than GAME_VERSION. An online
+	// player's own row still wins.
+	test('GET /player reports offline players on the caller’s build', async () => {
+		await exports.default.fetch(`${ORIGIN}/matchmake/dorm`, {
+			method: 'POST',
+			headers: await bearer('9713', '20250424.01'),
+		})
+		const players = (await (
+			await exports.default.fetch(`${ORIGIN}/player?id=9713&id=9714`, {
+				headers: await bearer('9715', '20250718.01'),
+			})
+		).json()) as Array<{ playerId: number; isOnline: boolean; appVersion: string }>
+		expect(players).toMatchObject([
+			{ playerId: 9713, isOnline: true, appVersion: '20250424.01' },
+			{ playerId: 9714, isOnline: false, appVersion: '20250718.01' },
+		])
+	})
+
 	// A player who quit and relaunched on a new build heartbeats with a NEW token against
 	// the row the old session left behind; the heartbeat adopts it rather than waiting for
 	// a re-matchmake.

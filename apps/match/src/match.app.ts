@@ -362,9 +362,11 @@ const QOS_REGIONS = [
  * in a room: you can be online in the lobby with `roomInstance` null. `errorCode` 0
  * is "no error"; it only turns non-zero on a failed matchmake.
  *
- * `callerVersion` (the `rn.ver` off the caller's token) may be passed ONLY when the
- * payload is the caller's own — the batch lookup serves other players, whose build this
- * caller's token knows nothing about.
+ * `callerVersion` (the `rn.ver` off the caller's token) fills in only when there is no
+ * stored version: for the caller's own payload before they have a presence row, and for
+ * OFFLINE players in the batch lookup — their build is unknown, and echoing the viewer's
+ * build reads better in the client than this server's default `GAME_VERSION`. An online
+ * player's row always wins.
  */
 function playerPayload(
 	playerId: number,
@@ -373,9 +375,9 @@ function playerPayload(
 ) {
 	return {
 		// The stored row is authoritative — for the caller it was just synced from their
-		// token, and for anyone else the caller's token says nothing. `callerVersion` only
-		// covers the caller having no presence row at all (they aren't in a room yet), where
-		// the alternative is reporting a build nobody is running.
+		// token. `callerVersion` only covers there being no row at all (the caller isn't in a
+		// room yet, or a batch-looked-up player is offline), where the alternative is
+		// reporting a build the viewer isn't running.
 		appVersion: presence?.appVersion || callerVersion || GAME_VERSION,
 		deviceClass: presence?.deviceClass ?? 0,
 		errorCode: 0,
@@ -1342,7 +1344,11 @@ async function batchPlayers(c: Context<App>) {
 	// One query per 99-id chunk (D1 `WHERE account_id IN (…)`), rather than a point read
 	// per id as the KV store required.
 	const presences = await getPresences<RoomInstance>(c.env.DB, ids)
-	return c.json(ids.map((playerId) => playerPayload(playerId, presences.get(playerId))))
+	// Offline players have no stored build; show them on the viewer's own build.
+	const version = await callerVersion(c)
+	return c.json(
+		ids.map((playerId) => playerPayload(playerId, presences.get(playerId), version))
+	)
 }
 
 /**
