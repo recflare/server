@@ -122,9 +122,8 @@ can inspect grants only while they currently manage the same room.
 
 ## Direct multipart artifact uploads
 
-Requires recflare/server#153. Its storage signer is shared through
+Builds on merged recflare/server#153. Its storage signer is shared through
 `@repo/hono-helpers`; storage keeps its existing import path via a re-export.
-Rebase after #153 merges, retaining this re-export when resolving the added file.
 No video routes are changed here.
 
 Apply `migrations/0005_cloud_artifact_upload.sql` before deploying Studio. Configure
