@@ -40,7 +40,9 @@ export const SCHEMA_DDL: string[] = [
 		email_lower TEXT GENERATED ALWAYS AS (NULLIF(lower(json_extract(data, '$.email')), '')) VIRTUAL
 	)`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_account_id ON account (account_id)`,
-	`CREATE INDEX IF NOT EXISTS idx_accounts_username_lower ON account (username_lower)`,
+	// A username belongs to ONE account (case-insensitive). The handlers check first; this is
+	// the backstop against two writes racing past the check (see auth migration 0018).
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_username_lower ON account (username_lower)`,
 	`CREATE INDEX IF NOT EXISTS idx_account_has_plus ON account (has_plus) WHERE has_plus = 1`,
 	`CREATE INDEX IF NOT EXISTS idx_account_is_influencer ON account (is_influencer) WHERE is_influencer = 1`,
 	`CREATE INDEX IF NOT EXISTS idx_account_signup_ip ON account (signup_ip)`,
@@ -289,13 +291,29 @@ const NOUNS = [
 	'Lynx',
 ]
 
-/** A random, readable username (e.g. "SwiftFox4821"). */
+/**
+ * A random, readable username (e.g. "SwiftFox482193"). 16 × 16 × 1,000,000 ≈ 256M names; the
+ * old 4-digit suffix gave only 2.56M, which at ~45k accounts had already collided ~250 times.
+ * Not unique on its own — {@link createAccount} checks and retries.
+ */
 export function randomUsername(): string {
 	const adj = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)]
 	const noun = NOUNS[Math.floor(Math.random() * NOUNS.length)]
-	const n = Math.floor(Math.random() * 10000)
+	const n = Math.floor(Math.random() * 1_000_000)
 	return `${adj}${noun}${n}`
 }
+
+/**
+ * Whether a D1 error is a UNIQUE index refusing a write on `column` (e.g. `username_lower`,
+ * `email_lower`) — two writes racing past a lookup. D1 surfaces SQLite's message verbatim.
+ */
+export function isUniqueViolation(err: unknown, column: string): boolean {
+	const message = err instanceof Error ? err.message : String(err)
+	return message.includes('UNIQUE constraint failed') && message.includes(column)
+}
+
+/** How many random names {@link createAccount} tries before giving up. */
+const USERNAME_ATTEMPTS = 8
 
 /**
  * Build a full account object from an id, applying default fallbacks for any
@@ -622,10 +640,22 @@ export async function createAccount(
 		.prepare('SELECT COALESCE(MAX(account_id), 1) + 1 AS next FROM account')
 		.first<{ next: number }>()
 	const id = row?.next ?? 2
-	const username = overrides.username ?? randomUsername()
-	const account = defaultAccount(id, { username, displayName: username, ...overrides })
-	await db.prepare('INSERT INTO account (data) VALUES (?1)').bind(JSON.stringify(account)).run()
-	return account
+	// A caller-supplied name is used as-is (the unique index refuses a taken one). A random one
+	// is checked first and, should another signup claim it in between, redrawn on the index's
+	// refusal.
+	const random = overrides.username === undefined
+	for (let attempt = 1; ; attempt++) {
+		const username = overrides.username ?? randomUsername()
+		const retry = random && attempt < USERNAME_ATTEMPTS
+		if (retry && (await getAccountByUsername(db, username))) continue
+		const account = defaultAccount(id, { username, displayName: username, ...overrides })
+		try {
+			await db.prepare('INSERT INTO account (data) VALUES (?1)').bind(JSON.stringify(account)).run()
+			return account
+		} catch (err) {
+			if (!retry || !isUniqueViolation(err, 'username_lower')) throw err
+		}
+	}
 }
 
 /**

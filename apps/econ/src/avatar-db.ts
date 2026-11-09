@@ -23,6 +23,7 @@ export const SCHEMA_DDL: string[] = [
 		email_lower TEXT GENERATED ALWAYS AS (NULLIF(lower(json_extract(data, '$.email')), '')) VIRTUAL
 	)`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_account_id ON account (account_id)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_username_lower ON account (username_lower)`,
 	`CREATE INDEX IF NOT EXISTS idx_account_has_plus ON account (has_plus) WHERE has_plus = 1`,
 	`CREATE INDEX IF NOT EXISTS idx_account_is_influencer ON account (is_influencer) WHERE is_influencer = 1`,
 	`CREATE INDEX IF NOT EXISTS idx_account_signup_ip ON account (signup_ip)`,

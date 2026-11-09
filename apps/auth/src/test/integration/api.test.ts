@@ -2919,7 +2919,7 @@ describe('staff login audit', () => {
 			.run()
 
 	test('a login by an isModerator account is recorded, with the context of the sign-in', async () => {
-		await seedAccount(9601, { username: 'ModPlayer', isModerator: true })
+		await seedAccount(9601, { username: 'AuditModPlayer', isModerator: true })
 		const res = await postToken(
 			`grant_type=password&account_id=9601&password=${LOGIN_PASSWORD}` +
 				'&device_id=dev-mod&device_class=2&ver=20230414',
@@ -2935,7 +2935,7 @@ describe('staff login audit', () => {
 			ip: '203.0.113.9',
 			roles: ['moderator'],
 			grantType: 'password',
-			username: 'ModPlayer',
+			username: 'AuditModPlayer',
 			deviceId: 'dev-mod',
 			deviceClass: 2,
 			version: '20230414',

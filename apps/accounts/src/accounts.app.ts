@@ -15,6 +15,7 @@ import {
 	getAccountByEmail,
 	getAccountByUsername,
 	getAccountsByIds,
+	isUniqueViolation,
 	pendingEmailCode,
 	SEARCH_LIMIT,
 	searchAccounts,
@@ -342,15 +343,6 @@ async function pendingEmailChange(
 		return { pending: change.payload, sentTo: current ?? change.payload }
 	}
 	return { pending: null, sentTo: null }
-}
-
-/**
- * Whether a D1 error is the `idx_account_email_lower` UNIQUE index refusing a second holder
- * of an address — two saves racing past the lookup. D1 surfaces SQLite's message verbatim.
- */
-function isUniqueEmailViolation(err: unknown): boolean {
-	const message = err instanceof Error ? err.message : String(err)
-	return message.includes('UNIQUE constraint failed') && message.includes('email_lower')
 }
 
 /** Bearer-JWT security requirement, for the auth-gated routes. */
@@ -734,10 +726,20 @@ const app = new Hono<App>()
 				return usernameResult(c, 'You have no username changes remaining.')
 			}
 
-			const updated = await updateAccount(c.env.DB, id, {
-				username,
-				availableUsernameChanges: remaining - 1,
-			})
+			// The unique index is the backstop: two players claiming the same name at once both
+			// pass the lookup above, and the second write is refused here.
+			let updated: Awaited<ReturnType<typeof updateAccount>>
+			try {
+				updated = await updateAccount(c.env.DB, id, {
+					username,
+					availableUsernameChanges: remaining - 1,
+				})
+			} catch (err) {
+				if (isUniqueViolation(err, 'username_lower')) {
+					return usernameResult(c, 'That username is already taken.')
+				}
+				throw err
+			}
 			await pushAccountUpdate(c, updated)
 			return usernameResult(c, '', toAccountDto(updated))
 		}
@@ -941,7 +943,7 @@ const app = new Hono<App>()
 			try {
 				await updateAccount(c.env.DB, id, { email })
 			} catch (err) {
-				if (isUniqueEmailViolation(err)) return c.json(taken, 400)
+				if (isUniqueViolation(err, 'email_lower')) return c.json(taken, 400)
 				throw err
 			}
 			logger.info('email changed', { accountId: id })
