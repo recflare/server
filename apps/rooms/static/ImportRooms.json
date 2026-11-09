@@ -1020,6 +1020,19 @@
 				"Accessibility": 1,
 				"ShouldAutoStageSaves": true,
 				"StagedSubRoomDataSaveId": null
+			},
+			{
+				"SubRoomId": 64,
+				"RoomId": 10,
+				"CreatorAccountId": null,
+				"UnitySceneId": "a8b02f8f-7c7c-4271-8d13-6151348c4fc1",
+				"Name": "MerryMidway",
+				"LastModeratedSaveModerationState": 0,
+				"IsSandbox": false,
+				"MaxPlayers": 8,
+				"Accessibility": 1,
+				"ShouldAutoStageSaves": true,
+				"StagedSubRoomDataSaveId": null
 			}
 		],
 		"Roles": [
