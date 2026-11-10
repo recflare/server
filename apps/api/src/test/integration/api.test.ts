@@ -9049,6 +9049,52 @@ describe('messages', () => {
 		expect(inbox[0]).toMatchObject({ Id: frameId, FromPlayerId: 42, Type: 10, Data: '' })
 	})
 
+	test('POST /api/messages/v2/send strips astral characters and the escapes that spell them', async () => {
+		const clover = '\\U0001F340'
+		const res = await send(
+			{
+				ToPlayerId: '2',
+				Type: '30',
+				Data: `hi ${clover.repeat(8)}\u{1F340}\\uD83C\\uDF40 caf\\u00e9`,
+			},
+			await bearer('9703')
+		)
+		expect(res.status).toBe(200)
+		// The accented-letter escape is not one of them and survives.
+		expect((await pushed())[0]?.data).toMatchObject({ Type: 30, Data: 'hi  caf\\u00e9' })
+		expect((await inboxOf('2'))[0]?.Data).toBe('hi  caf\\u00e9')
+	})
+
+	test('GET /api/messages/v2/get scrubs a message stored before the send did', async () => {
+		await env.DB.prepare(
+			`INSERT INTO notification (from_player_id, to_player_id, type, data, sent_time)
+			 VALUES (42, 2, 30, ?1, ?2)`
+		)
+			.bind('\\U0001F340\\U0001F340 ok', new Date().toISOString())
+			.run()
+		expect((await inboxOf('2'))[0]?.Data).toBe(' ok')
+	})
+
+	test('POST /api/messages/v2/send refuses an eleventh message inside ten seconds', async () => {
+		// Senders of their own: the budget is per sender and the tests here share a database.
+		const auth = await bearer('9701')
+		for (let i = 0; i < 10; i++) {
+			expect((await send({ ToPlayerId: '2', Type: '30', Data: 'hi' }, auth)).status).toBe(200)
+		}
+		const res = await send({ ToPlayerId: '2', Type: '30', Data: 'hi' }, auth)
+		expect(res.status).toBe(429)
+		expect(await res.json()).toEqual({
+			success: false,
+			error: 'You are sending messages too quickly!',
+		})
+		expect(await pushed()).toHaveLength(0)
+		// The bulk form shares the budget; another sender is unaffected.
+		expect((await sendMultiple({ ToPlayerIds: [2], Type: 30, Data: '' }, auth)).status).toBe(429)
+		expect(
+			(await send({ ToPlayerId: '2', Type: '30', Data: 'hi' }, await bearer('9702'))).status
+		).toBe(200)
+	})
+
 	test('POST /api/messages/v2/send defaults Data when omitted', async () => {
 		const res = await send({ ToPlayerId: '2', Type: '11' }, await bearer('42'))
 		expect(res.status).toBe(200)
@@ -9181,10 +9227,12 @@ describe('messages', () => {
 		expect(res.status).toBe(401)
 	})
 
+	// These send as 9630 rather than 42: the send's burst limit is per sender, the tests in
+	// this file share a database, and 42 has spent its ten by here.
 	test('POST /api/messages/v3/delete removes only the caller’s messages', async () => {
-		await send({ ToPlayerId: '9610', Type: '30', Data: 'keep' }, await bearer('42'))
-		await send({ ToPlayerId: '9610', Type: '30', Data: 'drop' }, await bearer('42'))
-		await send({ ToPlayerId: '9611', Type: '30', Data: 'someone else' }, await bearer('42'))
+		await send({ ToPlayerId: '9610', Type: '30', Data: 'keep' }, await bearer('9630'))
+		await send({ ToPlayerId: '9610', Type: '30', Data: 'drop' }, await bearer('9630'))
+		await send({ ToPlayerId: '9611', Type: '30', Data: 'someone else' }, await bearer('9630'))
 
 		const before = await inboxOf('9610')
 		const drop = before.find((m) => m.Data === 'drop')!
@@ -9201,7 +9249,7 @@ describe('messages', () => {
 	})
 
 	test('POST /api/messages/v3/delete takes a bare array, and shrugs off the rest', async () => {
-		await send({ ToPlayerId: '9620', Type: '30', Data: 'bare' }, await bearer('42'))
+		await send({ ToPlayerId: '9620', Type: '30', Data: 'bare' }, await bearer('9630'))
 		const message = (await inboxOf('9620'))[0]
 
 		// The client posts a bare array; the documented `{ MessageIds }` object works too.

@@ -76,6 +76,8 @@ export const NOTIFICATION_SCHEMA_DDL: string[] = [
 	// The inbox read and the newest-wins trim are both "this player's notifications, newest
 	// first", which is the whole access pattern.
 	`CREATE INDEX IF NOT EXISTS idx_notification_recipient ON notification (to_player_id, notification_id DESC)`,
+	// The send burst limit counts one sender's recent rows (see `countRecentNotificationsFrom`).
+	`CREATE INDEX IF NOT EXISTS idx_notification_sender ON notification (from_player_id, sent_time)`,
 ]
 
 /**
@@ -173,6 +175,33 @@ export async function createNotification(
 	])
 
 	return toNotification(inserted.results[0])
+}
+
+/**
+ * How many notifications of the given `types` a player has sent since `since` — what the
+ * message send's burst limit counts, read off `sent_time` rather than a counter of its own.
+ *
+ * A LOWER bound, not an exact count: a row is gone once its recipient deletes it or their
+ * inbox trims it. The trim keeps a recipient's newest {@link MAX_NOTIFICATIONS_PER_PLAYER},
+ * so a burst aimed at one player still leaves that many of its rows standing — a limit at
+ * or below that number cannot be dodged by flooding a single inbox.
+ */
+export async function countRecentNotificationsFrom(
+	db: D1Database,
+	fromPlayerId: number,
+	types: readonly number[],
+	since: Date
+): Promise<number> {
+	if (types.length === 0) return 0
+	const placeholders = types.map((_, i) => `?${i + 3}`).join(', ')
+	const row = await db
+		.prepare(
+			`SELECT COUNT(*) AS n FROM notification
+			 WHERE from_player_id = ?1 AND sent_time > ?2 AND type IN (${placeholders})`
+		)
+		.bind(fromPlayerId, since.toISOString(), ...types)
+		.first<{ n: number }>()
+	return row?.n ?? 0
 }
 
 /**

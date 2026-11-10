@@ -5,6 +5,7 @@ import {
 	acceptFriendRequest,
 	addFriend,
 	countOnlineFriends,
+	countRecentNotificationsFrom,
 	createNotification,
 	deleteNotifications,
 	getAccountsByIds,
@@ -43,6 +44,7 @@ import {
 	SuccessErrorEnvelope,
 	UNAUTHORIZED_RESPONSE,
 } from '../openapi'
+import { removeUnrenderableText } from '../sanitize'
 
 import type { Context } from 'hono'
 import type {
@@ -71,6 +73,30 @@ const PLAYER_SENDABLE_MESSAGE_TYPES: ReadonlySet<number> = new Set([
 	MessageType.TextMessage,
 	MessageType.FriendCodeUsed,
 ])
+
+/**
+ * The send burst limit: at most {@link MESSAGE_BURST_LIMIT} player-sent messages per
+ * {@link MESSAGE_BURST_WINDOW_MS}, counted per recipient row (a `sendMultiple` to five
+ * players is five). Generous for what the client sends on its own — an invite reply, a
+ * DM — and far below a script's rate. Kept under `MAX_NOTIFICATIONS_PER_PLAYER` so
+ * flooding one inbox cannot trim the evidence away (see `countRecentNotificationsFrom`).
+ */
+const MESSAGE_BURST_LIMIT = 10
+const MESSAGE_BURST_WINDOW_MS = 10_000
+
+/**
+ * Whether the caller has used up their burst. Checked before a send, so a single
+ * `sendMultiple` is never refused for its own size — only for what came before it.
+ */
+async function isOverMessageBurst(c: Context<App>, fromPlayerId: number): Promise<boolean> {
+	const recent = await countRecentNotificationsFrom(
+		c.env.DB,
+		fromPlayerId,
+		[...PLAYER_SENDABLE_MESSAGE_TYPES],
+		new Date(Date.now() - MESSAGE_BURST_WINDOW_MS)
+	)
+	return recent >= MESSAGE_BURST_LIMIT
+}
 
 /**
  * Push the `MessageReceived` frame for an ALREADY-STORED message, resolving false when the
@@ -397,14 +423,18 @@ export const socialRoutes = new Hono<App>({ strict: false })
 			if (!PLAYER_SENDABLE_MESSAGE_TYPES.has(type)) {
 				return c.json({ success: false, error: 'Invalid message type' }, 400)
 			}
+			if (await isOverMessageBurst(c, fromPlayerId)) {
+				return c.json({ success: false, error: 'You are sending messages too quickly!' }, 429)
+			}
 
 			const message = await createNotification(c.env.DB, {
 				FromPlayerId: fromPlayerId,
 				ToPlayerId: toPlayerId,
 				Type: type,
 				// `Data` stays a string, empty included — distinct from the null the types
-				// carrying no payload of their own send.
-				Data: str(body.Data) ?? '',
+				// carrying no payload of their own send. Scrubbed of what crashes the
+				// recipient's client to draw (see `removeUnrenderableText`).
+				Data: removeUnrenderableText(str(body.Data) ?? ''),
 			})
 
 			const delivered = await pushMessage(c, message)
@@ -475,7 +505,10 @@ export const socialRoutes = new Hono<App>({ strict: false })
 			if (!PLAYER_SENDABLE_MESSAGE_TYPES.has(type)) {
 				return c.json({ success: false, error: 'Invalid message type' }, 400)
 			}
-			const data = typeof body.Data === 'string' ? body.Data : ''
+			if (await isOverMessageBurst(c, fromPlayerId)) {
+				return c.json({ success: false, error: 'You are sending messages too quickly!' }, 429)
+			}
+			const data = typeof body.Data === 'string' ? removeUnrenderableText(body.Data) : ''
 
 			// Every recipient is attempted even if an earlier one fails — the reachable
 			// players get their message either way. One STORED message each, so every
@@ -732,7 +765,12 @@ export const socialRoutes = new Hono<App>({ strict: false })
 		async (c) => {
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
-			return c.json(await getNotificationsForPlayer(c.env.DB, id))
+			// Scrubbed on the way out as well as on the send: a row stored before the send
+			// scrubbed it would otherwise crash its recipient on every login.
+			const messages = await getNotificationsForPlayer(c.env.DB, id)
+			return c.json(
+				messages.map((m) => (m.Data === null ? m : { ...m, Data: removeUnrenderableText(m.Data) }))
+			)
 		}
 	)
 	// The inbox's delete button. A POST rather than a DELETE because the ids arrive as

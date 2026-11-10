@@ -119,6 +119,33 @@ export function removeBlockedCharacters(value: string): string {
 }
 
 /**
+ * What a player-written message must not carry to another client: characters outside the
+ * Basic Multilingual Plane (emoji such as U+1F340, lone surrogates included), and the
+ * ESCAPES that spell one — `\U0001F340`, or a `\uD83C\uDF40` surrogate pair typed out as
+ * text. The client's text renderer expands those escapes itself, so the literal ten
+ * characters `\U0001F340` reach it as the same glyph the raw character would, and a message
+ * of them crashed every client that drew it.
+ *
+ * Only the capital `\U` form and surrogate `\u` escapes are taken: a `Data` holding
+ * escaped JSON may legitimately spell an accented letter as `\u00e9`.
+ */
+const UNRENDERABLE_TEXT =
+	/[\u{10000}-\u{10FFFF}]|[\uD800-\uDFFF]|\\U[0-9a-fA-F]{8}|\\u[dD][89a-fA-F][0-9a-fA-F]{2}/gu
+
+/**
+ * `value` without the characters and escapes {@link UNRENDERABLE_TEXT} describes. Repeated
+ * until nothing matches, so removing one escape cannot splice its neighbours into another.
+ */
+export function removeUnrenderableText(value: string): string {
+	let text = value
+	for (;;) {
+		const stripped = text.replaceAll(UNRENDERABLE_TEXT, '')
+		if (stripped === text) return text
+		text = stripped
+	}
+}
+
+/**
  * Where the match starting at `start` ends.
  *
  * The library reports where a match begins but not how far it runs, so the shortest
