@@ -7802,18 +7802,31 @@ describe('Studio room management contracts', () => {
 			Roles: [],
 			SubRooms: [{ SubRoomId: 91005, Name: 'Home', CurrentSave: null }],
 		})
-		const id = '22222222-3333-4444-8555-666666666666'
 		const saved = await SELF.fetch(`${ORIGIN}/rooms/91005/subrooms/91005/data`, {
 			method: 'POST',
 			headers: { ...(await bearer('880')), 'Content-Type': 'application/json' },
 			body: JSON.stringify({
-				UnityAssetId: id,
 				UnityAsset: { Filename: 'manifest.json', Hash: 'source-hash' },
 				SubRoomData: { Filename: 'maker.room' },
 				AutoPublish: true,
 			}),
 		})
 		expect(saved.status).toBe(200)
+		const uploaded = (await saved.json()) as {
+			value: { subRoomDataSave: { unityAssetId: string } }
+		}
+		const id = uploaded.value.subRoomDataSave.unityAssetId
+		expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+		const reused = await SELF.fetch(`${ORIGIN}/rooms/91005/subrooms/91005/data`, {
+			method: 'POST',
+			headers: { ...(await bearer('880')), 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				UnityAssetId: id,
+				SubRoomData: { Filename: 'later.room' },
+				AutoPublish: true,
+			}),
+		})
+		expect(reused.status).toBe(200)
 		const source = await (
 			await SELF.fetch(`${ORIGIN}/rooms/91005/subrooms/91005/unityasset?unityAssetId=${id}`)
 		).json()
@@ -7829,6 +7842,9 @@ describe('Studio room management contracts', () => {
 			})
 		).json()) as { Results: Array<Record<string, unknown>> }
 		expect(history.Results[0]).toMatchObject({
+			UnityAssetId: id,
+		})
+		expect(history.Results[1]).toMatchObject({
 			UnityAssetId: id,
 			SavedOnPlatform: null,
 			SavedOnDeviceClass: null,

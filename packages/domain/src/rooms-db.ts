@@ -1972,7 +1972,9 @@ export async function saveSubRoomData(
 		// reference's `roomDesc ?? ""`).
 		description: input.description ?? '',
 		createdAt: new Date().toISOString(),
-		unityAssetId: input.unityAssetId,
+		unityAssetId: input.unitySource
+			? (input.unityAssetId ?? crypto.randomUUID())
+			: input.unityAssetId,
 	})
 	saveData.ReferencedUnityAssetIds = input.referencedUnityAssetIds ?? []
 	// A live client save changes the scene data while reusing the baked Studio
@@ -1987,6 +1989,16 @@ export async function saveSubRoomData(
 		previous.ServerData != null
 	) {
 		saveData.ServerData = previous.ServerData
+	}
+	if (
+		!input.unitySource &&
+		input.unityAssetId &&
+		typeof previous?.UnityAssetId === 'string' &&
+		input.unityAssetId.toLowerCase() === previous.UnityAssetId.toLowerCase() &&
+		previous.StudioSourceAsset
+	) {
+		// The editable source belongs to the reused asset, just like its baked bundles.
+		saveData.StudioSourceAsset = previous.StudioSourceAsset
 	}
 	if (input.unitySource) {
 		saveData.StudioSourceAsset = input.unitySource
