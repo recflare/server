@@ -2420,37 +2420,105 @@ button.photo-cheer.cheered:hover:not(:disabled) {
 
 /* The full-size popup. The dialog itself is invisible — just the photo, fitted to the
    viewport, over the dimmed page. */
+/* The popup: the photo with its caption under it, the same as the photo's own page. */
 .photo-modal {
+	width: min(94vw, 1200px);
 	max-width: 94vw;
 	max-height: 94vh;
 	padding: 0;
 	border: 0;
 	background: none;
-	overflow: visible;
-	cursor: zoom-out;
+	color: var(--text);
+	overflow: auto;
 }
 
 .photo-modal::backdrop {
 	background: rgb(0 0 0 / 80%);
 }
 
-/* `/image/<id>`: the one photo, fitted to the page. */
-.image-page img {
+/* `/image/<id>` and the popup: the one photo, fitted, with its caption under it. */
+.photo-view {
+	margin: 0;
+}
+.photo-view img {
 	display: block;
 	max-width: 100%;
 	max-height: 80vh;
 	margin: 0 auto;
 	border-radius: 9px;
 }
-/* Who took the photo, where, and who's in it — under the picture, like a grid caption. */
+.photo-modal .photo-view img {
+	max-height: calc(94vh - 140px);
+	cursor: zoom-out;
+	box-shadow: 0 10px 40px rgb(0 0 0 / 50%);
+}
+/* What the taker wrote, who took the photo, where, and who's in it. */
 .image-meta {
 	max-width: 720px;
 	margin: 12px auto 0;
 	font-size: 0.95rem;
 	line-height: 1.5;
 }
+.photo-modal .image-meta {
+	padding: 12px 16px;
+	border-radius: var(--radius);
+	background: var(--surface);
+	border: 1px solid var(--line);
+}
 .image-meta p {
 	margin: 0 0 4px;
+}
+.image-meta .image-desc {
+	font-size: 1.05rem;
+	margin-bottom: 8px;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+.image-meta-row {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 12px;
+}
+/* The cheer pill and the owner's padlock, at the end of the "Taken by" line. */
+.image-actions {
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+/* The grid's cheer pill sits on the thumbnail; under a full photo it sits in the line. */
+.photo-cheer.inline {
+	position: static;
+	height: 30px;
+	padding: 0 12px;
+	font-size: 0.85rem;
+}
+/* The owner's privacy padlock — accent when private, like the game's. */
+.photo-lock {
+	flex: none;
+	display: inline-grid;
+	place-items: center;
+	width: 30px;
+	height: 30px;
+	padding: 0;
+	border: 1px solid var(--line);
+	border-radius: 999px;
+	background: var(--surface-hi);
+	color: var(--muted);
+	cursor: pointer;
+}
+.photo-lock:hover:not(:disabled) {
+	color: var(--text);
+	border-color: var(--muted);
+}
+.photo-lock.locked {
+	color: var(--accent);
+	border-color: var(--accent);
+}
+.photo-lock:disabled {
+	opacity: 0.6;
+	cursor: default;
 }
 .image-meta a {
 	color: var(--accent);
@@ -2458,14 +2526,6 @@ button.photo-cheer.cheered:hover:not(:disabled) {
 }
 .image-meta a:hover {
 	text-decoration: underline;
-}
-
-.photo-modal img {
-	display: block;
-	max-width: 94vw;
-	max-height: 94vh;
-	border-radius: 9px;
-	box-shadow: 0 10px 40px rgb(0 0 0 / 50%);
 }
 
 @media (max-width: 620px) {

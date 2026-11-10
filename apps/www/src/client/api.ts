@@ -84,18 +84,33 @@ export function where(): Hosts {
 	return hosts
 }
 
-/** The session token's `role` claim, decoded WITHOUT verifying it. Malformed reads as none. */
-function tokenRoles(): string[] {
+/** The session token's claims, decoded WITHOUT verifying it. Malformed reads as none. */
+function tokenClaims(): { role?: unknown; sub?: unknown } {
 	const payload = token?.split('.')[1]
-	if (!payload) return []
+	if (!payload) return {}
 	try {
 		const b64 = payload.replace(/-/g, '+').replace(/_/g, '/')
 		const padded = b64.padEnd(b64.length + ((4 - (b64.length % 4)) % 4), '=')
-		const claims = JSON.parse(atob(padded)) as { role?: unknown }
-		return Array.isArray(claims.role) ? (claims.role as string[]) : []
+		return JSON.parse(atob(padded)) as { role?: unknown; sub?: unknown }
 	} catch {
-		return []
+		return {}
 	}
+}
+
+/** The session token's `role` claim. Malformed reads as none. */
+function tokenRoles(): string[] {
+	const { role } = tokenClaims()
+	return Array.isArray(role) ? (role as string[]) : []
+}
+
+/**
+ * The signed-in account's id, from the token's `sub` claim — unverified, so it only decides
+ * which controls to SHOW (an owner's own photo); the worker checks the real token. Null
+ * signed out or on a malformed token.
+ */
+export function tokenAccountId(): number | null {
+	const id = Number(tokenClaims().sub)
+	return Number.isInteger(id) && id > 0 ? id : null
 }
 
 /**

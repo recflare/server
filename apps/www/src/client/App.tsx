@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { renderSVG } from 'uqr'
 
 import { Accessibility } from '@repo/domain/src/enums'
@@ -26,6 +26,7 @@ import {
 	isDeveloper,
 	setHosts,
 	setToken,
+	tokenAccountId,
 	useAction,
 	usernamesFor,
 	where,
@@ -1590,8 +1591,7 @@ function SiteSearch({ navigate }: { navigate: Navigate }) {
  * The thumbnail is the img worker's cached 256px variant; the popup asks for the same key
  * with NO transform, which is the original upload. The popup is a native `<dialog>` opened
  * with `showModal()`, so Escape, the backdrop, and keeping focus inside it are the
- * browser's work rather than ours — all that's added is closing on a click anywhere, since
- * there is nothing in it to interact with but the photo.
+ * browser's work rather than ours. Under the photo is the same caption its own page has.
  *
  * Safe to call `where()` in render: a caller only has photos to pass once a fetch that
  * went through it has resolved (see MyRooms).
@@ -1605,18 +1605,48 @@ const isPlainClick = (e: React.MouseEvent): boolean =>
 	e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey
 
 /**
- * One photo, full size, over the page. Mounted only while open, so the full-size image
- * isn't fetched until asked for; `onClose` covers Escape, which closes the dialog without
- * going through us, and a click anywhere (the backdrop or the picture) closes it too.
+ * One photo over the page: the picture with the same caption its own page has (see
+ * PhotoView). Mounted only while open, so the full-size image isn't fetched until asked
+ * for. `src` is drawn at once while the record loads. `onClose` covers Escape, which closes
+ * the dialog without going through us; a click on the backdrop or the picture closes it
+ * too, but not one on the caption, which has links and the owner's privacy toggle in it.
  */
-function PhotoLightbox({ src, onClose }: { src: string; onClose: () => void }) {
+function PhotoLightbox({
+	imageId,
+	src,
+	navigate,
+	onAccessibilityChange,
+	onCheer,
+	onClose,
+}: {
+	imageId: number
+	src: string
+	navigate?: Navigate
+	onAccessibilityChange?: (accessibility: number) => void
+	onCheer?: (cheered: boolean) => void
+	onClose: () => void
+}) {
 	const dialogRef = useRef<HTMLDialogElement>(null)
 	useEffect(() => {
 		dialogRef.current?.showModal()
 	}, [])
 	return (
-		<dialog ref={dialogRef} className="photo-modal" onClose={onClose} onClick={onClose}>
-			<img src={src} alt="" />
+		<dialog
+			ref={dialogRef}
+			className="photo-modal"
+			onClose={onClose}
+			onClick={(e) => {
+				const target = e.target as HTMLElement
+				if (target === dialogRef.current || target.tagName === 'IMG') onClose()
+			}}
+		>
+			<PhotoView
+				imageId={imageId}
+				src={src}
+				navigate={navigate}
+				onAccessibilityChange={onAccessibilityChange}
+				onCheer={onCheer}
+			/>
 		</dialog>
 	)
 }
@@ -1696,12 +1726,75 @@ function usePhotoCheers(photos: PublicPhoto[], enabled: boolean) {
 		[cheered, pending]
 	)
 
+	/**
+	 * Take on a cheer made somewhere else — the popup's own pill — so the tile behind it
+	 * agrees once it closes. Moves the count only when the state actually changed.
+	 */
+	const adopt = useCallback(
+		(imageId: number, next: boolean) => {
+			if ((cheered.get(imageId) ?? false) === next) return
+			setCheered((current) => new Map(current).set(imageId, next))
+			setDelta((current) =>
+				new Map(current).set(imageId, (current.get(imageId) ?? 0) + (next ? 1 : -1))
+			)
+		},
+		[cheered]
+	)
+
 	return {
 		isCheered: (id: number) => cheered.get(id) ?? false,
 		count: (p: PublicPhoto) => Math.max(0, p.CheerCount + (delta.get(p.SavedImageId) ?? 0)),
 		isPending: (id: number) => pending.has(id),
 		toggle,
+		adopt,
 	}
+}
+
+/**
+ * A photo's cheer count: a button that cheers or un-cheers it for a signed-in viewer, a
+ * plain count for anyone else. Drawn on a grid tile and under the photo on its own page.
+ */
+function CheerPill({
+	photo,
+	cheers,
+	className = '',
+	onToggle,
+}: {
+	photo: PublicPhoto
+	cheers: ReturnType<typeof usePhotoCheers>
+	className?: string
+	/** Called with the new state once the viewer clicks (optimistically). */
+	onToggle?: (cheered: boolean) => void
+}) {
+	const id = photo.SavedImageId
+	const count = cheers.count(photo).toLocaleString()
+	if (!hasToken()) {
+		return (
+			<span
+				className={`photo-cheer ${className}`}
+				title="Sign in to cheer"
+				aria-label={`${count} cheers`}
+			>
+				<span aria-hidden="true">👍</span> {count}
+			</span>
+		)
+	}
+	const cheered = cheers.isCheered(id)
+	return (
+		<button
+			type="button"
+			className={`photo-cheer ${className}${cheered ? ' cheered' : ''}`}
+			aria-pressed={cheered}
+			aria-label={cheered ? 'Remove cheer' : 'Cheer photo'}
+			disabled={cheers.isPending(id)}
+			onClick={() => {
+				onToggle?.(!cheered)
+				void cheers.toggle(id)
+			}}
+		>
+			<span aria-hidden="true">👍</span> {count}
+		</button>
+	)
 }
 
 /**
@@ -1757,9 +1850,12 @@ function PhotoGrid({
 	navigate?: Navigate
 }) {
 	const [open, setOpen] = useState<PublicPhoto | null>(null)
+	// Privacy the owner changed from the popup, by image id — so the tile's Private badge
+	// follows without refetching the feed.
+	const [privacy, setPrivacy] = useState<Map<number, number>>(new Map())
+	const accessibility = (p: PublicPhoto) => privacy.get(p.SavedImageId) ?? p.Accessibility
 	const cheers = usePhotoCheers(photos, cheerable)
 	const roomNames = usePhotoRoomNames(photos, navigate !== undefined)
-	const signedIn = hasToken()
 
 	return (
 		<>
@@ -1782,7 +1878,7 @@ function PhotoGrid({
 									setOpen(p)
 								}}
 								aria-label={
-									p.Accessibility === Accessibility.Public ? 'View photo' : 'View private photo'
+									accessibility(p) === Accessibility.Public ? 'View photo' : 'View private photo'
 								}
 							>
 								<img
@@ -1794,32 +1890,12 @@ function PhotoGrid({
 								{/* Only the owner's own list ever carries a private photo (see
 						    fetchPlayerPhotos), so this is the mark on their own profile that tells
 						    them which of theirs nobody else can see. */}
-								{p.Accessibility !== Accessibility.Public && (
+								{accessibility(p) !== Accessibility.Public && (
 									<span className="badge photo-private">Private</span>
 								)}
 							</a>
 							{/* A sibling of the link, not inside it: a button can't nest in an <a>. */}
-							{cheerable &&
-								(signedIn ? (
-									<button
-										type="button"
-										className={`photo-cheer${cheers.isCheered(p.SavedImageId) ? ' cheered' : ''}`}
-										aria-pressed={cheers.isCheered(p.SavedImageId)}
-										aria-label={cheers.isCheered(p.SavedImageId) ? 'Remove cheer' : 'Cheer photo'}
-										disabled={cheers.isPending(p.SavedImageId)}
-										onClick={() => void cheers.toggle(p.SavedImageId)}
-									>
-										<span aria-hidden="true">👍</span> {cheers.count(p).toLocaleString()}
-									</button>
-								) : (
-									<span
-										className="photo-cheer"
-										title="Sign in to cheer"
-										aria-label={`${cheers.count(p).toLocaleString()} cheers`}
-									>
-										<span aria-hidden="true">👍</span> {cheers.count(p).toLocaleString()}
-									</span>
-								))}
+							{cheerable && <CheerPill photo={p} cheers={cheers} />}
 						</div>
 						{/* Always rendered when captions are on, so a photo with no public room keeps
 						    its row the same height as the captioned ones beside it. */}
@@ -1836,7 +1912,16 @@ function PhotoGrid({
 				))}
 			</div>
 			{open && (
-				<PhotoLightbox src={`${where().img}/${open.ImageName}`} onClose={() => setOpen(null)} />
+				<PhotoLightbox
+					imageId={open.SavedImageId}
+					src={`${where().img}/${open.ImageName}`}
+					navigate={navigate}
+					onAccessibilityChange={(a) =>
+						setPrivacy((current) => new Map(current).set(open.SavedImageId, a))
+					}
+					onCheer={cheerable ? (next) => cheers.adopt(open.SavedImageId, next) : undefined}
+					onClose={() => setOpen(null)}
+				/>
 			)}
 		</>
 	)
@@ -1859,6 +1944,11 @@ interface PageImage {
 	/** The room it was taken in; null for a photo taken outside one. */
 	RoomId: number | null
 	CreatedAt: string
+	/** The taker's caption; null (or empty) when they wrote none. */
+	Description: string | null
+	/** Moderation has fixed its privacy — the owner can't change it. */
+	AccessibilityLocked: boolean
+	CheerCount: number
 }
 
 /** The room a photo was taken in, as far as this page names it. */
@@ -1883,26 +1973,34 @@ async function fetchPhotoRoom(roomId: number, staff: boolean): Promise<PhotoRoom
 }
 
 /**
- * One photo on its own page (`/image/<id>`) — the image, and for staff a Delete card.
- *
- * Read through `api`'s `GET /api/images/v6/:id`. For everyone but staff that's WITHOUT the
- * session token, deliberately: the route serves a private image to the player who took it,
- * and this page is a public link, so it must show only what anyone could see. Signed out or
- * not, a private image is the same 404 as an unknown id.
- *
- * Staff send the token, which the route answers with a private photo too: the moderation
- * panel links a reported photo here so it can be deleted, and a reported photo may be one
- * its owner has since made private.
+ * One photo by id, for its own page and the popup, through `api`'s `GET /api/images/v6/:id`.
+ * Sent with the session token when there is one: the route serves a private image to the
+ * player who took it (and to staff), and both may see it here — the owner to make it public
+ * again, staff because the moderation panel links a reported photo here so it can be
+ * deleted, and it may since have been made private. Anyone else gets a private image as the
+ * same 404 as an unknown id.
  */
 async function fetchPageImage(imageId: number, staff: boolean): Promise<PageImage | null> {
-	const token = staff ? authHeader() : {}
-	const res = await fetch(`${where().api}/api/images/v6/${imageId}`, { headers: token })
+	const res = await fetch(`${where().api}/api/images/v6/${imageId}`, { headers: authHeader() })
 	if (res.status === 404) return null
 	if (!res.ok) throw new Error(`Couldn’t load the image (${res.status}).`)
 	const image = (await res.json()) as PageImage
-	// The route already refuses a private image to an anonymous caller; checked again so
-	// this page can't show one to a non-staff visitor if that ever changes.
-	return staff || image.Accessibility === Accessibility.Public ? image : null
+	// The route already refuses a private image to anyone else; checked again so this page
+	// can't show one to a visitor if that ever changes.
+	const mine = image.PlayerId === tokenAccountId()
+	return staff || mine || image.Accessibility === Accessibility.Public ? image : null
+}
+
+/**
+ * Make one of the caller's photos public or private through the game's own
+ * `POST /api/images/v2/modifyaccessibility` — owner-only, and refused when moderation has
+ * locked the photo's privacy.
+ */
+async function setImageAccessibility(imageName: string, accessibility: number): Promise<void> {
+	await call(`${where().api}/api/images/v2/modifyaccessibility`, {
+		json: { ImageName: imageName, Accessibility: accessibility },
+		authed: true,
+	})
 }
 
 /**
@@ -1916,14 +2014,47 @@ async function deleteImage(imageName: string): Promise<void> {
 	})
 }
 
-function ImagePage({
+/** A padlock, shut or open — the owner's privacy toggle, as the game draws it. */
+function LockIcon({ locked }: { locked: boolean }) {
+	return (
+		<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+			<rect x="5" y="11" width="14" height="10" rx="2" fill="currentColor" />
+			<path
+				d={locked ? 'M8 11V7a4 4 0 0 1 8 0v4' : 'M8 11V7a4 4 0 0 1 7.5-1.9'}
+				fill="none"
+				stroke="currentColor"
+				strokeWidth="2"
+				strokeLinecap="round"
+			/>
+		</svg>
+	)
+}
+
+/**
+ * A photo with its caption — the caption the taker wrote, who took it and where, when, and
+ * who's in it; and for the player who took it a padlock that makes it private or public, as
+ * the game's own photo view has. Shared by the photo's page and the grid's popup, so the two
+ * read the same.
+ *
+ * `src`, when given, is drawn while the record loads (the popup already knows the picture).
+ * Links go through `navigate` when there is one; a room's feed has none, so its popup's
+ * links are plain page loads. `footer` adds below the caption (the page's staff tools).
+ */
+function PhotoView({
 	imageId,
-	config,
+	src,
 	navigate,
+	onAccessibilityChange,
+	onCheer,
+	footer,
 }: {
 	imageId: number
-	config: SiteConfig | undefined
-	navigate: Navigate
+	src?: string
+	navigate?: Navigate
+	onAccessibilityChange?: (accessibility: number) => void
+	/** A cheer made here, for the grid behind a popup to follow. */
+	onCheer?: (cheered: boolean) => void
+	footer?: (image: PageImage) => ReactNode
 }) {
 	// undefined = not fetched yet; null = no image this visitor may see.
 	const [image, setImage] = useState<PageImage | null | undefined>(undefined)
@@ -1932,18 +2063,36 @@ function ImagePage({
 	const [players, setPlayers] = useState<Map<number, PublicAccount>>(new Map())
 	const [room, setRoom] = useState<PhotoRoom | null>(null)
 	const [error, setError] = useState('')
-	const [deleted, setDeleted] = useState(false)
+	const [saving, setSaving] = useState(false)
+	const [privacyError, setPrivacyError] = useState('')
 	const staff = isAdmin()
+	// The photo as the cheer hook takes it — one tile's worth, so the pill here behaves
+	// exactly as the grid's does.
+	const cheerTarget = useMemo<PublicPhoto[]>(
+		() =>
+			image
+				? [
+						{
+							SavedImageId: imageId,
+							ImageName: image.ImageName,
+							CreatedAt: image.CreatedAt,
+							CheerCount: image.CheerCount,
+							Accessibility: image.Accessibility,
+							RoomId: image.RoomId,
+						},
+					]
+				: [],
+		[image, imageId]
+	)
+	const cheers = usePhotoCheers(cheerTarget, true)
 
 	useEffect(() => {
-		// Waits for the config for the hostnames, as PlayerPage does.
-		if (config === undefined) return
 		let live = true
 		setImage(undefined)
 		setPlayers(new Map())
 		setRoom(null)
 		setError('')
-		setDeleted(false)
+		setPrivacyError('')
 		void fetchPageImage(imageId, staff)
 			.then((found) => {
 				if (!live) return
@@ -1964,83 +2113,176 @@ function ImagePage({
 		return () => {
 			live = false
 		}
-	}, [imageId, config, staff])
+	}, [imageId, staff])
+
+	const to = (path: string, children: ReactNode) =>
+		navigate ? (
+			<Link to={path} navigate={navigate}>
+				{children}
+			</Link>
+		) : (
+			<a href={path}>{children}</a>
+		)
 
 	/** A player's name as a link to their profile; the bare id while the lookup is out. */
 	const player = (id: number): ReactNode => {
 		const found = players.get(id)
 		if (!found) return <span className="muted">Player #{id}</span>
+		return to(`/user/${encodeURIComponent(found.username)}`, `@${found.username}`)
+	}
+
+	if (error) return <p className="error">{error}</p>
+	if (image === null) {
 		return (
-			<Link to={`/user/${encodeURIComponent(found.username)}`} navigate={navigate}>
-				@{found.username}
-			</Link>
+			<p className="muted">
+				There&apos;s no image here — it&apos;s private, or it doesn&apos;t exist.
+			</p>
 		)
 	}
+	if (image === undefined) {
+		return src ? (
+			<figure className="photo-view">
+				<img src={src} alt="" />
+			</figure>
+		) : (
+			<p className="muted">Loading…</p>
+		)
+	}
+
 	// Tagged once each, in the order the taker tagged them.
-	const tagged = image ? [...new Set(image.TaggedPlayerIds)] : []
-	const taken = image ? new Date(image.CreatedAt) : null
+	const tagged = [...new Set(image.TaggedPlayerIds)]
+	const taken = new Date(image.CreatedAt)
+	const isPrivate = image.Accessibility !== Accessibility.Public
+	// Cosmetic: `api` checks the token is the taker's on the change.
+	const mine = image.PlayerId === tokenAccountId()
+
+	const togglePrivacy = async () => {
+		const next = isPrivate ? Accessibility.Public : Accessibility.Private
+		const before = image
+		// Optimistic, as the cheer is: the padlock moves at once and back if refused.
+		setSaving(true)
+		setPrivacyError('')
+		setImage({ ...image, Accessibility: next })
+		try {
+			await setImageAccessibility(image.ImageName, next)
+			onAccessibilityChange?.(next)
+		} catch (e) {
+			setImage(before)
+			setPrivacyError(e instanceof Error ? e.message : String(e))
+		} finally {
+			setSaving(false)
+		}
+	}
+
+	return (
+		<>
+			<figure className="photo-view">
+				<img src={src ?? `${where().img}/${image.ImageName}`} alt={image.Description ?? ''} />
+				<figcaption className="image-meta">
+					{image.Description && <p className="image-desc">{image.Description}</p>}
+					<div className="image-meta-row">
+						<p>
+							Taken by {player(image.PlayerId)}
+							{room && <> in {to(`/rooms/${room.RoomId}`, `^${room.Name}`)}</>}
+							{!Number.isNaN(taken.getTime()) && (
+								<span className="muted"> · {taken.toLocaleDateString()}</span>
+							)}
+						</p>
+						<div className="image-actions">
+							{cheerTarget[0] && (
+								<CheerPill
+									photo={cheerTarget[0]}
+									cheers={cheers}
+									className="inline"
+									onToggle={onCheer}
+								/>
+							)}
+							{mine && (
+								<button
+									type="button"
+									className={`photo-lock${isPrivate ? ' locked' : ''}`}
+									aria-pressed={isPrivate}
+									aria-label={isPrivate ? 'Private — make public' : 'Public — make private'}
+									title={
+										image.AccessibilityLocked
+											? 'A moderator has locked this photo’s privacy'
+											: isPrivate
+												? 'Private — only you can see it. Click to make it public.'
+												: 'Public — click to make it private.'
+									}
+									disabled={saving || image.AccessibilityLocked}
+									onClick={() => void togglePrivacy()}
+								>
+									<LockIcon locked={isPrivate} />
+								</button>
+							)}
+						</div>
+					</div>
+					{tagged.length > 0 && (
+						<p>
+							Tagged:{' '}
+							{tagged.map((id, i) => (
+								<span key={id}>
+									{i > 0 && ', '}
+									{player(id)}
+								</span>
+							))}
+						</p>
+					)}
+					{privacyError && <p className="error">{privacyError}</p>}
+				</figcaption>
+			</figure>
+			{footer?.(image)}
+		</>
+	)
+}
+
+/** One photo on its own page (`/image/<id>`) — the photo and caption, and for staff a Delete card. */
+function ImagePage({
+	imageId,
+	config,
+	navigate,
+}: {
+	imageId: number
+	config: SiteConfig | undefined
+	navigate: Navigate
+}) {
+	const [deleted, setDeleted] = useState(false)
+	const staff = isAdmin()
+
+	useEffect(() => setDeleted(false), [imageId])
 
 	return (
 		<main className="shell wide image-page">
 			{deleted ? (
 				<p className="ok">The photo was deleted.</p>
-			) : error ? (
-				<p className="error">{error}</p>
-			) : image === undefined ? (
+			) : config === undefined ? (
+				// Waits for the config for the hostnames, as PlayerPage does.
 				<p className="muted">Loading…</p>
-			) : image === null ? (
-				<p className="muted">
-					There&apos;s no image here — it&apos;s private, or it doesn&apos;t exist.
-				</p>
 			) : (
-				<>
-					<img src={`${where().img}/${image.ImageName}`} alt="" />
-					<div className="image-meta">
-						<p>
-							Taken by {player(image.PlayerId)}
-							{room && (
-								<>
-									{' '}
-									in{' '}
-									<Link to={`/rooms/${room.RoomId}`} navigate={navigate}>
-										^{room.Name}
-									</Link>
-								</>
-							)}
-							{taken && !Number.isNaN(taken.getTime()) && (
-								<span className="muted"> · {taken.toLocaleDateString()}</span>
-							)}
-						</p>
-						{tagged.length > 0 && (
-							<p>
-								Tagged:{' '}
-								{tagged.map((id, i) => (
-									<span key={id}>
-										{i > 0 && ', '}
-										{player(id)}
-									</span>
-								))}
-							</p>
-						)}
-					</div>
-					{/* Staff only, and cosmetic: `api` checks the token's role on the delete. */}
-					{staff && (
-						<>
-							{image.Accessibility !== Accessibility.Public && (
-								<p className="muted">
-									This photo is private — only its owner and staff can see it.
-								</p>
-							)}
-							<StaffDelete
-								noun="photo"
-								name=""
-								consequence="This deletes the photo for everyone, including the player who took it, and can't be undone."
-								onDelete={() => deleteImage(image.ImageName)}
-								onDeleted={() => setDeleted(true)}
-							/>
-						</>
-					)}
-				</>
+				<PhotoView
+					imageId={imageId}
+					navigate={navigate}
+					footer={(image) =>
+						// Staff only, and cosmetic: `api` checks the token's role on the delete.
+						staff && (
+							<>
+								{image.Accessibility !== Accessibility.Public && (
+									<p className="muted">
+										This photo is private — only its owner and staff can see it.
+									</p>
+								)}
+								<StaffDelete
+									noun="photo"
+									name=""
+									consequence="This deletes the photo for everyone, including the player who took it, and can't be undone."
+									onDelete={() => deleteImage(image.ImageName)}
+									onDeleted={() => setDeleted(true)}
+								/>
+							</>
+						)
+					}
+				/>
 			)}
 		</main>
 	)
@@ -3569,7 +3811,14 @@ function Stage({
 						</a>
 					)}
 				</div>
-				{zoomed && <PhotoLightbox src={zoomed.url} onClose={() => setZoomed(null)} />}
+				{zoomed && (
+					<PhotoLightbox
+						imageId={zoomed.id}
+						src={zoomed.url}
+						navigate={navigate}
+						onClose={() => setZoomed(null)}
+					/>
+				)}
 				{/* Always mounted, so the frame doesn't shift down when the feed lands. */}
 				<div className="stage-foot">
 					{slide && (
