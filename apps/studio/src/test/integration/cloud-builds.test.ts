@@ -1,14 +1,17 @@
+import { createHash } from 'node:crypto'
 import { adminSecretsStore, env, SELF } from 'cloudflare:test'
 import { beforeAll, beforeEach, expect, it } from 'vitest'
 
 import {
 	ROOM_SCHEMA_DDL,
 	STUDIO_CLOUD_BUILD_SCHEMA_DDL,
+	studioBundleR2Key,
 	SUBROOM_SCHEMA_DDL,
 	UNITY_ASSET_SCHEMA_DDL,
 } from '@repo/domain'
 
 import { SCHEMA_DDL as CUSTOM_AVATAR_ITEM_SCHEMA_DDL } from '../../../../api/src/custom-avatar-items-db'
+import { UPLOAD_SCHEMA } from '../../artifact-multipart'
 import cloudBuilds, { CLOUD_JOB_SCHEMA } from '../../cloud-builds'
 
 import type { Env } from '../../context'
@@ -61,6 +64,7 @@ beforeAll(async () => {
 		// room badges from this table.
 		...CUSTOM_AVATAR_ITEM_SCHEMA_DDL,
 		CLOUD_JOB_SCHEMA,
+		UPLOAD_SCHEMA,
 	])
 		await env.DB.prepare(sql).run()
 	await env.DB.prepare('INSERT INTO room (data) VALUES (?)')
@@ -200,6 +204,17 @@ it('queues a numeric SDK build ID and returns the exact saved build contract', a
 	expect(validation.aud).toBe('studio-build-validation')
 	expect(validation.sub).toBeUndefined()
 	expect(validation.buildId).toBe(lease.job.buildId)
+	const renewed = await SELF.fetch(
+		origin + `/internal/cloud-builds/${lease.job.buildId}/heartbeat`,
+		{
+			method: 'POST',
+			headers: { ...worker, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ leaseToken: lease.leaseToken }),
+		}
+	)
+	const heartbeat = await renewed.json<{ active: boolean; leaseUntil: string }>()
+	expect(heartbeat.active).toBe(true)
+	expect(Date.parse(heartbeat.leaseUntil)).toBeGreaterThan(Date.now() + 4 * 60 * 1000)
 	const wrong = await SELF.fetch(origin + `/internal/cloud-builds/${lease.job.buildId}/heartbeat`, {
 		method: 'POST',
 		headers: { ...worker, 'Content-Type': 'application/json' },
@@ -352,6 +367,232 @@ function artifacts(lease: Awaited<ReturnType<typeof claim>>) {
 		{ field: 'bundle', unityAssetId: lease.job.unityAssetId, target: 0, kind: 'main', version: 5 },
 	])
 }
+async function uploadArtifact(
+	lease: Awaited<ReturnType<typeof claim>>,
+	overrides = {},
+	body = 'UnityFS\0test-fixture-bundle'
+) {
+	const entry = {
+		field: 'bundle',
+		unityAssetId: lease.job.unityAssetId,
+		target: 0,
+		kind: 'main',
+		version: 5,
+		...overrides,
+	}
+	return SELF.fetch(origin + `/internal/cloud-builds/${lease.job.buildId}/artifacts`, {
+		method: 'POST',
+		headers: {
+			...worker,
+			'X-Studio-Lease': lease.leaseToken,
+			'X-Studio-Artifact': JSON.stringify(entry),
+			'Content-Length': String(new TextEncoder().encode(body).length),
+		},
+		body,
+	})
+}
+async function finishStaged(lease: Awaited<ReturnType<typeof claim>>) {
+	const form = new FormData()
+	form.set('leaseToken', lease.leaseToken)
+	form.set('artifacts', artifacts(lease))
+	form.set('staged', 'true')
+	return SELF.fetch(origin + `/internal/cloud-builds/${lease.job.buildId}/finish`, {
+		method: 'POST',
+		headers: worker,
+		body: form,
+	})
+}
+function multipartRequest(
+	lease: Awaited<ReturnType<typeof claim>>,
+	path: string,
+	body: unknown = {},
+	config: Partial<Env> = {}
+) {
+	return cloudBuilds.request(
+		origin + `/internal/cloud-builds/${lease.job.buildId}/uploads/${path}`,
+		{
+			method: 'POST',
+			headers: {
+				...worker,
+				'Content-Type': 'application/json',
+				'X-Studio-Lease': lease.leaseToken,
+			},
+			body: JSON.stringify(body),
+		},
+		{
+			...env,
+			R2_ACCOUNT_ID: 'a'.repeat(32),
+			R2_CDN_BUCKET: 'test-bucket',
+			R2_ACCESS_KEY_ID: { get: async () => 'test-id' } as SecretsStoreSecret,
+			R2_SECRET_ACCESS_KEY: { get: async () => 'test-secret' } as SecretsStoreSecret,
+			...config,
+		}
+	)
+}
+it('keeps signed uploads disabled for off credential placeholders', async () => {
+	await create()
+	const lease = await claim()
+	const response = await multipartRequest(
+		lease,
+		'start',
+		{},
+		{
+			R2_ACCESS_KEY_ID: { get: async () => 'off' } as SecretsStoreSecret,
+			R2_SECRET_ACCESS_KEY: { get: async () => 'off' } as SecretsStoreSecret,
+		}
+	)
+	expect(response.status).toBe(503)
+	expect(await response.json()).toMatchObject({ error: 'R2 upload signing is not configured.' })
+})
+it('caps a bundle at 128 MiB before signing and permits exactly eight bounded parts', async () => {
+	await create()
+	const lease = await claim()
+	const input = {
+		artifact: JSON.parse(artifacts(lease))[0],
+		size: 128 * 1024 * 1024,
+		hash: btoa('x'.repeat(32)),
+	}
+	expect((await multipartRequest(lease, 'start', { ...input, size: input.size + 1 })).status).toBe(
+		413
+	)
+	expect(
+		await env.DB.prepare('SELECT id FROM studio_artifact_upload WHERE build_id=?')
+			.bind(lease.job.buildId)
+			.first()
+	).toBeNull()
+	const response = await multipartRequest(lease, 'start', input)
+	expect(response.status).toBe(200)
+	const plan = await response.json<{ id: string; parts: number }>()
+	expect(plan.parts).toBe(8)
+	const signed = await (
+		await multipartRequest(lease, `${plan.id}/part/8`)
+	).json<{ length: number; url: string }>()
+	expect(signed.length).toBe(16 * 1024 * 1024)
+	expect(new URL(signed.url).searchParams.get('X-Amz-SignedHeaders')).toContain('content-length')
+	expect((await multipartRequest(lease, `${plan.id}/part/9`)).status).toBe(400)
+})
+it('uploads signed multipart chunks, verifies the complete stream and finalizes idempotently', async () => {
+	await create()
+	const lease = await claim()
+	const first = new Uint8Array(16 * 1024 * 1024)
+	first.set(new TextEncoder().encode('UnityFS\0'))
+	const last = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])
+	const hash = createHash('sha256').update(first).update(last).digest('base64')
+	const input = {
+		artifact: JSON.parse(artifacts(lease))[0],
+		size: first.length + last.length,
+		hash,
+	}
+	const start = await multipartRequest(lease, 'start', input)
+	expect(start.status).toBe(200)
+	const plan = await start.json<{ id: string; parts: number }>()
+	expect(plan.parts).toBe(2)
+	expect(await (await multipartRequest(lease, 'start', input)).json()).toMatchObject({
+		id: plan.id,
+	})
+	const row = await env.DB.prepare(
+		'SELECT object_key,upload_id FROM studio_artifact_upload WHERE id=?'
+	)
+		.bind(plan.id)
+		.first<{ object_key: string; upload_id: string }>()
+	const signed = await (
+		await multipartRequest(lease, `${plan.id}/part/1`)
+	).json<{ url: string; length: number }>()
+	const url = new URL(signed.url)
+	expect(url.hostname).toBe('a'.repeat(32) + '.r2.cloudflarestorage.com')
+	expect(url.searchParams.get('X-Amz-Expires')).toBe('120')
+	expect(url.searchParams.get('X-Amz-SignedHeaders')).toContain('content-length')
+	expect(url.searchParams.get('uploadId')).toBe(row!.upload_id)
+	expect(signed.length).toBe(first.length)
+	expect((await multipartRequest(lease, `${plan.id}/part/3`)).status).toBe(400)
+	const multipart = env.CDN_ASSETS.resumeMultipartUpload(row!.object_key, row!.upload_id)
+	const parts = [await multipart.uploadPart(1, first), await multipart.uploadPart(2, last)]
+	expect((await finishStaged(lease)).status).toBe(400)
+	expect((await multipartRequest(lease, `${plan.id}/complete`, { parts })).status).toBe(200)
+	expect((await multipartRequest(lease, `${plan.id}/complete`, { parts })).status).toBe(200)
+	expect((await multipartRequest(lease, `${plan.id}/part/1`)).status).toBe(400)
+	expect((await finishStaged(lease)).status).toBe(200)
+	const asset = await env.DB.prepare(
+		"SELECT filename FROM unity_asset WHERE unity_asset_id=? AND target=0 AND kind='main'"
+	)
+		.bind(lease.job.unityAssetId)
+		.first<{ filename: string }>()
+	await claim() // sweeping completed sessions must preserve their published bundles
+	expect(await env.CDN_ASSETS.head(studioBundleR2Key(asset!.filename))).not.toBeNull()
+})
+it('refuses a completed object with a forged hash and cleans expired uploads', async () => {
+	await create()
+	const lease = await claim()
+	const data = new TextEncoder().encode('UnityFS\0actual')
+	const start = await multipartRequest(lease, 'start', {
+		artifact: JSON.parse(artifacts(lease))[0],
+		size: data.length,
+		hash: btoa('x'.repeat(32)),
+	})
+	const { id } = await start.json<{ id: string }>()
+	const row = await env.DB.prepare(
+		'SELECT object_key,upload_id FROM studio_artifact_upload WHERE id=?'
+	)
+		.bind(id)
+		.first<{ object_key: string; upload_id: string }>()
+	const part = await env.CDN_ASSETS.resumeMultipartUpload(
+		row!.object_key,
+		row!.upload_id
+	).uploadPart(1, data)
+	expect((await multipartRequest(lease, `${id}/complete`, { parts: [part] })).status).toBe(500)
+	expect((await finishStaged(lease)).status).toBe(400)
+	await env.DB.prepare(
+		"UPDATE studio_cloud_build_job SET status='cancelled',lease_token=NULL WHERE cloud_build_id=?"
+	)
+		.bind(lease.job.buildId)
+		.run()
+	expect((await multipartRequest(lease, `${id}/part/1`)).status).toBe(409)
+	await claim()
+	expect(await env.CDN_ASSETS.head(row!.object_key)).toBeNull()
+	expect(
+		await env.DB.prepare('SELECT id FROM studio_artifact_upload WHERE id=?').bind(id).first()
+	).toBeNull()
+})
+it('publishes independently uploaded bundles only after the complete set is present', async () => {
+	await create()
+	const lease = await claim()
+	expect((await finishStaged(lease)).status).toBe(400)
+	expect((await uploadArtifact(lease)).status).toBe(200)
+	// Network retries may send the same artifact again before completion.
+	expect((await uploadArtifact(lease)).status).toBe(200)
+	expect((await finishStaged(lease)).status).toBe(200)
+	const stored = await env.DB.prepare(
+		"SELECT filename,hash FROM unity_asset WHERE unity_asset_id=? AND target=0 AND kind='main'"
+	)
+		.bind(lease.job.unityAssetId)
+		.first<{ filename: string; hash: string }>()
+	expect(stored?.hash).toBe(
+		btoa(
+			String.fromCharCode(
+				...new Uint8Array(
+					await crypto.subtle.digest(
+						'SHA-256',
+						new TextEncoder().encode('UnityFS\0test-fixture-bundle')
+					)
+				)
+			)
+		)
+	)
+	expect((await uploadArtifact(lease)).status).toBe(409)
+})
+it('rejects invalid artifacts and cannot reuse another lease upload', async () => {
+	await create()
+	const lease = await claim()
+	expect((await uploadArtifact(lease, { unityAssetId: crypto.randomUUID() })).status).toBe(400)
+	expect((await uploadArtifact(lease, { target: 2 })).status).toBe(400)
+	expect((await uploadArtifact(lease, {}, 'not a Unity bundle')).status).toBe(400)
+	expect((await uploadArtifact({ ...lease, leaseToken: crypto.randomUUID() })).status).toBe(409)
+	expect((await uploadArtifact(lease)).status).toBe(200)
+	await env.DB.prepare('UPDATE studio_cloud_build_job SET lease_token=? WHERE cloud_build_id=?')
+		.bind(crypto.randomUUID(), lease.job.buildId)
+		.run()
+	expect((await finishStaged(lease)).status).toBe(409)
+})
 it('rejects malformed artifact metadata without consuming the lease', async () => {
 	await create()
 	const lease = await claim()

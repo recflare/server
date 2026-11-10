@@ -13,6 +13,7 @@ import {
 import { generateToken } from '@repo/jwt'
 
 import { SCHEMA_DDL, toQuestCustomAvatarItem } from '../../../../api/src/custom-avatar-items-db'
+import { UPLOAD_SCHEMA } from '../../artifact-multipart'
 import { CLOUD_JOB_SCHEMA } from '../../cloud-builds'
 
 import type { Env } from '../../context'
@@ -45,6 +46,7 @@ beforeAll(async () => {
 		...STUDIO_CLOUD_BUILD_SCHEMA_DDL,
 		...UNITY_ASSET_SCHEMA_DDL,
 		CLOUD_JOB_SCHEMA,
+		UPLOAD_SCHEMA,
 	])
 		await env.DB.prepare(sql).run()
 })

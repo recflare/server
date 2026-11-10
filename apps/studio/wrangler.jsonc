@@ -57,6 +57,18 @@
 			"binding": "CLOUD_BUILD_KEY",
 			"store_id": "local",
 			"secret_name": "CLOUD_BUILD_KEY"
+		},
+		// Same credential names as storage's presigned upload flow (PR #153).
+		// Create placeholders before deploying; empty/off values disable signed uploads.
+		{
+			"binding": "R2_ACCESS_KEY_ID",
+			"store_id": "local",
+			"secret_name": "R2_ACCESS_KEY_ID"
+		},
+		{
+			"binding": "R2_SECRET_ACCESS_KEY",
+			"store_id": "local",
+			"secret_name": "R2_SECRET_ACCESS_KEY"
 		}
 	],
 	"upload_source_maps": true,
