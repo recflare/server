@@ -411,7 +411,7 @@ const ROOM_KEY_STATUS_FAILED = 1
  * config (`apps/api/static/api-config-v2.json`) tells the client, restated here so the server
  * refuses what the client already knows not to ask for.
  */
-const MAX_KEYS_PER_ROOM = 10
+const MAX_KEYS_PER_ROOM = 50
 
 /**
  * The most a room key may cost, by what it is priced in: tokens (a null `PurchaseCurrencyId`)
@@ -6981,8 +6981,8 @@ const app = new Hono<App>({ strict: false })
 				'403. A room-currency price does not.',
 				'',
 				'`Name` and `Description` are masked by the same word list as every other string a',
-				'player types. A room may list at most 10 keys — the `RoomKeyConfig.MaxKeysPerRoom`',
-				'the `api` config tells the client — and the eleventh is refused. `Price` is capped by',
+				'player types. A room may list at most 50 keys — the `RoomKeyConfig.MaxKeysPerRoom`',
+				'the `api` config tells the client — and the fifty-first is refused. `Price` is capped by',
 				'what the key is priced in: 1000 in tokens, 1000000000 in a room currency.',
 				'`PurchaseCurrencyId` absent or blank is tokens; otherwise it must be a currency of',
 				'the key’s own room, as on `updateAll`.',

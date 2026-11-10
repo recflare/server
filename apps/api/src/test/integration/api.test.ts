@@ -1055,7 +1055,7 @@ describe('public endpoints', () => {
 		const res = await exports.default.fetch(`${ORIGIN}/api/config/v2`)
 		expect(res.status).toBe(200)
 		const config = (await res.json()) as { RoomKeyConfig: { MaxKeysPerRoom: number } }
-		expect(config.RoomKeyConfig).toEqual({ MaxKeysPerRoom: 10 })
+		expect(config.RoomKeyConfig).toEqual({ MaxKeysPerRoom: 50 })
 	})
 
 	test('the level rewards match the published reward table', async () => {

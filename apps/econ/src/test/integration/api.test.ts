@@ -3271,17 +3271,17 @@ describe('econ endpoints', () => {
 			await env.DB.prepare('DELETE FROM room_key').run()
 		})
 
-		test('POST create refuses the eleventh key in a room', async () => {
-			// MaxKeysPerRoom is 10 (apps/api/static/api-config-v2.json). Fill up to it…
-			while ((await keysOf(2511)).length < 10) {
+		test('POST create refuses the fifty-first key in a room', async () => {
+			// MaxKeysPerRoom is 50 (apps/api/static/api-config-v2.json). Fill up to it…
+			while ((await keysOf(2511)).length < 50) {
 				const res = await create({ ...body, Name: 'filler' }, await plusBearer('1'))
 				expect((await envOf(res)).Status).toBe(0)
 			}
-			// …and the next is refused, leaving the room at ten.
+			// …and the next is refused, leaving the room at fifty.
 			const res = await create({ ...body, Name: 'one too many' }, await plusBearer('1'))
 			expect(res.status).toBe(200)
 			expect(await envOf(res)).toEqual({ Status: 1, RoomKey: null })
-			expect((await keysOf(2511)).length).toBe(10)
+			expect((await keysOf(2511)).length).toBe(50)
 			await env.DB.prepare('DELETE FROM room_key').run()
 		})
 
