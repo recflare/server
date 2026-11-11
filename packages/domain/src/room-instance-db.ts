@@ -528,11 +528,18 @@ export async function deleteRoomInstances(db: D1Database, ids: number[]): Promis
 }
 
 /**
- * The oldest joinable public instance of a room (not private, not full, joins
+ * The most popular joinable public instance of a room (not private, not full, joins
  * enabled, not already in progress unless `joinInProgress`, not set to `Ignore`) that is running `gameVersion`,
  * or null when there's none to join. Used by matchmaking to reuse an existing instance
  * before creating a new one. An instance set to `Avoid` is a candidate, but ranks behind
- * every `Default` one however old it is (see {@link MatchmakingPolicy}).
+ * every `Default` one however busy it is (see {@link MatchmakingPolicy}).
+ *
+ * Within a policy (and the not-started-before-in-progress tier below), the instance with
+ * the most LIVE players — unexpired `presence` rows — wins, and the oldest breaks a tie.
+ * Players are gathered where the people are rather than spread across whichever instance
+ * happens to be oldest; `is_full` caps it, so the busiest fills and the next busiest takes
+ * the overflow. A player who wants a quieter one changes instance, which re-matchmakes
+ * with their current instance excluded and so lands them in the next one down.
  *
  * The build is part of the search, not a detail of it — which is why it's a required
  * argument rather than an optional filter a caller can forget. Two builds in one Photon
@@ -575,9 +582,10 @@ export async function getJoinableInstance(
 	subRoomId?: number,
 	excludeInstanceId?: number,
 	eventId = 0,
-	joinInProgress = false
+	joinInProgress = false,
+	now = Math.floor(Date.now() / 1000)
 ): Promise<RoomInstanceDto | null> {
-	const binds: Array<number | string> = [roomId, gameBuild(gameVersion) ?? '', eventId]
+	const binds: Array<number | string> = [roomId, gameBuild(gameVersion) ?? '', eventId, now]
 	const filters: string[] = []
 	if (subRoomId !== undefined) {
 		binds.push(subRoomId)
@@ -594,7 +602,11 @@ export async function getJoinableInstance(
 			   AND is_private = 0 AND is_full = 0 AND join_disabled = 0
 			   ${joinInProgress ? '' : 'AND is_in_progress = 0'}
 			   AND matchmaking_policy != ${MatchmakingPolicy.Ignore} ${filters.join(' ')}
-			 ORDER BY matchmaking_policy, is_in_progress, id LIMIT 1`
+			 ORDER BY matchmaking_policy, is_in_progress, (
+			   SELECT COUNT(*) FROM presence
+			    WHERE presence.room_instance_id = room_instance.id AND presence.expires_at > ?4
+			 ) DESC, id
+			 LIMIT 1`
 		)
 		.bind(...binds)
 		.first<{ data: string }>()

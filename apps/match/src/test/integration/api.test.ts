@@ -140,6 +140,15 @@ const TEST_ROOMS = [
 		],
 	},
 	{
+		// Public, 10 seats, used only by the popularity test — so its instance counts are
+		// exactly what that test makes them.
+		RoomId: 66,
+		Name: 'PopularityRoom',
+		IsDorm: false,
+		Accessibility: 1,
+		SubRooms: [{ SubRoomId: 66, UnitySceneId: RECCENTER_SCENE, MaxPlayers: 10 }],
+	},
+	{
 		// One subroom that lets players join a game already under way (like Run The Block's
 		// `TheBlock`) and one that doesn't — in-progress reuse is decided per subroom.
 		RoomId: 88,
@@ -2052,7 +2061,7 @@ describe('auth-gated endpoints', () => {
 	test('re-matchmaking into your current room returns a different instance (id must change)', async () => {
 		// The client keys the room transition off a changing roomInstanceId; handing back
 		// the instance the player is already in hangs their join. RecCenter (cap 12) so
-		// the instance isn't full — the naive "reuse the oldest joinable" would otherwise
+		// the instance isn't full — the naive "reuse the busiest joinable" would otherwise
 		// return the same id the player already has.
 		const first = await matchmakeInto('2', '950')
 		const second = await matchmakeInto('2', '950')
@@ -3086,7 +3095,7 @@ describe('auth-gated endpoints', () => {
 
 	test('PUT /roominstance/:id/matchpolicy is set from inside, and Ignore stops matchmaking into it', async () => {
 		// Room 77 subroom 34 — public, 10 seats, nobody's — so whoever stands in an instance
-		// is the one who may set its policy, and matchmaking reuses the oldest open one.
+		// is the one who may set its policy, and matchmaking reuses the busiest open one.
 		const spawn = async (player: string): Promise<number> => {
 			const res = await exports.default.fetch(`${ORIGIN}/matchmake/room/77/34`, {
 				method: 'POST',
@@ -3137,7 +3146,7 @@ describe('auth-gated endpoints', () => {
 		// B's occupant cannot touch A's policy either.
 		expect((await setPolicy(a, '0', '4202')).status).toBe(403)
 
-		// Back to Default, A is the oldest open instance again and is reused.
+		// Back to Default, A ties B on one player each, and as the older it is reused.
 		expect((await setPolicy(a, '0', '4201')).status).toBe(200)
 		expect(await spawn('4203')).toBe(a)
 
@@ -3149,6 +3158,41 @@ describe('auth-gated endpoints', () => {
 		// than a third instance opened.
 		expect((await setPolicy(b, '2', '4202')).status).toBe(200)
 		expect(await spawn('4205')).toBe(a)
+	})
+
+	test('POST /matchmake/room puts a player in the busiest open instance, oldest breaking a tie', async () => {
+		const spawn = async (player: string): Promise<number> => {
+			const res = await exports.default.fetch(`${ORIGIN}/matchmake/room/66/66`, {
+				method: 'POST',
+				headers: await bearer(player),
+			})
+			return ((await res.json()) as { roomInstance: { roomInstanceId: number } }).roomInstance
+				.roomInstanceId
+		}
+		const setPolicy = async (instanceId: number, policy: string, player: string) =>
+			exports.default.fetch(`${ORIGIN}/roominstance/${instanceId}/matchpolicy`, {
+				method: 'PUT',
+				headers: {
+					...(await bearer(player)),
+					'Content-Type': 'application/x-www-form-urlencoded',
+				},
+				body: new URLSearchParams({ policy }).toString(),
+			})
+
+		// A (older) gets one player; hidden behind Ignore, B (newer) gets two.
+		const a = await spawn('4601')
+		expect((await setPolicy(a, '2', '4601')).status).toBe(200)
+		const b = await spawn('4602')
+		expect(b).toBeGreaterThan(a)
+		expect(await spawn('4603')).toBe(b)
+		expect((await setPolicy(a, '0', '4601')).status).toBe(200)
+
+		// Both open and Default: the newer but busier B wins over the older A.
+		expect(await spawn('4604')).toBe(b)
+		// Changing instance excludes the one you're in, so it lands in the next busiest.
+		expect(await spawn('4604')).toBe(a)
+		// Now A and B hold two each — the tie goes to the older, A.
+		expect(await spawn('4605')).toBe(a)
 	})
 
 	test('POST /matchmake/room reuses an in-progress instance only when the subroom supports join-in-progress', async () => {
