@@ -237,6 +237,29 @@ export async function getReportsAgainst(db: D1Database, playerId: number): Promi
 }
 
 /**
+ * The distinct players who have reported this one, most recent report first — who `www`
+ * thanks when a ban lands on the reported player. Capped because the caller writes a
+ * message per reporter inside one request.
+ */
+export async function getReportersOf(
+	db: D1Database,
+	playerId: number,
+	limit: number
+): Promise<number[]> {
+	const { results } = await db
+		.prepare(
+			`SELECT reporter_player_id AS id FROM report
+			 WHERE reported_player_id = ?1
+			 GROUP BY reporter_player_id
+			 ORDER BY MAX(id) DESC
+			 LIMIT ?2`
+		)
+		.bind(playerId, limit)
+		.all<{ id: number }>()
+	return results.map((r) => r.id)
+}
+
+/**
  * The ban currently in force against a player, or null when they aren't banned.
  *
  * "In force" is narrower than `banned = 1`: a row whose `ban_expires` has passed is a

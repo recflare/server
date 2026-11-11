@@ -4,6 +4,7 @@ import {
 	clearDormSaveBlob,
 	clearPasswordHash,
 	createGift,
+	createNotification,
 	CURATED_ROW_OWNER,
 	CURATED_ROW_TYPE,
 	CURATED_ROWS,
@@ -24,7 +25,7 @@ import {
 	updateAccount,
 	writeAuditLog,
 } from '@repo/domain'
-import { PlatformType } from '@repo/domain/src/enums'
+import { MessageType, PlatformType } from '@repo/domain/src/enums'
 import { intVar, logger } from '@repo/hono-helpers'
 import { isStaff, validateAndGetAccountId, validateAndGetRoles } from '@repo/jwt'
 
@@ -41,6 +42,7 @@ import {
 	getActiveBan,
 	getBansInForce,
 	getReportById,
+	getReportersOf,
 	getReportsAgainst,
 	getTopReported,
 	parseReportKind,
@@ -377,6 +379,60 @@ async function kickLinkedAccounts(c: Context<App>, report: ReportRow, moderatorI
 	}
 }
 
+/** What the Coach tells everyone who reported a player once that player is banned. */
+const REPORTER_THANKS =
+	"We've taken action against a player you've previously reported for bad conduct. Thank you for helping keep RecFlare a friendly and welcoming place!"
+
+/** The most reporters one ban thanks — each is a D1 write inside the ban's own request. */
+const MAX_REPORTERS_THANKED = 200
+
+/**
+ * Thank everyone who reported a player, once that player is banned: a Coach message to each
+ * distinct reporter, across ALL the reports against the player and not only the one the ban
+ * hangs on — each of them reported the conduct that was acted on.
+ *
+ * It is a real message, like `notify`'s `/internal/coach-message`: STORED first, so a
+ * reporter who is offline reads it from `GET /api/messages/v2/get` later, then pushed as a
+ * `MessageReceived` frame carrying the stored row's id. It names nobody — neither the banned
+ * player nor which report — so it cannot be used to confirm a particular ban.
+ *
+ * The acting moderator is skipped (a ban on a staff-filed report has them as its reporter,
+ * and they know), as are the Coach and the banned player themselves.
+ *
+ * Best-effort, like the kicks: the ban has already committed.
+ */
+async function thankReporters(c: Context<App>, report: ReportRow, moderatorId: number) {
+	const bannedId = report.reported_player_id
+	try {
+		const reporters = (await getReportersOf(c.env.DB, bannedId, MAX_REPORTERS_THANKED)).filter(
+			(id) => id !== moderatorId && id !== bannedId && id !== COACH_ACCOUNT_ID
+		)
+		if (reporters.length === 0) return
+
+		const frames: PlayerNotification[] = []
+		for (const playerId of reporters) {
+			const message = await createNotification(c.env.DB, {
+				FromPlayerId: COACH_ACCOUNT_ID,
+				ToPlayerId: playerId,
+				Type: MessageType.CoachMessage,
+				Data: REPORTER_THANKS,
+			})
+			frames.push({
+				playerId,
+				notificationType: NotificationType.MessageReceived,
+				data: { ...message },
+			})
+		}
+		await c.env.RECFLARE_NOTIFICATIONS_HUB.getByName(HUB_INSTANCE).notifyPlayers(frames)
+	} catch (err) {
+		logger.error('failed to thank the reporters of a banned player', {
+			bannedPlayerId: bannedId,
+			reportId: report.id,
+			error: err instanceof Error ? err.message : String(err),
+		})
+	}
+}
+
 /**
  * Record a ban or a lift on the `audit_log` table, against the moderator who made it.
  *
@@ -541,7 +597,8 @@ export async function createReportHandler(c: Context<App>) {
  * moderator to see it.
  *
  * Applying one also EJECTS the player from any instance they are in (see
- * {@link kickBannedPlayer}), best-effort and after the row is committed. The response
+ * {@link kickBannedPlayer}), best-effort and after the row is committed, and — when the
+ * player was not banned already — thanks everyone who reported them ({@link thankReporters}). The response
  * reports whether the frame went out, so the panel can say "banned, but they were offline"
  * rather than implying a kick that never happened.
  */
@@ -571,6 +628,10 @@ export async function banReportHandler(c: Context<App>) {
 	// no-op, and so the response can name who it reached.
 	const existing = await getReportById(c.env.DB, id)
 	if (existing === null) return c.json({ error: 'No such report' }, 404)
+	// Whether the player was ALREADY banned, by this report or another: extending a standing
+	// ban, or banning a second report, is not news to the people who reported them.
+	const alreadyBanned =
+		banned && (await getActiveBan(c.env.DB, existing.reported_player_id, now)) !== null
 
 	const report = await banFromReport(c.env.DB, id, {
 		banned,
@@ -591,6 +652,7 @@ export async function banReportHandler(c: Context<App>) {
 	if (banned) {
 		await kickBannedPlayer(c, report, moderatorId)
 		await kickLinkedAccounts(c, report, moderatorId)
+		if (!alreadyBanned) await thankReporters(c, report, moderatorId)
 	}
 	return c.json(report)
 }

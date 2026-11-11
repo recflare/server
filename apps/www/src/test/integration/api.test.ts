@@ -21,6 +21,10 @@ import { getPendingGifts, RECEIVED_GIFT_SCHEMA_DDL } from '@repo/domain/src/gift
 import { IMAGE_SCHEMA_DDL } from '@repo/domain/src/images-db'
 import { CURATED_LIST_SCHEMA_DDL, getPlayerList } from '@repo/domain/src/lists-db'
 import {
+	getNotificationsForPlayer,
+	NOTIFICATION_SCHEMA_DDL,
+} from '@repo/domain/src/notifications-db'
+import {
 	PRESENCE_SCHEMA_DDL,
 	PRESENCE_TTL_SECONDS,
 	setPresence,
@@ -151,6 +155,8 @@ beforeAll(async () => {
 	for (const stmt of STAT_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	// `audit_log` is owned by `api`; www files a row there for every ban and lift.
 	for (const stmt of AUDIT_LOG_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	// `notification` is owned by `notify`; a ban stores a Coach message for each reporter.
+	for (const stmt of NOTIFICATION_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	// Read by the report search, which names a photo report's image.
 	for (const stmt of IMAGE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	// `balance` and `received_gift` are owned by `econ`; a staff token gift writes both.
@@ -1673,12 +1679,15 @@ it('throws a banned player out of the instance they are standing in', async () =
 		200
 	)
 
-	const frames = (await (await hub().fetch('http://do/all')).json()) as Array<{
-		playerIds?: number[]
-		ephemeral?: boolean
-		notificationType: number | string
-		data: Record<string, unknown>
-	}>
+	// Only the kicks (ModerationKick, 22): the ban also messages the reporter, pinned on its own.
+	const frames = (
+		(await (await hub().fetch('http://do/all')).json()) as Array<{
+			playerIds?: number[]
+			ephemeral?: boolean
+			notificationType: number | string
+			data: Record<string, unknown>
+		}>
+	).filter((f) => f.notificationType === 22)
 	expect(frames).toHaveLength(1)
 	expect(frames[0].playerIds).toEqual([8190])
 	// EPHEMERAL: a kick is true of the moment it happened. Queued and delivered on a later
@@ -1711,6 +1720,57 @@ it('throws a banned player out of the instance they are standing in', async () =
 	expect(presence?.instance).toBe(-2)
 })
 
+// The people who reported a player hear that it came to something: a stored Coach message
+// each (so an offline reporter reads it later), pushed as `MessageReceived`. Once per
+// reporter however many reports they filed, never to the moderator whose own report the
+// ban hangs on, and not again when a standing ban is extended.
+it('thanks everyone who reported a player when that player is banned', async () => {
+	const hub = () => env.RECFLARE_NOTIFICATIONS_HUB.getByName('global')
+	const banned = 8250
+	await createReport(env.DB, { reporterPlayerId: 8251, reportedPlayerId: banned })
+	await createReport(env.DB, { reporterPlayerId: 8251, reportedPlayerId: banned })
+	await createReport(env.DB, { reporterPlayerId: 8252, reportedPlayerId: banned })
+	// Someone else's reporter, who must hear nothing.
+	await createReport(env.DB, { reporterPlayerId: 8253, reportedPlayerId: 8254 })
+	// The report the ban hangs on is the moderator's own.
+	const report = await createReport(env.DB, { reporterPlayerId: 8110, reportedPlayerId: banned })
+
+	await hub().fetch('http://do/all', { method: 'DELETE' })
+	expect((await staffPost(`/api/staff/reports/${report.id}/ban`, 8110, { days: 1 })).status).toBe(
+		200
+	)
+
+	const text =
+		"We've taken action against a player you've previously reported for bad conduct. Thank you for helping keep RecFlare a friendly and welcoming place!"
+	for (const reporter of [8251, 8252]) {
+		const inbox = await getNotificationsForPlayer(env.DB, reporter)
+		expect(inbox).toHaveLength(1)
+		expect(inbox[0]).toMatchObject({ FromPlayerId: 1, ToPlayerId: reporter, Type: 100, Data: text })
+	}
+	for (const other of [8110, 8253, banned]) {
+		expect(await getNotificationsForPlayer(env.DB, other)).toHaveLength(0)
+	}
+
+	const frames = (
+		(await (await hub().fetch('http://do/all')).json()) as Array<{
+			playerId?: number
+			notificationType: number | string
+			data: Record<string, unknown>
+		}>
+	).filter((f) => f.notificationType === 2)
+	// Most recent reporter first.
+	expect(frames.map((f) => f.playerId)).toEqual([8252, 8251])
+	// The frame carries the stored row, so the client can read the same message back.
+	const stored = await getNotificationsForPlayer(env.DB, frames[0].playerId!)
+	expect(frames[0].data).toMatchObject({ Id: stored[0].Id, FromPlayerId: 1, Type: 100, Data: text })
+
+	// Extending the standing ban is not news: nobody is thanked twice.
+	expect((await staffPost(`/api/staff/reports/${report.id}/ban`, 8110, { days: 9 })).status).toBe(
+		200
+	)
+	expect(await getNotificationsForPlayer(env.DB, 8251)).toHaveLength(1)
+})
+
 // Online but not standing in any room — in a menu — is still banned from the game, and is
 // told so now rather than at their next sign-in.
 it('tells a banned player who is online but in no instance', async () => {
@@ -1731,11 +1791,15 @@ it('tells a banned player who is online but in no instance', async () => {
 		(await staffPost(`/api/staff/reports/${report.id}/ban`, 8110, { permanent: true })).status
 	).toBe(200)
 
-	const frames = (await (await hub().fetch('http://do/all')).json()) as Array<{
-		playerIds?: number[]
-		ephemeral?: boolean
-		data: Record<string, unknown>
-	}>
+	// Only the kicks (ModerationKick, 22): the ban also messages the reporter.
+	const frames = (
+		(await (await hub().fetch('http://do/all')).json()) as Array<{
+			playerIds?: number[]
+			ephemeral?: boolean
+			notificationType: number | string
+			data: Record<string, unknown>
+		}>
+	).filter((f) => f.notificationType === 22)
 	expect(frames).toHaveLength(1)
 	expect(frames[0]).toMatchObject({ playerIds: [8195], ephemeral: true })
 	// No session to name, and a permanent ban carries the largest duration the field holds.
@@ -1754,8 +1818,11 @@ it('bans an offline player without a kick to push', async () => {
 	)
 	await expect(getReportById(env.DB, report.id)).resolves.toMatchObject({ banned: 1 })
 
-	const frames = (await (await hub().fetch('http://do/all')).json()) as unknown[]
-	expect(frames).toHaveLength(0)
+	// No kick (ModerationKick, 22) — the reporter's thanks is the only frame the ban sends.
+	const frames = (await (await hub().fetch('http://do/all')).json()) as Array<{
+		notificationType: number | string
+	}>
+	expect(frames.filter((f) => f.notificationType === 22)).toHaveLength(0)
 })
 
 // An alt already standing in a room when its main is banned keeps a presence row there, and
