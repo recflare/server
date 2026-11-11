@@ -4564,6 +4564,8 @@ export async function getOrCreateDormRoom(db: D1Database, accountId: number): Pr
 		Name: `@${username}'s Dorm`,
 		CreatorAccountId: accountId,
 		IsDorm: true,
+		// The template dorm is Coach's and developer-owned; the player's copy is neither.
+		IsDeveloperOwned: false,
 		Roles: [
 			{
 				AccountId: accountId,

@@ -442,8 +442,14 @@ describe('rooms endpoints', () => {
 		).json()) as {
 			IsDorm: boolean
 			CreatorAccountId: number
+			IsDeveloperOwned: boolean
 		}
-		expect(provisioned).toMatchObject({ IsDorm: true, CreatorAccountId: 999 })
+		// The template dorm is developer-owned; the player's copy must not inherit that.
+		expect(provisioned).toMatchObject({
+			IsDorm: true,
+			CreatorAccountId: 999,
+			IsDeveloperOwned: false,
+		})
 
 		// Idempotent: the second call is the same dorm, not a second one.
 		const again = (await (
