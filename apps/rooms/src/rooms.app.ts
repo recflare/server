@@ -106,6 +106,7 @@ import {
 	isStaff as hasStaffRole,
 	validateAndGetAccountId,
 	validateAndGetBuild,
+	validateAndGetPlus,
 	validateAndGetRoles,
 } from '@repo/jwt'
 
@@ -264,6 +265,12 @@ function allIds(idParam: string): number[] {
  * rooms are never touched — lowering the cap just stops new ones.
  */
 const DEFAULT_MAX_ROOMS_PER_ACCOUNT = 10
+
+/**
+ * The room cap for a Rec Room Plus subscriber (the token's `rn.plus` claim), when the
+ * `MAX_ROOMS_PER_ACCOUNT_PLUS` var is unset. 0 lifts the cap for subscribers only.
+ */
+const DEFAULT_MAX_ROOMS_PER_ACCOUNT_PLUS = 100
 
 /** Account ids granted the global (Role 0) maker pen — the reference server's
  * hardcoded moderator/dev accounts. */
@@ -518,6 +525,19 @@ async function authedGameVersion(c: Context<App>): Promise<string | null> {
  * it (`20250718.01`, `20250718.2`) is the same build.
  */
 const FEATURED_ROOMS_VERSIONS: ReadonlySet<string> = new Set(['20250718'])
+
+/**
+ * How many rooms the caller may create: `MAX_ROOMS_PER_ACCOUNT`, or for a Plus subscriber
+ * `MAX_ROOMS_PER_ACCOUNT_PLUS`. 0 means uncapped. Lifting the base cap (0) lifts it for
+ * subscribers too, and Plus never LOWERS a player's cap below the base one.
+ */
+async function maxRoomsFor(c: Context<App>): Promise<number> {
+	const base = intVar(c.env.MAX_ROOMS_PER_ACCOUNT, DEFAULT_MAX_ROOMS_PER_ACCOUNT)
+	if (base === 0) return 0
+	if (!(await validateAndGetPlus(c.req.raw, await c.env.JWT_SECRET.get()))) return base
+	const plus = intVar(c.env.MAX_ROOMS_PER_ACCOUNT_PLUS, DEFAULT_MAX_ROOMS_PER_ACCOUNT_PLUS)
+	return plus === 0 ? 0 : Math.max(base, plus)
+}
 
 /**
  * Whether the caller's token carries a staff role. Used alongside the per-room owner
@@ -1472,7 +1492,7 @@ const app = new Hono<App>()
 				return c.json({ error: invalid ?? 'A room name is required.' }, 400)
 			const version = Number(body.ugcVersion ?? 1)
 			if (version !== 1 && version !== 2) return c.json({ error: 'Unsupported UGC version.' }, 400)
-			const maxRooms = intVar(c.env.MAX_ROOMS_PER_ACCOUNT, DEFAULT_MAX_ROOMS_PER_ACCOUNT)
+			const maxRooms = await maxRoomsFor(c)
 			if (maxRooms > 0 && (await countRoomsByCreator(c.env.DB, accountId)) >= maxRooms)
 				return c.json({ error: `You can only have ${maxRooms} rooms.` }, 403)
 			const room = await createStudioRoom(c.env.DB, name, accountId, version)
@@ -2411,7 +2431,7 @@ const app = new Hono<App>()
 				'Copies a room’s content (scene, subrooms, settings) into a new room owned by the',
 				'caller. Cloning is the only way to make a room, so the per-account room cap is',
 				'enforced here — it counts the rooms the account created, minus their auto-provisioned',
-				'dorm (`MAX_ROOMS_PER_ACCOUNT`; 0 lifts the cap). The clone keeps only the source’s',
+				'dorm (`MAX_ROOMS_PER_ACCOUNT`, or `MAX_ROOMS_PER_ACCOUNT_PLUS` for a Rec Room Plus subscriber; 0 lifts the cap). The clone keeps only the source’s',
 				'system tags (`Type` 1: `beta`, `limitsv2` — what the scene needs to run) and drops',
 				'every other tag, and starts with zeroed `Stats`, `IsRRO`/`IsDeveloperOwned`/`CloningAllowed` cleared, and PRIVATE accessibility — a new room is unpublished until its',
 				'owner sets its accessibility, so it never lands in the public feeds on creation.',
@@ -2446,7 +2466,7 @@ const app = new Hono<App>()
 			}
 			// Cloning is how a player makes a room, so the per-account cap belongs here.
 			// Checked after the cheap validations so a rejected name costs no extra D1 read.
-			const maxRooms = intVar(c.env.MAX_ROOMS_PER_ACCOUNT, DEFAULT_MAX_ROOMS_PER_ACCOUNT)
+			const maxRooms = await maxRoomsFor(c)
 			if (maxRooms > 0 && (await countRoomsByCreator(c.env.DB, accountId)) >= maxRooms) {
 				logger.info('room create rejected: per-account room limit', { accountId })
 				return roomEnvelope(c, null, `You can only have ${maxRooms} rooms.`)

@@ -30,6 +30,9 @@ export type Env = SharedHonoEnv & {
 	// number while the same var set from the dashboard or `--var` arrives as a string —
 	// read it through `intVar`, never as a bare number.
 	MAX_ROOMS_PER_ACCOUNT?: string | number
+	// The same cap for a Rec Room Plus subscriber (token `rn.plus`). Unset falls back to
+	// DEFAULT_MAX_ROOMS_PER_ACCOUNT_PLUS (100); 0 lifts it for subscribers. Read via `intVar`.
+	MAX_ROOMS_PER_ACCOUNT_PLUS?: string | number
 }
 
 /** Variables can be extended */

@@ -69,7 +69,9 @@ async function bearer(
 	// The client build the token was minted for (`rn.ver`), which is what
 	// `/featuredrooms/current` gates on. Omitted by default, like a token from a grant that
 	// posted no `ver`.
-	version?: string
+	version?: string,
+	// The `rn.plus` claim auth stamps for a Rec Room Plus subscriber.
+	plus?: boolean
 ): Promise<Record<string, string>> {
 	const now = Math.floor(Date.now() / 1000)
 	const signingInput = `${b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))}.${b64url(
@@ -78,6 +80,7 @@ async function bearer(
 			exp: now + 3600,
 			...(roles && { role: roles }),
 			...(version && { 'rn.ver': version }),
+			...(plus && { 'rn.plus': true }),
 		})
 	)}`
 	const key = await crypto.subtle.importKey(
@@ -1951,6 +1954,47 @@ describe('rooms endpoints', () => {
 			expect(await clone('Uncapped')).toMatchObject({ success: true })
 		} finally {
 			env.MAX_ROOMS_PER_ACCOUNT = original
+		}
+	})
+
+	it('POST /rooms/:id/clone gives a Plus subscriber the Plus room cap', async () => {
+		const clone = async (sub: string, name: string, plus: boolean) =>
+			(await (
+				await SELF.fetch(`${ORIGIN}/rooms/24/clone`, {
+					method: 'POST',
+					headers: {
+						...(await bearer(sub, undefined, undefined, plus)),
+						'Content-Type': 'application/x-www-form-urlencoded',
+					},
+					body: new URLSearchParams({ name }).toString(),
+				})
+			).json()) as { success: boolean; error: string; value: unknown }
+
+		const original = env.MAX_ROOMS_PER_ACCOUNT
+		const originalPlus = env.MAX_ROOMS_PER_ACCOUNT_PLUS
+		try {
+			env.MAX_ROOMS_PER_ACCOUNT = 1
+			env.MAX_ROOMS_PER_ACCOUNT_PLUS = 2
+			// A plain player stops at the base cap…
+			expect(await clone('811', 'PlainOne', false)).toMatchObject({ success: true })
+			expect((await clone('811', 'PlainTwo', false)).error).toMatch(/only have 1 rooms/i)
+			// …a subscriber at the Plus one.
+			expect(await clone('812', 'PlusOne', true)).toMatchObject({ success: true })
+			expect(await clone('812', 'PlusTwo', true)).toMatchObject({ success: true })
+			expect((await clone('812', 'PlusThree', true)).error).toMatch(/only have 2 rooms/i)
+
+			// Plus never lowers the cap below the base one.
+			env.MAX_ROOMS_PER_ACCOUNT = 3
+			expect(await clone('812', 'PlusThreeForReal', true)).toMatchObject({ success: true })
+
+			// 0 lifts the cap for subscribers only.
+			env.MAX_ROOMS_PER_ACCOUNT = 1
+			env.MAX_ROOMS_PER_ACCOUNT_PLUS = 0
+			expect(await clone('812', 'PlusUncapped', true)).toMatchObject({ success: true })
+			expect((await clone('811', 'PlainStillCapped', false)).success).toBe(false)
+		} finally {
+			env.MAX_ROOMS_PER_ACCOUNT = original
+			env.MAX_ROOMS_PER_ACCOUNT_PLUS = originalPlus
 		}
 	})
 
