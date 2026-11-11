@@ -55,7 +55,6 @@ import {
 	bansInForceHandler,
 	clearDormHandler,
 	clearPasswordHandler,
-	createReportHandler,
 	getCuratedRowHandler,
 	getReportHandler,
 	giftItemHandler,
@@ -882,7 +881,6 @@ const app = new Hono<App>()
 	// answer a 400 instead of the list.
 	.get('/api/staff/reports/top-reported', topReportedHandler)
 	.get('/api/staff/reports', searchReportsHandler)
-	.post('/api/staff/reports', createReportHandler)
 	.get('/api/staff/reports/:id', getReportHandler)
 	.post('/api/staff/reports/:id/ban', banReportHandler)
 	.get('/api/staff/bans', bansInForceHandler)

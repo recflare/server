@@ -117,6 +117,14 @@ export const SuccessErrorEnvelope = z.object({
 	error: z.string().describe('Empty string when the call succeeded'),
 })
 
+/**
+ * `POST /api/PlayerReporting/v3/create`'s success: the envelope plus the stored report row,
+ * which the client ignores and the website's moderation panel opens the ban dialog on.
+ */
+export const CreateReportResponse = SuccessErrorEnvelope.extend({
+	value: z.looseObject({ id: z.number() }).describe('The stored report row'),
+})
+
 // ---- Config ----------------------------------------------------------------
 
 /** `GET /api/config/v1/amplitude` — the client's analytics keys (blank; RudderStack and StatSig off). */

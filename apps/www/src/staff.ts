@@ -38,7 +38,6 @@ import { getCustomAvatarItem } from '../../api/src/custom-avatar-items-db'
 import {
 	banBlockDetails,
 	banFromReport,
-	createReport,
 	getActiveBan,
 	getBansInForce,
 	getReportById,
@@ -533,56 +532,6 @@ export async function getReportHandler(c: Context<App>) {
 	if (report === null) return c.json({ error: 'No such report' }, 404)
 	const [withName] = await withImageNames(c.env.DB, [report])
 	return c.json(withName)
-}
-
-/**
- * File a minimal report as the acting moderator — the row a ban needs something to hang
- * on when there is no player report to act on.
- *
- * A ban lives ON a report (see reports-db), so moderating something nobody happened to
- * report — found in a log, seen first-hand, escalated from elsewhere — needs a row first.
- * The reporter is the moderator, from the token, never the body: that IS the record of who
- * raised it, and it is why nothing marks these rows as staff-created.
- *
- * WHO, WHAT KIND and WHY, and nothing else. Everything else on a report describes a
- * client-side moment that did not happen here: the heights the game measured, the instance
- * type, the event/invention/item ids — and `room_id`, which a player's report gets from
- * the client that filed it. A moderator does not know a room's numeric id and would have
- * to go and look it up, so the room goes in `details` along with the rest of the account
- * of what happened. A `roomId` in the body is therefore not read; player reports still
- * carry the column, and it is theirs alone.
- */
-export async function createReportHandler(c: Context<App>) {
-	const moderatorId = staffId(c)
-	const body = (await c.req.json().catch(() => null)) as {
-		reportedPlayerId?: unknown
-		reportCategory?: unknown
-		details?: unknown
-	} | null
-	if (body === null) return c.json({ error: 'Invalid request body' }, 400)
-
-	const reportedPlayerId = Number(body.reportedPlayerId)
-	if (!Number.isInteger(reportedPlayerId) || reportedPlayerId <= 0) {
-		return c.json({ error: 'reportedPlayerId is required' }, 400)
-	}
-	// A moderator filing a report against themselves is a mistake every time, and the ban
-	// it would justify locks the panel's own operator out of the game.
-	if (reportedPlayerId === moderatorId) {
-		return c.json({ error: 'You cannot file a report against yourself' }, 400)
-	}
-
-	const report = await createReport(c.env.DB, {
-		reporterPlayerId: moderatorId,
-		reportedPlayerId,
-		reportCategory: Number.isInteger(Number(body.reportCategory)) ? Number(body.reportCategory) : 0,
-		details: typeof body.details === 'string' && body.details !== '' ? body.details : null,
-	})
-	logger.info('a moderator filed a report by hand', {
-		reportId: report.id,
-		moderatorId,
-		reportedPlayerId,
-	})
-	return c.json(report)
 }
 
 /**

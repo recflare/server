@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { PlatformType } from '@repo/domain/src/enums'
 
 import { KickReportCategory } from '../../../notify/src/notification-payloads'
-import { accountIdForUsername, call, isAdmin, useAction, usernamesFor } from './api'
+import { accountIdForUsername, call, isAdmin, useAction, usernamesFor, where } from './api'
 
 import type { ReactNode } from 'react'
 import type { ReportKind } from '../../../api/src/reports-db'
@@ -680,6 +680,7 @@ export function ModerationPage({
 							// `?player=` pre-fills who it's against — the Report link on a player's
 							// profile page lands here with it.
 							<FileReport
+								selfId={account.accountId}
 								initialPlayer={new URLSearchParams(search).get('player') ?? ''}
 								onFiled={openBan}
 							/>
@@ -1661,13 +1662,17 @@ function LinkedAccountsPanel({
  * it off. The reporter is the acting moderator, taken from the token; that is the record
  * of who raised it, which is why nothing marks these rows as staff-created.
  *
- * Hands the new report straight to the ban dialog, since filing one is almost always the
- * first half of banning somebody.
+ * Filed through the game's own report endpoint (`api` `POST /api/PlayerReporting/v3/create`),
+ * so a hand-written report is the same row by the same path as a player's. That endpoint
+ * answers the stored row as `value`, and the new report goes straight to the ban dialog,
+ * since filing one is almost always the first half of banning somebody.
  */
 function FileReport({
+	selfId,
 	initialPlayer,
 	onFiled,
 }: {
+	selfId: number
 	initialPlayer: string
 	onFiled: (report: ReportRow) => void
 }) {
@@ -1687,14 +1692,25 @@ function FileReport({
 				onSubmit={(e) => {
 					e.preventDefault()
 					void run(async () => {
-						const report = await call<ReportRow>('/api/staff/reports', {
-							authed: true,
-							json: {
-								reportedPlayerId: await playerIdFrom(player),
-								reportCategory: Number(category),
-								details: details.trim(),
-							},
-						})
+						const reportedPlayerId = await playerIdFrom(player)
+						// A mistake every time, and the ban it would justify locks the panel's own
+						// operator out of the game. The game endpoint doesn't refuse it, so this does.
+						if (reportedPlayerId === selfId) {
+							throw new Error('You cannot file a report against yourself')
+						}
+						// No room id: a moderator doesn't know a room's numeric id, so where it
+						// happened goes in the details with the rest of the account.
+						const { value: report } = await call<{ value: ReportRow }>(
+							`${where().api}/api/PlayerReporting/v3/create`,
+							{
+								authed: true,
+								form: {
+									PlayerIdReported: String(reportedPlayerId),
+									ReportCategory: category,
+									...(details.trim() === '' ? {} : { Details: details.trim() }),
+								},
+							}
+						)
 						// Straight to the ban page for the new report, which names it — so no
 						// success line is returned here: this form is gone by the time one could
 						// be read, and the fields don't need clearing for the same reason.

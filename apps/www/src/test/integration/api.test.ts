@@ -1246,10 +1246,10 @@ it('refuses every staff endpoint without a token, and without a staff role', asy
 	}
 
 	// The writes too, on the same terms.
-	const unauthed = await SELF.fetch('https://example.com/api/staff/reports', {
+	const unauthed = await SELF.fetch('https://example.com/api/staff/reports/1/ban', {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
-		body: JSON.stringify({ reportedPlayerId: 8102 }),
+		body: JSON.stringify({ banned: true, days: 1 }),
 	})
 	expect(unauthed.status).toBe(401)
 
@@ -1288,47 +1288,6 @@ it('refuses every staff endpoint without a token, and without a staff role', asy
 		body: JSON.stringify({ sandbox: true }),
 	})
 	expect(sandboxPlayer.status).toBe(403)
-})
-
-// The reporter is the CALLER, never a body field — that is the record of who raised a
-// hand-written report, and it is why nothing marks these rows as staff-created.
-it('files a minimal report as the acting moderator', async () => {
-	const res = await staffPost('/api/staff/reports', 8110, {
-		reportedPlayerId: 8111,
-		reportCategory: 102,
-		details: 'Seen in a log, in the Rec Center',
-	})
-	expect(res.status).toBe(200)
-	const report = (await res.json()) as Record<string, unknown>
-	expect(report.reporter_player_id).toBe(8110)
-	expect(report.reported_player_id).toBe(8111)
-	expect(report.report_category).toBe(102)
-	expect(report.details).toBe('Seen in a log, in the Rec Center')
-	// Filed unbanned: a report is not a ban, and the ban is a separate decision.
-	expect(report.banned).toBe(0)
-	expect(report.banned_at).toBeNull()
-	expect(report.banned_by_player_id).toBeNull()
-})
-
-// Who, what kind and why — and nothing else. A moderator does not know a room's numeric
-// id and would have to go and look it up, so WHERE goes in `details` with the rest of the
-// account of what happened. `room_id` is a player report's column: the client that filed
-// one knows the id it was standing in, and a hand-written row must not pretend to.
-it('ignores a room id on a hand-written report', async () => {
-	const res = await staffPost('/api/staff/reports', 8110, {
-		reportedPlayerId: 8112,
-		details: 'In someone’s dorm',
-		roomId: 991,
-	})
-	expect(res.status).toBe(200)
-	expect(((await res.json()) as Record<string, unknown>).room_id).toBeNull()
-})
-
-it('refuses a report with no player, and one a moderator files against themselves', async () => {
-	expect((await staffPost('/api/staff/reports', 8110, {})).status).toBe(400)
-	// The self-report is a mistake every time, and the ban it would justify locks the
-	// panel's own operator out of the game.
-	expect((await staffPost('/api/staff/reports', 8110, { reportedPlayerId: 8110 })).status).toBe(400)
 })
 
 it('filters the report search by kind', async () => {

@@ -6756,10 +6756,13 @@ describe('player reports', () => {
 			await bearer()
 		)
 		expect(res.status).toBe(200)
-		// `error` is an empty string, not null — the real service's envelope.
-		expect(await res.json()).toEqual({ success: true, error: '' })
+		// `error` is an empty string, not null — the real service's envelope. `value` is the
+		// stored row, which the website's moderation panel opens the ban dialog on.
+		const body = (await res.json()) as { success: boolean; error: string; value: { id: number } }
+		expect(body).toMatchObject({ success: true, error: '' })
 
 		const [row] = await getReportsAgainst(env.DB, 205)
+		expect(body.value).toEqual(row)
 		expect(row).toMatchObject({
 			// The reporter is the token's subject, not a body field.
 			reporter_player_id: 42,

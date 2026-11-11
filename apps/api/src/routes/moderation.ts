@@ -29,6 +29,7 @@ import {
 	BareBoolean,
 	CreateChatReportRequest,
 	CreateReportRequest,
+	CreateReportResponse,
 	CreateWarningRequest,
 	DeviceIdRequest,
 	form,
@@ -489,11 +490,13 @@ export const moderationRoutes = new Hono<App>({ strict: false })
 				'enum is mapped here. A `RoomId` of 0 or below means “no room”.\n\n' +
 				'Answers the real service’s `{ success, error }` envelope, where `error` is an ' +
 				'empty string rather than null. The rejected branch uses the same envelope so ' +
-				'the client only ever parses one shape.',
+				'the client only ever parses one shape. A success also carries `value`, the ' +
+				'stored report row: the client ignores it, and the website’s moderation panel ' +
+				'files reports here and opens the ban dialog on the row it gets back.',
 			security: AUTHED,
 			requestBody: form(CreateReportRequest, 'The report'),
 			responses: {
-				200: json(SuccessErrorEnvelope, '`{ success: true, error: "" }`'),
+				200: json(CreateReportResponse, '`{ success: true, error: "", value: <report> }`'),
 				400: json(SuccessErrorEnvelope, 'No `PlayerIdReported` in the request'),
 				401: UNAUTHORIZED_RESPONSE,
 			},
@@ -511,7 +514,7 @@ export const moderationRoutes = new Hono<App>({ strict: false })
 			// 0 / -1 are the client's "no room" values — store null rather than a bogus id.
 			const roomId = asInt(formField(body, c, 'RoomId'))
 
-			await createReport(c.env.DB, {
+			const report = await createReport(c.env.DB, {
 				reporterPlayerId: reporterId,
 				reportedPlayerId,
 				reportCategory: asInt(formField(body, c, 'ReportCategory')) ?? 0,
@@ -522,7 +525,7 @@ export const moderationRoutes = new Hono<App>({ strict: false })
 				roomInstanceType: formField(body, c, 'RoomInstanceType') ?? null,
 			})
 
-			return c.json({ success: true, error: '' })
+			return c.json({ success: true, error: '', value: report })
 		}
 	)
 
