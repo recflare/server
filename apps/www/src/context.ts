@@ -50,6 +50,14 @@ export type Env = SharedHonoEnv & {
 	 */
 	BAN_EVASION_MATCH?: string
 	/**
+	 * The account the AI moderation bot files its reports as, injected from
+	 * RECFLARE_AI_MODERATION_ID. The bot writes its report details as markdown, so the staff
+	 * panel renders the details of ITS reports as markdown and everyone else's as plain text
+	 * (a player's details are not markdown, and rendering them so would mangle a stray `*`).
+	 * Unset means no account's reports are rendered.
+	 */
+	AI_MODERATION_ID?: string | number
+	/**
 	 * The signup token grant — the same knob `econ` reads, injected into every worker from
 	 * RECFLARE_STARTING_TOKENS at deploy. www needs it for a staff token gift, which seeds a
 	 * never-touched balance with the signup grant before crediting, exactly as econ does; a

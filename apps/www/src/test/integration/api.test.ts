@@ -1436,6 +1436,83 @@ it('keeps the long tail of single reports out of the queue', async () => {
 // The ban: a duration in, an expiry stored, and the audit trail that 0020 added. The
 // duration matters because `banned_at` is what the client's block screen counts the ban
 // from — see `banBlockDetails`.
+// The AI moderation bot (AI_MODERATION_ID, 8199 in the test config) writes markdown; nobody
+// else does, so only its reports are flagged for the page to render.
+it('flags only the AI moderation bot’s report details as markdown', async () => {
+	const bot = await createReport(env.DB, {
+		reporterPlayerId: 8199,
+		reportedPlayerId: 8194,
+		details: '**Toxic** in chat',
+	})
+	const player = await createReport(env.DB, {
+		reporterPlayerId: 8195,
+		reportedPlayerId: 8194,
+		details: '**Toxic** in chat',
+	})
+	const read = async (id: number) =>
+		(await (await staffGet(`/api/staff/reports/${id}`, 8110)).json()) as Record<string, unknown>
+	expect((await read(bot.id)).details_markdown).toBe(true)
+	expect((await read(player.id)).details_markdown).toBe(false)
+})
+
+// For the frivolous ones. The whole row goes into the audit log, so it can be put back.
+it('deletes a report, and records the row it deleted', async () => {
+	const report = await createReport(env.DB, {
+		reporterPlayerId: 8191,
+		reportedPlayerId: 8190,
+		reportCategory: 102,
+		details: 'they beat me at paintball',
+	})
+	const del = (id: number, roles = ['moderator']) =>
+		tokenFor(8110, roles).then((t) =>
+			SELF.fetch(`https://example.com/api/staff/reports/${id}`, {
+				method: 'DELETE',
+				headers: { authorization: `Bearer ${t}` },
+			})
+		)
+
+	expect((await del(report.id, ['gameClient'])).status).toBe(403)
+	expect(await getReportById(env.DB, report.id)).not.toBeNull()
+
+	const res = await del(report.id)
+	expect(res.status).toBe(200)
+	expect(await getReportById(env.DB, report.id)).toBeNull()
+	// Gone is gone: a second delete is a 404, not a quiet success.
+	expect((await del(report.id)).status).toBe(404)
+
+	const audit = await env.DB.prepare(
+		`SELECT player_id, data FROM audit_log
+		 WHERE action = 'delete_report' AND json_extract(data, '$.reportId') = ?1`
+	)
+		.bind(report.id)
+		.first<{ player_id: number; data: string }>()
+	expect(audit?.player_id).toBe(8110)
+	expect(JSON.parse(audit!.data).report).toMatchObject({
+		reported_player_id: 8190,
+		details: 'they beat me at paintball',
+	})
+})
+
+// The ban lives on the report, so deleting the row would lift it with no record it existed.
+it('refuses to delete a report with a ban on it, until the ban is lifted', async () => {
+	const report = await createReport(env.DB, { reporterPlayerId: 8193, reportedPlayerId: 8192 })
+	expect((await staffPost(`/api/staff/reports/${report.id}/ban`, 8110, { days: 1 })).status).toBe(
+		200
+	)
+	const del = async () =>
+		SELF.fetch(`https://example.com/api/staff/reports/${report.id}`, {
+			method: 'DELETE',
+			headers: { authorization: `Bearer ${await tokenFor(8110, ['moderator'])}` },
+		})
+
+	expect((await del()).status).toBe(409)
+	expect(await getReportById(env.DB, report.id)).not.toBeNull()
+
+	await staffPost(`/api/staff/reports/${report.id}/ban`, 8110, { banned: false })
+	expect((await del()).status).toBe(200)
+	expect(await getReportById(env.DB, report.id)).toBeNull()
+})
+
 it('bans from a report, recording who did it and when', async () => {
 	const report = await createReport(env.DB, {
 		reporterPlayerId: 8161,

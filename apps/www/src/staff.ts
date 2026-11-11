@@ -38,6 +38,7 @@ import { getCustomAvatarItem } from '../../api/src/custom-avatar-items-db'
 import {
 	banBlockDetails,
 	banFromReport,
+	deleteReport,
 	getActiveBan,
 	getBansInForce,
 	getReportById,
@@ -531,7 +532,16 @@ export async function getReportHandler(c: Context<App>) {
 	const report = await getReportById(c.env.DB, id)
 	if (report === null) return c.json({ error: 'No such report' }, 404)
 	const [withName] = await withImageNames(c.env.DB, [report])
-	return c.json(withName)
+	return c.json({ ...withName, details_markdown: isAiModerationReport(c.env, report) })
+}
+
+/**
+ * Whether a report was filed by the AI moderation bot (`AI_MODERATION_ID`), whose details
+ * are markdown and are rendered as such on the report's page. Nobody else's are.
+ */
+function isAiModerationReport(env: Env, report: ReportRow): boolean {
+	const botId = intVar(env.AI_MODERATION_ID, 0)
+	return botId > 0 && report.reporter_player_id === botId
 }
 
 /**
@@ -604,6 +614,46 @@ export async function banReportHandler(c: Context<App>) {
 		if (!alreadyBanned) await thankReporters(c, report, moderatorId)
 	}
 	return c.json(report)
+}
+
+/**
+ * Delete a report — for the frivolous ones that clutter the tables and the triage counts.
+ *
+ * Refused with a 409 while a ban sits on the report (an expired one included): the ban
+ * lives on the row, so deleting it would erase the ban's record. Lift it first. The whole
+ * row goes into the audit log, so a deletion is recorded and can be put back by hand.
+ */
+export async function deleteReportHandler(c: Context<App>) {
+	const moderatorId = staffId(c)
+	const id = Number.parseInt(c.req.param('id') ?? '', 10)
+	if (Number.isNaN(id)) return c.json({ error: 'A numeric report id is required' }, 400)
+
+	const result = await deleteReport(c.env.DB, id)
+	if (result === null) return c.json({ error: 'No such report' }, 404)
+	if (!result.deleted) {
+		return c.json({ error: 'This report has a ban on it. Lift the ban before deleting it.' }, 409)
+	}
+
+	logger.info('a moderator deleted a report', {
+		reportId: id,
+		moderatorId,
+		reportedPlayerId: result.report.reported_player_id,
+	})
+	try {
+		await writeAuditLog(c.env.DB, {
+			playerId: moderatorId,
+			action: 'delete_report',
+			data: { reportId: id, report: result.report },
+		})
+	} catch (err) {
+		logger.error('could not write an audit log row', {
+			action: 'delete_report',
+			moderatorId,
+			reportId: id,
+			error: err instanceof Error ? err.message : String(err),
+		})
+	}
+	return c.json({ success: true })
 }
 
 /**

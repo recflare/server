@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
+import Markdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 import { PlatformType } from '@repo/domain/src/enums'
 
@@ -57,6 +59,7 @@ type View =
 	| { kind: 'tab'; tab: Tab }
 	| { kind: 'player'; playerId: number }
 	| { kind: 'ban'; reportId: number }
+	| { kind: 'report'; reportId: number }
 
 function viewForPath(path: string): View {
 	const rest = path.replace(/^\/moderation\/?/, '').replace(/\/$/, '')
@@ -67,6 +70,9 @@ function viewForPath(path: string): View {
 
 	const ban = /^reports\/(\d+)\/ban$/.exec(rest)
 	if (ban) return { kind: 'ban', reportId: Number.parseInt(ban[1]!, 10) }
+
+	const report = /^reports\/(\d+)$/.exec(rest)
+	if (report) return { kind: 'report', reportId: Number.parseInt(report[1]!, 10) }
 
 	// An unknown segment falls back to the queue rather than rendering nothing: these paths
 	// are typed and pasted, and a typo should land somewhere usable.
@@ -104,6 +110,11 @@ interface ReportRow {
 	 * the id). Null for a report that isn't against a photo, or one whose photo is gone.
 	 */
 	image_name?: string | null
+	/**
+	 * Whether `details` is markdown — true only for a report the AI moderation bot filed
+	 * (`AI_MODERATION_ID`, decided by `www`). Served on the single-report read alone.
+	 */
+	details_markdown?: boolean
 	/**
 	 * Who lifted the ban that once stood on this row, and when — null until one is lifted,
 	 * and cleared again by a re-ban. A lift wipes the four ban columns, so this pair is the
@@ -216,6 +227,14 @@ function when(iso: string | null): string {
 	const parsed = Date.parse(iso)
 	if (Number.isNaN(parsed)) return iso
 	return new Date(parsed).toISOString().slice(0, 16) + 'Z'
+}
+
+/** Just the UTC date (`2026-09-25`) — for tables, where the full time is on the view page. */
+function day(iso: string | null): string {
+	if (iso === null) return '—'
+	const parsed = Date.parse(iso)
+	if (Number.isNaN(parsed)) return iso
+	return new Date(parsed).toISOString().slice(0, 10)
 }
 
 /**
@@ -510,10 +529,10 @@ export function PlayerBanStatus({
 	const history = (
 		<button
 			type="button"
-			className="linkish"
+			className="linkish accent"
 			onClick={() => navigate(`/moderation/players/${playerId}`)}
 		>
-			Moderation history
+			Moderation history →
 		</button>
 	)
 
@@ -581,6 +600,10 @@ export function ModerationPage({
 		(report: ReportRow) => navigate(`/moderation/reports/${report.id}/ban`),
 		[navigate]
 	)
+	const openReport = useCallback(
+		(report: ReportRow) => navigate(`/moderation/reports/${report.id}`),
+		[navigate]
+	)
 
 	if (account === undefined) {
 		return (
@@ -640,6 +663,8 @@ export function ModerationPage({
 				/>
 			) : view.kind === 'ban' ? (
 				<BanDialog reportId={view.reportId} navigate={navigate} />
+			) : view.kind === 'report' ? (
+				<ReportDetail reportId={view.reportId} navigate={navigate} onBan={openBan} />
 			) : (
 				<div className="workspace">
 					<nav className="vtabs">
@@ -668,6 +693,7 @@ export function ModerationPage({
 								navigate={navigate}
 								onOpenPlayer={openPlayer}
 								onBan={openBan}
+								onView={openReport}
 								onChanged={changed}
 							/>
 						) : view.tab === 'bans' ? (
@@ -929,6 +955,7 @@ function ReportSearch({
 	navigate,
 	onOpenPlayer,
 	onBan,
+	onView,
 	onChanged,
 }: {
 	search: string
@@ -936,6 +963,7 @@ function ReportSearch({
 	navigate: (to: string) => void
 	onOpenPlayer: (id: number) => void
 	onBan: (report: ReportRow) => void
+	onView: (report: ReportRow) => void
 	onChanged: () => void
 }) {
 	const applied = filtersFromSearch(search)
@@ -1129,6 +1157,7 @@ function ReportSearch({
 						names={names}
 						onOpenPlayer={onOpenPlayer}
 						onBan={onBan}
+						onView={onView}
 						onChanged={onChanged}
 					/>
 					{/* Paging is navigation, so each page is its own history entry: Back walks
@@ -1169,6 +1198,7 @@ function ReportTable({
 	names,
 	onOpenPlayer,
 	onBan,
+	onView,
 	onChanged,
 	navigate,
 }: {
@@ -1176,6 +1206,8 @@ function ReportTable({
 	names: Map<number, PublicAccount>
 	onOpenPlayer?: (id: number) => void
 	onBan: (report: ReportRow) => void
+	/** Opens the report's own page, where the details are rendered whole. */
+	onView: (report: ReportRow) => void
 	onChanged: () => void
 	/** Links each name to its profile — where the table isn't already opening players. */
 	navigate?: (to: string) => void
@@ -1200,7 +1232,7 @@ function ReportTable({
 					{reports.map((report) => (
 						<tr key={report.id}>
 							<td>{report.id}</td>
-							<td>{when(report.created_at)}</td>
+							<td title={when(report.created_at)}>{day(report.created_at)}</td>
 							<td>
 								{onOpenPlayer ? (
 									<button
@@ -1220,10 +1252,10 @@ function ReportTable({
 								<ReportKind report={report} />
 							</td>
 							<td>{categoryLabel(report.report_category)}</td>
-							{/* The reporter's own words, untruncated in the title so a long
-							    description is readable without leaving the table. */}
-							<td className="mod-details" title={report.details ?? ''}>
-								{report.details ?? <span className="muted">none given</span>}
+							{/* The reporter's own words, cut to DETAILS_PREVIEW characters; the
+							    report's page renders them whole, as markdown. */}
+							<td className="mod-details">
+								<DetailsPreview report={report} onView={onView} />
 							</td>
 							<td>
 								{report.banned === 1 ? (
@@ -1234,13 +1266,21 @@ function ReportTable({
 									<span className="muted">—</span>
 								)}
 							</td>
-							<td>
+							<td className="mod-actions">
+								<button className="linkish" onClick={() => onView(report)}>
+									View
+								</button>
 								{report.banned === 1 ? (
 									<LiftBanButton report={report} onDone={onChanged} />
 								) : (
-									<button className="linkish" onClick={() => onBan(report)}>
-										{banLifted(report) ? 'Ban again…' : 'Ban…'}
-									</button>
+									<>
+										<button className="linkish accent" onClick={() => onBan(report)}>
+											{banLifted(report) ? 'Ban again' : 'Ban'}
+										</button>
+										{/* Not offered while a ban sits on the row: the ban lives on the
+										    report, so the server refuses until it is lifted. */}
+										<DeleteReportButton report={report} onDone={onChanged} />
+									</>
 								)}
 							</td>
 						</tr>
@@ -1248,6 +1288,194 @@ function ReportTable({
 				</tbody>
 			</table>
 		</div>
+	)
+}
+
+/** How much of a report's details the tables show before "more". */
+const DETAILS_PREVIEW = 200
+
+/**
+ * A report's details as the tables show them: the raw text, cut to {@link DETAILS_PREVIEW}
+ * characters with a "more" link to the report's page. Raw rather than rendered — markdown
+ * cut mid-way renders as broken markup, and the page is where it is read properly.
+ */
+function DetailsPreview({
+	report,
+	onView,
+}: {
+	report: ReportRow
+	onView: (report: ReportRow) => void
+}) {
+	if (!report.details) return <span className="muted">none given</span>
+	// By code point, so an emoji at the cut isn't split into a broken half.
+	const chars = Array.from(report.details)
+	if (chars.length <= DETAILS_PREVIEW) return <>{report.details}</>
+	return (
+		<>
+			{chars.slice(0, DETAILS_PREVIEW).join('').trimEnd()}…{' '}
+			<button className="linkish" onClick={() => onView(report)}>
+				more
+			</button>
+		</>
+	)
+}
+
+/**
+ * A report's details rendered as markdown — only ever the AI moderation bot's (see
+ * `details_markdown`).
+ *
+ * The text is a PLAYER's, shown to staff, so it is rendered without raw HTML (react-markdown
+ * builds React elements and never injects markup; its URL filter drops `javascript:` and the
+ * like). Images are shown as links rather than loaded: loading one would have every
+ * moderator's browser fetch whatever address the reporter chose.
+ */
+function ReportDetails({ details }: { details: string }) {
+	return (
+		<div className="mod-markdown">
+			<Markdown
+				remarkPlugins={[remarkGfm]}
+				components={{
+					a: ({ href, children }) => (
+						<a href={href} target="_blank" rel="noreferrer noopener">
+							{children}
+						</a>
+					),
+					img: ({ src, alt }) =>
+						typeof src === 'string' && src !== '' ? (
+							<a href={src} target="_blank" rel="noreferrer noopener">
+								[image{alt ? `: ${alt}` : ''}]
+							</a>
+						) : (
+							<>[image{alt ? `: ${alt}` : ''}]</>
+						),
+				}}
+			>
+				{details}
+			</Markdown>
+		</div>
+	)
+}
+
+/**
+ * One report on its own page (`/moderation/reports/:id`): everything on the row, with the
+ * details rendered as markdown, and the same actions the tables offer. Read from the
+ * server rather than handed down, so the URL can be pasted to a colleague.
+ */
+function ReportDetail({
+	reportId,
+	navigate,
+	onBan,
+}: {
+	reportId: number
+	navigate: (to: string) => void
+	onBan: (report: ReportRow) => void
+}) {
+	const [revision, setRevision] = useState(0)
+	const { data: report, error } = useStaffData<ReportRow>(`/api/staff/reports/${reportId}`, [
+		revision,
+	])
+	const names = useNames(
+		report
+			? [
+					report.reported_player_id,
+					report.reporter_player_id,
+					report.banned_by_player_id ?? 0,
+					report.unbanned_by_player_id ?? 0,
+				]
+			: []
+	)
+
+	if (error !== '') {
+		return (
+			<section className="card">
+				<BackLink navigate={navigate} label="Back to the tables" />
+				<p className="error">{error}</p>
+			</section>
+		)
+	}
+	if (report === null) {
+		return (
+			<section className="card">
+				<p className="muted">Loading report #{reportId}…</p>
+			</section>
+		)
+	}
+
+	const openPlayer = (id: number) => navigate(`/moderation/players/${id}`)
+	return (
+		<section className="card">
+			<BackLink navigate={navigate} label="Back to the tables" />
+			<h2>Report #{report.id}</h2>
+			<dl className="mod-report-facts">
+				<dt>Against</dt>
+				<dd>
+					<button className="linkish" onClick={() => openPlayer(report.reported_player_id)}>
+						<PlayerName id={report.reported_player_id} names={names} />
+					</button>
+				</dd>
+				<dt>By</dt>
+				<dd>
+					<button className="linkish" onClick={() => openPlayer(report.reporter_player_id)}>
+						<PlayerName id={report.reporter_player_id} names={names} />
+					</button>
+				</dd>
+				<dt>Filed</dt>
+				<dd>{when(report.created_at)}</dd>
+				<dt>Kind</dt>
+				<dd>
+					<ReportKind report={report} />
+				</dd>
+				<dt>Category</dt>
+				<dd>{categoryLabel(report.report_category)}</dd>
+				{report.room_id !== null && (
+					<>
+						<dt>Room</dt>
+						<dd>
+							#{report.room_id}
+							{report.room_instance_type ? ` (${report.room_instance_type})` : ''}
+						</dd>
+					</>
+				)}
+				<dt>Ban</dt>
+				<dd>
+					{report.banned === 1 ? (
+						<span className="badge mod-banned">{expiryLabel(report)}</span>
+					) : banLifted(report) ? (
+						<LiftedBan report={report} names={names} navigate={navigate} />
+					) : (
+						<span className="muted">None</span>
+					)}
+				</dd>
+			</dl>
+
+			<h3>Details</h3>
+			{/* Markdown only for the AI moderation bot's reports; a player's details are plain
+			    text, and rendering them as markdown would mangle a stray `*` or `#`. */}
+			{report.details && report.details_markdown ? (
+				<ReportDetails details={report.details} />
+			) : report.details ? (
+				<p className="mod-plain-details">{report.details}</p>
+			) : (
+				<p className="muted">None given.</p>
+			)}
+
+			<div className="mod-filter-actions">
+				{report.banned === 1 ? (
+					<LiftBanButton report={report} onDone={() => setRevision((n) => n + 1)} />
+				) : (
+					<>
+						<button type="button" className="primary" onClick={() => onBan(report)}>
+							{banLifted(report) ? 'Ban again' : 'Ban'}
+						</button>
+						{/* Deleted, the page has nothing left to show, so it goes to the player. */}
+						<DeleteReportButton
+							report={report}
+							onDone={() => navigate(`/moderation/players/${report.reported_player_id}`)}
+						/>
+					</>
+				)}
+			</div>
+		</section>
 	)
 }
 
@@ -1275,6 +1503,33 @@ function LiftBanButton({ report, onDone }: { report: ReportRow; onDone: () => vo
 				}
 			>
 				{pending ? 'Lifting…' : 'Lift ban'}
+			</button>
+			{error && <p className="error">{error}</p>}
+		</>
+	)
+}
+
+/**
+ * Delete a frivolous report. Confirmed first, like the lift beside it — it is one click in a
+ * row of them, and the report doesn't come back without digging it out of the audit log.
+ */
+function DeleteReportButton({ report, onDone }: { report: ReportRow; onDone: () => void }) {
+	const { pending, error, run } = useAction()
+	return (
+		<>
+			<button
+				className="linkish danger"
+				disabled={pending}
+				onClick={() =>
+					void run(async () => {
+						if (!confirm(`Delete report #${report.id}? This can't be undone from here.`)) return ''
+						await call(`/api/staff/reports/${report.id}`, { method: 'DELETE', authed: true })
+						onDone()
+						return ''
+					})
+				}
+			>
+				{pending ? 'Deleting…' : 'Delete'}
 			</button>
 			{error && <p className="error">{error}</p>}
 		</>
@@ -1401,7 +1656,7 @@ function PlayerHistory({
 		data?.blockedBy?.bannedAccountId ?? 0,
 	])
 	// The most recent lift, if any — it is the thing a moderator about to ban needs to know
-	// first, since the report rows below say "Ban again…" and the reason is up here.
+	// first, since the report rows below say "Ban again" and the reason is up here.
 	const lastLifted = reports
 		.filter(banLifted)
 		.sort((a, b) => (a.unbanned_at! < b.unbanned_at! ? 1 : -1))[0]
@@ -1454,6 +1709,7 @@ function PlayerHistory({
 						reports={reports}
 						names={names}
 						onBan={onBan}
+						onView={(report) => navigate(`/moderation/reports/${report.id}`)}
 						onChanged={() => setOwnRevision((n) => n + 1)}
 						navigate={navigate}
 					/>

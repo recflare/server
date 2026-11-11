@@ -582,6 +582,18 @@ body {
 	color: var(--text);
 }
 
+/* A link sitting in a line of muted or error text, which the plain grey .linkish would
+   blend into (the profile's "Not banned. Moderation history"). */
+.linkish.accent {
+	color: var(--accent);
+	font-weight: 600;
+}
+
+.linkish.accent:hover {
+	color: var(--accent-hover);
+	text-decoration: underline;
+}
+
 .linkish.danger:disabled {
 	opacity: 0.6;
 	cursor: default;
@@ -1341,7 +1353,8 @@ textarea:focus {
 	margin-bottom: 14px;
 }
 
-button[type='submit'] {
+button[type='submit'],
+button.primary {
 	border: none;
 	border-radius: 8px;
 	padding: 11px 18px;
@@ -1355,11 +1368,13 @@ button[type='submit'] {
 	width: auto;
 }
 
-button[type='submit']:not(:disabled):hover {
+button[type='submit']:not(:disabled):hover,
+button.primary:not(:disabled):hover {
 	background: var(--accent-hover);
 }
 
-button[type='submit']:disabled {
+button[type='submit']:disabled,
+button.primary:disabled {
 	opacity: 0.55;
 	cursor: default;
 }
@@ -1924,6 +1939,122 @@ button.link:not(:disabled):hover {
 	max-width: 320px;
 	min-width: 180px;
 	color: var(--muted);
+}
+
+/* View / Ban / Delete side by side rather than stacked one per line, as small outlined
+   buttons: as bare words they ran together into one grey phrase. */
+.mod-actions {
+	white-space: nowrap;
+}
+
+.mod-table .mod-actions button.linkish {
+	padding: 2px 10px;
+	border: 1px solid var(--line);
+	border-radius: var(--radius);
+	color: var(--text);
+	font-size: 0.8125rem;
+	line-height: 1.5;
+	transition:
+		background 0.15s ease,
+		border-color 0.15s ease;
+}
+
+.mod-actions button:not(:first-of-type) {
+	margin-left: 6px;
+}
+
+.mod-table .mod-actions button.linkish:hover:not(:disabled) {
+	background: var(--surface);
+	border-color: var(--muted);
+	text-decoration: none;
+}
+
+.mod-table .mod-actions button.linkish.accent {
+	color: var(--accent);
+	border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.mod-table .mod-actions button.linkish.danger {
+	color: var(--error);
+	border-color: color-mix(in srgb, var(--error) 40%, transparent);
+}
+
+.mod-table .mod-actions button.linkish.accent:hover:not(:disabled) {
+	border-color: var(--accent);
+}
+
+.mod-table .mod-actions button.linkish.danger:hover:not(:disabled) {
+	border-color: var(--error);
+}
+
+/* A failed lift/delete drops its message under the buttons; let it wrap there. */
+.mod-actions .error {
+	white-space: normal;
+	margin: 6px 0 0;
+}
+
+/* A report's own page: the row's facts as a two-column list. */
+.mod-report-facts {
+	display: grid;
+	grid-template-columns: max-content 1fr;
+	gap: 6px 16px;
+	margin: 12px 0 20px;
+}
+
+.mod-report-facts dt {
+	color: var(--muted);
+}
+
+.mod-report-facts dd {
+	margin: 0;
+	min-width: 0;
+}
+
+/* A player's details on the report's page: plain text, line breaks kept. */
+.mod-plain-details {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	margin: 0 0 20px;
+}
+
+/* The AI moderation bot's details, rendered as markdown. Long unbroken text (a pasted URL) wraps rather than
+   widening the card. */
+.mod-markdown {
+	border-left: 3px solid var(--line);
+	padding-left: 12px;
+	margin-bottom: 20px;
+	overflow-wrap: anywhere;
+}
+
+.mod-markdown > :first-child {
+	margin-top: 0;
+}
+
+.mod-markdown > :last-child {
+	margin-bottom: 0;
+}
+
+.mod-markdown pre {
+	background: var(--surface-hi);
+	padding: 8px 12px;
+	overflow-x: auto;
+}
+
+.mod-markdown blockquote {
+	margin: 0;
+	padding-left: 12px;
+	border-left: 3px solid var(--line);
+	color: var(--muted);
+}
+
+.mod-markdown table {
+	border-collapse: collapse;
+}
+
+.mod-markdown th,
+.mod-markdown td {
+	border: 1px solid var(--line);
+	padding: 4px 8px;
 }
 
 /* Red, unlike every other badge: a ban is the one state on these tables that someone

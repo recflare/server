@@ -464,6 +464,27 @@ export async function getReportById(db: D1Database, reportId: number): Promise<R
 	return db.prepare('SELECT * FROM report WHERE id = ?1').bind(reportId).first<ReportRow>()
 }
 
+/**
+ * Delete one report, answering the row as it was, or null when there was none.
+ *
+ * Refuses (returns the row untouched, `deleted: false`) while a ban sits on it: the ban
+ * lives ON the report, so deleting the row would lift the ban with nothing to say it had
+ * ever been handed down. Lift it first. Run as one guarded statement so a ban applied
+ * between a read and the delete can't be lost.
+ */
+export async function deleteReport(
+	db: D1Database,
+	reportId: number
+): Promise<{ report: ReportRow; deleted: boolean } | null> {
+	const deleted = await db
+		.prepare('DELETE FROM report WHERE id = ?1 AND banned = 0 RETURNING *')
+		.bind(reportId)
+		.first<ReportRow>()
+	if (deleted !== null) return { report: deleted, deleted: true }
+	const existing = await getReportById(db, reportId)
+	return existing === null ? null : { report: existing, deleted: false }
+}
+
 /** A player who has collected reports, as the staff panel's triage list shows them. */
 export interface ReportedPlayerTally {
 	playerId: number

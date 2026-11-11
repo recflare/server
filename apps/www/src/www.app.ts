@@ -55,6 +55,7 @@ import {
 	bansInForceHandler,
 	clearDormHandler,
 	clearPasswordHandler,
+	deleteReportHandler,
 	getCuratedRowHandler,
 	getReportHandler,
 	giftItemHandler,
@@ -883,6 +884,7 @@ const app = new Hono<App>()
 	.get('/api/staff/reports', searchReportsHandler)
 	.get('/api/staff/reports/:id', getReportHandler)
 	.post('/api/staff/reports/:id/ban', banReportHandler)
+	.delete('/api/staff/reports/:id', deleteReportHandler)
 	.get('/api/staff/bans', bansInForceHandler)
 	.get('/api/staff/players/:id', playerHistoryHandler)
 	.get('/api/staff/players/:id/linked', linkedAccountsHandler)
