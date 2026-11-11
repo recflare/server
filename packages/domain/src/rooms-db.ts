@@ -4493,6 +4493,21 @@ export function isPickableDorm(room: Room | null, accountId: number): room is Ro
 }
 
 /**
+ * Whether this is a PLAYER's dorm — a dorm room some player (not the Coach, who owns the
+ * template and any stock dorm) created. Dorms are stored Unlisted, but a player's dorm is
+ * their own space: `match` `canEnterRoom` admits to it only the people it admits to an
+ * unpublished room (owner, role holders, invitees). It is still SERVED to anyone by `rooms`
+ * `GET /rooms/:id` — the client needs to resolve the room; it is entering it that is gated.
+ */
+export function isPlayerDorm(room: Room): boolean {
+	return (
+		room.IsDorm === true &&
+		typeof room.CreatorAccountId === 'number' &&
+		room.CreatorAccountId !== COACH_ACCOUNT_ID
+	)
+}
+
+/**
  * The dorm the player picked through `rooms` `PUT /dormroom/me`, while it is still a dorm
  * they run. Null when they never picked one, or the pick went stale (the room was deleted,
  * or they lost their role on it), or KV is unreachable — every caller has a fallback.

@@ -41,6 +41,7 @@ import {
 	isClubMember,
 	isMatchmakingPolicy,
 	isPlayerBannedFromRoom,
+	isPlayerDorm,
 	isRolloutGameVersion,
 	MatchmakingErrorCode,
 	MessageType,
@@ -1001,11 +1002,16 @@ function isPublished(room: Room): boolean {
  * Without this, a private INSTANCE was the only thing "private" meant to the room routes:
  * `JoinMode` 2 spawned a fresh instance of any room whose id you had, published or not,
  * and the unpublished builds a player's visit history named were open to anyone who
- * could read it. Dorms are not gated here — they are Unlisted by construction and reach
- * their guests through the invite routes, not this one.
+ * could read it.
+ *
+ * A PLAYER'S DORM ({@link isPlayerDorm}) is gated the same way although it is stored
+ * Unlisted: a dorm is its owner's space, and the room route left open let anyone who
+ * opened a stranger's profile matchmake into it. Guests reach a dorm by invite (here, or
+ * through the player-join routes). The v1 follow shares this gate, so following a friend
+ * into their dorm likewise takes an invite.
  */
 async function canEnterRoom(db: D1Database, room: Room, accountId: number): Promise<boolean> {
-	if (isPublished(room)) return true
+	if (isPublished(room) && !isPlayerDorm(room)) return true
 	if (room.CreatorAccountId === accountId) return true
 	if (roomRoles(room).some((r) => r.AccountId === accountId && r.Role !== Role.None)) return true
 	return hasRoomInviteTo(db, accountId, Number(room.RoomId))

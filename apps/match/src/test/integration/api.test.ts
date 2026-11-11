@@ -3732,6 +3732,41 @@ describe('auth-gated endpoints', () => {
 		expect((await v2('/matchmake/v2/room/2', '9880', 2)).RoomInstance?.RoomId).toBe(2)
 	})
 
+	test('POST /matchmake/v2/room/:roomId refuses a stranger an Unlisted player dorm', async () => {
+		// Dorms are stored Unlisted, so the published-room pass let anyone who opened a
+		// stranger's profile matchmake straight into their dorm.
+		await seedRoomWithSubRooms(env.DB, {
+			RoomId: 97_200,
+			Name: "@Owner's Dorm",
+			IsDorm: true,
+			Accessibility: 2,
+			CreatorAccountId: 9890,
+			Roles: [{ AccountId: 9890, Role: 255 }],
+			SubRooms: [{ SubRoomId: 97_200, UnitySceneId: RECCENTER_SCENE, MaxPlayers: 4 }],
+		} as unknown as Record<string, unknown>)
+		const v2 = async (sub: string) =>
+			(await (
+				await exports.default.fetch(`${ORIGIN}/matchmake/v2/room/97200/97200`, {
+					method: 'POST',
+					headers: { ...(await bearer(sub)), 'Content-Type': 'application/json' },
+					body: JSON.stringify({ JoinMode: 0 }),
+				})
+			).json()) as { ErrorCode: number; RoomInstance: { RoomId: number } | null }
+
+		expect(await v2('9891')).toMatchObject({ ErrorCode: 25, RoomInstance: null })
+		expect((await v2('9890')).RoomInstance?.RoomId).toBe(97_200)
+
+		// An invite into the dorm is the guest's key.
+		await env.DB.prepare(
+			`INSERT INTO room_invite (from_player_id, to_player_id, room_id, created_at)
+			 VALUES (9890, 9891, 97200, ?1)`
+		)
+			.bind(Math.floor(Date.now() / 1000))
+			.run()
+		expect((await v2('9891')).RoomInstance?.RoomId).toBe(97_200)
+		await env.DB.prepare('DELETE FROM room_invite WHERE to_player_id = 9891').run()
+	})
+
 	test('an unpublished room has ONE private instance, shared by everyone it admits', async () => {
 		// Start clean: an earlier case may have left room 6 sessions and presence behind,
 		// and which instance a matchmake lands in is the whole point here.
