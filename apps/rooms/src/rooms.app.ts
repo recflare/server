@@ -2482,7 +2482,7 @@ const app = new Hono<App>()
 		}
 	)
 
-	// Update a room's description. Auth-gated (401) and owner-only. Business results
+	// Update a room's description. Auth-gated (401) and owner/co-owner-only. Business results
 	// use the `{ Success, Value, ErrorId, Error }` envelope at HTTP 200.
 	.put(
 		'/rooms/:roomId{[0-9]+}/description',
@@ -2490,8 +2490,8 @@ const app = new Hono<App>()
 			tags: ['Room settings'],
 			summary: 'Set a room’s description',
 			description: [
-				'Owner-only (the room’s `CreatorAccountId` — co-owners cannot). An unknown room or a',
-				'non-owner is HTTP 200 with `Success: false` and an `ErrorId`; only a missing token is',
+				'Owner or co-owner (`CreatorAccountId` or a Creator/CoOwner role). An unknown room or a',
+				'non-manager is HTTP 200 with `Success: false` and an `ErrorId`; only a missing token is',
 				'a real 401. An absent `description` field clears the description. Pushes a',
 				'`RoomUpdate` to the owner — this envelope carries no room, so the push is the only',
 				'thing that tells their client to redraw.',
@@ -2517,7 +2517,7 @@ const app = new Hono<App>()
 					Error: 'This room does not exist!',
 				})
 			}
-			if (room.CreatorAccountId !== accountId) {
+			if (!canManageRoom(room, accountId)) {
 				return roomResult(c, {
 					Success: false,
 					ErrorId: 'Rooms.NotOwner',
@@ -2535,7 +2535,7 @@ const app = new Hono<App>()
 		}
 	)
 
-	// Rename a room. Auth-gated (401) and owner-only; the new name must be non-empty
+	// Rename a room. Auth-gated (401) and owner/co-owner-only; the new name must be non-empty
 	// and not already taken by another room. Business results use the
 	// `{ Success, Value, ErrorId, Error }` envelope at HTTP 200.
 	// NOTE: the ErrorId strings (besides Rooms.DoesntExist) are best guesses.
@@ -2545,7 +2545,7 @@ const app = new Hono<App>()
 			tags: ['Room settings'],
 			summary: 'Rename a room',
 			description: [
-				'Owner-only. The new name must be non-empty and not already taken by another room',
+				'Owner or co-owner. The new name must be non-empty and not already taken by another room',
 				'(names are compared case-insensitively). Rejections are HTTP 200 with',
 				'`Success: false`.',
 				'',
@@ -2573,7 +2573,7 @@ const app = new Hono<App>()
 					Error: 'This room does not exist!',
 				})
 			}
-			if (room.CreatorAccountId !== accountId) {
+			if (!canManageRoom(room, accountId)) {
 				return roomResult(c, {
 					Success: false,
 					ErrorId: 'Rooms.NotOwner',
@@ -4674,7 +4674,7 @@ const app = new Hono<App>()
 	)
 
 	// Modify a subroom's settings (Name/Accessibility/MaxPlayers) from the form body.
-	// Auth-gated (401) and owner-only — only the room creator may change its subrooms.
+	// Auth-gated (401) and owner/co-owner-only, like the other subroom mutations.
 	// Notifies the owner (RoomUpdate) and returns the `{ Success, Value, ErrorId, Error }`
 	// envelope at HTTP 200, matching the other owner-gated room mutations.
 	.put(
@@ -4683,8 +4683,8 @@ const app = new Hono<App>()
 			tags: ['Subrooms'],
 			summary: 'Modify a subroom’s settings',
 			description: [
-				'Sets a subroom’s `Name`, `Accessibility` and `MaxPlayers`. Owner-only — only the',
-				'room’s creator may change its subrooms, not co-owners. `name` is required;',
+				'Sets a subroom’s `Name`, `Accessibility` and `MaxPlayers`. Owner or co-owner.',
+				'`name` is required;',
 				'`accessibility` and `maxPlayers` are applied only when supplied, and a non-positive',
 				'`maxPlayers` is ignored rather than rejected.',
 			].join(' '),
@@ -4711,7 +4711,7 @@ const app = new Hono<App>()
 					Error: 'This room does not exist!',
 				})
 			}
-			if (room.CreatorAccountId !== accountId) {
+			if (!canManageRoom(room, accountId)) {
 				return roomResult(c, {
 					Success: false,
 					ErrorId: 'Rooms.NotOwner',
@@ -4764,8 +4764,8 @@ const app = new Hono<App>()
 
 	// Publish a subroom's staged save — promote it to the live one players load. Every
 	// non-dorm room save only STAGES (see the save route), so this is the manual step that
-	// makes edits visible. Auth-gated (401) and creator-only: co-owners may save, but
-	// only the room's owner decides what goes live. Answers the updated ROOM in the
+	// makes edits visible. Auth-gated (401) and owner/co-owner-only: whoever may
+	// save may also decide what goes live. Answers the updated ROOM in the
 	// `{ success, error, value }` envelope, like the other subroom mutations.
 	.post(
 		'/rooms/:roomId{[0-9]+}/subrooms/:subRoomId{[0-9]+}/publish_save',
@@ -4781,7 +4781,7 @@ const app = new Hono<App>()
 				'`StagedSubRoomDataSaveId` is cleared only when the published save IS the staged',
 				'one — restoring an older version keeps newer unpublished work staged.',
 				'',
-				'Owner-only: co-owners may save but not decide what goes live. A save id belonging',
+				'Owner or co-owner — anyone who may save may publish. A save id belonging',
 				'to another subroom is rejected.',
 			].join(' '),
 			security: AUTHED,
@@ -4803,7 +4803,7 @@ const app = new Hono<App>()
 
 			const room = await getRoomById(c.env.DB, roomId)
 			if (!room) return roomEnvelope(c, null, 'This room does not exist!')
-			if (room.CreatorAccountId !== accountId) {
+			if (!canManageRoom(room, accountId)) {
 				return roomEnvelope(c, null, 'You are not the owner of this room!')
 			}
 
@@ -4836,7 +4836,7 @@ const app = new Hono<App>()
 	// the subroom `modify` call, but this is what the client actually calls when the
 	// player flips one subroom's visibility, and the body carries the enum NAME
 	// (`accessibility=Private`), not the number the room-level `/accessibility` takes.
-	// Auth-gated (401) and owner-only, like the other subroom mutations. Answers the
+	// Auth-gated (401) and owner/co-owner-only, like the other subroom mutations. Answers the
 	// updated ROOM in the `{ success, error, value }` envelope — the client re-renders
 	// the room's subroom list from `value`, the same as subroom create/delete.
 	.put(
@@ -4848,8 +4848,7 @@ const app = new Hono<App>()
 				'A subroom’s own visibility, independent of the room’s top-level `Accessibility`.',
 				'The client sends the `RoomAccessibility` NAME here (`accessibility=Private`) rather',
 				'than the ordinal the room-level route takes, so both forms are accepted; an',
-				'unrecognised value is rejected. Owner-only — only the room’s creator may change',
-				'its subrooms, not co-owners.',
+				'unrecognised value is rejected. Owner or co-owner.',
 				'',
 				'Answers the updated ROOM, not the bare subroom, so the client can re-render the',
 				'room’s subroom list from `value`.',
@@ -4873,7 +4872,7 @@ const app = new Hono<App>()
 
 			const room = await getRoomById(c.env.DB, roomId)
 			if (!room) return roomEnvelope(c, null, 'This room does not exist!')
-			if (room.CreatorAccountId !== accountId) {
+			if (!canManageRoom(room, accountId)) {
 				return roomEnvelope(c, null, 'You are not the owner of this room!')
 			}
 			if (!findSubRoom(room, subRoomId)) {
@@ -4975,7 +4974,7 @@ const app = new Hono<App>()
 	)
 
 	// Clone a subroom into a new subroom of the same room (fresh SubRoomId, same
-	// scene/settings/data). Auth-gated (401) and owner-only. Notifies the owner and
+	// scene/settings/data). Auth-gated (401) and owner/co-owner-only. Notifies the owner and
 	// returns the updated ROOM in the `{ success, error, value }` envelope — NOT the new
 	// subroom, even though the new subroom is what the call produces. The client
 	// re-renders the room's subroom list from `value`, the same as subroom
@@ -4988,7 +4987,7 @@ const app = new Hono<App>()
 			description: [
 				'Copies a subroom into a new subroom of the SAME room — same scene, settings and saved',
 				'data blobs, so it loads identical content — with a fresh globally-unique `SubRoomId`.',
-				'Owner-only.',
+				'Owner or co-owner (`CreatorAccountId` or a Creator/CoOwner role).',
 				'',
 				'Answers the updated ROOM, not the new subroom — the client re-renders the room’s',
 				'subroom list from `value`. Unlike the room-level `/clone`, whose `value` IS the new',
@@ -5012,7 +5011,7 @@ const app = new Hono<App>()
 
 			const room = await getRoomById(c.env.DB, roomId)
 			if (!room) return roomEnvelope(c, null, 'This room does not exist!')
-			if (room.CreatorAccountId !== accountId) {
+			if (!canManageRoom(room, accountId)) {
 				return roomEnvelope(c, null, 'You are not the owner of this room!')
 			}
 
@@ -5025,8 +5024,8 @@ const app = new Hono<App>()
 	)
 
 	// Move a subroom into another room (form body `newRoomId`). Auth-gated (401), and the
-	// caller must be able to MANAGE both rooms — owner or co-owner, unlike the creator-only
-	// gate on the other subroom mutations. Answers the SOURCE room in the PascalCase
+	// caller must be able to MANAGE both rooms — owner or co-owner, like the other subroom
+	// mutations, but on both rooms. Answers the SOURCE room in the PascalCase
 	// `{ Value, Success, Error, error_id }` envelope, not the lowercase one its siblings use.
 	.post(
 		'/rooms/:roomId{[0-9]+}/subrooms/:subRoomId{[0-9]+}/move',
@@ -5095,7 +5094,7 @@ const app = new Hono<App>()
 	)
 
 	// Create a new (empty) subroom in a room (form body `name`). Auth-gated (401) and
-	// owner-only. Mints a fresh globally-unique SubRoomId, bases the scene/capacity on the
+	// owner/co-owner-only. Mints a fresh globally-unique SubRoomId, bases the scene/capacity on the
 	// room's first subroom, notifies the owner (RoomUpdate), and returns the updated ROOM
 	// in the `{ success, error, value }` envelope (the client re-renders the room's subroom
 	// list from `value`, so it's the whole room, not the bare subroom).
@@ -5105,7 +5104,7 @@ const app = new Hono<App>()
 			tags: ['Subrooms'],
 			summary: 'Create a subroom',
 			description: [
-				'Adds an empty subroom to a room. Owner-only. It mints a fresh globally-unique',
+				'Adds an empty subroom to a room. Owner or co-owner. It mints a fresh globally-unique',
 				'`SubRoomId` (the game numbers subrooms from one sequence, not per room) and inherits',
 				'the scene and capacity of the room’s first existing subroom.',
 				'',
@@ -5129,7 +5128,7 @@ const app = new Hono<App>()
 			const roomId = Number.parseInt(c.req.param('roomId'), 10)
 			const room = await getRoomById(c.env.DB, roomId)
 			if (!room) return roomEnvelope(c, null, 'This room does not exist!')
-			if (room.CreatorAccountId !== accountId) {
+			if (!canManageRoom(room, accountId)) {
 				return roomEnvelope(c, null, 'You are not the owner of this room!')
 			}
 
@@ -5147,7 +5146,7 @@ const app = new Hono<App>()
 		}
 	)
 
-	// Delete a subroom from a room. Auth-gated (401) and owner-only. Refuses to remove a
+	// Delete a subroom from a room. Auth-gated (401) and owner/co-owner-only. Refuses to remove a
 	// room's only subroom. Notifies the owner (RoomUpdate) and returns the updated ROOM in
 	// the `{ success, error, value }` envelope (same shape as create, so the client
 	// re-renders the subroom list from `value`).
@@ -5157,7 +5156,7 @@ const app = new Hono<App>()
 			tags: ['Subrooms'],
 			summary: 'Delete a subroom',
 			description: [
-				'Removes a subroom from a room. Owner-only, and it refuses to remove a room’s only',
+				'Removes a subroom from a room. Owner or co-owner, and it refuses to remove a room’s only',
 				'subroom — that would leave the room with no scene to load. Any saved-data blob the',
 				'subroom pointed at is left in R2, the same way deleting a room leaves the photos',
 				'taken in it. Answers the updated ROOM, like create.',
@@ -5180,7 +5179,7 @@ const app = new Hono<App>()
 
 			const room = await getRoomById(c.env.DB, roomId)
 			if (!room) return roomEnvelope(c, null, 'This room does not exist!')
-			if (room.CreatorAccountId !== accountId) {
+			if (!canManageRoom(room, accountId)) {
 				return roomEnvelope(c, null, 'You are not the owner of this room!')
 			}
 

@@ -2115,7 +2115,7 @@ describe('rooms endpoints', () => {
 		return (room.SubRooms ?? []).find((s) => s.SubRoomId === subRoomId)
 	}
 
-	it('PUT /rooms/:id/description is auth-gated, owner-only, and persists', async () => {
+	it('PUT /rooms/:id/description is auth-gated, owner/co-owner-only, and persists', async () => {
 		// No token → 401 (auth gate).
 		expect((await putForm('/rooms/2/description', { description: 'x' })).status).toBe(401)
 		// Not the owner (RecCenter is owned by account 1) → 200 envelope, Success:false.
@@ -4716,8 +4716,12 @@ describe('rooms endpoints', () => {
 		expect(foreign.success).toBe(false)
 		expect(foreign.error).toBe('That save does not exist!')
 
-		// Co-owners may save but not publish.
+		// Co-owners may publish too — whoever may save decides what goes live — and a
+		// stranger may not.
 		expect(((await (await publish(firstId, '2')).json()) as { success: boolean }).success).toBe(
+			true
+		)
+		expect(((await (await publish(firstId, '999')).json()) as { success: boolean }).success).toBe(
 			false
 		)
 	})
@@ -5181,7 +5185,7 @@ describe('rooms endpoints', () => {
 		expect(await count()).toBe(0)
 	})
 
-	it('PUT /rooms/:id/name is auth-gated, owner-only, unique, and persists', async () => {
+	it('PUT /rooms/:id/name is auth-gated, owner/co-owner-only, unique, and persists', async () => {
 		// No token → 401 (auth gate).
 		expect((await putForm('/rooms/2/name', { name: 'Whatever' })).status).toBe(401)
 		// Wrong owner / unknown room → Success:false envelopes.
@@ -5609,7 +5613,7 @@ describe('rooms endpoints', () => {
 		expect(visited).toEqual([])
 	})
 
-	it('PUT /rooms/:id/subrooms/:sid/modify is auth-gated, owner-only, and persists subroom settings', async () => {
+	it('PUT /rooms/:id/subrooms/:sid/modify is auth-gated, owner/co-owner-only, and persists subroom settings', async () => {
 		const fields = { name: 'MyCoolSubroom', accessibility: '1', maxPlayers: '20' }
 		// No token → 401 (auth gate).
 		expect((await putForm('/rooms/2/subrooms/2/modify', fields)).status).toBe(401)
@@ -6070,7 +6074,7 @@ describe('rooms endpoints', () => {
 		})
 	})
 
-	it('POST /rooms/:id/subrooms/:sid/clone is auth-gated, owner-only, and copies the subroom', async () => {
+	it('POST /rooms/:id/subrooms/:sid/clone is auth-gated, owner/co-owner only, and copies the subroom', async () => {
 		const clone = async (roomId: number, subRoomId: number, sub?: string) =>
 			SELF.fetch(`${ORIGIN}/rooms/${roomId}/subrooms/${subRoomId}/clone`, {
 				method: 'POST',
@@ -6114,6 +6118,15 @@ describe('rooms endpoints', () => {
 		expect(await subRoomOf(2, added[0]!.SubRoomId)).toMatchObject({
 			SubRoomId: added[0]!.SubRoomId,
 		})
+
+		// A CoOwner (account 2 holds Role 30 in the seeded rooms) may clone too; the copy is
+		// theirs, and the room's creator stays account 1.
+		const coOwnerBody = await envelope(await clone(2, 2, '2'))
+		expect(coOwnerBody.success).toBe(true)
+		const known = new Set([...before, added[0]!.SubRoomId])
+		const coOwnerAdded = coOwnerBody.value!.SubRooms.filter((s) => !known.has(s.SubRoomId))
+		expect(coOwnerAdded).toHaveLength(1)
+		expect(coOwnerAdded[0]!.CreatorAccountId).toBe(2)
 	})
 
 	it('PUT /rooms/:id/max_player_calculation_mode stores the mode without touching MaxPlayers', async () => {
@@ -6286,7 +6299,7 @@ describe('rooms endpoints', () => {
 		expect(dupes).toBe(1)
 	})
 
-	it('POST /rooms/:id/subrooms creates a new subroom (auth-gated, owner-only, fresh id)', async () => {
+	it('POST /rooms/:id/subrooms creates a new subroom (auth-gated, owner/co-owner-only, fresh id)', async () => {
 		const create = async (roomId: number, name: string, sub?: string) =>
 			SELF.fetch(`${ORIGIN}/rooms/${roomId}/subrooms`, {
 				method: 'POST',
@@ -6344,7 +6357,7 @@ describe('rooms endpoints', () => {
 		expect(fetched.UnitySceneId).toBe(roomScene)
 	})
 
-	it('DELETE /rooms/:id/subrooms/:sid removes a subroom (auth-gated, owner-only, not the last)', async () => {
+	it('DELETE /rooms/:id/subrooms/:sid removes a subroom (auth-gated, owner/co-owner-only, not the last)', async () => {
 		const del = async (roomId: number, subRoomId: number, sub?: string) =>
 			SELF.fetch(`${ORIGIN}/rooms/${roomId}/subrooms/${subRoomId}`, {
 				method: 'DELETE',
