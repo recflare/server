@@ -3637,7 +3637,7 @@ function NavBar({
  */
 const SLIDESHOW_TAKE = 10
 
-/** One of the last two weeks' most-cheered public photos plus who took it and where. */
+/** One of the last three days' most-cheered public photos plus who took it and where. */
 interface Slide {
 	/** The `SavedImageId` — the photo's own page is `/image/<id>`. */
 	id: number
@@ -3649,7 +3649,7 @@ interface Slide {
 }
 
 /**
- * Loads the last two weeks' most-cheered public photos once (topped up with the newest older ones
+ * Loads the last three days' most-cheered public photos once (topped up with the newest older ones
  * in a quiet stretch). `slides === null` means still in flight.
  *
  * Waits for the config, since the feed is served by the `api` worker — the same public

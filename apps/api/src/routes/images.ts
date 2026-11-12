@@ -594,7 +594,7 @@ export const imageRoutes = new Hono<App>({ strict: false })
 	)
 
 	// Global slideshow feed — public ShareCamera photos (Accessibility 1, Type 1) tagged with
-	// a room (no RoomId, no slide), the most cheered of the last 7 days first (older photos,
+	// a room (no RoomId, no slide), the most cheered of the last 3 days first (older photos,
 	// newest first, top up a quiet stretch), each joined to its creator's username and room name. Serves the game's
 	// slideshow and the website's homepage alike. Public (no auth): it only surfaces
 	// already-public images. Private photos (Accessibility 0) never appear — the
@@ -612,7 +612,7 @@ export const imageRoutes = new Hono<App>({ strict: false })
 			description:
 				'Publicly-listable ShareCamera photos taken in a room (photos with no room are left ' +
 				'out), the most cheered of those ' +
-				'taken in the last 7 days first (newest breaks ties). When those are fewer ' +
+				'taken in the last 3 days first (newest breaks ties). When those are fewer ' +
 				'than `take`, older photos follow newest first. Each is joined to its creator’s ' +
 				'username and room name.\n\n' +
 				'Deliberately public — it surfaces only already-public images and backs the ' +
