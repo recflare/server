@@ -5640,7 +5640,6 @@ function RoomDetail({
 								key={sub.SubRoomId}
 								sub={sub}
 								roomId={room.RoomId}
-								roomName={room.Name}
 								cdnHost={cdnHost}
 								onRoomChange={onRoomChange}
 							/>
@@ -5656,13 +5655,11 @@ function RoomDetail({
 function SubRoomRow({
 	sub,
 	roomId,
-	roomName,
 	cdnHost,
 	onRoomChange,
 }: {
 	sub: SubRoom
 	roomId: number
-	roomName: string
 	cdnHost: string
 	onRoomChange: (room: OwnedRoom) => void
 }) {
@@ -5705,7 +5702,6 @@ function SubRoomRow({
 				<BlobDownload
 					label="Save DataBlob"
 					blobKey={save.DataBlob}
-					filename={safeFilename(roomName, name, `save-${save.SubRoomDataSaveId}`)}
 					cdnHost={cdnHost}
 				/>
 			)}
@@ -5713,7 +5709,6 @@ function SubRoomRow({
 				<BlobDownload
 					label="Subroom DataBlob"
 					blobKey={sub.DataBlob}
-					filename={safeFilename(roomName, name, 'datablob')}
 					cdnHost={cdnHost}
 				/>
 			)}
@@ -6040,84 +6035,32 @@ function ProfileImageUpload({
 }
 
 /**
- * A download filename built from player-supplied names, with everything that isn't a
- * word character, dot or dash flattened to a dash — a subroom can be called anything,
- * and that string is about to become a path on someone's disk.
- */
-const safeFilename = (...parts: string[]): string =>
-	`${parts.join('-').replace(/[^\w.-]+/g, '-')}.bin`
-
-/**
- * One scene-data blob: the key, and a link that downloads it from `cdn`.
+ * One scene-data blob: the key, and a plain link to it on `cdn`.
  *
- * `href` is the real CDN URL, so open-in-new-tab and right-click → Save As work like any
- * other link. The click is intercepted only to give the file a NAME: blobs are stored
- * under a date-foldered UUID, so three downloads otherwise land as three
- * indistinguishable extensionless files. The `download` attribute can't do that on its
- * own — browsers ignore it cross-origin, and `cdn` is always a different origin from the
- * website — hence fetching the bytes and saving them through an object URL.
+ * Just a link. It isn't fetched to pick a filename: `cdn` is always another origin, so the
+ * browser ignores `download`, and fetching the bytes needs CORS from whatever host serves
+ * them. When that host is the bucket's own custom domain, no worker sets that header. The
+ * file saves under its key's last segment, and `storage` gives each key an extension
+ * (`.room`, `.meta`), so the download still says what it is. The blobs are binary and served
+ * as such, so the browser downloads them instead of opening them.
  */
 function BlobDownload({
 	label,
 	blobKey,
-	filename,
 	cdnHost,
 }: {
 	label: string
 	blobKey: string
-	filename: string
 	cdnHost: string
 }) {
-	// Room build data is served under `room/` — the same prefix the storage worker
-	// uploads it to, and the one the game downloads it from.
-	const url = `${cdnHost}/room/${blobKey}`
-	const [pending, setPending] = useState(false)
-	const [error, setError] = useState('')
-
-	const download = async () => {
-		setPending(true)
-		setError('')
-		try {
-			const res = await fetch(url)
-			// The blob key is stored on the subroom, so a miss here means the object is gone
-			// from the bucket — worth saying, rather than saving a file of the 404 body.
-			if (!res.ok) throw new Error(`the CDN answered ${res.status}`)
-			const href = URL.createObjectURL(await res.blob())
-			const link = document.createElement('a')
-			link.href = href
-			link.download = filename
-			link.click()
-			// The click is dispatched synchronously but the save reads the URL after this
-			// frame, so the revoke waits a tick rather than pulling it out from under.
-			setTimeout(() => URL.revokeObjectURL(href), 0)
-		} catch (e) {
-			setError(e instanceof Error ? e.message : String(e))
-		} finally {
-			setPending(false)
-		}
-	}
-
+	// Room build data is served under `room/`, the same prefix the storage worker
+	// uploads it to and the one the game downloads it from.
 	return (
 		<div className="blob">
 			<span className="blob-label">{label}</span>
-			<a
-				className="blob-key"
-				href={url}
-				download={filename}
-				onClick={(e) => {
-					e.preventDefault()
-					void download()
-				}}
-			>
+			<a className="blob-key" href={`${cdnHost}/room/${blobKey}`} download>
 				{blobKey}
 			</a>
-			{/* Only rendered when it has something to say — an empty span would still take a
-			    gap from the flex row, leaving the key trailed by a stray space. */}
-			{pending ? (
-				<span className="blob-note">Downloading…</span>
-			) : error ? (
-				<span className="blob-note error">Couldn’t download — {error}.</span>
-			) : null}
 		</div>
 	)
 }

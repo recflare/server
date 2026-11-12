@@ -98,7 +98,7 @@ it('POST /upload stores a RoomMetadata (FileType 6) file under room/ and returns
 	expect(res.status).toBe(200)
 	const { filename } = (await res.json()) as { filename: string }
 	expect(filename).toMatch(
-		/^\d{4}-\d{2}-\d{2}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+		/^\d{4}-\d{2}-\d{2}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.meta$/
 	)
 
 	// The bytes are persisted in the shared CDN bucket under `room/`, the same folder as a
@@ -146,6 +146,30 @@ it('POST /upload names an Invention (FileType 5) upload with the .inv extension'
 	const stored = await env.CDN_ASSETS.get(`invention/${filename}`)
 	expect(stored).not.toBeNull()
 	expect(new Uint8Array(await stored!.arrayBuffer())).toEqual(bytes)
+})
+
+it('POST /upload names a RoomSave (FileType 1) upload with the .room extension', async () => {
+	const res = await SELF.fetch(`${ORIGIN}/upload`, {
+		method: 'POST',
+		headers: await bearer(),
+		body: uploadForm('1', new Uint8Array([1, 2, 3])),
+	})
+	expect(res.status).toBe(200)
+	const { filename } = (await res.json()) as { filename: string }
+	expect(filename).toMatch(/^\d{4}-\d{2}-\d{2}\/[0-9a-f-]{36}\.room$/)
+	expect(await env.CDN_ASSETS.get(`room/${filename}`)).not.toBeNull()
+})
+
+it('POST /upload names a Holotar (FileType 2) upload with the .htr extension', async () => {
+	const res = await SELF.fetch(`${ORIGIN}/upload`, {
+		method: 'POST',
+		headers: await bearer(),
+		body: uploadForm('2', new Uint8Array([1, 2, 3])),
+	})
+	expect(res.status).toBe(200)
+	const { filename } = (await res.json()) as { filename: string }
+	expect(filename).toMatch(/^\d{4}-\d{2}-\d{2}\/[0-9a-f-]{36}\.htr$/)
+	expect(await env.CDN_ASSETS.get(`data/${filename}`)).not.toBeNull()
 })
 
 it('POST /upload 400s for a binary with an unknown/missing FileType', async () => {

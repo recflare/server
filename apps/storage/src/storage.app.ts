@@ -76,13 +76,20 @@ function subfolderForFileType(fileType: string): string | undefined {
 }
 
 /**
- * The file extension an upload of a given type keeps. Invention data blobs are
- * named `<name>.inv` — the client expects the extension on the `BlobName` it later
- * gets back from the api worker, so it has to be part of the stored key too, or the
- * blob wouldn't be there to download. Other types are stored under a bare name.
+ * The file extension an upload of a given type keeps, on both the stored key and the
+ * returned name. An Invention needs `.inv`: the client expects it on the `BlobName` it
+ * later gets back from the api worker, so the key has to carry it too, or the blob
+ * wouldn't be there to download. A RoomSave (`.room`), Holotar (`.htr`) and RoomMetadata
+ * (`.meta`) get one so a downloaded blob says what it is: the key's last segment is the
+ * filename a browser saves it under. The client only stores the name it is handed and
+ * fetches it back from the matching cdn path, so the extension needs nothing else. Keys stored before this
+ * have no extension and still resolve as they are. Other types keep a bare name.
  */
 const UPLOAD_EXTENSION: Record<number, string> = {
+	1: '.room',
+	2: '.htr',
 	5: '.inv',
+	6: '.meta',
 }
 
 /**
@@ -369,8 +376,10 @@ const app = new Hono<App>()
 				'`<type-subfolder>/<upload-date>/<random-name>` and returns the',
 				'`<upload-date>/<random-name>` part the client references it by (the same name the',
 				'`cdn` worker serves back). The subfolder comes from `FileType`; RoomSave (1) lands',
-				'under `room/` so the cdn worker’s `GET /room/:dataBlob` finds it, and an Invention',
-				'(5) keeps a `.inv` extension on both the key and the returned name. An Image (3) is',
+				'under `room/` so the cdn worker’s `GET /room/:dataBlob` finds it. RoomSave (1), Holotar',
+				'(2), Invention (5) and RoomMetadata (6) carry an extension (`.room`, `.htr`, `.inv`,',
+				'`.meta`) on',
+				'both the key and the returned name. An Image (3) is',
 				'identified by its bytes — it must be a PNG, JPEG, GIF, WebP or BMP, and is stored under',
 				'that content-type rather than the part’s claimed one — because the `img` worker serves',
 				'it back under the stored type; anything else is refused with a 400. Auth-gated —',

@@ -1214,11 +1214,6 @@ h2 {
 	text-decoration: underline;
 }
 
-.blob-note {
-	color: var(--muted);
-	overflow-wrap: anywhere;
-}
-
 /*
  * Replacing a subroom's scene data. Boxed off from the download links above it: those
  * only read the room, this one overwrites what players load, and the two shouldn't read
