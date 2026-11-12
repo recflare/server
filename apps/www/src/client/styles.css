@@ -826,6 +826,34 @@ h2 {
 	min-width: 0;
 }
 
+/*
+ * A profile's public rooms: tiles rather than rows. Unlike the owner's list there is no
+ * badge or action to read across — just a picture, a name and a few counts — so the
+ * picture can lead and the page holds more rooms per screen.
+ */
+.rooms-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+	gap: 12px;
+}
+
+.rooms-grid .room,
+.rooms-grid .room:first-child {
+	padding-top: 0;
+	border-top: none;
+}
+
+.rooms-grid .room-link {
+	grid-template-columns: minmax(0, 1fr);
+	gap: 8px;
+	margin: 0;
+	height: 100%;
+}
+
+.rooms-grid .room-stats {
+	margin: 2px 0 0;
+}
+
 .room-head {
 	display: flex;
 	flex-wrap: wrap;

@@ -2422,7 +2422,7 @@ function PlayerPage({
 						) : rooms.length === 0 ? (
 							<p className="muted">No public rooms.</p>
 						) : (
-							<ul className="rooms">
+							<ul className="rooms rooms-grid">
 								{rooms.map((room) => (
 									<li className="room" key={room.RoomId}>
 										<Link to={`/rooms/${room.RoomId}`} navigate={navigate} className="room-link">
@@ -2436,6 +2436,10 @@ function PlayerPage({
 												<span className="room-name">^{room.Name}</span>
 												<p className="room-stats">
 													{room.Stats.VisitCount.toLocaleString()} visits
+												</p>
+												<p className="room-stats">
+													{room.Stats.CheerCount.toLocaleString()} cheers ·{' '}
+													{room.Stats.FavoriteCount.toLocaleString()} favorites
 												</p>
 											</div>
 										</Link>
