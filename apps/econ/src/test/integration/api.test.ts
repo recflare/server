@@ -5293,12 +5293,9 @@ describe('econ endpoints', () => {
 			SubscriberPrices: [{ CurrencyType: 2, Price: 85, StorefrontSaleData: null }],
 		})
 
-		// An id with no storefront still 404s, and 1704 is gone — it was a stand-in for a store
-		// that turned out to be this one.
-		for (const id of [1705, 1704]) {
-			const res = await exports.default.fetch(`${ORIGIN}/api/storefronts/v3/giftdropstore/${id}`)
-			expect(res.status, String(id)).toBe(404)
-		}
+		// An id with no storefront still 404s.
+		const missing = await exports.default.fetch(`${ORIGIN}/api/storefronts/v3/giftdropstore/9999`)
+		expect(missing.status).toBe(404)
 	})
 
 	// Item 73 in sf3.json — "Bowtie (White)", 450 RecCenterTokens (CurrencyType 2).

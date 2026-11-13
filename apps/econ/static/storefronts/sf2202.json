@@ -42,11 +42,7 @@
 				{
 					"CurrencyType": 2,
 					"Price": 0,
-					"StorefrontSaleData": {
-						"SalePercent": 80,
-						"SaleStartDate": "2026-03-30T23:00:00Z",
-						"SaleEndDate": null
-					}
+					"StorefrontSaleData": null
 				}
 			],
 			"SubscriberPrices": [
@@ -105,11 +101,7 @@
 				{
 					"CurrencyType": 2,
 					"Price": 0,
-					"StorefrontSaleData": {
-						"SalePercent": 80,
-						"SaleStartDate": "2026-03-30T23:00:00Z",
-						"SaleEndDate": null
-					}
+					"StorefrontSaleData": null
 				}
 			],
 			"SubscriberPrices": [
@@ -168,11 +160,7 @@
 				{
 					"CurrencyType": 2,
 					"Price": 0,
-					"StorefrontSaleData": {
-						"SalePercent": 80,
-						"SaleStartDate": "2026-03-30T23:00:00Z",
-						"SaleEndDate": null
-					}
+					"StorefrontSaleData": null
 				}
 			],
 			"SubscriberPrices": [
@@ -231,11 +219,7 @@
 				{
 					"CurrencyType": 2,
 					"Price": 0,
-					"StorefrontSaleData": {
-						"SalePercent": 80,
-						"SaleStartDate": "2026-03-30T23:00:00Z",
-						"SaleEndDate": null
-					}
+					"StorefrontSaleData": null
 				}
 			],
 			"SubscriberPrices": [
@@ -288,11 +272,7 @@
 				{
 					"CurrencyType": 2,
 					"Price": 900,
-					"StorefrontSaleData": {
-						"SalePercent": 80,
-						"SaleStartDate": "2026-03-30T23:00:00Z",
-						"SaleEndDate": null
-					}
+					"StorefrontSaleData": null
 				}
 			],
 			"SubscriberPrices": [
@@ -345,11 +325,7 @@
 				{
 					"CurrencyType": 2,
 					"Price": 3840,
-					"StorefrontSaleData": {
-						"SalePercent": 80,
-						"SaleStartDate": "2026-03-30T23:00:00Z",
-						"SaleEndDate": null
-					}
+					"StorefrontSaleData": null
 				}
 			],
 			"SubscriberPrices": [
@@ -408,11 +384,7 @@
 				{
 					"CurrencyType": 2,
 					"Price": 6000,
-					"StorefrontSaleData": {
-						"SalePercent": 80,
-						"SaleStartDate": "2026-03-30T23:00:00Z",
-						"SaleEndDate": null
-					}
+					"StorefrontSaleData": null
 				}
 			],
 			"SubscriberPrices": [
@@ -471,11 +443,7 @@
 				{
 					"CurrencyType": 2,
 					"Price": 6000,
-					"StorefrontSaleData": {
-						"SalePercent": 80,
-						"SaleStartDate": "2026-03-30T23:00:00Z",
-						"SaleEndDate": null
-					}
+					"StorefrontSaleData": null
 				}
 			],
 			"SubscriberPrices": [
@@ -534,11 +502,7 @@
 				{
 					"CurrencyType": 2,
 					"Price": 3500,
-					"StorefrontSaleData": {
-						"SalePercent": 80,
-						"SaleStartDate": "2026-03-30T23:00:00Z",
-						"SaleEndDate": null
-					}
+					"StorefrontSaleData": null
 				}
 			],
 			"SubscriberPrices": [
@@ -597,11 +561,7 @@
 				{
 					"CurrencyType": 2,
 					"Price": 3500,
-					"StorefrontSaleData": {
-						"SalePercent": 80,
-						"SaleStartDate": "2026-03-30T23:00:00Z",
-						"SaleEndDate": null
-					}
+					"StorefrontSaleData": null
 				}
 			],
 			"SubscriberPrices": [
@@ -660,11 +620,7 @@
 				{
 					"CurrencyType": 2,
 					"Price": 1500,
-					"StorefrontSaleData": {
-						"SalePercent": 80,
-						"SaleStartDate": "2026-03-30T23:00:00Z",
-						"SaleEndDate": null
-					}
+					"StorefrontSaleData": null
 				}
 			],
 			"SubscriberPrices": [
@@ -723,11 +679,7 @@
 				{
 					"CurrencyType": 2,
 					"Price": 1500,
-					"StorefrontSaleData": {
-						"SalePercent": 80,
-						"SaleStartDate": "2026-03-30T23:00:00Z",
-						"SaleEndDate": null
-					}
+					"StorefrontSaleData": null
 				}
 			],
 			"SubscriberPrices": [
@@ -786,11 +738,7 @@
 				{
 					"CurrencyType": 2,
 					"Price": 3500,
-					"StorefrontSaleData": {
-						"SalePercent": 80,
-						"SaleStartDate": "2026-03-30T23:00:00Z",
-						"SaleEndDate": null
-					}
+					"StorefrontSaleData": null
 				}
 			],
 			"SubscriberPrices": [
@@ -849,11 +797,7 @@
 				{
 					"CurrencyType": 2,
 					"Price": 3500,
-					"StorefrontSaleData": {
-						"SalePercent": 80,
-						"SaleStartDate": "2026-03-30T23:00:00Z",
-						"SaleEndDate": null
-					}
+					"StorefrontSaleData": null
 				}
 			],
 			"SubscriberPrices": [
@@ -912,11 +856,7 @@
 				{
 					"CurrencyType": 2,
 					"Price": 1500,
-					"StorefrontSaleData": {
-						"SalePercent": 80,
-						"SaleStartDate": "2026-03-30T23:00:00Z",
-						"SaleEndDate": null
-					}
+					"StorefrontSaleData": null
 				}
 			],
 			"SubscriberPrices": [
@@ -975,11 +915,7 @@
 				{
 					"CurrencyType": 2,
 					"Price": 1500,
-					"StorefrontSaleData": {
-						"SalePercent": 80,
-						"SaleStartDate": "2026-03-30T23:00:00Z",
-						"SaleEndDate": null
-					}
+					"StorefrontSaleData": null
 				}
 			],
 			"SubscriberPrices": [
@@ -1038,11 +974,7 @@
 				{
 					"CurrencyType": 2,
 					"Price": 1500,
-					"StorefrontSaleData": {
-						"SalePercent": 80,
-						"SaleStartDate": "2026-03-30T23:00:00Z",
-						"SaleEndDate": null
-					}
+					"StorefrontSaleData": null
 				}
 			],
 			"SubscriberPrices": [
