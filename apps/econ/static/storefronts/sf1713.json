@@ -1,0 +1,465 @@
+{
+	"StoreItems": [
+		{
+			"GiftDrop": {
+				"GiftDropId": 33010,
+				"FriendlyName": "The Unripened Sigil Potion",
+				"Tooltip": "Display your Unripened team pride for 5 minutes with this effects potion! Check event leaderboard at https://rec.net/nobles",
+				"TagList": "",
+				"ConsumableItemDesc": "4hbiwdv6kEmYFg-0FJnOnQ",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1004,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "13jhcopkxc86kqa3ynkvl9c7a.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 32025,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 180,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 162,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": "2025-08-22T21:00:00Z",
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 33009,
+				"FriendlyName": "The Rootforged Sigil Potion",
+				"Tooltip": "Display your Rootforged team pride for 5 minutes with this effects potion! Check event leaderboard at https://rec.net/nobles",
+				"TagList": "",
+				"ConsumableItemDesc": "M_BqF21kO0SIB4Q15SItdw",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1004,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "4twch6pym6loze9gn2bxwlngm.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 32024,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 180,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 162,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": "2025-08-22T21:00:00Z",
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 33008,
+				"FriendlyName": "The Vineguard Sigil Potion",
+				"Tooltip": "Display your Vineguard team pride for 5 minutes with this effects potion! Check event leaderboard at https://rec.net/nobles",
+				"TagList": "",
+				"ConsumableItemDesc": "_Nq1QFOzIkOhs7lHasEFCA",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1004,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "d9bkxrrroiflrjrepxu3jhv12.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 32023,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 180,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 162,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": "2025-08-22T21:00:00Z",
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 18152,
+				"FriendlyName": "Roomie Soundboard Potion",
+				"Tooltip": "This potion gives Roomie the ability to play a variety of hilarious sound effects for 10 minutes!",
+				"TagList": "",
+				"ConsumableItemDesc": "mzQRH9-YD0-X3w2gWBGF7w",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 50,
+				"Context": 1002,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "1hqu5malp8fckjp0a35sn7dya.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 31872,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 1000,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 900,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": "2025-08-15T21:00:00Z",
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 18178,
+				"FriendlyName": "Orange Fire Potion",
+				"Tooltip": "This potion applies a moving and glowing ORANGE FIRE texture to your outfits, this effect lasts 5 minutes per potion!",
+				"TagList": "",
+				"ConsumableItemDesc": "HGcgUIIJiE2hGqU2T971yg",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "43b6r1png90oyc1w9s4p801n7.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 31915,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 180,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 162,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 18182,
+				"FriendlyName": "Purple Lightning Potion",
+				"Tooltip": "This potion applies a moving and glowing PURPLE LIGHTNING texture to your outfits, this effect lasts 5 minutes per potion!",
+				"TagList": "",
+				"ConsumableItemDesc": "0rWm6rJbtE6BabKjSYomtg",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "2y59sv70w0ewoj3sc8kqvwn1m.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 31912,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 180,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 162,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": "2025-08-15T21:00:00Z",
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 18181,
+				"FriendlyName": "Green Galaxy Potion",
+				"Tooltip": "This potion applies a moving and glowing GREEN GALAXY texture to your outfits, this effect lasts 5 minutes per potion!",
+				"TagList": "",
+				"ConsumableItemDesc": "D_XWuFz0SkS8DccR62mIYw",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "43av4c4zm1p6le7eetvbq3oog.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 31916,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 180,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 162,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": "2025-08-15T21:00:00Z",
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 18162,
+				"FriendlyName": "Random Potion",
+				"Tooltip": "Get a random potion!",
+				"TagList": "",
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": true,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": "potion",
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "7iif6npeo26nbt7a94yzrzguv.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 31911,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 90,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 81,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		}
+	],
+	"SubscriberDiscountPercent": 10,
+	"StorefrontName": "New Potions this Week!",
+	"StorefrontType": 1713,
+	"NextUpdate": "2026-07-04T18:00:00Z",
+	"NewUntil": "2025-07-04T21:00:00Z"
+}

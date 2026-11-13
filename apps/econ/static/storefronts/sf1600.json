@@ -1,0 +1,743 @@
+{
+	"StoreItems": [
+		{
+			"GiftDrop": {
+				"GiftDropId": 3897,
+				"FriendlyName": "Racing Helmet (Blue)",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "9fb62d0c-67ff-4675-85d3-a2869c2330aa,,,",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 30,
+				"Context": 0,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": 54,
+				"ItemSetFriendlyName": "Blue Racer",
+				"AvatarItemId": 1854,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "5ll88rg9iiispe9c611fj575e.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "9fb62d0c-67ff-4675-85d3-a2869c2330aa",
+					"DownloadableAvatarItemId": "cef8163c-2f4e-4df4-a8f4-ca5902fb1827",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 1854
+				}
+			},
+			"PurchasableItemId": 2170,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 700,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 630,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2021-09-03T21:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 3895,
+				"FriendlyName": "Racing Suit (Blue)",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "7adae61e-cd62-46c3-ae42-83ef0bced5c7,,,",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 30,
+				"Context": 0,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": 54,
+				"ItemSetFriendlyName": "Blue Racer",
+				"AvatarItemId": 1852,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "7lyaxr5m3766nt3tdurlv2gik.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "7adae61e-cd62-46c3-ae42-83ef0bced5c7",
+					"DownloadableAvatarItemId": "1ddda1a3-d4ee-4f3c-899a-6f5978b3ca8e",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 1852
+				}
+			},
+			"PurchasableItemId": 2168,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 750,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 675,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2021-09-03T21:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 3896,
+				"FriendlyName": "Racing Gloves (Blue)",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "45695fba-5abc-4c5b-b9eb-949d5174d1f5,,,",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 20,
+				"Context": 0,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": 54,
+				"ItemSetFriendlyName": "Blue Racer",
+				"AvatarItemId": 1853,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "chi1z36iwxalp98kkl4coqu8h.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "45695fba-5abc-4c5b-b9eb-949d5174d1f5",
+					"DownloadableAvatarItemId": "89744465-3174-4ba0-b9d3-c798d459d8bf",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 1853
+				}
+			},
+			"PurchasableItemId": 2169,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 400,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 360,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2021-09-03T21:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 1732,
+				"FriendlyName": "Bandana (Dots, Blue)",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "5accb7dc-90a3-46ee-bad2-8fd1861d50f1,ad61c418-6d77-4a99-8ac5-9f10f5a3d42f,b292eb4b-07e3-4a48-99b5-3c6587a1e02e,",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 10,
+				"Context": 0,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 446,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "8pn1j2wbx9ivldclxa1ubgufx.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "5accb7dc-90a3-46ee-bad2-8fd1861d50f1,ad61c418-6d77-4a99-8ac5-9f10f5a3d42f,b292eb4b-07e3-4a48-99b5-3c6587a1e02e",
+					"DownloadableAvatarItemId": "9b193f03-2585-4ff0-87c9-f2c2f50924cc",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 446
+				}
+			},
+			"PurchasableItemId": 328,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 150,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 135,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 2310,
+				"FriendlyName": "Biker Goggles",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "_qXaNbm4yEeyalo372QbvA,,,",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 20,
+				"Context": 0,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 749,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "dyz4zg15sdjewdf5zjojjk36p.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "_qXaNbm4yEeyalo372QbvA",
+					"DownloadableAvatarItemId": "9fe55c9b-f88a-4d0a-8ae5-f32368f2e782",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 749
+				}
+			},
+			"PurchasableItemId": 872,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 400,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 360,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 3025,
+				"FriendlyName": "Fancy Bubbly",
+				"Tooltip": "",
+				"TagList": "",
+				"ConsumableItemDesc": "iiGTvhOCHkOTNJhb16Zbyw",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 50,
+				"Context": 110000,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": 176,
+				"ItemSetFriendlyName": "Yummy Bubbly",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "2d6tl7oxqp9fg3xzi1l2o421v.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 1554,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 1000,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 900,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 3944,
+				"FriendlyName": "Racing Helmet (Red)",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "9fb62d0c-67ff-4675-85d3-a2869c2330aa,ijCbiOeGD0C4uznegq9CXw,VzyoPsQyCUaW6RSusgVUGQ,",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 30,
+				"Context": 0,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": 53,
+				"ItemSetFriendlyName": "Red Racer",
+				"AvatarItemId": 1896,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "b5jt7jrhmi5ch4z1axfan8u95.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "9fb62d0c-67ff-4675-85d3-a2869c2330aa,ijCbiOeGD0C4uznegq9CXw,VzyoPsQyCUaW6RSusgVUGQ",
+					"DownloadableAvatarItemId": "c3ce3ee4-bb48-4b18-b2ca-a70326722250",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 1896
+				}
+			},
+			"PurchasableItemId": 2171,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 700,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 630,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2021-09-03T21:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 3946,
+				"FriendlyName": "Racing Suit (Red)",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "7adae61e-cd62-46c3-ae42-83ef0bced5c7,lhqUg1VMNkC8nrsGZF4edQ,uFERkSfSl0i9BPFBVOICeg,",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 30,
+				"Context": 0,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": 53,
+				"ItemSetFriendlyName": "Red Racer",
+				"AvatarItemId": 1898,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "1ohpxd83hqnj4iz7zqf0eqy3w.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "7adae61e-cd62-46c3-ae42-83ef0bced5c7,lhqUg1VMNkC8nrsGZF4edQ,uFERkSfSl0i9BPFBVOICeg",
+					"DownloadableAvatarItemId": "05f0f9f7-30da-45b3-8903-535cb988ae34",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 1898
+				}
+			},
+			"PurchasableItemId": 2172,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 750,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 675,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2021-09-03T21:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 3947,
+				"FriendlyName": "Racing Gloves (Red)",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "45695fba-5abc-4c5b-b9eb-949d5174d1f5,oFjt2tSsa0CJ7j0s3P6b4Q,XD9dH8LF_ECmL0TwXJW1zg,",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 20,
+				"Context": 0,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": 53,
+				"ItemSetFriendlyName": "Red Racer",
+				"AvatarItemId": 1899,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "7trthor2vpnt3r9e6aywi0ohc.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "45695fba-5abc-4c5b-b9eb-949d5174d1f5,oFjt2tSsa0CJ7j0s3P6b4Q,XD9dH8LF_ECmL0TwXJW1zg",
+					"DownloadableAvatarItemId": "07d751e3-c349-427e-bc3e-d881a6cb3e41",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 1899
+				}
+			},
+			"PurchasableItemId": 2173,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 400,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 360,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2021-09-03T21:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 1731,
+				"FriendlyName": "Bandana (Dots, Red)",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "5accb7dc-90a3-46ee-bad2-8fd1861d50f1,827a1538-51bb-4fef-99c1-7f1bebd9866c,b292eb4b-07e3-4a48-99b5-3c6587a1e02e,",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 10,
+				"Context": 0,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 445,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "72m3n2l0f0v5ryummqatwer5t.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "5accb7dc-90a3-46ee-bad2-8fd1861d50f1,827a1538-51bb-4fef-99c1-7f1bebd9866c,b292eb4b-07e3-4a48-99b5-3c6587a1e02e",
+					"DownloadableAvatarItemId": "b4c8b1fa-eabe-4176-bad7-90ebac5bd198",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 445
+				}
+			},
+			"PurchasableItemId": 327,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 150,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 135,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 2155,
+				"FriendlyName": "Mirrored Glasses (Gold)",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "7db6b49f-3e2a-4da8-bdfa-e9ad9ebc5ba6,,,",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 50,
+				"Context": 0,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 348,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "bgvzostookysj7axrphthrkbq.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "7db6b49f-3e2a-4da8-bdfa-e9ad9ebc5ba6",
+					"DownloadableAvatarItemId": "47b1d65c-791a-4cad-ba1b-ab9f33402d74",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 348
+				}
+			},
+			"PurchasableItemId": 711,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 3500,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 3150,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 1630,
+				"FriendlyName": "Curly Mustache",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "6b337a35-95d9-4b3a-9891-d9fbb06262aa,,,",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 0,
+				"Context": 0,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 360,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "dn6xgp8b6mjoilolmwxfn8tom.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "6b337a35-95d9-4b3a-9891-d9fbb06262aa",
+					"DownloadableAvatarItemId": "5f00002b-8092-438c-8763-cc8ebd7eaf4d",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 360
+				}
+			},
+			"PurchasableItemId": 239,
+			"Type": 0,
+			"Prices": [],
+			"SubscriberPrices": [],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		}
+	],
+	"SubscriberDiscountPercent": 10,
+	"StorefrontName": null,
+	"StorefrontType": 1600,
+	"NextUpdate": "2222-02-22T22:22:00Z",
+	"NewUntil": null
+}

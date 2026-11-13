@@ -1,0 +1,135 @@
+{
+	"StoreItems": [
+		{
+			"GiftDrop": {
+				"GiftDropId": 5753,
+				"FriendlyName": "Collared Shirt (Plaid, Blue) - Free",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "0d74dd22-d707-4907-b3c7-5bdbfac079d5",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1011,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 3134,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "25fhk07daxauf7idcwvnppbb8.png",
+				"AvatarItemInfo": {
+					"Version": 1,
+					"LegacyAvatarItemDesc": "0d74dd22-d707-4907-b3c7-5bdbfac079d5",
+					"DownloadableAvatarItemId": null,
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 3134
+				}
+			},
+			"PurchasableItemId": 20964,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 0,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 0,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 6932,
+				"FriendlyName": "Black Leggings - Free",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "7c0b07a6-04a3-4ad4-98d2-fff12c48e7ef,b5779ba5-ff69-435f-84ac-a4fa1ecee782",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 0,
+				"Context": 1011,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 4313,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "FskImrnBjUelbd9CjARSow.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "7c0b07a6-04a3-4ad4-98d2-fff12c48e7ef,b5779ba5-ff69-435f-84ac-a4fa1ecee782",
+					"DownloadableAvatarItemId": "4c7fcf1d-a726-4859-9ad3-d5b18661fa70",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 4313
+				}
+			},
+			"PurchasableItemId": 27174,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 0,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 0,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		}
+	],
+	"SubscriberDiscountPercent": 10,
+	"StorefrontName": "Free Items",
+	"StorefrontType": 1709,
+	"NextUpdate": "2029-02-28T19:00:00Z",
+	"NewUntil": null
+}

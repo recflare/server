@@ -1,0 +1,1332 @@
+{
+	"StoreItems": [
+		{
+			"GiftDrop": {
+				"GiftDropId": 9338,
+				"FriendlyName": "Chupacabra T-Shirt",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "1940c740-695d-4481-a802-bb11b6561635,aa4b768a-c865-4c1c-beec-cc7077a2547d",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 12200,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 6687,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "RYCK1EjwyUuHxGgwCI63AA.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "1940c740-695d-4481-a802-bb11b6561635,aa4b768a-c865-4c1c-beec-cc7077a2547d",
+					"DownloadableAvatarItemId": "73fe1a43-4a3b-498a-bc65-82e37600f1ef",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 6687
+				}
+			},
+			"PurchasableItemId": 23286,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 0,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 0,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2024-05-26T21:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": false,
+			"OnlyAvailableThroughCv2": true
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 9339,
+				"FriendlyName": "Mothman T-Shirt",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "1940c740-695d-4481-a802-bb11b6561635,bbea3f0d-ebed-44da-a687-4d979a2de691",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 12200,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 6688,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "engL33xkpkmtMAmb749PYw.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "1940c740-695d-4481-a802-bb11b6561635,bbea3f0d-ebed-44da-a687-4d979a2de691",
+					"DownloadableAvatarItemId": "44d0942a-4f9c-4f39-9cb8-758d109b5d46",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 6688
+				}
+			},
+			"PurchasableItemId": 23287,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 0,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 0,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2024-05-26T21:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": false,
+			"OnlyAvailableThroughCv2": true
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 9341,
+				"FriendlyName": "Sasquatch T-Shirt",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "1940c740-695d-4481-a802-bb11b6561635,4248fe84-ec7c-4e9e-92bb-711017b4b899",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 12200,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 6690,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "uNaKuQBccUqM0o-tFC2S5g.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "1940c740-695d-4481-a802-bb11b6561635,4248fe84-ec7c-4e9e-92bb-711017b4b899",
+					"DownloadableAvatarItemId": "95cfed03-c2bd-4044-a11e-9b351132b6c6",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 6690
+				}
+			},
+			"PurchasableItemId": 23289,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 0,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 0,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2024-05-26T21:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": false,
+			"OnlyAvailableThroughCv2": true
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 9340,
+				"FriendlyName": "Cryptid Creek T-Shirt",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "1940c740-695d-4481-a802-bb11b6561635,676f2be6-d057-48cd-b1d4-3c7d79677c83",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 20,
+				"Context": 12200,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 6689,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "3ic8vBOnVkepyWiHmcwAGw.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "1940c740-695d-4481-a802-bb11b6561635,676f2be6-d057-48cd-b1d4-3c7d79677c83",
+					"DownloadableAvatarItemId": "d81b6a06-dc50-4696-b59a-93723c87fca4",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 6689
+				}
+			},
+			"PurchasableItemId": 23288,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 1500,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 1350,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": "2024-07-16T21:00:00Z",
+			"AvailableAt": "2024-05-26T21:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": false,
+			"OnlyAvailableThroughCv2": true
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 9329,
+				"FriendlyName": "Evergrown Boots",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "83544102-751c-4f68-adc5-a4c329ae6e70,0802219e-56da-4ff4-9ec6-2db5d256d434",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 12200,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 6678,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "BZSoetomek2t4JjIcBjQiw.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "83544102-751c-4f68-adc5-a4c329ae6e70,0802219e-56da-4ff4-9ec6-2db5d256d434",
+					"DownloadableAvatarItemId": "c3ad1457-10bd-4d9b-8f53-ad76583f7fd0",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 6678
+				}
+			},
+			"PurchasableItemId": 23310,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 9000,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 8100,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": "2024-07-16T21:00:00Z",
+			"AvailableAt": "2024-05-26T21:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": false,
+			"OnlyAvailableThroughCv2": true
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 9351,
+				"FriendlyName": "Evergrown Hip Pack",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "oYvOo47DJE-DEPlpn5xNUw,8fbc5fd6-6152-46c1-a73d-24282d0da119",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 12200,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 6700,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "7b07e7-ARkywOajhLyCETg.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "oYvOo47DJE-DEPlpn5xNUw,8fbc5fd6-6152-46c1-a73d-24282d0da119",
+					"DownloadableAvatarItemId": "adae1f90-7375-4476-8af6-c0c27f404034",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 6700
+				}
+			},
+			"PurchasableItemId": 23290,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 4800,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 4320,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": "2024-07-16T21:00:00Z",
+			"AvailableAt": "2024-05-26T21:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": false,
+			"OnlyAvailableThroughCv2": true
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 9326,
+				"FriendlyName": "Chupacabra Headband",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "d32ffb12-d4a6-460c-976c-5ba98716436d",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 12200,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 6675,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "1LmLUUSIrEO-tEaWuAL40w.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "d32ffb12-d4a6-460c-976c-5ba98716436d",
+					"DownloadableAvatarItemId": "223fc11d-4846-46fa-b14c-1d536b602a3b",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 6675
+				}
+			},
+			"PurchasableItemId": 23307,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 3500,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 3150,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": "2024-07-16T21:00:00Z",
+			"AvailableAt": "2024-05-26T21:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": false,
+			"OnlyAvailableThroughCv2": true
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 9327,
+				"FriendlyName": "Mothman Headband",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "97f081a0-14c1-49b6-a48a-4281e6fa65b2",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 12200,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 6676,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "O5jQ6umgak670hDZ9xgmpg.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "97f081a0-14c1-49b6-a48a-4281e6fa65b2",
+					"DownloadableAvatarItemId": "f67589d8-4899-4197-a4ce-0fa9363d2673",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 6676
+				}
+			},
+			"PurchasableItemId": 23308,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 3500,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 3150,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": "2024-07-16T21:00:00Z",
+			"AvailableAt": "2024-05-26T21:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": false,
+			"OnlyAvailableThroughCv2": true
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 9328,
+				"FriendlyName": "Sasquatch Headband",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "ee7fa0f7-7097-4880-b7ce-90bff39a5796",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 12200,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 6677,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "2GcBCZjIhkWhlFAWRssuEQ.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "ee7fa0f7-7097-4880-b7ce-90bff39a5796",
+					"DownloadableAvatarItemId": "1a14dd5b-b329-4f32-b7cd-50a69bbdef48",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 6677
+				}
+			},
+			"PurchasableItemId": 23309,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 3500,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 3150,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": "2024-07-16T21:00:00Z",
+			"AvailableAt": "2024-05-26T21:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": false,
+			"OnlyAvailableThroughCv2": true
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 9483,
+				"FriendlyName": "Chupacabra Cryptid Trainer Hat",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "14ef6b00-debf-4a85-9755-b4d37df496d3,ca8ddc6f-3c69-44b0-b5da-969b419239d0",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 50,
+				"Context": 12200,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 6827,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "KY5EVNGduUidRadBHIAvRA.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "14ef6b00-debf-4a85-9755-b4d37df496d3,ca8ddc6f-3c69-44b0-b5da-969b419239d0",
+					"DownloadableAvatarItemId": "bc36d90d-65b4-4b6f-a7fb-40a9c4e231f9",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 6827
+				}
+			},
+			"PurchasableItemId": 24378,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 3500,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 3150,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": "2024-07-16T21:00:00Z",
+			"AvailableAt": "2024-06-13T20:50:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 9484,
+				"FriendlyName": "Mothman Cryptid Trainer Hat",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "14ef6b00-debf-4a85-9755-b4d37df496d3,dde4711c-f489-42da-89fe-774918802249",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 50,
+				"Context": 12200,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 6828,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "DvjhocwfwUyzpvd7uWkimQ.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "14ef6b00-debf-4a85-9755-b4d37df496d3,dde4711c-f489-42da-89fe-774918802249",
+					"DownloadableAvatarItemId": "66027d70-8513-460b-92a5-144ca3b08298",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 6828
+				}
+			},
+			"PurchasableItemId": 24379,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 3500,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 3150,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": "2024-07-16T21:00:00Z",
+			"AvailableAt": "2024-06-13T20:50:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 9485,
+				"FriendlyName": "Sasquatch Cryptid Trainer Hat",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "14ef6b00-debf-4a85-9755-b4d37df496d3,952866cd-c899-4547-b16d-94193646d804",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 50,
+				"Context": 12200,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 6829,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "ystOAXWpg0SXFTYysq-ojA.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "14ef6b00-debf-4a85-9755-b4d37df496d3,952866cd-c899-4547-b16d-94193646d804",
+					"DownloadableAvatarItemId": "959014f3-bea4-4d91-8b63-10c300d39099",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 6829
+				}
+			},
+			"PurchasableItemId": 24380,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 3500,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 3150,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": "2024-07-16T21:00:00Z",
+			"AvailableAt": "2024-06-13T20:50:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 9409,
+				"FriendlyName": "Chupacabra Cryptid Trainer Hiker Shirt",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "32cdcbc0-6a9e-4245-980f-6888f12fe065,02306559-159e-413d-ad33-8cb87cb354ff",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 50,
+				"Context": 12200,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 6758,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "nZA30se6_EWXcmk2uQ0GIQ.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "32cdcbc0-6a9e-4245-980f-6888f12fe065,02306559-159e-413d-ad33-8cb87cb354ff",
+					"DownloadableAvatarItemId": "e656b32a-cced-4649-ab6e-4218f66c3da9",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 6758
+				}
+			},
+			"PurchasableItemId": 24383,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 3500,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 3150,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": "2024-07-16T21:00:00Z",
+			"AvailableAt": "2024-06-13T20:50:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 9410,
+				"FriendlyName": "Mothman Cryptid Trainer Hiker Shirt",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "32cdcbc0-6a9e-4245-980f-6888f12fe065,2405ae19-5918-4c95-a408-40015f28c6d2",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 50,
+				"Context": 12200,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 6759,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "GlcvOr8rDEOignGWUM6ftQ.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "32cdcbc0-6a9e-4245-980f-6888f12fe065,2405ae19-5918-4c95-a408-40015f28c6d2",
+					"DownloadableAvatarItemId": "69d98323-8889-42f2-9cb0-15315510f93e",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 6759
+				}
+			},
+			"PurchasableItemId": 24384,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 3500,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 3150,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": "2024-07-16T21:00:00Z",
+			"AvailableAt": "2024-06-13T20:50:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 9411,
+				"FriendlyName": "Sasquatch Cryptid Trainer Hiker Shirt",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "32cdcbc0-6a9e-4245-980f-6888f12fe065,88a08c66-6a75-4dcb-bf38-2395403b1535",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 50,
+				"Context": 12200,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 6760,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "IaIc1rud_EmSU8-BS9DBJQ.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "32cdcbc0-6a9e-4245-980f-6888f12fe065,88a08c66-6a75-4dcb-bf38-2395403b1535",
+					"DownloadableAvatarItemId": "14ade8db-81e7-4b87-a8d0-622e71df9b7a",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 6760
+				}
+			},
+			"PurchasableItemId": 24385,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 3500,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 3150,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": "2024-07-16T21:00:00Z",
+			"AvailableAt": "2024-06-13T20:50:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 9471,
+				"FriendlyName": "Chupacabra Cryptid Trainer Bookbag",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "4c54eb96-4c84-4685-8cbc-e65ad792b777",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 50,
+				"Context": 12200,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 6815,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "4AyVysZb4E60srDrHLoZ9w.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "4c54eb96-4c84-4685-8cbc-e65ad792b777",
+					"DownloadableAvatarItemId": "56a2570d-d642-4562-9ce1-c54c9031493e",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 6815
+				}
+			},
+			"PurchasableItemId": 24374,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 6000,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 5400,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2024-06-13T20:50:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 9472,
+				"FriendlyName": "Mothman Cryptid Trainer Bookbag",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "4308b6d7-21ad-4417-a6fd-7116c6480689",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 50,
+				"Context": 12200,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 6816,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "cFTU48jgK06Vd0MjcBTUHw.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "4308b6d7-21ad-4417-a6fd-7116c6480689",
+					"DownloadableAvatarItemId": "1f22984d-f1b6-4018-a112-a0d268fb0dd0",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 6816
+				}
+			},
+			"PurchasableItemId": 24375,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 6000,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 5400,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2024-06-13T20:50:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 9473,
+				"FriendlyName": "Sasquatch Cryptid Trainer Bookbag",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "c1d78817-7c33-4496-88c9-c28eeca92db1",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 50,
+				"Context": 12200,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 6817,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "zbIRJ3b_g0G2oJcSasnlxg.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "c1d78817-7c33-4496-88c9-c28eeca92db1",
+					"DownloadableAvatarItemId": "0aebbc58-06d0-42d7-bbfd-8837eca6cbda",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 6817
+				}
+			},
+			"PurchasableItemId": 24376,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 6000,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 5400,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2024-06-13T20:50:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 9470,
+				"FriendlyName": "Chupacabra Mutton Chops",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "5779551d-d536-4f85-b4a5-00fd723c94f4",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 50,
+				"Context": 12200,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 6814,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "-Hn_YFXxMEuVCmNokgB2pw.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "5779551d-d536-4f85-b4a5-00fd723c94f4",
+					"DownloadableAvatarItemId": "374e7bef-bb94-4717-8aec-667123fd271b",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 6814
+				}
+			},
+			"PurchasableItemId": 24373,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 3840,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 3456,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2024-06-13T20:50:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 9486,
+				"FriendlyName": "Mothman Wings",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "37668d3d-c9f4-4bd6-81d4-a4f64ba2d61b,1d92cbd4-4101-4edb-a7ef-5f5d81b9d672",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 50,
+				"Context": 12200,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 6830,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "3zWFeOaPTkmOMyaegaR7bQ.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "37668d3d-c9f4-4bd6-81d4-a4f64ba2d61b,1d92cbd4-4101-4edb-a7ef-5f5d81b9d672",
+					"DownloadableAvatarItemId": "da93518f-15b9-492e-a7a1-3f4dcdb1e9c1",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 6830
+				}
+			},
+			"PurchasableItemId": 24381,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 6000,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 5400,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2024-06-13T20:50:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 9482,
+				"FriendlyName": "Sasquatch Stompers",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "515ac648-44bf-4ea7-a3e8-7a6d9899d740",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 50,
+				"Context": 12200,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 6826,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "5aGh4zsGXUqD3M4cuiWkjA.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "515ac648-44bf-4ea7-a3e8-7a6d9899d740",
+					"DownloadableAvatarItemId": "38990b23-e45e-48d3-9daf-4fc634befaa2",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 6826
+				}
+			},
+			"PurchasableItemId": 24377,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 6000,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 5400,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2024-06-13T20:50:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		}
+	],
+	"SubscriberDiscountPercent": 10,
+	"StorefrontName": "My Little Monsters",
+	"StorefrontType": 2200,
+	"NextUpdate": "2222-06-15T21:00:00Z",
+	"NewUntil": null
+}

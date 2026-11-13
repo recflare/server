@@ -1,0 +1,4113 @@
+{
+	"StoreItems": [
+		{
+			"GiftDrop": {
+				"GiftDropId": 33493,
+				"FriendlyName": "Enchanted Lantern",
+				"Tooltip": "This lantern lights your way with butterfly magic, turning dark rooms into moments of wonder.",
+				"TagList": "",
+				"ConsumableItemDesc": "9yfTHV-ZhEyvReRyjy7jjw",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 0,
+				"Context": 0,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "5ls0ofg7yv463ng4geagppyf7.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 32504,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 300,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 270,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 33496,
+				"FriendlyName": "Fiz the Penguin",
+				"Tooltip": "Pick them up, carry ‘em around. Let these cute little penguin buddies keep you company on a cold day.",
+				"TagList": "",
+				"ConsumableItemDesc": "n8N7RuSvo0GYzJRZ3lHoCw",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 0,
+				"Context": 0,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "7bcieo713ovoo3365iaynf9bt.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 32507,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 350,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 315,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 33497,
+				"FriendlyName": "Pekka the Penguin",
+				"Tooltip": "Pick them up, carry ‘em around. Let these cute little penguin buddies keep you company on a cold day.",
+				"TagList": "",
+				"ConsumableItemDesc": "RtakBhke4EyLGV1MXKWGmw",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 0,
+				"Context": 0,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "1o2si7m9u81thsxlicli2hg89.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 32508,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 350,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 315,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 33498,
+				"FriendlyName": "Zuzu the Penguin",
+				"Tooltip": "Pick them up, carry ‘em around. Let these cute little penguin buddies keep you company on a cold day.",
+				"TagList": "",
+				"ConsumableItemDesc": "HEu9IhpWZU2i92hMRoYbEg",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 0,
+				"Context": 0,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "660q46rbua98cyckrkjvhfkvb.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 32509,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 350,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 315,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 33070,
+				"FriendlyName": "Sad Trombone 3-Pack",
+				"Tooltip": "When you or your friends are feeling blue, grab your trombone and blat out a tune.",
+				"TagList": "",
+				"ConsumableItemDesc": "TLLReQoO10GMzE2WlIhUsA",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 3,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "54zq7smer96etiesydeug6v5s.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33568,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 700,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 630,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2026-02-10T23:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34600,
+				"FriendlyName": "Punch Surprise Box",
+				"Tooltip": "Punch a friend or punch a foe, but keep it in silly fun. Get a Mini Punch that lasts 3 minutes or a Mega Punch that lasts 3 HUMUNGOUS punches.",
+				"TagList": "",
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": true,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": "punch-surprise-box",
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "aezxyrf2f9v2gzrduffszjpg8.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33570,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 600,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 540,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2026-02-12T21:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 33501,
+				"FriendlyName": "Mystery Heart 6-Pack",
+				"Tooltip": "What will it be?  It's a mystery!  You have 6 chances to find out, but don't squeeze it the wrong way or you might break it...",
+				"TagList": "",
+				"ConsumableItemDesc": "LxbIRgB8d06Vzk17XESZ1Q",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 6,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "c2tql4n6jglg3jz4og5hl3erg.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33598,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2026-02-12T07:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34634,
+				"FriendlyName": "Bonnie Bear 3-Pack",
+				"Tooltip": "A 3-pack of light-up music boxes that play a sweet tune for you to enjoy alone or with friends.  AHHHHHH, TOO CUTE!!!",
+				"TagList": "",
+				"ConsumableItemDesc": "KmMXHu_UfkW4tWuxcItZeg",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 3,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "am4oklw1kdtyzwk7rpfiym997.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33606,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 600,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 540,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2026-02-14T03:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 33073,
+				"FriendlyName": "Magic Paintbrush 3-Pack",
+				"Tooltip": "Give the air a splash of paint and leave your friends wondering how you did it.  Use this magic paintbrush to paint short strokes and leave your mark!",
+				"TagList": "",
+				"ConsumableItemDesc": "c7ergluvm0K9oHzdsYIYWQ",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 3,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "a4uiv5ph53fy8scpay4ekqw2l.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33611,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 700,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 630,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34597,
+				"FriendlyName": "Luminous Blade 3-Pack (Red)",
+				"Tooltip": "Blades to swing around that make a satisfying buzz. [UPDATED with Glow and flare particles]. Each lasts 5 minutes or until you leave the room. [Created by @Z.Nation]",
+				"TagList": "",
+				"ConsumableItemDesc": "WLgnQzDvo0-ax22eloPiFg",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 0,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 3,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "dvhod6zic70kpq9mhxkdv2vkc.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33564,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 700,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 630,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34598,
+				"FriendlyName": "Luminous Blade 3-Pack (Green)",
+				"Tooltip": "Blades to swing around that make a satisfying buzz. [UPDATED with Glow and flare particles]. Each lasts 5 minutes or until you leave the room. [Created by @Z.Nation]",
+				"TagList": "",
+				"ConsumableItemDesc": "ZnHi5o7kIE-9B1_hrVcsYg",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 0,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 3,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "7wusqdclvvnggwtyfntm2bu9j.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33565,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 700,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 630,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34599,
+				"FriendlyName": "Luminous Blade 3-Pack (Blue)",
+				"Tooltip": "Blades to swing around that make a satisfying buzz. [UPDATED with Glow and flare particles]. Each lasts 5 minutes or until you leave the room. [Created by @Z.Nation]",
+				"TagList": "",
+				"ConsumableItemDesc": "njE3SGLmkEa7sfl8NWut8Q",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 0,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 3,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "cphlzzpixnfmcrbg9x4eq3uyg.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33566,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 700,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 630,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34632,
+				"FriendlyName": "Radiant Rose",
+				"Tooltip": "A rose that glows gently when you hold it.  Squeeze it to see hearts float into the air. A simple way to show you care.  [Created by @.Katy]",
+				"TagList": "",
+				"ConsumableItemDesc": "kMiR3oSHrUubQsLC53-_jQ",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "74foe2umaa83fcwiriqj1yg3s.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33604,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 350,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 315,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2026-02-13T12:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34633,
+				"FriendlyName": "The Hexvoid Staff 3-Pack",
+				"Tooltip": "A staff etched with forbidden geometry. Charge it, focus your will, and release a searing arcane bolt upon your target.  [Created by @Snowfall]",
+				"TagList": "",
+				"ConsumableItemDesc": "pnn7DwV07ke447k0ZhB_Og",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 3,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "4jua29ztdojds9n1f2cbwm1q0.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33605,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 900,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 810,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2026-02-13T12:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34635,
+				"FriendlyName": "Token Gun",
+				"Tooltip": "Flex on your friends with this suspiciously overfilled token gun.. though, i think these tokens might be fake!?  Lasts for 5 minutes or until you leave the room.  [Created by @blueasis]",
+				"TagList": "",
+				"ConsumableItemDesc": "i2H1tosenk6SzGtNwBmgUw",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "5rzovqp3rmwif6zkhc42wxwi3.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33608,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 550,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 495,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2026-02-19T18:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34637,
+				"FriendlyName": "World's Smallest Violin",
+				"Tooltip": "Here's the world's smallest violin and it's playing just for you.  [Created by @.Katy]",
+				"TagList": "",
+				"ConsumableItemDesc": "5jI4IRmq4UOHT7-iWE_zpA",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "08nave1sq7ebp4zzimbamoekz.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33610,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 600,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 540,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2026-02-19T18:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34638,
+				"FriendlyName": "Lizard Lizard",
+				"Tooltip": "Lizard  [Created by @.Katy]",
+				"TagList": "",
+				"ConsumableItemDesc": "5QCe6PYZvEOdxb76GB-r4g",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "1tfam21fyo1mtv0wey03tse1h.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33609,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2026-02-19T18:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34636,
+				"FriendlyName": "Soundboard",
+				"Tooltip": "A soundboard to test your comedic timing and troll your friends!  Lasts 5 minutes or until you leave the room.  [Created by @DiscoMan]",
+				"TagList": "",
+				"ConsumableItemDesc": "WtADuhVYAkibhfcUgGKcYQ",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "0n0endl4jzbruqvtc0uv2hrid.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33607,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 600,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 540,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2026-02-19T18:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34639,
+				"FriendlyName": "Dart Pistol",
+				"Tooltip": "Have intense battles with your foes with this foam slinging pistol.  Lasts 5 minutes or until you leave the room.  [Created by @DiscoMan]",
+				"TagList": "",
+				"ConsumableItemDesc": "xMWDpHigEk-m0FLsF5YfZQ",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "72pn9ekz6hkoebg4nabw9madp.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33612,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 600,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 540,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2026-02-25T23:30:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34641,
+				"FriendlyName": "Magic Jolt Staff",
+				"Tooltip": "Aim and Activate to release surging jolts of green lightning magic upon your target.  Lasts 5 minutes or until you leave the room.  [Created by @Z.Nation]",
+				"TagList": "",
+				"ConsumableItemDesc": "bcWofEAwfUekl0dmpJNLzQ",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "dl126jc3tyvkbovn2a36zni77.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33614,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 600,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 540,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2026-02-26T01:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34642,
+				"FriendlyName": "Apple",
+				"Tooltip": "This mighty Apple releases flies on command to swarm your foes!  Lasts 5 minutes or until you leave the room.  [Created by @Z.Nation]",
+				"TagList": "",
+				"ConsumableItemDesc": "Ygp1Ldz9Y0i2l9c-Cch7WQ",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "5h9ul7otj4auhcbdvtdl2velt.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33615,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 600,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 540,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2026-02-27T11:30:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34643,
+				"FriendlyName": "Disco Dance Break",
+				"Tooltip": "Instant disco energy anywhere you go.  Click to start the party, then drop it to the floor to set the vibe.  Lasts 3 minutes after you start your first party.  [Created by @.Katy]",
+				"TagList": "",
+				"ConsumableItemDesc": "SZ3IO1hM302j0_VRdGVDnQ",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "7hohwkezt0ubu1xscudmizbw8.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33617,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 405,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2026-02-27T11:30:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34645,
+				"FriendlyName": "Disco Dance Break 3-Pack",
+				"Tooltip": "A 3-pack of instant disco energy anywhere you go. Click to start the party, then drop it to the floor to set the vibe. Each one lasts 3 minutes after you start your first party. [Created by @.Katy]",
+				"TagList": "",
+				"ConsumableItemDesc": "SZ3IO1hM302j0_VRdGVDnQ",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 3,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "a8jgs0a8rzfeyowz5v2ozelts.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33618,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 1200,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 1080,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2026-02-27T11:30:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34644,
+				"FriendlyName": "Bubble Blaster",
+				"Tooltip": "Summons radiant bubbles that glide through the air before bursting on contact.  Lasts 5 minutes or until you leave the room.  [Created by @Snowfall]",
+				"TagList": "",
+				"ConsumableItemDesc": "f1A0DXhYwEeBHiv2wM1QPA",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "87eb5g09nf7gcw0ku20sck64p.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33616,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2026-02-27T11:30:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34665,
+				"FriendlyName": "Token Gun!",
+				"Tooltip": "Make it rain tokens, and show off your wealth. Lasts 5 minutes or until you leave the room.  [Created by @DiscoMan]",
+				"TagList": "",
+				"ConsumableItemDesc": "5bB9_KyS_USK6bD_4Wq8Jg",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "3pxbvf7zw121xnodexbowsz7p.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33633,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 550,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 495,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34668,
+				"FriendlyName": "Alien Blaster",
+				"Tooltip": "Fire away with this Alien Blaster that shoots super fast bouncing lasers! Lasts 5 minutes or until you leave the room. [Created by @DiscoMan]",
+				"TagList": "",
+				"ConsumableItemDesc": "BcPIjhW0XE6EuxxezOZWCQ",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "3se22q9g3ocaw8h7snlsf4bmr.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33636,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 600,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 540,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34670,
+				"FriendlyName": "Fart Gun",
+				"Tooltip": "Must've been the wind.  Lasts 5 minutes or until you leave the room.  [Created by @DiscoMan]",
+				"TagList": "",
+				"ConsumableItemDesc": "W5mhfSu8nE27tTHWpVdsKw",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "15wgcr8shgw43ya885lvkxadu.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33638,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34672,
+				"FriendlyName": "Dart Rifle",
+				"Tooltip": "Batteries included!  Lasts 5 minutes or until you leave the room.  [Created by @DiscoMan]",
+				"TagList": "",
+				"ConsumableItemDesc": "NrHbMxnpEE2qVvU7w-w3xw",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "2qcsqe32gbgp2s3jfdpt64zpz.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33640,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 600,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 540,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34669,
+				"FriendlyName": "Laser Rifle",
+				"Tooltip": "Shoot down your foes with this Laser gun!  Includes a ton of cool vfx effects!  Lasts 5 minutes or until you leave the room.  [Created by @Z.Nation]",
+				"TagList": "",
+				"ConsumableItemDesc": "Gf7UwMtXf0SOuvYByZbQnw",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "dh5sthoggre2ap9z26ifr6jsd.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33637,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 600,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 540,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34671,
+				"FriendlyName": "Rat",
+				"Tooltip": "Look at this rat i found.  [Created by @blueasis]",
+				"TagList": "",
+				"ConsumableItemDesc": "cH2P_o9mT0u_xAIrxk07MA",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "as0wlk827kattnqylozuikchz.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33639,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34673,
+				"FriendlyName": "Firework Launcher",
+				"Tooltip": "Launches fireworks that shoot up and burst into a colorful explosion!  Lasts 5 minutes or until you leave the room.  [Created by @hkr123]",
+				"TagList": "",
+				"ConsumableItemDesc": "EtFd7lK6lEC4sRZWOfrTQg",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "en11ls4k5xs5ddacuj23sy9p2.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33641,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34674,
+				"FriendlyName": "Pot of Gold",
+				"Tooltip": "A magical pot that can’t hold its excitement!  Press trigger and watch gold coins pop out while colorful rainbows sparkle around it.  Treasure has never been this cheerful!  Lasts 5 minutes.  [Created by @Z.Nation]",
+				"TagList": "",
+				"ConsumableItemDesc": "xfeDIDboPES-AS90CCn2xQ",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "cvpykry3ez38bvngj90svu87z.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33642,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34667,
+				"FriendlyName": "Photo Softbox",
+				"Tooltip": "Activate for 2 minutes of enhanced photo lighting anywhere in Rec Room.  It has warm, cool and red light as available lighting modes.  [Created by @.Katy]",
+				"TagList": "",
+				"ConsumableItemDesc": "prX4cLJYYkuCJe0j8tZVvw",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "bkgmuoiqhcr219tl1ndneopux.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33635,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 150,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 135,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34675,
+				"FriendlyName": "Fidget Spinner 5-Pack",
+				"Tooltip": "A 5-pack of fidget spinners, each being a new random color!  Lasts 5 minutes or until you leave the room.  [Created by @DiscoMan]",
+				"TagList": "",
+				"ConsumableItemDesc": "2FRccsuTikyWx98i523-ug",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 5,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "0u2khwx5kmxnpi16fxpaqm6h8.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33643,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34676,
+				"FriendlyName": "Flare Gun",
+				"Tooltip": "Light up the room with a blazing flare.  Lasts 5 minutes or until you leave the room.  [Created by @hkr123]",
+				"TagList": "",
+				"ConsumableItemDesc": "UbMWSV2w0EePcolidyDg-A",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "aupxlq4brurvtd0d18ljtpdz1.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33644,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34677,
+				"FriendlyName": "Magic 8 Ball",
+				"Tooltip": "Ask a question.  Shake the ball.  Let the magic answer.  Ask as many questions as you want until you leave the room.  [Created by @SnugRR, Model by @OfficialColah]",
+				"TagList": "",
+				"ConsumableItemDesc": "WhLvIQA_10yJJ_5aoW0kGA",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "6o2nnvo4x2kkkcatiej04jle5.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33645,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34678,
+				"FriendlyName": "Tic-Tac-Toe",
+				"Tooltip": "This board lets you play tic-tac-toe with a friend.  Play as many times as you like until you leave the room.  [Created by @SnugRR, Model by @OfficialColah]",
+				"TagList": "",
+				"ConsumableItemDesc": "ZOjXDYcWV02KvYRplkN_rg",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "174jkm1igm9qfpyk5tliaiuni.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33646,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 538,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 484,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34666,
+				"FriendlyName": "Bootleg Heart",
+				"Tooltip": "This is a real Mystery Heart, right?  Something looks off.  The driver for this shipment swore he came direct from the factory like always \\_(·_·)_/",
+				"TagList": "",
+				"ConsumableItemDesc": "CqjZXq7c5U6oKc3SbY9wnA",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "2tqsj1h0fjio772nbauvqkriv.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33634,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 250,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 225,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2026-03-06T08:01:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34683,
+				"FriendlyName": "Water Pistol 2-Pack",
+				"Tooltip": "Fight fire with fi- water!  Blast your friends (or foes) with these colorful water pistols.  You'll get 2 pistols of 1 random color.  Each pistol lasts 5 minutes or until you leave the room.  [Created by @blueasis]",
+				"TagList": "",
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": true,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": "water-pistol-color-picker",
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 2,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "5suksm1qaho8be0htxjwrhmqh.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33647,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 550,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 495,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34685,
+				"FriendlyName": "Flip Phone 3-Pack",
+				"Tooltip": "A pack of 3 Y2k flippy flip phones to fidget with!  Lasts 5 minutes or until you leave the room.  [Created by @starycomet1]",
+				"TagList": "",
+				"ConsumableItemDesc": "M5kv92Bed0eRpE1VqNiF1A",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 3,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "4qfuqdibomrutz0ycocsfxvtu.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33653,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34686,
+				"FriendlyName": "Party Popper 5-Pack (Green)",
+				"Tooltip": "The classic party essential, now in your Backpack.  Pull the string and unleash a burst of confetti and streamers in every direction.  Perfect for celebrations, surprises, or just because you felt like it.  [Created by @Clover_3ee]",
+				"TagList": "",
+				"ConsumableItemDesc": "ufdSGEJZq0Ci7zCyUZlQDg",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "2sjwo7r2jwoiesg0v19cg9yud.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33655,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34688,
+				"FriendlyName": "Party Popper 5-Pack (Red)",
+				"Tooltip": "The classic party essential, now in your Backpack.  Pull the string and unleash a burst of confetti and streamers in every direction.  Perfect for celebrations, surprises, or just because you felt like it.  [Created by @Clover_3ee]",
+				"TagList": "",
+				"ConsumableItemDesc": "bduy5x4RCE6B7dNFH6X_HA",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "60js24of6n8wnsz6874la1u7w.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33657,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34687,
+				"FriendlyName": "Party Popper 5-Pack (Blue)",
+				"Tooltip": "The classic party essential, now in your Backpack.  Pull the string and unleash a burst of confetti and streamers in every direction.  Perfect for celebrations, surprises, or just because you felt like it.  [Created by @Clover_3ee]",
+				"TagList": "",
+				"ConsumableItemDesc": "Itt9jQ_kOEi-Sx42aQkjhw",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "5tq824d4g7uaash3ntmilb4hv.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33654,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34689,
+				"FriendlyName": "Party Popper 5-Pack (Pink)",
+				"Tooltip": "The classic party essential, now in your Backpack.  Pull the string and unleash a burst of confetti and streamers in every direction.  Perfect for celebrations, surprises, or just because you felt like it.  [Created by @Clover_3ee]",
+				"TagList": "",
+				"ConsumableItemDesc": "tWB3cteJU0OuytmYgcfxXg",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "8hrz12ty0yc2a2eifcdlrv677.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33656,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34690,
+				"FriendlyName": "Bouncy Ball Slingshot",
+				"Tooltip": "A slingshot that fires Bouncy Balls!  Lasts until you leave the room.  [Created by @CallumRocking]",
+				"TagList": "",
+				"ConsumableItemDesc": "vOn2DHw9gEGDnpnyJDcnKA",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "6bie52nt2q94ygt3t7d0cyk81.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33658,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 550,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 495,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34691,
+				"FriendlyName": "Flame Thrower",
+				"Tooltip": "Unleash a stream of fire for everyone to see.  Lasts 5 minutes or until you leave the room.  [Created by @SnugRR]",
+				"TagList": "",
+				"ConsumableItemDesc": "FVSXIYLUDUyBbHDGBJFLBw",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "c9it9fnyyoxwla5vnt8tie9oz.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33660,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 600,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 540,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34692,
+				"FriendlyName": "Ice Breaker Questions",
+				"Tooltip": "Press a button to get a random question and start the conversation.  Easy to use and always ready.  Unlimited use while you’re in the room.  [Created by @SnugRR, Model by @OfficialColah]",
+				"TagList": "",
+				"ConsumableItemDesc": "XM3BVJaDJEmOwmplzi4hWg",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "0xxlkgu4s14ugxj7nwjd2hk92.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33659,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34693,
+				"FriendlyName": "Slime Gun",
+				"Tooltip": "Shoots sticky slime that splatters on impact.  Lasts 5 minutes or until you leave the room.  [Created by @hkr123]",
+				"TagList": "",
+				"ConsumableItemDesc": "c9ksItaonEmej-tDMEjjMA",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "67lkl94ywtkfwzst4mni64qb9.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33661,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34694,
+				"FriendlyName": "Toilet Paper Gun",
+				"Tooltip": "Launches rolls of toilet paper.  Lasts 5 minutes or until you leave the room.  [Created by @hkr123]",
+				"TagList": "",
+				"ConsumableItemDesc": "XYUgBJDblEOAHGmgGJqbLw",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "96wf6yn0x5yjjjzikzqe1a8i8.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33662,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34695,
+				"FriendlyName": "Capybara",
+				"Tooltip": "Tap to play music and vibe with your Capybara.  Lasts 5 minutes or until you leave the room.  [Created by @hkr123]",
+				"TagList": "",
+				"ConsumableItemDesc": "U8ITWxUae0uiFbZZIDYYbA",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "c1gn511adt3nro5zhfokz8rgu.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33663,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34696,
+				"FriendlyName": "Energy Ring",
+				"Tooltip": "Generates giant emerald light constructs from a ring.  Project your power!  Lasts 5 minutes or until you leave the room.  [Created by @hkr123]",
+				"TagList": "",
+				"ConsumableItemDesc": "uQmpxRYZBUCy8BQQc5uavg",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "6t6dwl4vvw9x91axl4cx5qnby.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33664,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34697,
+				"FriendlyName": "Banana Launcher",
+				"Tooltip": "Launches bananas.  Lasts 5 minutes or until you leave the room.  [Created by @hkr123]",
+				"TagList": "",
+				"ConsumableItemDesc": "CbPhBkmiGk6mwDpH18tojA",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "6y1a66g7st6nan96ui2kwydfo.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33665,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34698,
+				"FriendlyName": "Egg Launcher",
+				"Tooltip": "Shoot eggs on the reg with this fully automatic egg shootin' machine.  Lasts for 5 minutes or until you leave the room.  [Created by @starycomet1]",
+				"TagList": "",
+				"ConsumableItemDesc": "Z_4o51EayE2Xf0jPgRqkAA",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "506r3s0v5ww644diyymr63yja.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33666,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 600,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 540,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34699,
+				"FriendlyName": "Potato Cannon",
+				"Tooltip": "Shoot spuds at your buds with this potato launching cannon!  Lasts 5 minutes or until you leave the room.  [Created by @DiscoMan]",
+				"TagList": "",
+				"ConsumableItemDesc": "Oelci8SCLE6r-zPFM1HNPA",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "asjvcomkcmzsfittfvu8s77ol.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33667,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 600,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 540,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34700,
+				"FriendlyName": "The Plunginator",
+				"Tooltip": "If it’s stuck, clogged, or refusing to move… the Plunginator is coming for it!  Lasts 5 minutes or until you leave the room.  [Created by @Sus]",
+				"TagList": "",
+				"ConsumableItemDesc": "MrJwDgR3-UW62QskfKpR-A",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "46qi5nc0gem6w8zdpyzdkrh9p.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33668,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34701,
+				"FriendlyName": "Pride Flag 3-Pack",
+				"Tooltip": "Express yourself!  Each flag lasts 5 minutes or until you leave the room.  [Created by @Sus]",
+				"TagList": "",
+				"ConsumableItemDesc": "iGtO7LpdBUiMbnmswOItmQ",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 3,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "elazztg62183roqn3lhp1ayp9.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33669,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 400,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 360,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34702,
+				"FriendlyName": "Trancecaster",
+				"Tooltip": "Cast a spiraling corridor of enchanted energy so vivid and hypnotic, players can’t help but stare.  Lasts until you leave the room.  [Created by @Snowfall and @.Katy]",
+				"TagList": "",
+				"ConsumableItemDesc": "WvHZXN33d0C9qojK5D02Sw",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "42rx7zzk2le8134sz5fativw4.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33673,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34703,
+				"FriendlyName": "Bearzo",
+				"Tooltip": "Squeeze responsibly!  Bearzo's eyes are not emotionally prepared.  Lasts until you leave the room.  [Created by @Snowfall and @.Katy]",
+				"TagList": "",
+				"ConsumableItemDesc": "2-Fl7-tuhUSimqH-CTcBeA",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "es948mxg3uug527fq6a5v3g3p.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33675,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34704,
+				"FriendlyName": "Fluffet",
+				"Tooltip": "The cuddly bunny with a shocking reaction.  One squeeze and the eyes steal the show.  Lasts until you leave the room.  [Created by @Snowfall and @.Katy]",
+				"TagList": "",
+				"ConsumableItemDesc": "J7po2xdKVk6hXi4bMUDPZg",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "38vbvxf22y1rgbz8rxlymf7ij.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33676,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34705,
+				"FriendlyName": "Hex Sigil Ring",
+				"Tooltip": "A demonic ward of glowing geometry, turning with a cursed, mesmerizing energy.  Lasts until you leave the room.  [Created by @Snowfall and @.Katy]",
+				"TagList": "",
+				"ConsumableItemDesc": "_FljptOWGkqDEwYrqUaPxw",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "cez3uh7296hoywb9im933edes.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33677,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34706,
+				"FriendlyName": "Firework Gun",
+				"Tooltip": "Shoots a big firework up into the air (best for outdoor use).  Lasts 10 minutes or until you leave the room.  [Created by @Snowfall and @.Katy]",
+				"TagList": "",
+				"ConsumableItemDesc": "pOzQXW0LEE69mMVly4tJUA",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "7okvz7gtevl5dppcxnknjjlcf.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33674,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34707,
+				"FriendlyName": "Starlight Serenade",
+				"Tooltip": "Press the mic to summon celestial singing and drifting particles.  Lasts until you leave the room.  [Created by @Snowfall and @.Katy]",
+				"TagList": "",
+				"ConsumableItemDesc": "gQMkSYsG9UGEOsYGj_q7SA",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "0jvdth1fbwrenbjn4ko8ixc5r.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33678,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34708,
+				"FriendlyName": "Candy Bomb",
+				"Tooltip": "A magical neon lollipop that bursts into a shower of candy.  Lasts 10 minutes or until you leave the room.  [Created by @Snowfall and @.Katy]",
+				"TagList": "",
+				"ConsumableItemDesc": "ZpIW21gvn0OvvD-ZDszroA",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "6vybz0p57uv4y5kemrhd4qd1m.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33679,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 550,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 495,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34709,
+				"FriendlyName": "Axolotl Plushie",
+				"Tooltip": "A companion to carry around, squeeze for extra cuteness.  Lasts until you leave the room.  [Created by @Snowfall and @.Katy]",
+				"TagList": "",
+				"ConsumableItemDesc": "0EUyvb4ca0O-6fFZpVEM6g",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "0deu7c0qr0sy2rcmwrx1cro22.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33680,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34710,
+				"FriendlyName": "Gravity Tube",
+				"Tooltip": "On click this tube makes bizarre noises.  Lasts 10 minutes or until you leave the room.  [Created by @Snowfall and @.Katy]",
+				"TagList": "",
+				"ConsumableItemDesc": "2H6UqwoOt0yIOxBvK3wt1g",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "9m69u4itiu2sewnvskwx1dqek.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33681,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34711,
+				"FriendlyName": "Laserblade (Red)",
+				"Tooltip": "An ancient beam of light, humming with power from a forgotten age.  Lasts 30 minutes or until you leave the room.  [Blue and Green also available in the store.  Created by @Snowfall]",
+				"TagList": "",
+				"ConsumableItemDesc": "pJu95JFNik6WpImaSvSrKA",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "9dteg9jowqipunjiy82ysr27m.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33672,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34712,
+				"FriendlyName": "Laserblade (Green)",
+				"Tooltip": "An ancient beam of light, humming with power from a forgotten age.  Lasts 30 minutes or until you leave the room.  [Blue and Red also available in the store.  Created by @Snowfall]",
+				"TagList": "",
+				"ConsumableItemDesc": "P7Z0I5jHGEaOpA09WNdL9Q",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "5or9ojt47p8324ucdna5t88qc.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33671,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34713,
+				"FriendlyName": "Laserblade (Blue)",
+				"Tooltip": "An ancient beam of light, humming with power from a forgotten age.  Lasts 30 minutes or until you leave the room.  [Red and Green also available in the store.  Created by @Snowfall]",
+				"TagList": "",
+				"ConsumableItemDesc": "943wwOHfnU6azsF27I-HaA",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "egaathr6cz11t0g6zz0cp4mi3.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33670,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34715,
+				"FriendlyName": "Slappy",
+				"Tooltip": "Slappy is the handiest way to settle things.  One swing sends players flying!  Lasts 5 minutes or until you leave the room.  [Created by @Snowfall]",
+				"TagList": "",
+				"ConsumableItemDesc": "ko9vsa25_02mBRcdZovp0A",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "9s851lxiws8wqnwb2lbnz1gc3.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33688,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34716,
+				"FriendlyName": "Rubber Duck",
+				"Tooltip": "A rubber duck. Squeeze to quack.  Lasts 5 minutes or until you leave the room.  [Created by @Z.Nation]",
+				"TagList": "",
+				"ConsumableItemDesc": "QVS8BgStzUO3aQ9J7zjyxg",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "9xwhwhs3s8m6gogir20e8eny6.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33691,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34717,
+				"FriendlyName": "The Maker Pen?!",
+				"Tooltip": "Aim and launch a flurry of cubes on your target... well, sorta...  Lasts 5 minutes or until you leave the room.  [Created by @Z.Nation]",
+				"TagList": "",
+				"ConsumableItemDesc": "akUQRGBNeUCoytkaQMErxA",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "c98r9swnt42ygkdvwwz80xypz.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33690,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 34718,
+				"FriendlyName": "Rubber Chicken",
+				"Tooltip": "A squeaky rubber chicken.  Why?  Because.  Lasts 5 minutes or until you leave the room.  [Created by @mossbirb]",
+				"TagList": "",
+				"ConsumableItemDesc": "2jvrlIDPU0mPwziH60S2Lw",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "7dm5g886axhf5m5t392fes3ix.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 33689,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 50,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		}
+	],
+	"SubscriberDiscountPercent": 10,
+	"StorefrontName": "Consumables For Sale In UGC Rooms (DO NOT REORDER)",
+	"StorefrontType": 1718,
+	"NextUpdate": "2030-03-11T21:00:00Z",
+	"NewUntil": null
+}

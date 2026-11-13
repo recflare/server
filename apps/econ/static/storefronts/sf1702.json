@@ -1,0 +1,294 @@
+{
+	"StoreItems": [
+		{
+			"GiftDrop": {
+				"GiftDropId": 16999,
+				"FriendlyName": "FairyFX Potion",
+				"Tooltip": "Apply the Fairy Magic Aura for 2 minutes! Your every move will burst with stars and whimsy! RR+ Subscribers gain constant access to Speedster, Green Thumb, Fairy Magic Auras for the duration of their subscription.",
+				"TagList": "",
+				"ConsumableItemDesc": "ECLaHwMNMUiYn8uqRN5gwQ",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "9ckzeycibz0z853dwyirfa016.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 30778,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 180,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 162,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": "2025-07-08T17:00:00Z",
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 17000,
+				"FriendlyName": "GreenThumbFX Potion",
+				"Tooltip": "Apply the Green Thumb Aura for 2 minutes! Plants grow at your feet! The power of nature is at your fingertips! RR+ Subscribers gain constant access to Speedster, Green Thumb, Fairy Magic Auras for the duration of their subscription.",
+				"TagList": "",
+				"ConsumableItemDesc": "s9SmYVytgUGyhm5QzG-nXQ",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "8kc6rwzi7lxw4788v256ljcmq.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 30777,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 180,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 162,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": "2025-07-08T17:00:00Z",
+			"AvailableAt": "2025-07-02T17:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 17001,
+				"FriendlyName": "SpeedsterFX Potion",
+				"Tooltip": "Apply the Speedster Aura for 2 minutes! A must have for speed and style. RR+ Subscribers gain constant access to Speedster, Green Thumb, Fairy Magic Auras for the duration of their subscription.",
+				"TagList": "",
+				"ConsumableItemDesc": "X4M48quTBESgPUr-V76cKw",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "2lqottb05m0cqaz3lol3qhm4i.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 30776,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 180,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 162,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": "2025-07-08T17:00:00Z",
+			"AvailableAt": "2025-06-30T17:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 2013,
+				"FriendlyName": "High Five Potion (Golden)",
+				"Tooltip": "Give golden high fives for a time.",
+				"TagList": "",
+				"ConsumableItemDesc": "-hy0qD-iUk-v4NHxNzanmg",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 0,
+				"Context": 4004,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "bjsifec7s1d2959t8rpd4t53w.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 573,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 30,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 27,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 2015,
+				"FriendlyName": "High Five Potion (Magic)",
+				"Tooltip": "Give magical high fives for a time.",
+				"TagList": "",
+				"ConsumableItemDesc": "VQSgL2pTLkWx4B3kwYG7UA",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 0,
+				"Context": 4014,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "94izrtnj71tapg7f6p3mq84rq.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 575,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 30,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 27,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		}
+	],
+	"SubscriberDiscountPercent": 10,
+	"StorefrontName": "Potion Shop",
+	"StorefrontType": 1702,
+	"NextUpdate": "2026-08-09T18:00:00Z",
+	"NewUntil": null
+}

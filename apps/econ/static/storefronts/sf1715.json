@@ -1,0 +1,522 @@
+{
+	"StoreItems": [
+		{
+			"GiftDrop": {
+				"GiftDropId": 15520,
+				"FriendlyName": "Phoenix Pulse Potion",
+				"Tooltip": "This premium multicolor potion makes your avatar passively glow for a few minutes! Every avatar item reacts differently, so mix 'n match! This experimental potion is unstable and may change.",
+				"TagList": "",
+				"ConsumableItemDesc": "RTVV7Qt-806ZHrhkNeTAkw",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 50,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "6npogx4en3uztisyeuoyeu34o.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 29666,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 600,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 540,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 15530,
+				"FriendlyName": "Prismatic Pulse Potion",
+				"Tooltip": "This premium multicolor potion makes your avatar passively glow for a few minutes! Every avatar item reacts differently, so mix 'n match! This experimental potion is unstable and may change.",
+				"TagList": "",
+				"ConsumableItemDesc": "hBbOErjOR0uMR_IOkTtFIw",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 50,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "9765rab484b0zq7b0ceovbkae.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 29649,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 600,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 540,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 15550,
+				"FriendlyName": "Winter Pulse Potion",
+				"Tooltip": "This premium multicolor potion makes your avatar passively glow for a few minutes! Every avatar item reacts differently, so mix 'n match! This experimental potion is unstable and may change.",
+				"TagList": "",
+				"ConsumableItemDesc": "uwmFf9R2GESdLwhij-SiQg",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 50,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "1nss50z33kiq858dwy0erohrj.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 29643,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 600,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 540,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2025-06-06T18:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 15500,
+				"FriendlyName": "Blue Pulse Potion",
+				"Tooltip": "This potion makes your avatar passively glow for a few minutes! Every avatar item reacts differently, so mix 'n match! This experimental potion is unstable and may change.",
+				"TagList": "",
+				"ConsumableItemDesc": "ELjo2q4UU061pTdFfnHu3g",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 50,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "2k971pdsgqer05tfq3cv3cmtl.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 29635,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 300,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 270,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 15833,
+				"FriendlyName": "Purple Pulse Potion",
+				"Tooltip": "This potion makes your avatar passively glow for a few minutes! Every avatar item reacts differently, so mix 'n match! This experimental potion is unstable and may change.",
+				"TagList": "",
+				"ConsumableItemDesc": "Pvw7WOU0_kKsacUeIMK6jw",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 50,
+				"Context": 1002,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "280mdixk19u75rk65eednt27p.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 30707,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 300,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 270,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 15526,
+				"FriendlyName": "Red Pulse Potion",
+				"Tooltip": "This potion makes your avatar passively glow for a few minutes! Every avatar item reacts differently, so mix 'n match! This experimental potion is unstable and may change.",
+				"TagList": "",
+				"ConsumableItemDesc": "T2MAdKquaUOk6FdmZZYGsw",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 50,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "0vy82gopzn90v8anzja1ikla0.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 29683,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 300,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 270,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2025-06-06T18:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 15512,
+				"FriendlyName": "Green Pulse Potion",
+				"Tooltip": "This potion makes your avatar passively glow for a few minutes! Every avatar item reacts differently, so mix 'n match! This experimental potion is unstable and may change.",
+				"TagList": "",
+				"ConsumableItemDesc": "E1o2EuLIdk2vZYFyn3dAWg",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 50,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "4knrc4i5siq39zrk5nm6lbtvk.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 29661,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 300,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 270,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2025-06-06T18:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 15516,
+				"FriendlyName": "Gold Pulse Potion",
+				"Tooltip": "This potion makes your avatar passively glow for a few minutes! Every avatar item reacts differently, so mix 'n match! This experimental potion is unstable and may change.",
+				"TagList": "",
+				"ConsumableItemDesc": "UfsEA_vnPU653zSAf6GkzA",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 50,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "4zubppa8phi6w4meck2rf71xo.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 29669,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 300,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 270,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2025-06-06T18:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 15546,
+				"FriendlyName": "Silver Pulse Potion",
+				"Tooltip": "This potion makes your avatar passively glow for a few minutes! Every avatar item reacts differently, so mix 'n match! This experimental potion is unstable and may change.",
+				"TagList": "",
+				"ConsumableItemDesc": "Xpukw6yTB0yAqLrL7z6EvA",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 50,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "66r53ei46b16ehnmrhmaelkn0.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 29619,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 300,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 270,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": "2025-06-06T18:00:00Z",
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		}
+	],
+	"SubscriberDiscountPercent": 10,
+	"StorefrontName": "Pulse Potion Vibes",
+	"StorefrontType": 1715,
+	"NextUpdate": "2026-06-27T18:00:00Z",
+	"NewUntil": "2025-06-11T18:00:00Z"
+}

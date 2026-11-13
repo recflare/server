@@ -1,0 +1,765 @@
+{
+	"StoreItems": [
+		{
+			"GiftDrop": {
+				"GiftDropId": 15696,
+				"FriendlyName": "Deep Sea Diver Gloves (Leviathan)",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "b1c3ccc8-91d7-434e-b9cc-bd632fffc01b,CahBzgN3D0y46AQsvGC14A,0p5N9U5qokKdQhW07yYLGQ,",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 0,
+				"Context": 9000,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 936,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "ael0gchmqiiy4xijypkebw5gy.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "b1c3ccc8-91d7-434e-b9cc-bd632fffc01b,CahBzgN3D0y46AQsvGC14A,0p5N9U5qokKdQhW07yYLGQ",
+					"DownloadableAvatarItemId": "8556ee11-578e-474c-b764-402a3260bdf1",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 936
+				}
+			},
+			"PurchasableItemId": 29695,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 0,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 0,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 15682,
+				"FriendlyName": "Rec Room Hoodie (Black)",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "b6rLwzD4NkKV7xKn9ZYVkA,,,",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 0,
+				"Context": 9000,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 752,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "964z64p0djst7okp5yy4qnb5n.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "b6rLwzD4NkKV7xKn9ZYVkA",
+					"DownloadableAvatarItemId": "d97511ee-b99f-4f37-a32b-d13654a4c25f",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 752
+				}
+			},
+			"PurchasableItemId": 29603,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 0,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 0,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 15685,
+				"FriendlyName": "Turtleneck (Black)",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "7e22a4bd-3e87-4d50-8843-9e2e3cf45285,,,",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 0,
+				"Context": 9000,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 1193,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "cccfr6msg1shob4s8fngcwqa6.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "7e22a4bd-3e87-4d50-8843-9e2e3cf45285",
+					"DownloadableAvatarItemId": "84431026-a71a-42b9-babb-83aa82e8ae6a",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 1193
+				}
+			},
+			"PurchasableItemId": 29606,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 0,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 0,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 15686,
+				"FriendlyName": "Boho Sundress",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "adf2aa89-61c4-4b7a-9307-e39e72db23d3,rsh2uKli90OoEnJZRFc2Ww",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 0,
+				"Context": 9000,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 2262,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "EPFpkkBDokyWw7QwCJe9Hw.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "adf2aa89-61c4-4b7a-9307-e39e72db23d3,rsh2uKli90OoEnJZRFc2Ww",
+					"DownloadableAvatarItemId": "1b228200-7358-442d-b6e8-63ac300bd700",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 2262
+				}
+			},
+			"PurchasableItemId": 29607,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 0,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 0,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 15687,
+				"FriendlyName": "Nineties Outfit (Aiight)",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "ca218759-7eed-440e-b5dc-dba15f81e598,ulOBBvFEJ0ioFA1qmL390A,u9yHtj_tfkuowGp0h_YpFg,",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 0,
+				"Context": 9000,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 1568,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "1oix7x6qvyo7ps4kk7lftxq9j.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "ca218759-7eed-440e-b5dc-dba15f81e598,ulOBBvFEJ0ioFA1qmL390A,u9yHtj_tfkuowGp0h_YpFg",
+					"DownloadableAvatarItemId": "e89f03bb-dbaf-460b-9787-5e8e87a11c0f",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 1568
+				}
+			},
+			"PurchasableItemId": 29608,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 0,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 0,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 15688,
+				"FriendlyName": "Traveler Shades",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "cbN5e-t_jEKa4hzir5JAxQ,,,",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 0,
+				"Context": 9000,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 976,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "35n8yj17afa5u5gc5w40oz7de.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "cbN5e-t_jEKa4hzir5JAxQ",
+					"DownloadableAvatarItemId": "c0464378-6773-464a-bef3-311f8d64d729",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 976
+				}
+			},
+			"PurchasableItemId": 29609,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 0,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 0,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 15689,
+				"FriendlyName": "Babydoll Dress (Maroon)",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "da55bfc3-47b7-46f6-b548-7fb2c2a5e0bf,d6823e01-69f0-4f85-b94a-74894356a2cf,cb9e9e05-c481-4397-86e7-c2111bc0e817,",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 0,
+				"Context": 9000,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 136,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "9qamxgi6spdwdg7gwy4xnedzt.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "da55bfc3-47b7-46f6-b548-7fb2c2a5e0bf,d6823e01-69f0-4f85-b94a-74894356a2cf,cb9e9e05-c481-4397-86e7-c2111bc0e817",
+					"DownloadableAvatarItemId": "ae5cdb36-1b66-4438-80da-8adb7d028612",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 136
+				}
+			},
+			"PurchasableItemId": 29610,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 0,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 0,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 15690,
+				"FriendlyName": "Beanie (Black)",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "41bece0e-9b5d-4151-bf5c-d0e786a803b4,_fBrHCkTKUe82QgxCyI-Kw,uWXtz0WaO0qJ1W4TfWnLqg,",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 0,
+				"Context": 9000,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 1399,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "6w4cwzijj4bww69aju5fi9pzj.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "41bece0e-9b5d-4151-bf5c-d0e786a803b4,_fBrHCkTKUe82QgxCyI-Kw,uWXtz0WaO0qJ1W4TfWnLqg",
+					"DownloadableAvatarItemId": "76796f99-4b98-465c-94c8-3cae510f17e0",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 1399
+				}
+			},
+			"PurchasableItemId": 29611,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 0,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 0,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 15681,
+				"FriendlyName": "Long Denim Shorts (Black)",
+				"Tooltip": "",
+				"TagList": "",
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": "31ba4f55-e83a-4749-9607-8d56001ab0a3",
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 0,
+				"Context": 9000,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": null,
+				"AvatarItemInfo": {
+					"Version": 3,
+					"LegacyAvatarItemDesc": null,
+					"DownloadableAvatarItemId": "31ba4f55-e83a-4749-9607-8d56001ab0a3",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": null
+				}
+			},
+			"PurchasableItemId": 29602,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 0,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 0,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 3339,
+				"FriendlyName": "Demon Wings",
+				"Tooltip": "",
+				"TagList": "halloween",
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "26f5e849-14b3-4cb3-ab92-673c94b37c51,,,",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 50,
+				"Context": 1000,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 1526,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "6fwxedm1vpp6m7vdyj1mjush3.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "26f5e849-14b3-4cb3-ab92-673c94b37c51",
+					"DownloadableAvatarItemId": "d282cc95-e0f8-40f7-b86e-cac94a14ec96",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 1526
+				}
+			},
+			"PurchasableItemId": 1796,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 5000,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 4500,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 4292,
+				"FriendlyName": "Angel Halo",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "2d07c0d0-b277-46dd-8980-382bdaa4749e,",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 50,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 2185,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "NboCAaiehkigdPqWgZxRoA.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "2d07c0d0-b277-46dd-8980-382bdaa4749e",
+					"DownloadableAvatarItemId": "c5c3557f-4654-4dc4-8634-e28ca2d2e6e2",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 2185
+				}
+			},
+			"PurchasableItemId": 2442,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 4000,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 3600,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 3364,
+				"FriendlyName": "Bounty Hunter Cape",
+				"Tooltip": "",
+				"TagList": null,
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "e773fddc-ad9f-408c-82c5-2637f75b3214,,,",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": 0,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": false,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 50,
+				"Context": 0,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 1550,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "2wi7442sqsy6n251dpxoai2q1.png",
+				"AvatarItemInfo": {
+					"Version": 2,
+					"LegacyAvatarItemDesc": "e773fddc-ad9f-408c-82c5-2637f75b3214",
+					"DownloadableAvatarItemId": "9cb7047e-06a3-4e9a-b859-0701ab71d782",
+					"AvatarItemType": 0,
+					"LegacyAvatarItemRowId": 1550
+				}
+			},
+			"PurchasableItemId": 1813,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 3500,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 3150,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		}
+	],
+	"SubscriberDiscountPercent": 10,
+	"StorefrontName": "Gift Shop In Orientation Upsell",
+	"StorefrontType": 1701,
+	"NextUpdate": "2026-08-09T18:00:00Z",
+	"NewUntil": null
+}

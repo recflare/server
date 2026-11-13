@@ -1,0 +1,294 @@
+{
+	"StoreItems": [
+		{
+			"GiftDrop": {
+				"GiftDropId": 1978,
+				"FriendlyName": "4-Star Unique Box",
+				"Tooltip": "Equal chance of getting each 4-star item that you don't own.",
+				"TagList": "",
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": true,
+				"QueryRedirectContext": 0,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": 30,
+				"Unique": true,
+				"SubscribersOnly": false,
+				"Rarity": 30,
+				"Context": 0,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": 44,
+				"ItemSetFriendlyName": "Star Boxes",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "27m3la1ay2d76rvlgav6h3b2a.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 539,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 800,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 720,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 18162,
+				"FriendlyName": "Random Potion",
+				"Tooltip": "Get a random potion!",
+				"TagList": "",
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": true,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": "potion",
+				"QueryRedirectRarity": null,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": -1,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "7iif6npeo26nbt7a94yzrzguv.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 31911,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 90,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 81,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 33051,
+				"FriendlyName": "Size Surprise Box",
+				"Tooltip": "Get either a grow or a shrink potion!",
+				"TagList": "",
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": true,
+				"QueryRedirectContext": null,
+				"QueryRedirectTag": "grow/shrink",
+				"QueryRedirectRarity": 30,
+				"Unique": false,
+				"SubscribersOnly": false,
+				"Rarity": 30,
+				"Context": 1003,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": null,
+				"ItemSetFriendlyName": "",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "afhwr8fkl2iqnh29gidpcvelg.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 32044,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 600,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 540,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 1977,
+				"FriendlyName": "3-Star Unique Box",
+				"Tooltip": "Equal chance of getting each 3-star item that you don't own.",
+				"TagList": "",
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": true,
+				"QueryRedirectContext": 0,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": 20,
+				"Unique": true,
+				"SubscribersOnly": false,
+				"Rarity": 20,
+				"Context": 0,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": 44,
+				"ItemSetFriendlyName": "Star Boxes",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "3o4mggbq97w8e2rhk01pjvoow.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 538,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 500,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 450,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		},
+		{
+			"GiftDrop": {
+				"GiftDropId": 1980,
+				"FriendlyName": "2-Star Unique Box",
+				"Tooltip": "Equal chance of getting each 2-star item that you don't own.",
+				"TagList": "",
+				"ConsumableItemDesc": "",
+				"AvatarItemDesc": "",
+				"CustomAvatarItemId": null,
+				"AvatarItemType": null,
+				"EquipmentPrefabName": "",
+				"EquipmentModificationGuid": "",
+				"IsQuery": true,
+				"QueryRedirectContext": 0,
+				"QueryRedirectTag": null,
+				"QueryRedirectRarity": 10,
+				"Unique": true,
+				"SubscribersOnly": false,
+				"Rarity": 10,
+				"Context": 0,
+				"Currency": 0,
+				"CurrencyType": 0,
+				"ItemCount": 1,
+				"ItemSetId": 44,
+				"ItemSetFriendlyName": "Star Boxes",
+				"AvatarItemId": 0,
+				"EquipmentItemId": 0,
+				"ThumbnailImageName": "besb2252ca3sxd11arwv7fmwi.png",
+				"AvatarItemInfo": null
+			},
+			"PurchasableItemId": 541,
+			"Type": 0,
+			"Prices": [
+				{
+					"CurrencyType": 2,
+					"Price": 200,
+					"StorefrontSaleData": {
+						"SalePercent": 80,
+						"SaleStartDate": "2026-03-30T23:00:00Z",
+						"SaleEndDate": null
+					}
+				}
+			],
+			"SubscriberPrices": [
+				{
+					"CurrencyType": 2,
+					"Price": 180,
+					"StorefrontSaleData": null
+				}
+			],
+			"IsFeatured": false,
+			"NewUntil": null,
+			"AvailableAt": null,
+			"AvailableUntil": null,
+			"CanBeGifted": true,
+			"OnlyAvailableThroughCv2": false
+		}
+	],
+	"SubscriberDiscountPercent": 10,
+	"StorefrontName": "Surprise Me!",
+	"StorefrontType": 1717,
+	"NextUpdate": "2026-06-27T18:00:00Z",
+	"NewUntil": "2025-06-11T18:00:00Z"
+}
