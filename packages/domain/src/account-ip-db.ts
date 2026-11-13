@@ -28,7 +28,7 @@
 
 import { bindPlaceholders, chunkForBinds } from './d1-binds'
 
-/** Schema DDL (mirror of apps/auth/migrations/0016_account_ip.sql, sans the backfill). */
+/** Schema DDL (mirror of apps/auth/migrations/0016_account_ip.sql, sans the backfill, + 0019's `country`). */
 export const ACCOUNT_IP_SCHEMA_DDL: string[] = [
 	`CREATE TABLE IF NOT EXISTS account_ip (
 		account_id INTEGER NOT NULL,
@@ -36,6 +36,7 @@ export const ACCOUNT_IP_SCHEMA_DDL: string[] = [
 		first_seen TEXT NOT NULL,
 		last_seen TEXT NOT NULL,
 		hits INTEGER NOT NULL DEFAULT 1,
+		country TEXT,
 		PRIMARY KEY (account_id, ip)
 	)`,
 	// The evasion arm asks "which accounts have used THIS address" — the reverse of the
@@ -53,6 +54,12 @@ export interface AccountIp {
 	lastSeen: string
 	/** How many grants (signups, logins, refreshes) have come from it. */
 	hits: number
+	/**
+	 * The country Cloudflare placed this address in at its most recent grant — ISO 3166-1
+	 * alpha-2, `T1` for Tor — or null when unknown (recorded before the column existed, or
+	 * the edge couldn't say).
+	 */
+	country: string | null
 }
 
 interface AccountIpRow {
@@ -61,6 +68,7 @@ interface AccountIpRow {
 	first_seen: string
 	last_seen: string
 	hits: number
+	country: string | null
 }
 
 function fromRow(row: AccountIpRow): AccountIp {
@@ -70,12 +78,15 @@ function fromRow(row: AccountIpRow): AccountIp {
 		firstSeen: row.first_seen,
 		lastSeen: row.last_seen,
 		hits: row.hits,
+		country: row.country ?? null,
 	}
 }
 
 /**
  * Note that `accountId` was just seen from `ip`: a new row the first time, otherwise the
- * row's `last_seen` moves and its `hits` count up. An empty address — the edge reported
+ * row's `last_seen` moves and its `hits` count up. `country` is the
+ * grant's (see {@link requestCountry}); a later grant the edge couldn't place keeps the
+ * country already on the row rather than blanking it. An empty address — the edge reported
  * none, as in tests — records nothing, for the same reason `countAccountsBySignupIp` counts
  * an empty one as 0: it attributes the grant to nobody, and a row for `''` would link every
  * such account to every other.
@@ -84,19 +95,30 @@ export async function recordAccountIp(
 	db: D1Database,
 	accountId: number,
 	ip: string,
-	now: Date = new Date()
+	{ country = null, now = new Date() }: { country?: string | null; now?: Date } = {}
 ): Promise<void> {
 	if (ip === '') return
 	await db
 		.prepare(
-			`INSERT INTO account_ip (account_id, ip, first_seen, last_seen, hits)
-			 VALUES (?1, ?2, ?3, ?3, 1)
+			`INSERT INTO account_ip (account_id, ip, first_seen, last_seen, hits, country)
+			 VALUES (?1, ?2, ?3, ?3, 1, ?4)
 			 ON CONFLICT (account_id, ip) DO UPDATE SET
 				last_seen = excluded.last_seen,
-				hits = hits + 1`
+				hits = hits + 1,
+				country = COALESCE(excluded.country, country)`
 		)
-		.bind(accountId, ip, now.toISOString())
+		.bind(accountId, ip, now.toISOString(), country)
 		.run()
+}
+
+/**
+ * The country Cloudflare's edge placed a request in (`request.cf.country`), or null when it
+ * couldn't — no `cf` object (tests, a service binding) or its own "unknown", `XX`. Tor exits
+ * come through as `T1` and are kept: that is worth a moderator seeing.
+ */
+export function requestCountry(request: Request): string | null {
+	const country = (request as { cf?: { country?: unknown } }).cf?.country
+	return typeof country === 'string' && country !== '' && country !== 'XX' ? country : null
 }
 
 /** Every address `accountId` has been seen from, most recently seen first. */

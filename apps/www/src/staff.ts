@@ -759,12 +759,15 @@ export async function linkedAccountsHandler(c: Context<App>) {
 			platforms: (links[i] ?? []).map(({ platform, platformId }) => ({ platform, platformId })),
 			signupIp: account?.signupIp || null,
 			lastLoginIp: account?.lastLoginIp || null,
-			ips: (ipsByAccount.get(accountId) ?? []).map(({ ip, firstSeen, lastSeen, hits }) => ({
-				ip,
-				firstSeen,
-				lastSeen,
-				hits,
-			})),
+			ips: (ipsByAccount.get(accountId) ?? []).map(
+				({ ip, firstSeen, lastSeen, hits, country }) => ({
+					ip,
+					country,
+					firstSeen,
+					lastSeen,
+					hits,
+				})
+			),
 		}
 	})
 	return c.json({ playerId, arms, self, linked })

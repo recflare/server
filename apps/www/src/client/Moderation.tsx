@@ -156,7 +156,14 @@ interface LinkedAccount {
 	signupIp: string | null
 	lastLoginIp: string | null
 	/** Every address the account has been seen from, most recent first. */
-	ips: Array<{ ip: string; firstSeen: string; lastSeen: string; hits: number }>
+	ips: Array<{
+		ip: string
+		/** ISO 3166-1 alpha-2 (`T1` = Tor), or null when unknown. */
+		country: string | null
+		firstSeen: string
+		lastSeen: string
+		hits: number
+	}>
 }
 
 /**
@@ -1870,6 +1877,12 @@ function LinkedAccountsPanel({
 										row.ips.map((entry) => (
 											<div key={entry.ip} title={`First seen ${entry.firstSeen}`}>
 												<code>{entry.ip}</code>
+												{entry.country && (
+													<span className="muted" title="Country, per Cloudflare">
+														{' '}
+														{entry.country === 'T1' ? 'Tor' : entry.country}
+													</span>
+												)}
 												{i > 0 && selfIps.has(entry.ip) && (
 													<span className="badge mod-via">Shared</span>
 												)}

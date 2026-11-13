@@ -1988,10 +1988,10 @@ it('previews which other accounts a ban would reach', async () => {
 	// An address the evader used once, kept only in the history — and a fourth account that
 	// shares nothing but that.
 	const seen = new Date('2026-02-03T04:05:06.000Z')
-	await recordAccountIp(env.DB, 8220, '203.0.113.9', seen)
-	await recordAccountIp(env.DB, 8220, '198.51.100.9', seen)
+	await recordAccountIp(env.DB, 8220, '203.0.113.9', { now: seen })
+	await recordAccountIp(env.DB, 8220, '198.51.100.9', { now: seen, country: 'DE' })
 	await seedAccount({ accountId: 8223, username: 'OldFriend', signupIp: '198.51.100.23' })
-	await recordAccountIp(env.DB, 8223, '198.51.100.9', seen)
+	await recordAccountIp(env.DB, 8223, '198.51.100.9', { now: seen })
 
 	const preview = (await (await staffGet('/api/staff/players/8220/linked', 8110)).json()) as {
 		arms: { ip: boolean; platform: boolean }
@@ -2005,7 +2005,13 @@ it('previews which other accounts a ban would reach', async () => {
 		platforms: Array<{ platform: number; platformId: string }>
 		signupIp: string | null
 		lastLoginIp: string | null
-		ips: Array<{ ip: string; firstSeen: string; lastSeen: string; hits: number }>
+		ips: Array<{
+			ip: string
+			country: string | null
+			firstSeen: string
+			lastSeen: string
+			hits: number
+		}>
 	}
 	// BAN_EVASION_MATCH is unset in the test config, so both arms are live — the default
 	// an operator who sets nothing gets.
@@ -2043,7 +2049,7 @@ it('previews which other accounts a ban would reach', async () => {
 		platforms: [],
 		signupIp: '198.51.100.23',
 		lastLoginIp: null,
-		ips: [{ ip: '198.51.100.9', firstSeen: at, lastSeen: at, hits: 1 }],
+		ips: [{ ip: '198.51.100.9', country: null, firstSeen: at, lastSeen: at, hits: 1 }],
 	})
 	// The player asked about heads the table in the same shape, so what the matches were
 	// made on is in view; nothing matched them to themselves.
@@ -2055,8 +2061,8 @@ it('previews which other accounts a ban would reach', async () => {
 		signupIp: null,
 		lastLoginIp: '203.0.113.9',
 		ips: [
-			{ ip: '198.51.100.9', firstSeen: at, lastSeen: at, hits: 1 },
-			{ ip: '203.0.113.9', firstSeen: at, lastSeen: at, hits: 1 },
+			{ ip: '198.51.100.9', country: 'DE', firstSeen: at, lastSeen: at, hits: 1 },
+			{ ip: '203.0.113.9', country: null, firstSeen: at, lastSeen: at, hits: 1 },
 		],
 	})
 	// Never the account asked about: the question is who ELSE.

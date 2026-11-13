@@ -2824,6 +2824,35 @@ describe('ban evasion at the token endpoint', () => {
 		expect((await postToken('grant_type=create_account', '203.0.113.35')).status).toBe(200)
 	})
 
+	// The edge's `cf.country` lands beside the address; a later grant the edge couldn't place
+	// keeps the country already recorded rather than blanking it.
+	test('a grant records the country Cloudflare places the address in', async () => {
+		await account(6309, 'Traveller')
+		const loginFrom = (cf?: { country: string }) =>
+			exports.default.fetch(`${ORIGIN}/connect/token`, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/x-www-form-urlencoded',
+					'CF-Connecting-IP': '203.0.113.36',
+				},
+				body: `account_id=6309&password=${LOGIN_PASSWORD}`,
+				...(cf ? { cf } : {}),
+			})
+		const country = async () =>
+			(
+				await env.DB.prepare(
+					"SELECT country FROM account_ip WHERE account_id = 6309 AND ip = '203.0.113.36'"
+				).first<{ country: string | null }>()
+			)?.country
+
+		expect((await loginFrom({ country: 'DE' })).status).toBe(200)
+		expect(await country()).toBe('DE')
+		expect((await loginFrom({ country: 'XX' })).status).toBe(200)
+		expect(await country()).toBe('DE')
+		expect((await loginFrom({ country: 'FR' })).status).toBe(200)
+		expect(await country()).toBe('FR')
+	})
+
 	test('an unrelated account signs in normally', async () => {
 		await account(6307, 'Unrelated', { signupIp: '198.51.100.7' })
 		await banAccount(6307 + 1000) // a ban on somebody else entirely
