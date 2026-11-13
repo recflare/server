@@ -130,7 +130,8 @@ export const roomRoutes = new Hono<App>({ strict: false })
 				return c.req.query(name) ?? ''
 			}
 			const roomId = Number.parseInt(param('roomId'), 10)
-			const role = Number.parseInt(param('role'), 10)
+			const rawRole = param('role').trim()
+			const role = /^-?\d+$/.test(rawRole) ? Number(rawRole) : Number.NaN
 
 			const accountId = await authedId(c)
 			if (accountId === null || Number.isNaN(roomId)) return c.json(false)
