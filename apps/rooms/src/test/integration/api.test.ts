@@ -2225,7 +2225,7 @@ describe('rooms endpoints', () => {
 	})
 
 	it('DELETE /rooms/:id also lets staff through — the website’s takedown — but only there', async () => {
-		// Somebody else's room. A developer or moderator token may delete it; the same token
+		// Somebody else's room. A developer token may delete it (a moderator's may not); the same token
 		// may NOT rename it, which is what a misapplied check once allowed.
 		await env.DB.prepare('INSERT INTO room (data) VALUES (?1)')
 			.bind(
@@ -2262,12 +2262,12 @@ describe('rooms endpoints', () => {
 		expect(await del(staff)).toMatchObject({ Success: true })
 		expect(await roomExists()).toBe(false)
 
-		// A moderator gets through too.
+		// A moderator is refused: deleting a room is developer-only.
 		await env.DB.prepare('INSERT INTO room (data) VALUES (?1)')
 			.bind(
 				JSON.stringify({
 					RoomId: 9502,
-					Name: 'ModTakesMeDown',
+					Name: 'ModCannotTakeMeDown',
 					CreatorAccountId: 1,
 					IsDorm: false,
 					Accessibility: 1,
@@ -2277,20 +2277,21 @@ describe('rooms endpoints', () => {
 			)
 			.run()
 		expect(await del(await bearer('998', ['gameClient', 'moderator']), 9502)).toMatchObject({
-			Success: true,
+			Success: false,
+			ErrorId: 'Rooms.NotOwner',
 		})
-		expect(await env.DB.prepare('SELECT 1 FROM room WHERE room_id = 9502').first()).toBeNull()
+		expect(await env.DB.prepare('SELECT 1 FROM room WHERE room_id = 9502').first()).not.toBeNull()
+		await env.DB.prepare('DELETE FROM room WHERE room_id = 9502').run()
 
-		// The takedowns are the only rows in the audit log: the owner's own deletion in the
-		// test above wrote none, and the refused attempt wrote none. Each names the actor and
+		// The takedown is the only row in the audit log: the owner's own deletion in the
+		// test above wrote none, and the refused attempts wrote none. Each names the actor and
 		// keeps enough of the room to say which one it was, now that the room itself is gone.
 		const { results: audit } = await env.DB.prepare(
 			'SELECT player_id, action, data FROM audit_log WHERE action = ?1 ORDER BY audit_log_id'
 		)
 			.bind('room_delete')
 			.all<{ player_id: number; action: string; data: string }>()
-		expect(audit).toHaveLength(2)
-		expect(audit[1].player_id).toBe(998)
+		expect(audit).toHaveLength(1)
 		expect(audit[0].player_id).toBe(999)
 		expect(JSON.parse(audit[0].data)).toEqual({
 			roomId: 9501,

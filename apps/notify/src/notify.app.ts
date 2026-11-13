@@ -206,6 +206,18 @@ const requireAdmin: MiddlewareHandler<App> = async (c, next) => {
 	}
 }
 
+/**
+ * Narrows {@link requireAdmin} to DEVELOPERS for the endpoints that speak to every player
+ * or as the Coach — the maintenance broadcast and the coach messages. A moderator's token
+ * passes the staff gate but is refused here (403, audited by that gate like any refusal).
+ * Runs after `requireAdmin`, so a missing or invalid token is still its 401.
+ */
+const requireDeveloper: MiddlewareHandler<App> = async (c, next) => {
+	const roles = await validateAndGetRoles(c.req.raw, await c.env.JWT_SECRET.get())
+	if (!roles?.includes('developer')) return c.json({ error: 'Forbidden' }, 403)
+	await next()
+}
+
 const app = new Hono<App>()
 	.use(
 		'*',
@@ -292,7 +304,7 @@ const app = new Hono<App>()
 		return c.json({ success: true, ...result })
 	})
 
-	.post('/internal/broadcast', async (c) => {
+	.post('/internal/broadcast', requireDeveloper, async (c) => {
 		const body = await c.req
 			.json<{ notificationType?: string | number; data?: Record<string, unknown> }>()
 			.catch(() => null)
@@ -305,7 +317,7 @@ const app = new Hono<App>()
 	})
 
 	// Send a coach/system direct message to every currently-online player.
-	.post('/internal/coach-message-all', async (c) => {
+	.post('/internal/coach-message-all', requireDeveloper, async (c) => {
 		const body = await c.req.json<{ messageContent?: string }>().catch(() => null)
 		const content = typeof body?.messageContent === 'string' ? body.messageContent.trim() : ''
 		if (content === '') return c.json({ error: 'messageContent is required' }, 400)
@@ -320,7 +332,7 @@ const app = new Hono<App>()
 	// frame carries the stored row's id. The broadcast stays unstored — it reaches everyone
 	// online at once, so a row per player would be thousands of writes per maintenance
 	// notice, for something nobody needs to re-read.
-	.post('/internal/coach-message', async (c) => {
+	.post('/internal/coach-message', requireDeveloper, async (c) => {
 		const body = await c.req
 			.json<{ playerId?: number; messageContent?: string }>()
 			.catch(() => null)

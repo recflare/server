@@ -548,6 +548,12 @@ async function isStaff(c: Context<App>): Promise<boolean> {
 	return hasStaffRole(roles)
 }
 
+/** Whether the caller's token carries the `developer` role — narrower than {@link isStaff}. */
+async function isDeveloper(c: Context<App>): Promise<boolean> {
+	const roles = await validateAndGetRoles(c.req.raw, await c.env.JWT_SECRET.get())
+	return roles?.includes('developer') ?? false
+}
+
 /**
  * Audit a staff edit to a room they don't manage — a moderation action, so it's logged like
  * the takedown and the unpublish; an owner's own edit is not. Written after the fact and
@@ -2789,7 +2795,7 @@ const app = new Hono<App>()
 		}
 	)
 
-	// Delete a room. Auth-gated (401); the owner or staff (a developer or moderator) may delete.
+	// Delete a room. Auth-gated (401); the owner or a developer may delete — not a moderator.
 	// Removes the room record (and per-player interactions with it) and the room's
 	// image object from the shared CDN bucket. Images players *took* in the room are
 	// left alone — they live in the api/img world and outlast the room.
@@ -2799,7 +2805,7 @@ const app = new Hono<App>()
 			tags: ['Room settings'],
 			summary: 'Delete a room',
 			description: [
-				'Owner or staff (a `developer` / `moderator` token). Removes the room record, the per-player interactions with it, and the',
+				'Owner or a `developer` token (a `moderator` is refused). Removes the room record, the per-player interactions with it, and the',
 				'room’s image object from the shared CDN bucket. Photos players TOOK in the room are',
 				'left alone — those live in the api/img world and outlive the room.',
 			].join(' '),
@@ -2824,7 +2830,7 @@ const app = new Hono<App>()
 				})
 			}
 			const isOwner = room.CreatorAccountId === accountId
-			if (!isOwner && !(await isStaff(c))) {
+			if (!isOwner && !(await isDeveloper(c))) {
 				return roomResult(c, {
 					Success: false,
 					ErrorId: 'Rooms.NotOwner',

@@ -134,14 +134,15 @@ async function connect(
 
 const send = (ws: WebSocket, msg: HubRecord) => ws.send(JSON.stringify(msg) + RS)
 
-// The /internal/* endpoints are admin-gated (a token carrying an admin role), so
-// default to a moderator token; pass `auth` to override (e.g. the 401/403 paths).
+// The /internal/* endpoints are admin-gated (a token carrying an admin role), and the
+// broadcast / coach messages are developer-only, so default to a developer token; pass
+// `auth` to override (e.g. the 401/403 paths).
 const post = async (path: string, body: unknown, auth?: Record<string, string>) =>
 	exports.default.fetch(`${ORIGIN}${path}`, {
 		method: 'POST',
 		headers: {
 			'Content-Type': 'application/json',
-			...(auth ?? (await bearer('1', ['gameClient', 'moderator']))),
+			...(auth ?? (await bearer('1', ['gameClient', 'developer']))),
 		},
 		body: JSON.stringify(body),
 	})
@@ -187,12 +188,21 @@ describe('internal endpoint auth', () => {
 
 	test('tokens carrying an admin role are allowed', async () => {
 		for (const role of ['developer', 'moderator']) {
-			const res = await post(
-				'/internal/broadcast',
-				{ notificationType: 1 },
-				await bearer('3', ['gameClient', role])
-			)
+			const res = await post('/internal/notify', body, await bearer('3', ['gameClient', role]))
 			expect(res.status).toBe(200)
+		}
+	})
+
+	test('the broadcast and coach messages are developer-only — a moderator is refused', async () => {
+		const moderator = await bearer('3', ['gameClient', 'moderator'])
+		const calls: Array<[string, unknown]> = [
+			['/internal/broadcast', { notificationType: 1 }],
+			['/internal/coach-message-all', { messageContent: 'hi' }],
+			['/internal/coach-message', { playerId: 9690, messageContent: 'hi' }],
+		]
+		for (const [path, payload] of calls) {
+			expect((await post(path, payload, moderator)).status).toBe(403)
+			expect((await post(path, payload, await bearer('3', ['developer']))).status).toBe(200)
 		}
 	})
 })
@@ -941,7 +951,7 @@ describe('audit log', () => {
 		const res = await post(
 			'/internal/coach-message',
 			{ playerId: 9500, messageContent: 'audited' },
-			await bearer(String(actor), ['moderator'])
+			await bearer(String(actor), ['developer'])
 		)
 		expect(res.status).toBe(200)
 
@@ -982,7 +992,7 @@ describe('audit log', () => {
 		const res = await post(
 			'/internal/coach-message',
 			{ playerId: 9501 },
-			await bearer(String(actor), ['moderator'])
+			await bearer(String(actor), ['developer'])
 		)
 		expect(res.status).toBe(400)
 

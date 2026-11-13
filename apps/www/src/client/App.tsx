@@ -1336,8 +1336,8 @@ const fetchRoomPhotos = (roomId: number, skip: number, take: number): Promise<Pu
 	)
 
 /**
- * Delete a room outright — the staff takedown. `rooms` lets the owner or staff (developer or
- * moderator) through and refuses everyone else; it answers a refusal as a 200 carrying
+ * Delete a room outright — the staff takedown. `rooms` lets the owner or a developer
+ * through and refuses everyone else, moderators included; it answers a refusal as a 200 carrying
  * `Success: false` (the game's envelope), so the check is on the body, not the status.
  */
 async function deleteRoom(roomId: number): Promise<void> {
@@ -4477,9 +4477,9 @@ function AccountPage({
  * `/admin`: the server-wide staff controls, in the account dashboard's tab rail but on
  * their own page. They used to be the dashboard's last tabs, where a staff member's own
  * settings and the server's switches shared one crowded rail. The split between the roles
- * is unchanged: every staff member gets the maintenance notice, the coach message, their
- * own sandbox switch and the Studio access whitelists (a tab per kind); the token drop,
- * which mints currency, is developers only — and
+ * is: every staff member gets their own sandbox switch and the Studio access whitelists
+ * (a tab per kind); the maintenance notice, the coach message and the token drop are
+ * developers only — and
  * `isAdmin()`/`isDeveloper()` only decide what's SHOWN, every endpoint behind a tab checks
  * the token's role itself (`requireStaff`, `requireDeveloper`).
  *
@@ -4537,11 +4537,12 @@ function AdminPage({
 function AdminTabs({ account, navigate }: { account: SelfAccount; navigate: Navigate }) {
 	const developer = isDeveloper()
 	const sections = [
-		{ id: 'maintenance', label: 'Server maintenance', render: () => <MaintenanceForm /> },
-		{ id: 'coach', label: 'Coach message', render: () => <CoachMessageForm /> },
-		// Developer-only: the drop mints tokens, and www's route is developer-only.
+		// Developer-only: the broadcasts speak to every player or as the Coach (notify refuses
+		// moderators), and the drop mints tokens (www's route is developer-only).
 		...(developer
 			? [
+					{ id: 'maintenance', label: 'Server maintenance', render: () => <MaintenanceForm /> },
+					{ id: 'coach', label: 'Coach message', render: () => <CoachMessageForm /> },
 					{
 						id: 'tokens',
 						label: 'Token drop',
@@ -5208,7 +5209,8 @@ function StaffRoomTools({
 			<StaffListing room={room} onRoomChange={onRoomChange} />
 			<StaffUnpublish room={room} onRoomChange={onRoomChange} />
 			{clearInstances && <ClearInstances room={room} />}
-			<StaffTakedown room={room} onTakenDown={onTakenDown} />
+			{/* Developer-only; `rooms` refuses a moderator's delete. */}
+			{isDeveloper() && <StaffTakedown room={room} onTakenDown={onTakenDown} />}
 		</>
 	)
 }
@@ -6623,7 +6625,7 @@ function RoomCard({
 }
 
 /**
- * Admin-only: send a coach/system message, either to one player by `@username` or to
+ * Developer-only: send a coach/system message, either to one player by `@username` or to
  * everyone online.
  *
  * The two go to different endpoints because they behave differently, not just in reach:
@@ -6696,7 +6698,7 @@ function CoachMessageForm() {
 	)
 }
 
-/** Admin-only: broadcast a server-maintenance countdown to every connected client. */
+/** Developer-only: broadcast a server-maintenance countdown to every connected client. */
 function MaintenanceForm() {
 	const [minutes, setMinutes] = useState('5')
 	const { pending, error, done, run } = useAction()
