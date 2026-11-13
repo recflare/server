@@ -125,6 +125,7 @@ import {
 	ROOM_BALANCE_SCHEMA_DDL,
 	ROOM_CURRENCY_SCHEMA_DDL,
 } from '../../room-currency-db'
+import { ROOM_INVENTORY_ITEM_SCHEMA_DDL } from '../../room-inventory-item-db'
 import { createRoomKey, ROOM_KEY_SCHEMA_DDL } from '../../room-key-db'
 import { WISHLIST_SCHEMA_DDL } from '../../wishlist-db'
 
@@ -234,6 +235,7 @@ beforeAll(async () => {
 	for (const stmt of ROOM_CONSUMABLE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of ROOM_INVENTORY_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of ROOM_KEY_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	for (const stmt of ROOM_INVENTORY_ITEM_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of WISHLIST_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	// The platform link table (owned by `auth`) — the Discord supporter gift reads the roles
 	// `www` records on each Discord link.
@@ -3902,9 +3904,6 @@ describe('econ endpoints', () => {
 	// registered — an unregistered one 404s and stalls the room load.
 	test('the room-economy endpoints all return []', async () => {
 		for (const path of [
-			'/econ/roomInventory/room/92',
-			'/econ/roomInventory/room/92/player',
-			'/econ/roomInventoryItemTags/room/92',
 			'/econ/roomOffer/room/92',
 			'/econ/roomOffer/room/92/purchaseCounts',
 			'/econ/roomGiftDropShops/room/92',
@@ -3913,6 +3912,374 @@ describe('econ endpoints', () => {
 			expect(res.status, path).toBe(200)
 			expect(await res.json(), path).toEqual([])
 		}
+	})
+
+	// Room inventory items. Room 2511 is account 1's, with 2 as co-owner.
+	test('room inventory items: create, list, tags and the caller’s holdings', async () => {
+		const base = '/econ/roomInventory/room'
+		const get = async (path: string, sub?: string) =>
+			exports.default.fetch(`${ORIGIN}${path}`, {
+				headers: sub === undefined ? {} : await bearer(sub),
+			})
+		const post = async (roomId: number | string, payload: unknown, sub = '1') =>
+			exports.default.fetch(`${ORIGIN}${base}/${roomId}`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', ...(await bearer(sub)) },
+				body: JSON.stringify(payload),
+			})
+		const FAILED = {
+			Value: null,
+			Success: false,
+			Error: 'Failed to save inventory item',
+			error_id: null,
+		}
+
+		// Every list is `[]` when empty — an unknown room and a non-numeric id included.
+		for (const path of [
+			`${base}/2511`,
+			`${base}/999999`,
+			`${base}/nope`,
+			'/econ/roomInventoryItemTags/room/2511',
+			'/econ/roomInventoryItemTags/room/nope',
+		]) {
+			const res = await get(path)
+			expect(res.status, path).toBe(200)
+			expect(await res.json(), path).toEqual([])
+		}
+		expect((await get(`${base}/2511/player`)).status).toBe(401)
+		expect(await (await get(`${base}/2511/player`, '1')).json()).toEqual([])
+		expect(await (await get(`${base}/nope/player`, '1')).json()).toEqual([])
+
+		// The gates: no token, not a manager, an unknown room, an unusable body.
+		const sword = {
+			Name: 'Sword',
+			Description: 'Pointy',
+			ImageName: 'sword.png',
+			Properties: '{"damage":5}',
+			TagIds: [424242],
+			NewTags: [
+				{ Name: 'weapon', Properties: '{"slot":1}' },
+				{ Name: 'weapon', Properties: null },
+			],
+			IconShape: 3,
+			IconColor: -65536,
+		}
+		expect(
+			(await exports.default.fetch(`${ORIGIN}${base}/2511`, { method: 'POST', body: '{}' })).status
+		).toBe(401)
+		expect((await post(2511, sword, '3')).status).toBe(403)
+		expect(await (await post(999999, sword)).json()).toEqual(FAILED)
+		expect(await (await post(2511, { ...sword, Name: ' ' })).json()).toEqual(FAILED)
+		expect(await (await post(2511, { ...sword, OriginId: 'not-a-guid' })).json()).toEqual(FAILED)
+
+		// A create: the envelope around the 12-key DTO, in the client's key order. The unknown
+		// tag id is dropped and the new tag (named twice, made once) is attached.
+		const created = (await (await post(2511, sword)).json()) as {
+			Value: Record<string, unknown> & { OriginId: string; TagIds: number[]; CreatedAt: string }
+			Success: boolean
+			Error: null
+			error_id: null
+		}
+		expect(Object.keys(created)).toEqual(['Value', 'Success', 'Error', 'error_id'])
+		expect(created).toMatchObject({ Success: true, Error: null, error_id: null })
+		const item = created.Value
+		expect(Object.keys(item)).toEqual([
+			'OriginId',
+			'RoomId',
+			'Name',
+			'Description',
+			'ImageName',
+			'CreatedAt',
+			'ModifiedAt',
+			'Properties',
+			'TagIds',
+			'NewTags',
+			'IconShape',
+			'IconColor',
+		])
+		expect(item.OriginId).toMatch(/^[0-9a-f-]{36}$/)
+		expect(item.TagIds).toHaveLength(1)
+		const tagId = item.TagIds[0]
+		expect(item).toMatchObject({
+			RoomId: 2511,
+			Name: 'Sword',
+			Description: 'Pointy',
+			ImageName: 'sword.png',
+			Properties: '{"damage":5}',
+			NewTags: [{ TagId: tagId, Name: 'weapon', Properties: '{"slot":1}' }],
+			IconShape: 3,
+			IconColor: -65536,
+		})
+
+		// The lists now serve it; `NewTags` is `[]` on a read.
+		expect(await (await get(`${base}/2511`)).json()).toEqual([{ ...item, NewTags: [] }])
+		expect(await (await get('/econ/roomInventoryItemTags/room/2511')).json()).toEqual([
+			{ TagId: tagId, Name: 'weapon', Properties: '{"slot":1}' },
+		])
+
+		// A co-owner may write too. Naming the existing id REPLACES it, keeping `CreatedAt`;
+		// an all-zero id mints a fresh one; a NewTag naming an existing tag resolves to it.
+		const replaced = (
+			(await (
+				await post(2511, { OriginId: item.OriginId, Name: 'Axe', TagIds: [tagId] }, '2')
+			).json()) as { Value: Record<string, unknown> }
+		).Value
+		expect(replaced).toMatchObject({
+			OriginId: item.OriginId,
+			Name: 'Axe',
+			Description: '',
+			ImageName: null,
+			Properties: null,
+			TagIds: [tagId],
+			NewTags: [],
+			IconShape: 0,
+			IconColor: 0,
+			CreatedAt: item.CreatedAt,
+		})
+		const second = (
+			(await (
+				await post(2511, {
+					OriginId: '00000000-0000-0000-0000-000000000000',
+					Name: 'Shield',
+					NewTags: [{ Name: 'weapon' }],
+				})
+			).json()) as { Value: { OriginId: string; TagIds: number[] } }
+		).Value
+		expect(second.OriginId).not.toBe(item.OriginId)
+		expect(second.OriginId).not.toBe('00000000-0000-0000-0000-000000000000')
+		expect(second.TagIds).toEqual([tagId])
+		expect(await (await get(`${base}/2511`)).json()).toHaveLength(2)
+
+		// The update MERGES: a key the body carries is replaced, the rest is kept.
+		const put = async (roomId: number, originId: string, payload: unknown, sub = '1') =>
+			exports.default.fetch(`${ORIGIN}/econ/roomInventory/items/${roomId}/${originId}`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json', ...(await bearer(sub)) },
+				body: JSON.stringify(payload),
+			})
+		expect(
+			(
+				await exports.default.fetch(`${ORIGIN}/econ/roomInventory/items/2511/${item.OriginId}`, {
+					method: 'PUT',
+					body: '{}',
+				})
+			).status
+		).toBe(401)
+		expect((await put(2511, item.OriginId, { Name: 'x' }, '3')).status).toBe(403)
+		expect(await (await put(2511, crypto.randomUUID(), { Name: 'x' })).json()).toEqual(FAILED)
+		expect(await (await put(2511, item.OriginId, { Name: '' })).json()).toEqual(FAILED)
+		const updated = (await (
+			await put(
+				2511,
+				item.OriginId,
+				{
+					Description: 'Choppy',
+					Properties: '{"damage":9}',
+					IconShape: 7,
+					NewTags: [{ Name: 'heavy', Properties: null }],
+				},
+				'2'
+			)
+		).json()) as { Value: { TagIds: number[]; ModifiedAt: string }; Success: boolean }
+		expect(Object.keys(updated)).toEqual(['Value', 'Success', 'Error', 'error_id'])
+		expect(updated.Value.TagIds).toHaveLength(2)
+		const heavyId = updated.Value.TagIds[1]
+		expect(updated).toMatchObject({
+			Success: true,
+			Error: null,
+			error_id: null,
+			Value: {
+				OriginId: item.OriginId,
+				RoomId: 2511,
+				Name: 'Axe',
+				Description: 'Choppy',
+				ImageName: null,
+				Properties: '{"damage":9}',
+				TagIds: [tagId, heavyId],
+				NewTags: [{ TagId: heavyId, Name: 'heavy', Properties: null }],
+				IconShape: 7,
+				IconColor: 0,
+				CreatedAt: item.CreatedAt,
+			},
+		})
+		// An explicit `TagIds` replaces the list; an explicit null clears a nullable field.
+		expect(
+			await (await put(2511, item.OriginId, { TagIds: [heavyId], Properties: null })).json()
+		).toMatchObject({ Value: { Name: 'Axe', TagIds: [heavyId], Properties: null } })
+
+		// An id that lives in another room is refused rather than moved or overwritten.
+		expect(
+			await (await put(2511, '11111111-1111-1111-1111-111111111112', { Name: 'x' })).json()
+		).toEqual(FAILED)
+		await env.DB.prepare(
+			`INSERT INTO room_inventory_item (origin_id, room_id, name, description, created_at, modified_at)
+			 VALUES ('11111111-1111-1111-1111-111111111111', 77, 'theirs', '', 'x', 'x')`
+		).run()
+		expect(
+			await (
+				await post(2511, { OriginId: '11111111-1111-1111-1111-111111111111', Name: 'mine' })
+			).json()
+		).toEqual(FAILED)
+
+		// Holdings: the caller's rows for THIS room only, with the room joined in.
+		const code = crypto.randomUUID()
+		const hold = (accountId: number, originId: string) =>
+			env.DB.prepare(
+				`INSERT INTO room_inventory_item_player
+				   (account_id, origin_id, count, concurrency_code, created_at, modified_at)
+				 VALUES (?1, ?2, 4, ?3, '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z')`
+			)
+				.bind(accountId, originId, code)
+				.run()
+		await hold(1, item.OriginId)
+		await hold(1, '11111111-1111-1111-1111-111111111111')
+		await hold(2, second.OriginId)
+		expect(await (await get(`${base}/2511/player`, '1')).json()).toEqual([
+			{
+				RoomId: 2511,
+				RoomInventoryItemOriginId: item.OriginId,
+				Count: 4,
+				ConcurrencyCode: code,
+				CreatedAt: '2026-01-01T00:00:00.000Z',
+				ModifiedAt: '2026-01-02T00:00:00.000Z',
+			},
+		])
+		expect(await (await get(`${base}/2511/player`, '3')).json()).toEqual([])
+
+		// The award: bare array in, bare array out, one result per entry in order. It gives
+		// the CALLER the items; `Count` is the resulting total and the new code is stored.
+		const award = async (payload: unknown, sub = '3') =>
+			exports.default.fetch(`${ORIGIN}/econ/roomInventory/v2/award`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', ...(await bearer(sub)) },
+				body: JSON.stringify(payload),
+			})
+		const entry = (originId: string, quantity: unknown, code: string | null, roomId = 2511) => ({
+			RoomId: roomId,
+			RoomInventoryItemOriginId: originId,
+			Quantity: quantity,
+			ConcurrencyCodes: { CurrentConcurrencyCode: null, NewConcurrencyCode: code },
+		})
+		expect(
+			(
+				await exports.default.fetch(`${ORIGIN}/econ/roomInventory/v2/award`, {
+					method: 'POST',
+					body: '[]',
+				})
+			).status
+		).toBe(401)
+		expect(await (await award({ nope: true })).json()).toEqual([])
+		expect(await (await award([])).json()).toEqual([])
+
+		const REFUSED = { Result: 1, PlayerRoomInventoryItem: null }
+		const code1 = crypto.randomUUID()
+		const code2 = crypto.randomUUID()
+		const awarded = (await (
+			await award([
+				entry(second.OriginId.toUpperCase(), 2, code1),
+				entry(crypto.randomUUID(), 1, code1),
+				// The right item named under the wrong room is not this room's item.
+				entry(second.OriginId, 1, code1, 77),
+				entry(second.OriginId, 1.5, code1),
+				entry(second.OriginId, 1, code2),
+			])
+		).json()) as Array<{
+			Result: number
+			PlayerRoomInventoryItem: Record<string, unknown> & { CreatedAt: string }
+		}>
+		expect(awarded).toHaveLength(5)
+		expect(Object.keys(awarded[0])).toEqual(['Result', 'PlayerRoomInventoryItem'])
+		expect(Object.keys(awarded[0].PlayerRoomInventoryItem)).toEqual([
+			'RoomId',
+			'RoomInventoryItemOriginId',
+			'Count',
+			'ConcurrencyCode',
+			'CreatedAt',
+			'ModifiedAt',
+		])
+		expect(awarded[0]).toMatchObject({
+			Result: 0,
+			PlayerRoomInventoryItem: {
+				RoomId: 2511,
+				RoomInventoryItemOriginId: second.OriginId,
+				Count: 2,
+				ConcurrencyCode: code1,
+			},
+		})
+		expect(awarded.slice(1, 4)).toEqual([REFUSED, REFUSED, REFUSED])
+		expect(awarded[4]).toMatchObject({
+			Result: 0,
+			PlayerRoomInventoryItem: {
+				Count: 3,
+				ConcurrencyCode: code2,
+				CreatedAt: awarded[0].PlayerRoomInventoryItem.CreatedAt,
+			},
+		})
+		// The holdings read serves the same row; a negative quantity floors at zero, and an
+		// entry naming no new code still gets a GUID.
+		expect(await (await get(`${base}/2511/player`, '3')).json()).toEqual([
+			awarded[4].PlayerRoomInventoryItem,
+		])
+		expect(await (await award([entry(second.OriginId, -10, null)])).json()).toMatchObject([
+			{
+				Result: 0,
+				PlayerRoomInventoryItem: {
+					Count: 0,
+					ConcurrencyCode: expect.stringMatching(/^[0-9a-f-]{36}$/),
+				},
+			},
+		])
+		await env.DB.prepare('DELETE FROM room_inventory_item_player WHERE account_id = 3').run()
+
+		// The delete: the status envelope with NO `Value` key. It takes the holdings with it,
+		// leaves the tags, and cannot reach another room's item through this room's gate.
+		const del = async (roomId: number, originId: string, sub?: string) =>
+			exports.default.fetch(`${ORIGIN}/econ/roomInventory/items/${roomId}/${originId}`, {
+				method: 'DELETE',
+				headers: sub === undefined ? {} : await bearer(sub),
+			})
+		const DELETED = { Success: true, Error: null, error_id: null }
+		expect((await del(2511, item.OriginId)).status).toBe(401)
+		expect((await del(2511, item.OriginId, '3')).status).toBe(403)
+		expect(await (await del(999999, item.OriginId, '1')).json()).toEqual({
+			Success: false,
+			Error: 'Failed to delete inventory item',
+			error_id: null,
+		})
+		const deleted = await (await del(2511, item.OriginId.toUpperCase(), '2')).json()
+		expect(deleted).toEqual(DELETED)
+		expect(Object.keys(deleted as object)).toEqual(['Success', 'Error', 'error_id'])
+		// Again is still a success; another room's item survives.
+		expect(await (await del(2511, item.OriginId, '1')).json()).toEqual(DELETED)
+		expect(await (await del(2511, '11111111-1111-1111-1111-111111111111', '1')).json()).toEqual(
+			DELETED
+		)
+		expect(
+			((await (await get(`${base}/2511`)).json()) as Array<{ OriginId: string }>).map(
+				(i) => i.OriginId
+			)
+		).toEqual([second.OriginId])
+		expect(await (await get(`${base}/2511/player`, '1')).json()).toEqual([])
+		expect(
+			await env.DB.prepare(
+				'SELECT account_id, origin_id FROM room_inventory_item_player ORDER BY account_id'
+			).all()
+		).toMatchObject({
+			results: [
+				{ account_id: 1, origin_id: '11111111-1111-1111-1111-111111111111' },
+				{ account_id: 2, origin_id: second.OriginId },
+			],
+		})
+		expect(
+			await env.DB.prepare(
+				`SELECT COUNT(*) AS n FROM room_inventory_item WHERE origin_id = '11111111-1111-1111-1111-111111111111'`
+			).first()
+		).toEqual({ n: 1 })
+		expect(await (await get('/econ/roomInventoryItemTags/room/2511')).json()).toHaveLength(2)
+
+		await env.DB.prepare('DELETE FROM room_inventory_item').run()
+		await env.DB.prepare('DELETE FROM room_inventory_item_tag').run()
+		await env.DB.prepare('DELETE FROM room_inventory_item_player').run()
 	})
 
 	test('GET /api/ugcPurchasables/v1/items/room/:roomId lists keys, consumables and currency packs as one shop', async () => {
@@ -8366,6 +8733,7 @@ describe('econ endpoints', () => {
 			)
 		)
 		expect([...documented].sort()).toEqual([
+			'DELETE /econ/roomInventory/items/{roomId}/{originId}',
 			'GET /api/CampusCard/v1/SignUpBonus',
 			'GET /api/avatar/v1/defaultbaseavataritems',
 			'GET /api/avatar/v1/defaultunlocked',
@@ -8457,11 +8825,14 @@ describe('econ endpoints', () => {
 			'POST /api/timedCurrencyGrants/update',
 			'POST /api/ugcPurchasables/v1/items/bulk',
 			'POST /circuitsRoomRewards/grantRoomBadge',
+			'POST /econ/roomInventory/room/{roomId}',
+			'POST /econ/roomInventory/v2/award',
 			'PUT /api/equipment/v1/update',
 			'PUT /api/roomconsumables/v1/roomConsumable',
 			'PUT /api/roomconsumables/v1/roomConsumable/{id}/consume',
 			'PUT /api/roomconsumables/v1/roomconsumable/{id}/purchase/{via}',
 			'PUT /api/roomkeys/v1/updateAll',
+			'PUT /econ/roomInventory/items/{roomId}/{originId}',
 		])
 
 		// Every operation carries a summary — a path present but undescribed is not

@@ -88,6 +88,8 @@ import {
 	AwardRoomConsumablesRequest,
 	AwardRoomCurrencyRequest,
 	AwardRoomCurrencyResultList,
+	AwardRoomInventoryItemResultList,
+	AwardRoomInventoryItemsRequest,
 	AwardRoomKeyResultList,
 	AwardRoomKeysRequest,
 	BalanceEntry,
@@ -111,9 +113,11 @@ import {
 	ConsumeRoomConsumableResponse,
 	CreatePurchaseOfferRequest,
 	CreateRoomCurrencyRequest,
+	CreateRoomInventoryItemRequest,
 	CreateRoomKeyRequest,
 	CustomAvatarItemsResponse,
 	DeletePurchaseOfferRequest,
+	DeleteRoomInventoryItemResponse,
 	EquipmentUpdateRequest,
 	ErrorResponse,
 	form,
@@ -136,6 +140,7 @@ import {
 	OPTIONAL_AUTHED,
 	OwnsRoomKeysRequest,
 	OwnsRoomKeysResponse,
+	PlayerRoomInventoryItemDto,
 	PurchasableItemsRequest,
 	PurchaseRoomConsumableRequest,
 	PurchaseRoomConsumableResponse,
@@ -156,6 +161,9 @@ import {
 	RoomCurrencyPurchaseOfferEnvelope,
 	RoomCurrencyPurchaseOffersDto,
 	RoomEconConfig,
+	RoomInventoryItemDto,
+	RoomInventoryItemEnvelope,
+	RoomInventoryItemTagDto,
 	RoomKeyDto,
 	RoomKeyEnvelope,
 	RoomPurchasableList,
@@ -173,6 +181,7 @@ import {
 	UpdateObjectiveRequest,
 	UpdateObjectiveResponse,
 	UpdateRoomCurrencyRequest,
+	UpdateRoomInventoryItemRequest,
 	UpdateRoomKeyRequest,
 	UpsertRoomConsumableRequest,
 	WishlistEnvelope,
@@ -202,6 +211,15 @@ import {
 	spendRoomCurrency,
 	updateRoomCurrency,
 } from './room-currency-db'
+import {
+	awardRoomInventoryItem,
+	deleteRoomInventoryItem,
+	getPlayerRoomInventoryItems,
+	getRoomInventoryItem,
+	getRoomInventoryItems,
+	getRoomInventoryItemTags,
+	upsertRoomInventoryItem,
+} from './room-inventory-item-db'
 import {
 	awardRoomKey,
 	claimRoomKey,
@@ -247,6 +265,7 @@ import type { Equipment } from './equipment-db'
 import type { AvatarItem } from './inventory-db'
 import type { RoomConsumable, RoomConsumableInventoryItem } from './room-consumable-db'
 import type { RoomCurrency, RoomCurrencyPurchaseOffer } from './room-currency-db'
+import type { RoomInventoryItem } from './room-inventory-item-db'
 import type { RoomKey, RoomKeyHolding } from './room-key-db'
 import type { WishlistItem } from './wishlist-db'
 
@@ -399,6 +418,17 @@ const UPDATE_CURRENCY_FAILED = 'Failed to update currency'
 const CREATE_OFFER_FAILED = 'Failed to create purchase offer'
 const DELETE_OFFER_FAILED = 'Failed to delete purchase offer'
 const SAVE_CONSUMABLE_FAILED = 'Failed to save consumable'
+const SAVE_INVENTORY_ITEM_FAILED = 'Failed to save inventory item'
+const DELETE_INVENTORY_ITEM_FAILED = 'Failed to delete inventory item'
+/**
+ * `Result` on each entry of the room inventory award. 0 is the observed success; 1 for a
+ * refusal is an assumption — no refusal has been observed.
+ */
+const ROOM_INVENTORY_AWARD_OK = 0
+const ROOM_INVENTORY_AWARD_FAILED = 1
+/** What a non-nullable client `Guid` holds when it has none to give. */
+const EMPTY_GUID = '00000000-0000-0000-0000-000000000000'
+const GUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 /**
  * `Status` on the room-key create's `{ Status, RoomKey }` reply. 0 is the observed success
  * code; the refusal code has not been observed, so 1 is an assumption.
@@ -448,6 +478,23 @@ function roomKeyEnvelope(c: Context<App>, key: RoomKey | null) {
 	return c.json({
 		Status: key === null ? ROOM_KEY_STATUS_FAILED : ROOM_KEY_STATUS_OK,
 		RoomKey: key,
+	})
+}
+
+/**
+ * The inventory item create's envelope — the client's `RecNetResultObject<RoomInventoryItemDTO>`,
+ * the same `{ Value, Success, Error, error_id }` shape the room-currency writes answer in.
+ */
+function roomInventoryItemEnvelope(
+	c: Context<App>,
+	value: RoomInventoryItem | null,
+	error?: string
+) {
+	return c.json({
+		Value: value,
+		Success: error === undefined,
+		Error: error ?? null,
+		error_id: null,
 	})
 }
 
@@ -5319,30 +5366,478 @@ const app = new Hono<App>({ strict: false })
 		}
 	)
 
-	// The room-economy surface the client asks for on entering a room: the room's own
-	// inventory/offers/gift-drop shops and the caller's slice of them. Nothing here is
+	// Room inventory items — the things a room DEFINES for its players to hold (the client's
+	// `RoomInventoryItem` family; NOT the consumables, whose table took the `room_inventory`
+	// name first). The client asks for all three lists on entering a room, and each must be
+	// an ARRAY whatever happens: `null` resolves and then NREs on the consumer, and `{}`
+	// throws Malformed Response. So an unknown room, or a room id that isn't a number, is `[]`.
+	//
+	// A room's item definitions. Public, like its shop and its currencies.
+	.get(
+		'/econ/roomInventory/room/:roomId',
+		describeRoute({
+			tags: ['Econ'],
+			summary: 'A room’s inventory items',
+			description: [
+				'A bare array of the items the room defines — the client’s `RoomInventoryItemDTO`,',
+				'12 keys — oldest first. `Properties` is a JSON blob served AS A STRING, verbatim.',
+				'`NewTags` is a write input and is always `[]` here.',
+				'',
+				'Public. A room that defines nothing, and an unknown room, are both `[]` — never',
+				'null and never `{}`, which the client cannot read.',
+			].join('\n'),
+			parameters: [
+				{
+					name: 'roomId',
+					in: 'path',
+					required: true,
+					description: 'The room whose items to list',
+					schema: { type: 'integer' },
+				},
+			],
+			responses: { 200: json(RoomInventoryItemDto.array(), 'The room’s items, oldest first') },
+		}),
+		async (c) => {
+			const roomId = Number.parseInt(c.req.param('roomId'), 10)
+			if (!Number.isInteger(roomId)) return c.json([])
+			return c.json(await getRoomInventoryItems(c.env.DB, roomId))
+		}
+	)
+	// Define an item in a room. Auth-gated (401) and gated to the room's creator or a co-owner
+	// (403), like the room's shop. The request body has NOT been observed — only that the
+	// client sends one and reads `RecNetResultObject<RoomInventoryItemDTO>` back — so it is
+	// taken to be that same DTO as JSON.
+	.post(
+		'/econ/roomInventory/room/:roomId',
+		describeRoute({
+			tags: ['Econ'],
+			summary: 'Create a room inventory item',
+			description: [
+				'Defines an item in the room and answers it inside the',
+				'`{ Value, Success, Error, error_id }` envelope.',
+				'',
+				'The body is ASSUMED to be the `RoomInventoryItemDTO` as JSON (it has not been',
+				'observed). `OriginId` absent, null or all-zero mints an id; one naming an item this',
+				'room already defines REPLACES that item, keeping its `CreatedAt`; one naming another',
+				'room’s item is refused. The room is always the path’s — a body `RoomId` is ignored.',
+				'',
+				'`NewTags` are created in the room (an entry naming a tag the room already has',
+				'resolves to it) and attached after `TagIds`, from which ids that are not this',
+				'room’s tags are dropped. The response’s `NewTags` are those tags with their ids.',
+				'',
+				'Gated to the room’s creator or a co-owner; a valid token from anyone else is a 403.',
+				'An unusable body or an unknown room is a 200 carrying `Success: false`.',
+			].join('\n'),
+			security: AUTHED,
+			parameters: [
+				{
+					name: 'roomId',
+					in: 'path',
+					required: true,
+					description: 'The room to define the item in',
+					schema: { type: 'integer' },
+				},
+			],
+			requestBody: jsonBody(CreateRoomInventoryItemRequest, 'The item to define'),
+			responses: {
+				200: json(
+					RoomInventoryItemEnvelope,
+					'The item as stored, or a rejection with `Success: false`'
+				),
+				401: UNAUTHORIZED_RESPONSE,
+				403: { description: 'Not the room’s creator or a co-owner (empty body)' },
+			},
+		}),
+		async (c) => {
+			const accountId = await authedId(c)
+			if (accountId === null) return unauthorized(c)
+			const failed = () => roomInventoryItemEnvelope(c, null, SAVE_INVENTORY_ITEM_FAILED)
+
+			const roomId = Number.parseInt(c.req.param('roomId'), 10)
+			if (!Number.isInteger(roomId)) return failed()
+
+			const body = (await c.req.json<Record<string, unknown>>().catch(() => null)) as Record<
+				string,
+				unknown
+			> | null
+			if (!body || typeof body !== 'object') return failed()
+
+			const str = (v: unknown): string | null => (typeof v === 'string' ? v : null)
+			const int = (v: unknown): number => (typeof v === 'number' && Number.isInteger(v) ? v : 0)
+
+			const name = str(body.Name)?.trim() ?? ''
+			if (name === '') return failed()
+
+			const canManage = await canManageRoomById(c.env.DB, roomId, accountId)
+			if (canManage === null) return failed()
+			if (!canManage) return c.body(null, 403)
+
+			// A non-nullable Guid arrives as all zeroes when the client has none to give, so
+			// that mints one just as an absent id does. An id already in use must be this
+			// room's: the permission check above was against the path's room, and must not be
+			// spent on an item that lives somewhere else.
+			let originId = str(body.OriginId)?.toLowerCase() ?? null
+			if (originId === null || originId === EMPTY_GUID) {
+				originId = crypto.randomUUID()
+			} else {
+				if (!GUID_PATTERN.test(originId)) return failed()
+				const existing = await getRoomInventoryItem(c.env.DB, originId)
+				if (existing && existing.RoomId !== roomId) return failed()
+			}
+
+			const newTags = (Array.isArray(body.NewTags) ? body.NewTags : [])
+				.filter((t): t is Record<string, unknown> => typeof t === 'object' && t !== null)
+				.map((t) => ({
+					Name: censorSwears(str(t.Name)?.trim() ?? ''),
+					Properties: str(t.Properties),
+				}))
+				.filter((t) => t.Name !== '')
+
+			const item = await upsertRoomInventoryItem(c.env.DB, originId, {
+				RoomId: roomId,
+				// Masked like every other player-typed string a room shows its visitors.
+				Name: censorSwears(name),
+				Description: censorSwears(str(body.Description) ?? ''),
+				ImageName: str(body.ImageName),
+				Properties: str(body.Properties),
+				TagIds: (Array.isArray(body.TagIds) ? body.TagIds : []).filter((id): id is number =>
+					Number.isInteger(id)
+				),
+				NewTags: newTags,
+				// A byte in the client's model.
+				IconShape: Math.min(255, Math.max(0, int(body.IconShape))),
+				IconColor: int(body.IconColor),
+			})
+			return roomInventoryItemEnvelope(c, item)
+		}
+	)
+	// Edit an item — the client's `UpdateRoomInventoryItem`. Same gates and same envelope as
+	// the create. The body is "the updated fields" and has not been observed, so it is MERGED:
+	// a key the body carries replaces the stored value, a key it omits is left alone. That is
+	// right whether the client sends the whole DTO back or only what changed — a replace
+	// would wipe every field a partial body didn't mention.
+	.put(
+		'/econ/roomInventory/items/:roomId/:originId',
+		describeRoute({
+			tags: ['Econ'],
+			summary: 'Update a room inventory item',
+			description: [
+				'Edits an item the room defines and answers it inside the',
+				'`{ Value, Success, Error, error_id }` envelope, like the create.',
+				'',
+				'The body (JSON, not observed) is MERGED onto the stored item: `Name`,',
+				'`Description`, `ImageName`, `Properties`, `TagIds`, `IconShape` and `IconColor`',
+				'each replace the stored value when the body carries the key and are kept when it',
+				'does not. `NewTags` are created in the room and attached, as on the create.',
+				'`OriginId`, `RoomId` and `CreatedAt` never change; `ModifiedAt` is set to now.',
+				'',
+				'Gated to the room’s creator or a co-owner; a valid token from anyone else is a 403.',
+				'An item that is not this room’s, an unknown room, or an unusable body (a blank',
+				'`Name` included) is a 200 carrying `Success: false`.',
+			].join('\n'),
+			security: AUTHED,
+			parameters: [
+				{
+					name: 'roomId',
+					in: 'path',
+					required: true,
+					description: 'The room that defines the item',
+					schema: { type: 'integer' },
+				},
+				{
+					name: 'originId',
+					in: 'path',
+					required: true,
+					description: 'The item’s `OriginId`',
+					schema: { type: 'string' },
+				},
+			],
+			requestBody: jsonBody(UpdateRoomInventoryItemRequest, 'The fields to change'),
+			responses: {
+				200: json(
+					RoomInventoryItemEnvelope,
+					'The item as it now stands, or a rejection with `Success: false`'
+				),
+				401: UNAUTHORIZED_RESPONSE,
+				403: { description: 'Not the room’s creator or a co-owner (empty body)' },
+			},
+		}),
+		async (c) => {
+			const accountId = await authedId(c)
+			if (accountId === null) return unauthorized(c)
+			const failed = () => roomInventoryItemEnvelope(c, null, SAVE_INVENTORY_ITEM_FAILED)
+
+			const roomId = Number.parseInt(c.req.param('roomId'), 10)
+			if (!Number.isInteger(roomId)) return failed()
+
+			const body = (await c.req.json<Record<string, unknown>>().catch(() => null)) as Record<
+				string,
+				unknown
+			> | null
+			if (!body || typeof body !== 'object') return failed()
+
+			const canManage = await canManageRoomById(c.env.DB, roomId, accountId)
+			if (canManage === null) return failed()
+			if (!canManage) return c.body(null, 403)
+
+			// The item must be the PATH room's: that is the room the check above was made
+			// against.
+			const existing = await getRoomInventoryItem(c.env.DB, c.req.param('originId').toLowerCase())
+			if (!existing || existing.RoomId !== roomId) return failed()
+
+			const str = (v: unknown): string | null => (typeof v === 'string' ? v : null)
+			const has = (key: string) => key in body
+
+			const name = has('Name') ? (str(body.Name)?.trim() ?? '') : existing.Name
+			if (name === '') return failed()
+
+			const newTags = (Array.isArray(body.NewTags) ? body.NewTags : [])
+				.filter((t): t is Record<string, unknown> => typeof t === 'object' && t !== null)
+				.map((t) => ({
+					Name: censorSwears(str(t.Name)?.trim() ?? ''),
+					Properties: str(t.Properties),
+				}))
+				.filter((t) => t.Name !== '')
+
+			const item = await upsertRoomInventoryItem(c.env.DB, existing.OriginId, {
+				RoomId: roomId,
+				Name: has('Name') ? censorSwears(name) : existing.Name,
+				Description: has('Description')
+					? censorSwears(str(body.Description) ?? '')
+					: existing.Description,
+				ImageName: has('ImageName') ? str(body.ImageName) : existing.ImageName,
+				Properties: has('Properties') ? str(body.Properties) : existing.Properties,
+				TagIds: Array.isArray(body.TagIds)
+					? body.TagIds.filter((id): id is number => Number.isInteger(id))
+					: existing.TagIds,
+				NewTags: newTags,
+				IconShape:
+					typeof body.IconShape === 'number' && Number.isInteger(body.IconShape)
+						? Math.min(255, Math.max(0, body.IconShape))
+						: existing.IconShape,
+				IconColor:
+					typeof body.IconColor === 'number' && Number.isInteger(body.IconColor)
+						? body.IconColor
+						: existing.IconColor,
+			})
+			return roomInventoryItemEnvelope(c, item)
+		}
+	)
+	// Remove an item. Same gates as the edit. The reply is the STATUS envelope —
+	// `{ Success, Error, error_id }` with NO `Value` key, as observed from the live server —
+	// not the item envelope the create and the edit answer in.
+	.delete(
+		'/econ/roomInventory/items/:roomId/:originId',
+		describeRoute({
+			tags: ['Econ'],
+			summary: 'Delete a room inventory item',
+			description: [
+				'Removes an item the room defines, along with what every player holds of it. The',
+				'room’s tags are left alone. Answers `{ Success, Error, error_id }` — no `Value`.',
+				'',
+				'Deleting an item the room does not define (already deleted, or another room’s) is',
+				'still a success and removes nothing: the item is not there, which is what was asked.',
+				'',
+				'Gated to the room’s creator or a co-owner; a valid token from anyone else is a 403.',
+				'An unknown room is a 200 carrying `Success: false`.',
+			].join('\n'),
+			security: AUTHED,
+			parameters: [
+				{
+					name: 'roomId',
+					in: 'path',
+					required: true,
+					description: 'The room that defines the item',
+					schema: { type: 'integer' },
+				},
+				{
+					name: 'originId',
+					in: 'path',
+					required: true,
+					description: 'The item’s `OriginId`',
+					schema: { type: 'string' },
+				},
+			],
+			responses: {
+				200: json(DeleteRoomInventoryItemResponse, 'The outcome'),
+				401: UNAUTHORIZED_RESPONSE,
+				403: { description: 'Not the room’s creator or a co-owner (empty body)' },
+			},
+		}),
+		async (c) => {
+			const accountId = await authedId(c)
+			if (accountId === null) return unauthorized(c)
+			const failed = () =>
+				c.json({ Success: false, Error: DELETE_INVENTORY_ITEM_FAILED, error_id: null })
+
+			const roomId = Number.parseInt(c.req.param('roomId'), 10)
+			if (!Number.isInteger(roomId)) return failed()
+
+			const canManage = await canManageRoomById(c.env.DB, roomId, accountId)
+			if (canManage === null) return failed()
+			if (!canManage) return c.body(null, 403)
+
+			await deleteRoomInventoryItem(c.env.DB, roomId, c.req.param('originId').toLowerCase())
+			return c.json({ Success: true, Error: null, error_id: null })
+		}
+	)
+	// Give the CALLER some of a room's items. Auth-gated (401); everything else is reported
+	// per entry, like the consumable award. Both shapes are bare arrays, as observed.
+	.post(
+		'/econ/roomInventory/v2/award',
+		describeRoute({
+			tags: ['Econ'],
+			summary: 'Award room inventory items to the caller',
+			description: [
+				'Adds to what the CALLER holds of a room’s inventory items — the token says who is',
+				'being given them, and there is no recipient in the body.',
+				'',
+				'The body is a BARE ARRAY of `{ RoomId, RoomInventoryItemOriginId, Quantity,',
+				'ConcurrencyCodes: { CurrentConcurrencyCode, NewConcurrencyCode } }`, and the answer',
+				'a bare array of `{ Result, PlayerRoomInventoryItem }`, one per entry in the order',
+				'sent. `Result` 0 carries the holding as it now stands — `Count` is the RESULTING',
+				'total, never the change, and `ConcurrencyCode` is the entry’s `NewConcurrencyCode`.',
+				'',
+				'Each entry stands alone: one naming an item its `RoomId` does not define, or a',
+				'`Quantity` that is not an integer, answers `Result` 1 with a null',
+				'`PlayerRoomInventoryItem` and leaves the rest to land. (The refusal shape is an',
+				'assumption — only success has been observed.)',
+				'',
+				'`CurrentConcurrencyCode` is accepted and NOT checked — no optimistic concurrency is',
+				'implemented, as with the room consumables. `Quantity` may be negative, which takes',
+				'items away; a count floors at zero.',
+				'',
+				'NOTE: this awards to whoever is asking, and no room membership is checked — the same',
+				'self-service faucet the consumable award is.',
+			].join('\n'),
+			security: AUTHED,
+			requestBody: jsonBody(AwardRoomInventoryItemsRequest, 'The items to give the caller'),
+			responses: {
+				200: json(AwardRoomInventoryItemResultList, 'One result per entry, in the order sent'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const accountId = await authedId(c)
+			if (accountId === null) return unauthorized(c)
+
+			// The answer is a list of entry results, so a body with no entries is `[]` —
+			// never null or `{}`.
+			const body = await c.req.json<unknown>().catch(() => null)
+			if (!Array.isArray(body)) return c.json([])
+
+			const results = []
+			for (const entry of body as unknown[]) {
+				const request = (typeof entry === 'object' && entry !== null ? entry : {}) as {
+					RoomId?: unknown
+					RoomInventoryItemOriginId?: unknown
+					Quantity?: unknown
+					ConcurrencyCodes?: { NewConcurrencyCode?: unknown } | null
+				}
+				const originId =
+					typeof request.RoomInventoryItemOriginId === 'string'
+						? request.RoomInventoryItemOriginId.toLowerCase()
+						: null
+				const code = request.ConcurrencyCodes?.NewConcurrencyCode
+				const held =
+					originId !== null &&
+					Number.isInteger(request.RoomId) &&
+					Number.isInteger(request.Quantity)
+						? await awardRoomInventoryItem(
+								c.env.DB,
+								accountId,
+								request.RoomId as number,
+								originId,
+								request.Quantity as number,
+								// The client reads a non-nullable Guid, so an entry naming no
+								// new code is given one rather than a null.
+								typeof code === 'string' && GUID_PATTERN.test(code.toLowerCase())
+									? code.toLowerCase()
+									: crypto.randomUUID()
+							)
+						: null
+				results.push({
+					Result: held === null ? ROOM_INVENTORY_AWARD_FAILED : ROOM_INVENTORY_AWARD_OK,
+					PlayerRoomInventoryItem: held,
+				})
+			}
+			return c.json(results)
+		}
+	)
+	// What the CALLER holds of a room's items. Auth-gated (401), like the consumables' `/me`.
+	.get(
+		'/econ/roomInventory/room/:roomId/player',
+		describeRoute({
+			tags: ['Econ'],
+			summary: 'The caller’s inventory in a room',
+			description: [
+				'A bare array of what the caller holds of the room’s inventory items — the client’s',
+				'`PlayerRoomInventoryItemDTO`: `{ RoomId, RoomInventoryItemOriginId, Count,',
+				'ConcurrencyCode, CreatedAt, ModifiedAt }`, in the order the room defined the items.',
+				'',
+				'Rows are written by `POST /econ/roomInventory/v2/award`. An unknown room,',
+				'or one the caller holds nothing in, is `[]` — never null and never `{}`.',
+			].join('\n'),
+			security: AUTHED,
+			parameters: [
+				{
+					name: 'roomId',
+					in: 'path',
+					required: true,
+					description: 'The room whose items to list',
+					schema: { type: 'integer' },
+				},
+			],
+			responses: {
+				200: json(PlayerRoomInventoryItemDto.array(), 'What the caller holds'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+			const roomId = Number.parseInt(c.req.param('roomId'), 10)
+			if (!Number.isInteger(roomId)) return c.json([])
+			return c.json(await getPlayerRoomInventoryItems(c.env.DB, roomId, id))
+		}
+	)
+	// A room's tags. Public, like the definitions that name them.
+	.get(
+		'/econ/roomInventoryItemTags/room/:roomId',
+		describeRoute({
+			tags: ['Econ'],
+			summary: 'A room’s inventory item tags',
+			description: [
+				'A bare array of the room’s tags — the client’s `RoomInventoryItemTagDTO`:',
+				'`{ TagId, Name, Properties }`, oldest first. Tags are created by the `NewTags` an',
+				'item create carries. A room with none, and an unknown room, are both `[]`.',
+			].join('\n'),
+			parameters: [
+				{
+					name: 'roomId',
+					in: 'path',
+					required: true,
+					description: 'The room whose tags to list',
+					schema: { type: 'integer' },
+				},
+			],
+			responses: { 200: json(RoomInventoryItemTagDto.array(), 'The room’s tags, oldest first') },
+		}),
+		async (c) => {
+			const roomId = Number.parseInt(c.req.param('roomId'), 10)
+			if (!Number.isInteger(roomId)) return c.json([])
+			return c.json(await getRoomInventoryItemTags(c.env.DB, roomId))
+		}
+	)
+
+	// The rest of the room-economy surface the client asks for on entering a room: the
+	// room's offers and gift-drop shops, and the caller's slice of them. Nothing here is
 	// stored yet, so every one is an empty list — the client reads that as "this room
 	// sells nothing" and renders no shop, where a 404 stalls the room load instead.
 	//
-	// The `/player` and `purchaseCounts` variants are caller-scoped but deliberately
-	// unauthed, matching the `roomConsumable/.../me` stub above: an empty list is the
-	// same answer for every caller, so there's nothing to protect until something
-	// writes here. Gate them when they start returning real data.
-	.get(
-		'/econ/roomInventory/room/:roomId',
-		listRoute('A room’s inventory', 'Empty stub so the client doesn’t 404'),
-		(c) => c.json([])
-	)
-	.get(
-		'/econ/roomInventory/room/:roomId/player',
-		listRoute('The caller’s inventory in a room', 'Empty stub'),
-		(c) => c.json([])
-	)
-	.get(
-		'/econ/roomInventoryItemTags/room/:roomId',
-		listRoute('A room’s inventory item tags', 'Empty stub'),
-		(c) => c.json([])
-	)
+	// The `purchaseCounts` variant is caller-scoped but deliberately unauthed: an empty
+	// list is the same answer for every caller, so there's nothing to protect until
+	// something writes here. Gate it when it starts returning real data.
 	.get('/econ/roomOffer/room/:roomId', listRoute('A room’s offers', 'Empty stub'), (c) =>
 		c.json([])
 	)

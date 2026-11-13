@@ -1029,6 +1029,120 @@ export const RoomConsumableDto = z.object({
 		.describe('How many may be bought at once. Stored and served; nothing buys one yet'),
 })
 
+/** A room's inventory item tag — the client's `RoomInventoryItemTagDTO`, in its key order. */
+export const RoomInventoryItemTagDto = z.object({
+	TagId: z.int().describe('Autoincrement — the client’s model has a long here'),
+	Name: z.string(),
+	Properties: z.string().nullable().describe('A JSON blob AS A STRING, served verbatim'),
+})
+
+/**
+ * A room inventory item's definition — the client's `RoomInventoryItemDTO`, its 12 keys in
+ * order. NOT a room consumable, and nothing to do with the `room_inventory` table.
+ */
+export const RoomInventoryItemDto = z.object({
+	OriginId: z.string().describe('GUID — how the client names this item afterwards'),
+	RoomId: z.int(),
+	Name: z.string(),
+	Description: z.string(),
+	ImageName: z.string().nullable(),
+	CreatedAt: z.string().describe('ISO-8601 UTC'),
+	ModifiedAt: z.string().describe('ISO-8601 UTC'),
+	Properties: z.string().nullable().describe('A JSON blob AS A STRING, served verbatim'),
+	TagIds: z.array(z.int()).describe('The room’s tags this item carries'),
+	NewTags: z
+		.array(RoomInventoryItemTagDto)
+		.describe('The tags the write created, on its own response; `[]` on a list read'),
+	IconShape: z.int().describe('A byte in the client’s model'),
+	IconColor: z.int(),
+})
+
+/**
+ * `POST /econ/roomInventory/room/{roomId}` — JSON. The body has NOT been observed: it is
+ * assumed to be the `RoomInventoryItemDTO` the response carries, minus what the server mints.
+ */
+export const CreateRoomInventoryItemRequest = z.object({
+	OriginId: z
+		.string()
+		.nullable()
+		.optional()
+		.describe(
+			'Absent, null or the all-zero GUID mints one; an existing item of this room is replaced'
+		),
+	Name: z.string(),
+	Description: z.string().optional().describe('Defaults to empty'),
+	ImageName: z.string().nullable().optional(),
+	Properties: z.string().nullable().optional().describe('A JSON blob AS A STRING'),
+	TagIds: z.array(z.int()).optional().describe('Ids that are not this room’s tags are dropped'),
+	NewTags: z
+		.array(z.object({ Name: z.string(), Properties: z.string().nullable().optional() }))
+		.optional()
+		.describe('Tags to create in the room (or resolve by name) and attach'),
+	IconShape: z.int().optional(),
+	IconColor: z.int().optional(),
+})
+
+/**
+ * `PUT /econ/roomInventory/items/{roomId}/{originId}` — JSON, "the updated fields". Not
+ * observed, so every key is optional and the body is MERGED onto the stored item.
+ */
+export const UpdateRoomInventoryItemRequest = CreateRoomInventoryItemRequest.omit({
+	OriginId: true,
+}).partial()
+
+/** The envelope the item create and update answer in — `RecNetResultObject<RoomInventoryItemDTO>`. */
+export const RoomInventoryItemEnvelope = z.object({
+	Value: RoomInventoryItemDto.nullable(),
+	Success: z.boolean(),
+	Error: z.string().nullable(),
+	error_id: z.null(),
+})
+
+/**
+ * `DELETE /econ/roomInventory/items/{roomId}/{originId}` — the status envelope with NO
+ * `Value` key, as observed from the live server: `{"Success":true,"Error":null,"error_id":null}`.
+ */
+export const DeleteRoomInventoryItemResponse = z.object({
+	Success: z.boolean(),
+	Error: z.string().nullable(),
+	error_id: z.null().describe('Always null. Present as a key, and lowercase'),
+})
+
+/** What a player holds of one room inventory item — `PlayerRoomInventoryItemDTO`. */
+export const PlayerRoomInventoryItemDto = z.object({
+	RoomId: z.int(),
+	RoomInventoryItemOriginId: z.string().describe('The item’s `OriginId`'),
+	Count: z.int(),
+	ConcurrencyCode: z.string().describe('GUID'),
+	CreatedAt: z.string().describe('ISO-8601 UTC'),
+	ModifiedAt: z.string().describe('ISO-8601 UTC'),
+})
+
+/** `POST /econ/roomInventory/v2/award` — a BARE JSON ARRAY, as the live client sends it. */
+export const AwardRoomInventoryItemsRequest = z.array(
+	z.object({
+		RoomId: z.int().describe('The room that defines the item'),
+		RoomInventoryItemOriginId: z.string().describe('The item’s `OriginId`'),
+		Quantity: z.int().describe('How many to give; negative takes away, floored at zero'),
+		ConcurrencyCodes: z
+			.object({
+				CurrentConcurrencyCode: z.string().nullable().describe('Accepted, not checked'),
+				NewConcurrencyCode: z.string().describe('GUID — stored and served back'),
+			})
+			.optional(),
+	})
+)
+
+/** The award's answer — a bare array, one `{ Result, PlayerRoomInventoryItem }` per entry. */
+export const AwardRoomInventoryItemResultList = z.array(
+	z.object({
+		Result: z.int().describe('0 on success; 1 on a refusal (assumed — not observed)'),
+		PlayerRoomInventoryItem: PlayerRoomInventoryItemDto.nullable().describe(
+			'The holding as it now stands, `Count` the resulting total; null on a refusal'
+		),
+	})
+)
+
 /**
  * `PUT /api/roomconsumables/v1/roomConsumable` — JSON, creating a listing or replacing one.
  *
