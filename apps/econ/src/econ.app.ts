@@ -115,6 +115,7 @@ import {
 	CreateRoomCurrencyRequest,
 	CreateRoomInventoryItemRequest,
 	CreateRoomKeyRequest,
+	CreateRoomOfferRequest,
 	CustomAvatarItemsResponse,
 	DeletePurchaseOfferRequest,
 	DeleteRoomInventoryItemResponse,
@@ -166,6 +167,7 @@ import {
 	RoomInventoryItemTagDto,
 	RoomKeyDto,
 	RoomKeyEnvelope,
+	RoomOfferEnvelope,
 	RoomPurchasableList,
 	RRPlusSignUpBonus,
 	SaveOutfitRequest,
@@ -232,6 +234,7 @@ import {
 	releaseRoomKey,
 	updateRoomKey,
 } from './room-key-db'
+import { getRoomOffer, ROOM_OFFER_ITEM_TYPE_INVENTORY_ITEM, upsertRoomOffer } from './room-offer-db'
 import { getRoomPurchasables } from './room-purchasables-db'
 import {
 	addWishlistItem,
@@ -267,6 +270,7 @@ import type { RoomConsumable, RoomConsumableInventoryItem } from './room-consuma
 import type { RoomCurrency, RoomCurrencyPurchaseOffer } from './room-currency-db'
 import type { RoomInventoryItem } from './room-inventory-item-db'
 import type { RoomKey, RoomKeyHolding } from './room-key-db'
+import type { RoomOffer, RoomOfferItemMapping } from './room-offer-db'
 import type { WishlistItem } from './wishlist-db'
 
 // Invention storage (owned by the `api` worker, on this same `recflare` database).
@@ -420,6 +424,7 @@ const DELETE_OFFER_FAILED = 'Failed to delete purchase offer'
 const SAVE_CONSUMABLE_FAILED = 'Failed to save consumable'
 const SAVE_INVENTORY_ITEM_FAILED = 'Failed to save inventory item'
 const DELETE_INVENTORY_ITEM_FAILED = 'Failed to delete inventory item'
+const SAVE_ROOM_OFFER_FAILED = 'Failed to save room offer'
 /**
  * `Result` on each entry of the room inventory award. 0 is the observed success; 1 for a
  * refusal is an assumption — no refusal has been observed.
@@ -485,6 +490,19 @@ function roomKeyEnvelope(c: Context<App>, key: RoomKey | null) {
  * The inventory item create's envelope — the client's `RecNetResultObject<RoomInventoryItemDTO>`,
  * the same `{ Value, Success, Error, error_id }` shape the room-currency writes answer in.
  */
+/**
+ * The room offer create's envelope — `{ Value, Success, Error, error_id }`, as observed from
+ * the live server. The keys of the offer inside `Value` are not yet confirmed (see `RoomOffer`).
+ */
+function roomOfferEnvelope(c: Context<App>, value: RoomOffer | null, error?: string) {
+	return c.json({
+		Value: value,
+		Success: error === undefined,
+		Error: error ?? null,
+		error_id: null,
+	})
+}
+
 function roomInventoryItemEnvelope(
 	c: Context<App>,
 	value: RoomInventoryItem | null,
@@ -5840,6 +5858,140 @@ const app = new Hono<App>({ strict: false })
 	// something writes here. Gate it when it starts returning real data.
 	.get('/econ/roomOffer/room/:roomId', listRoute('A room’s offers', 'Empty stub'), (c) =>
 		c.json([])
+	)
+	// Create a room offer: a price, and the room's inventory items it gives. Auth-gated (401)
+	// and gated to the room's creator or a co-owner (403), like the items themselves. The body
+	// and the response envelope are as observed; the offer's own keys are not yet confirmed.
+	.post(
+		'/econ/roomOffer/room/:roomId',
+		describeRoute({
+			tags: ['Econ'],
+			summary: 'Create a room offer',
+			description: [
+				'Creates an offer that sells some of the room’s inventory items, and answers it inside',
+				'the `{ Value, Success, Error, error_id }` envelope, as observed. The keys of the offer',
+				'in `Value` are PROVISIONAL: the request’s, plus `OriginId`, `RoomId` and timestamps.',
+				'',
+				'Each `ItemMappings` entry is `{ ItemType, ItemOriginId, Count }`; `ItemType` 1 is the',
+				'only type accepted, and its `ItemOriginId` must be an inventory item THIS room',
+				'defines. `Count` and `MaxCountPerPurchase` are at least 1, `Price` at least 0,',
+				'`MaxNumPurchasesPerPlayer` null (no limit) or at least 1.',
+				'',
+				'`OriginId` absent, null or all-zero mints an id; one naming an offer this room',
+				'already has REPLACES it, keeping its `CreatedAt`; one naming another room’s offer',
+				'is refused. `PriceUnitId` has only been seen null and is stored as sent.',
+				'',
+				'Gated to the room’s creator or a co-owner; a valid token from anyone else is a 403.',
+				'An unusable body or an unknown room is a 200 carrying `Success: false`.',
+			].join('\n'),
+			security: AUTHED,
+			parameters: [
+				{
+					name: 'roomId',
+					in: 'path',
+					required: true,
+					description: 'The room to create the offer in',
+					schema: { type: 'integer' },
+				},
+			],
+			requestBody: jsonBody(CreateRoomOfferRequest, 'The offer to create'),
+			responses: {
+				200: json(RoomOfferEnvelope, 'The offer as stored, or a rejection with `Success: false`'),
+				401: UNAUTHORIZED_RESPONSE,
+				403: { description: 'Not the room’s creator or a co-owner (empty body)' },
+			},
+		}),
+		async (c) => {
+			const accountId = await authedId(c)
+			if (accountId === null) return unauthorized(c)
+			const failed = () => roomOfferEnvelope(c, null, SAVE_ROOM_OFFER_FAILED)
+
+			const roomId = Number.parseInt(c.req.param('roomId'), 10)
+			if (!Number.isInteger(roomId)) return failed()
+
+			const body = (await c.req.json<Record<string, unknown>>().catch(() => null)) as Record<
+				string,
+				unknown
+			> | null
+			if (!body || typeof body !== 'object' || Array.isArray(body)) return failed()
+
+			const str = (v: unknown): string | null => (typeof v === 'string' ? v : null)
+			const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v)
+			/** An optional int: absent or null is null, an int is itself, anything else undefined. */
+			const optInt = (v: unknown): number | null | undefined =>
+				v === undefined || v === null ? null : isInt(v) ? v : undefined
+
+			const name = str(body.Name)?.trim() ?? ''
+			if (name === '') return failed()
+			if (!isInt(body.Price) || body.Price < 0) return failed()
+			const maxCount = body.MaxCountPerPurchase ?? 1
+			if (!isInt(maxCount) || maxCount < 1) return failed()
+			const maxPurchases = optInt(body.MaxNumPurchasesPerPlayer)
+			if (maxPurchases === undefined || (maxPurchases !== null && maxPurchases < 1)) return failed()
+			const minDynamic = optInt(body.MinimumDynamicPrice)
+			const maxDynamic = optInt(body.MaximumDynamicPrice)
+			if (minDynamic === undefined || maxDynamic === undefined) return failed()
+
+			// Shape-check the mappings before the room is read; whether each names one of the
+			// room's items is checked once the room is known to be the caller's.
+			if (!Array.isArray(body.ItemMappings) || body.ItemMappings.length === 0) return failed()
+			const mappings: RoomOfferItemMapping[] = []
+			for (const raw of body.ItemMappings as unknown[]) {
+				const m = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+				const itemOriginId = str(m.ItemOriginId)?.toLowerCase() ?? ''
+				if (
+					m.ItemType !== ROOM_OFFER_ITEM_TYPE_INVENTORY_ITEM ||
+					!GUID_PATTERN.test(itemOriginId) ||
+					!isInt(m.Count) ||
+					m.Count < 1
+				) {
+					return failed()
+				}
+				mappings.push({ ItemType: m.ItemType, ItemOriginId: itemOriginId, Count: m.Count })
+			}
+
+			const canManage = await canManageRoomById(c.env.DB, roomId, accountId)
+			if (canManage === null) return failed()
+			if (!canManage) return c.body(null, 403)
+
+			// Every mapped item must be one THIS room defines: the permission check was against
+			// the path's room, and an offer must not sell another room's items.
+			const roomItems = new Set(
+				(await getRoomInventoryItems(c.env.DB, roomId)).map((item) => item.OriginId)
+			)
+			if (mappings.some((m) => !roomItems.has(m.ItemOriginId))) return failed()
+
+			// A non-nullable Guid arrives as all zeroes when the client has none to give, so
+			// that mints one just as null does. An id already in use must be this room's.
+			let originId = str(body.OriginId)?.toLowerCase() ?? null
+			if (originId === null || originId === EMPTY_GUID) {
+				originId = crypto.randomUUID()
+			} else {
+				if (!GUID_PATTERN.test(originId)) return failed()
+				const existing = await getRoomOffer(c.env.DB, originId)
+				if (existing && existing.RoomId !== roomId) return failed()
+			}
+
+			const offer = await upsertRoomOffer(c.env.DB, originId, {
+				RoomId: roomId,
+				// Masked like every other player-typed string a room shows its visitors.
+				Name: censorSwears(name),
+				Description: censorSwears(str(body.Description) ?? ''),
+				ImageName: str(body.ImageName),
+				Price: body.Price,
+				HasDynamicPrice: body.HasDynamicPrice === true,
+				MinimumDynamicPrice: minDynamic,
+				MaximumDynamicPrice: maxDynamic,
+				MaxNumPurchasesPerPlayer: maxPurchases,
+				MaxCountPerPurchase: maxCount,
+				ItemMappings: mappings,
+				PriceUnitId: body.PriceUnitId ?? null,
+				AllowRename: body.AllowRename === true,
+				Visibility: isInt(body.Visibility) ? body.Visibility : 0,
+				IsGiftable: body.IsGiftable === true,
+			})
+			return roomOfferEnvelope(c, offer)
+		}
 	)
 	.get(
 		'/econ/roomOffer/room/:roomId/purchaseCounts',

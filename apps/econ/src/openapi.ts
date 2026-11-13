@@ -1098,6 +1098,54 @@ export const RoomInventoryItemEnvelope = z.object({
 	error_id: z.null(),
 })
 
+/** One thing a room offer gives. */
+export const RoomOfferItemMappingDto = z.object({
+	ItemType: z.int().describe('1: `ItemOriginId` is a room inventory item. The only type accepted'),
+	ItemOriginId: z.string().describe('GUID — a `room_inventory_item` of the offer’s room'),
+	Count: z.int().describe('How many of the item the offer gives; at least 1'),
+})
+
+/** `POST /econ/roomOffer/room/{roomId}` — JSON, as the live client sends it. */
+export const CreateRoomOfferRequest = z.object({
+	Name: z.string(),
+	Description: z.string().optional().describe('Defaults to empty'),
+	ImageName: z.string().nullable().optional(),
+	Price: z.int().describe('At least 0'),
+	HasDynamicPrice: z.boolean().optional(),
+	MinimumDynamicPrice: z.int().nullable().optional(),
+	MaximumDynamicPrice: z.int().nullable().optional(),
+	MaxNumPurchasesPerPlayer: z.int().nullable().optional().describe('Null: no limit'),
+	MaxCountPerPurchase: z.int().optional().describe('Defaults to 1'),
+	ItemMappings: z.array(RoomOfferItemMappingDto).describe('At least one'),
+	PriceUnitId: z.unknown().optional().describe('Only seen null; stored and served as sent'),
+	OriginId: z
+		.string()
+		.nullable()
+		.optional()
+		.describe(
+			'Null, absent or the all-zero GUID mints one; an existing offer of this room is replaced'
+		),
+	AllowRename: z.boolean().optional(),
+	Visibility: z.int().optional(),
+	IsGiftable: z.boolean().optional(),
+})
+
+/** A room offer as stored. PROVISIONAL: the create's response has not been observed. */
+export const RoomOfferDto = CreateRoomOfferRequest.extend({
+	OriginId: z.string().describe('GUID'),
+	RoomId: z.int(),
+	CreatedAt: z.string().describe('ISO-8601 UTC'),
+	ModifiedAt: z.string().describe('ISO-8601 UTC'),
+})
+
+/** The offer create's envelope, as observed. The DTO inside it is still provisional. */
+export const RoomOfferEnvelope = z.object({
+	Value: RoomOfferDto.nullable(),
+	Success: z.boolean(),
+	Error: z.string().nullable(),
+	error_id: z.null(),
+})
+
 /**
  * `DELETE /econ/roomInventory/items/{roomId}/{originId}` — the status envelope with NO
  * `Value` key, as observed from the live server: `{"Success":true,"Error":null,"error_id":null}`.

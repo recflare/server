@@ -127,6 +127,7 @@ import {
 } from '../../room-currency-db'
 import { ROOM_INVENTORY_ITEM_SCHEMA_DDL } from '../../room-inventory-item-db'
 import { createRoomKey, ROOM_KEY_SCHEMA_DDL } from '../../room-key-db'
+import { ROOM_OFFER_SCHEMA_DDL } from '../../room-offer-db'
 import { WISHLIST_SCHEMA_DDL } from '../../wishlist-db'
 
 import type { CatalogLoadRow, CatalogRow, CatalogValue, StoreListing } from '../../catalog-db'
@@ -236,6 +237,7 @@ beforeAll(async () => {
 	for (const stmt of ROOM_INVENTORY_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of ROOM_KEY_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of ROOM_INVENTORY_ITEM_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	for (const stmt of ROOM_OFFER_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of WISHLIST_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	// The platform link table (owned by `auth`) — the Discord supporter gift reads the roles
 	// `www` records on each Discord link.
@@ -4280,6 +4282,156 @@ describe('econ endpoints', () => {
 		await env.DB.prepare('DELETE FROM room_inventory_item').run()
 		await env.DB.prepare('DELETE FROM room_inventory_item_tag').run()
 		await env.DB.prepare('DELETE FROM room_inventory_item_player').run()
+	})
+
+	// Room offers: a price and the room's inventory items it gives. Room 2511 is account 1's,
+	// with 2 as co-owner. The body and the envelope are the live client's; the DTO is provisional.
+	test('room offers: create an offer selling the room’s inventory items', async () => {
+		const post = async (roomId: number | string, payload: unknown, sub = '1') =>
+			exports.default.fetch(`${ORIGIN}/econ/roomOffer/room/${roomId}`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', ...(await bearer(sub)) },
+				body: JSON.stringify(payload),
+			})
+		const FAILED = {
+			Value: null,
+			Success: false,
+			Error: 'Failed to save room offer',
+			error_id: null,
+		}
+
+		// Two items the room defines, and one another room does.
+		const define = async (name: string) =>
+			(
+				(await (
+					await exports.default.fetch(`${ORIGIN}/econ/roomInventory/room/2511`, {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json', ...(await bearer('1')) },
+						body: JSON.stringify({ Name: name }),
+					})
+				).json()) as { Value: { OriginId: string } }
+			).Value.OriginId
+		const [gem, coin] = [await define('Gem'), await define('Coin')]
+		const elsewhere = '22222222-2222-2222-2222-222222222222'
+		await env.DB.prepare(
+			`INSERT INTO room_inventory_item (origin_id, room_id, name, description, created_at, modified_at)
+			 VALUES (?1, 9999, 'Elsewhere', '', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`
+		)
+			.bind(elsewhere)
+			.run()
+
+		// The live client's body, mapped onto this room's items (one in upper case).
+		const offer = {
+			Name: 'faca8fae',
+			Description: 'Unknown',
+			ImageName: null,
+			Price: 1,
+			HasDynamicPrice: false,
+			MinimumDynamicPrice: null,
+			MaximumDynamicPrice: null,
+			MaxNumPurchasesPerPlayer: null,
+			MaxCountPerPurchase: 1,
+			ItemMappings: [
+				{ ItemType: 1, ItemOriginId: gem.toUpperCase(), Count: 1 },
+				{ ItemType: 1, ItemOriginId: coin, Count: 3 },
+			],
+			PriceUnitId: null,
+			OriginId: null,
+			AllowRename: false,
+			Visibility: 0,
+			IsGiftable: true,
+		}
+
+		// The gates: no token, not a manager, an unknown room, unusable bodies.
+		expect(
+			(
+				await exports.default.fetch(`${ORIGIN}/econ/roomOffer/room/2511`, {
+					method: 'POST',
+					body: '{}',
+				})
+			).status
+		).toBe(401)
+		expect((await post(2511, offer, '3')).status).toBe(403)
+		expect(await (await post(999999, offer)).json()).toEqual(FAILED)
+		for (const bad of [
+			{ ...offer, Name: ' ' },
+			{ ...offer, Price: -1 },
+			{ ...offer, Price: 1.5 },
+			{ ...offer, MaxCountPerPurchase: 0 },
+			{ ...offer, MaxNumPurchasesPerPlayer: 0 },
+			{ ...offer, ItemMappings: [] },
+			{ ...offer, ItemMappings: [{ ItemType: 2, ItemOriginId: gem, Count: 1 }] },
+			{ ...offer, ItemMappings: [{ ItemType: 1, ItemOriginId: gem, Count: 0 }] },
+			{ ...offer, ItemMappings: [{ ItemType: 1, ItemOriginId: 'nope', Count: 1 }] },
+			// Another room's item, and one nothing defines.
+			{ ...offer, ItemMappings: [{ ItemType: 1, ItemOriginId: elsewhere, Count: 1 }] },
+			{
+				...offer,
+				ItemMappings: [
+					{ ItemType: 1, ItemOriginId: '33333333-3333-3333-3333-333333333333', Count: 1 },
+				],
+			},
+			{ ...offer, OriginId: 'not-a-guid' },
+		]) {
+			expect(await (await post(2511, bad)).json(), JSON.stringify(bad)).toEqual(FAILED)
+		}
+		expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM room_offer').first()).toEqual({ n: 0 })
+
+		// A create, by the co-owner: an id is minted, the mappings name the items in lower case.
+		const created = (await (await post(2511, offer, '2')).json()) as {
+			Value: Record<string, unknown> & { OriginId: string; CreatedAt: string }
+			Success: boolean
+		}
+		expect(created).toMatchObject({ Success: true, Error: null, error_id: null })
+		expect(created.Value).toMatchObject({
+			RoomId: 2511,
+			Name: 'faca8fae',
+			Description: 'Unknown',
+			ImageName: null,
+			Price: 1,
+			HasDynamicPrice: false,
+			MinimumDynamicPrice: null,
+			MaximumDynamicPrice: null,
+			MaxNumPurchasesPerPlayer: null,
+			MaxCountPerPurchase: 1,
+			ItemMappings: [
+				{ ItemType: 1, ItemOriginId: gem, Count: 1 },
+				{ ItemType: 1, ItemOriginId: coin, Count: 3 },
+			],
+			PriceUnitId: null,
+			AllowRename: false,
+			Visibility: 0,
+			IsGiftable: true,
+		})
+		expect(created.Value.OriginId).toMatch(/^[0-9a-f-]{36}$/)
+
+		// Naming that id again replaces the offer and keeps its CreatedAt.
+		const replaced = (await (
+			await post(2511, {
+				...offer,
+				OriginId: created.Value.OriginId,
+				Price: 25,
+				MaxNumPurchasesPerPlayer: 2,
+			})
+		).json()) as { Value: Record<string, unknown> }
+		expect(replaced.Value).toMatchObject({
+			OriginId: created.Value.OriginId,
+			Price: 25,
+			MaxNumPurchasesPerPlayer: 2,
+			CreatedAt: created.Value.CreatedAt,
+		})
+		expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM room_offer').first()).toEqual({ n: 1 })
+
+		// Another room's offer id is refused rather than moved.
+		await env.DB.prepare(`UPDATE room_offer SET room_id = 9999 WHERE origin_id = ?1`)
+			.bind(created.Value.OriginId)
+			.run()
+		expect(await (await post(2511, { ...offer, OriginId: created.Value.OriginId })).json()).toEqual(
+			FAILED
+		)
+
+		await env.DB.prepare('DELETE FROM room_offer').run()
+		await env.DB.prepare('DELETE FROM room_inventory_item').run()
 	})
 
 	test('GET /api/ugcPurchasables/v1/items/room/:roomId lists keys, consumables and currency packs as one shop', async () => {
@@ -8824,6 +8976,7 @@ describe('econ endpoints', () => {
 			'POST /circuitsRoomRewards/grantRoomBadge',
 			'POST /econ/roomInventory/room/{roomId}',
 			'POST /econ/roomInventory/v2/award',
+			'POST /econ/roomOffer/room/{roomId}',
 			'PUT /api/equipment/v1/update',
 			'PUT /api/roomconsumables/v1/roomConsumable',
 			'PUT /api/roomconsumables/v1/roomConsumable/{id}/consume',
