@@ -666,7 +666,7 @@ export function ModerationPage({
 			) : view.kind === 'report' ? (
 				<ReportDetail reportId={view.reportId} navigate={navigate} onBan={openBan} />
 			) : (
-				<div className="workspace">
+				<div className="workspace mod-workspace">
 					<nav className="vtabs">
 						{TABS.map((t) => (
 							<button
@@ -1252,10 +1252,10 @@ function ReportTable({
 								<ReportKind report={report} />
 							</td>
 							<td>{categoryLabel(report.report_category)}</td>
-							{/* The reporter's own words, cut to DETAILS_PREVIEW characters; the
-							    report's page renders them whole, as markdown. */}
+							{/* The reporter's own words on one line; the report's page renders
+							    them whole, as markdown. */}
 							<td className="mod-details">
-								<DetailsPreview report={report} onView={onView} />
+								<DetailsPreview report={report} />
 							</td>
 							<td>
 								{report.banned === 1 ? (
@@ -1291,32 +1291,18 @@ function ReportTable({
 	)
 }
 
-/** How much of a report's details the tables show before "more". */
-const DETAILS_PREVIEW = 200
-
 /**
- * A report's details as the tables show them: the raw text, cut to {@link DETAILS_PREVIEW}
- * characters with a "more" link to the report's page. Raw rather than rendered — markdown
- * cut mid-way renders as broken markup, and the page is where it is read properly.
+ * A report's details as the tables show them: the raw text on ONE line, cut off with an
+ * ellipsis by CSS (`.mod-details-line`) and whole in the hover title; the report's page
+ * (the row's View) is where it is read properly. Raw rather than rendered — markdown cut
+ * mid-way renders as broken markup.
  */
-function DetailsPreview({
-	report,
-	onView,
-}: {
-	report: ReportRow
-	onView: (report: ReportRow) => void
-}) {
+function DetailsPreview({ report }: { report: ReportRow }) {
 	if (!report.details) return <span className="muted">none given</span>
-	// By code point, so an emoji at the cut isn't split into a broken half.
-	const chars = Array.from(report.details)
-	if (chars.length <= DETAILS_PREVIEW) return <>{report.details}</>
 	return (
-		<>
-			{chars.slice(0, DETAILS_PREVIEW).join('').trimEnd()}…{' '}
-			<button className="linkish" onClick={() => onView(report)}>
-				more
-			</button>
-		</>
+		<span className="mod-details-line" title={report.details}>
+			{report.details}
+		</span>
 	)
 }
 

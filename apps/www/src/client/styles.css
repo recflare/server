@@ -717,6 +717,17 @@ h2 {
 	font-weight: 600;
 }
 
+/* The moderation panel's tabs run across the top rather than down the side: its tables
+   are wide, and a 190px sidebar took that room from every row. */
+.mod-workspace {
+	grid-template-columns: 1fr;
+}
+
+.mod-workspace .vtabs {
+	flex-direction: row;
+	flex-wrap: wrap;
+}
+
 /* The active section's card carries its own margin; drop it inside the panel. */
 .panel .card {
 	margin-bottom: 0;
@@ -1958,10 +1969,19 @@ button.link:not(:disabled):hover {
 /* The reporter's own words — the one cell allowed to wrap, clamped to a sensible width
    so a long description doesn't push the actions off the table. Full text in the title. */
 .mod-details {
-	white-space: normal;
-	max-width: 320px;
-	min-width: 180px;
+	max-width: 160px;
+	min-width: 90px;
 	color: var(--muted);
+}
+
+/* One line, ellipsised: a long report otherwise made its row many lines tall. Block with its
+   own max-width because a table cell alone doesn't clip. */
+.mod-details-line {
+	display: block;
+	max-width: 160px;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
 }
 
 /* View / Ban / Delete side by side rather than stacked one per line, as small outlined
