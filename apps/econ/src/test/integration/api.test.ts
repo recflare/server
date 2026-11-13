@@ -4355,11 +4355,16 @@ describe('econ endpoints', () => {
 		expect(await (await post(999999, offer)).json()).toEqual(FAILED)
 		for (const bad of [
 			{ ...offer, Name: ' ' },
+			// 41 characters of name, 181 of description — counted in characters, so 41 emoji
+			// (82 UTF-16 units) is over and 40 of them is not.
+			{ ...offer, Name: 'n'.repeat(41) },
+			{ ...offer, Name: '🎁'.repeat(41) },
+			{ ...offer, Description: 'd'.repeat(181) },
+			{ ...offer, ItemMappings: 'none' },
 			{ ...offer, Price: -1 },
 			{ ...offer, Price: 1.5 },
 			{ ...offer, MaxCountPerPurchase: 0 },
 			{ ...offer, MaxNumPurchasesPerPlayer: 0 },
-			{ ...offer, ItemMappings: [] },
 			{ ...offer, ItemMappings: [{ ItemType: 2, ItemOriginId: gem, Count: 1 }] },
 			{ ...offer, ItemMappings: [{ ItemType: 1, ItemOriginId: gem, Count: 0 }] },
 			{ ...offer, ItemMappings: [{ ItemType: 1, ItemOriginId: 'nope', Count: 1 }] },
@@ -4421,6 +4426,37 @@ describe('econ endpoints', () => {
 			CreatedAt: created.Value.CreatedAt,
 		})
 		expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM room_offer').first()).toEqual({ n: 1 })
+
+		// The list read: public, a bare array of exactly what the create answered. Unknown and
+		// non-numeric rooms are `[]`.
+		expect(
+			await (await exports.default.fetch(`${ORIGIN}/econ/roomOffer/room/2511`)).json()
+		).toEqual([replaced.Value])
+		for (const roomId of ['999999', 'nope']) {
+			expect(
+				await (await exports.default.fetch(`${ORIGIN}/econ/roomOffer/room/${roomId}`)).json()
+			).toEqual([])
+		}
+
+		// An offer may be saved with no items — an empty list, a null one, or none at all — and
+		// right at the limits: 40 characters of name (emoji count as one), 180 of description.
+		for (const empty of [
+			{ ...offer, ItemMappings: [], Name: 'n'.repeat(40), Description: 'd'.repeat(180) },
+			{ ...offer, ItemMappings: null, Name: '🎁'.repeat(40) },
+			(({ ItemMappings: _, ...rest }) => rest)(offer),
+		]) {
+			const saved = (await (await post(2511, empty)).json()) as {
+				Success: boolean
+				Value: { Name: string; Description: string; ItemMappings: unknown[] }
+			}
+			expect(saved.Success, JSON.stringify(empty)).toBe(true)
+			expect(saved.Value.ItemMappings).toEqual([])
+			expect(saved.Value.Name).toBe(empty.Name)
+			expect(saved.Value.Description).toBe(empty.Description)
+		}
+		await env.DB.prepare('DELETE FROM room_offer WHERE origin_id != ?1')
+			.bind(created.Value.OriginId)
+			.run()
 
 		// Another room's offer id is refused rather than moved.
 		await env.DB.prepare(`UPDATE room_offer SET room_id = 9999 WHERE origin_id = ?1`)
@@ -4659,6 +4695,56 @@ describe('econ endpoints', () => {
 			}),
 		})
 		expect(((await legacy.json()) as { Success: boolean }).Success).toBe(false)
+	})
+
+	test('bulkpurchase of a numbered listing whose drop is a custom item names it on the box', async () => {
+		// 26805, Run The Block Velcro Sneakers: an ordinary sf3-2025 listing whose drop names a
+		// first-party custom avatar item by guid, with `AvatarItemDesc` empty. The item was always
+		// granted, but the box came back with `CustomAvatarItemId: null` and so named nothing.
+		const listing = storeListings.find((i) => i.PurchasableItemId === 26805)!
+		const guid = listing.GiftDrop.CustomAvatarItemId as string
+		expect(guid).toBe('9ea59e1d-0b1f-4492-8663-5a6a70908046')
+		const headers = {
+			...((await bearer('4803', undefined, '20250718.01')) as Record<string, string>),
+			'Content-Type': 'application/json',
+		}
+		const res = await exports.default.fetch(`${ORIGIN}/api/items/bulkpurchase`, {
+			method: 'POST',
+			headers,
+			body: JSON.stringify({
+				PurchaseItemRequests: [
+					{
+						ItemPurchaseMethodId: { Type: 0, NumberId: 26805, Guid: null },
+						RequestedPrice: listing.Prices.find((p) => p.CurrencyType === 2)!.Price,
+						Gift: null,
+						CouponConsumablePlayerMappingId: null,
+						DuplicateItemCount: 1,
+					},
+				],
+				StorefrontType: 3,
+				CurrencyType: 2,
+				BypassGiftPackages: false,
+				AllowPartialSuccess: true,
+				ShoppingBagId: null,
+			}),
+		})
+		const body = (await res.json()) as {
+			Success: boolean
+			Value: { BalanceUpdates: Array<{ Data: { GiftPackage: Record<string, unknown> } }> }
+		}
+		expect(body.Success).toBe(true)
+		expect(body.Value.BalanceUpdates[0]?.Data.GiftPackage).toMatchObject({
+			CustomAvatarItemId: guid,
+			AvatarItemDesc: '',
+			AvatarItemType: 0,
+		})
+
+		// The stored box — what `GET /api/avatar/v2/gifts` serves — names it too.
+		const gifts = (await (
+			await exports.default.fetch(`${ORIGIN}/api/avatar/v2/gifts`, { headers })
+		).json()) as Array<Record<string, unknown>>
+		expect(gifts).toHaveLength(1)
+		expect(gifts[0]).toMatchObject({ CustomAvatarItemId: guid, AvatarItemType: 0 })
 	})
 
 	test('bulkpurchase resolves numbered lines against the storefront file alone', async () => {
@@ -7721,6 +7807,7 @@ describe('econ endpoints', () => {
 			// The week's reward is a SKIN, so this is null whatever the block says: a 0 would
 			// send the client looking for an avatar item that does not exist.
 			AvatarItemType: gift.AvatarItemDesc === '' ? null : gift.AvatarItemType,
+			CustomAvatarItemId: null,
 			EquipmentPrefabName: gift.EquipmentPrefabName,
 			EquipmentModificationGuid: gift.EquipmentModificationGuid,
 			CurrencyType: 0,

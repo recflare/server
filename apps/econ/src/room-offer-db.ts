@@ -5,6 +5,7 @@
  *
  * The endpoints:
  *  - `POST /econ/roomOffer/room/{roomId}` creates an offer (or replaces the one `OriginId` names)
+ *  - `GET  /econ/roomOffer/room/{roomId}` lists a room's offers
  *
  * This worker (`econ`) owns the table and its migration — see apps/econ/migrations/0031.
  */

@@ -39,6 +39,14 @@ export const MAX_EVENT_NAME_LENGTH = 64
 export const MAX_EVENT_DESCRIPTION_LENGTH = 512
 
 /**
+ * Room offer limits (`econ`: `POST /econ/roomOffer/room/{roomId}`), counted in characters
+ * (code points), like the club name. An offer's name is a shop-tile title; its description is
+ * the line under it.
+ */
+export const MAX_ROOM_OFFER_NAME_LENGTH = 40
+export const MAX_ROOM_OFFER_DESCRIPTION_LENGTH = 180
+
+/**
  * The longest a player event may run — a day, inclusive, so a full 24-hour event is
  * allowed and anything past it is refused. An event is a scheduled get-together in one
  * room, not a season: a window of weeks would sit in the browse feed's "upcoming" and

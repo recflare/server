@@ -18,6 +18,8 @@ import {
 	levelReward,
 	levelsReached,
 	listInfluencerIds,
+	MAX_ROOM_OFFER_DESCRIPTION_LENGTH,
+	MAX_ROOM_OFFER_NAME_LENGTH,
 	ownsInvention,
 	setOutfit,
 	updateAccount,
@@ -167,6 +169,7 @@ import {
 	RoomInventoryItemTagDto,
 	RoomKeyDto,
 	RoomKeyEnvelope,
+	RoomOfferDto,
 	RoomOfferEnvelope,
 	RoomPurchasableList,
 	RRPlusSignUpBonus,
@@ -234,7 +237,12 @@ import {
 	releaseRoomKey,
 	updateRoomKey,
 } from './room-key-db'
-import { getRoomOffer, ROOM_OFFER_ITEM_TYPE_INVENTORY_ITEM, upsertRoomOffer } from './room-offer-db'
+import {
+	getRoomOffer,
+	getRoomOffers,
+	ROOM_OFFER_ITEM_TYPE_INVENTORY_ITEM,
+	upsertRoomOffer,
+} from './room-offer-db'
 import { getRoomPurchasables } from './room-purchasables-db'
 import {
 	addWishlistItem,
@@ -1455,6 +1463,18 @@ function boxAvatarItemType(drop: StoreGiftDrop): number | null {
 	return isAvatarItem ? (drop.AvatarItemType ?? 0) : null
 }
 
+/**
+ * The custom avatar item a catalog drop's box holds, or null. The 2025 store sells five
+ * hundred first-party custom items as ordinary numbered listings whose drop names the item by
+ * `CustomAvatarItemId` (and leaves `AvatarItemDesc` empty), so a box built from the drop must
+ * carry the guid — without it the box names nothing at all, though the item was granted.
+ */
+function boxCustomAvatarItemId(drop: StoreGiftDrop): string | null {
+	return typeof drop.CustomAvatarItemId === 'string' && drop.CustomAvatarItemId !== ''
+		? drop.CustomAvatarItemId
+		: null
+}
+
 function toGiftContent(
 	giftDrop: StoreGiftDrop,
 	message: string,
@@ -1473,6 +1493,7 @@ function toGiftContent(
 		ConsumablePreExistingCount: consumablePreExistingCount,
 		AvatarItemDesc: giftDrop.AvatarItemDesc,
 		AvatarItemType: boxAvatarItemType(giftDrop),
+		CustomAvatarItemId: boxCustomAvatarItemId(giftDrop),
 		CurrencyType: giftDrop.CurrencyType,
 		Currency: giftDrop.Currency,
 		Xp: giftDrop.Xp ?? 0,
@@ -1554,6 +1575,7 @@ async function pushGiftReceived(
 		ConsumableItemDesc: gift.drop.ConsumableItemDesc,
 		AvatarItemDesc: gift.drop.AvatarItemDesc,
 		AvatarItemType: boxAvatarItemType(gift.drop),
+		CustomAvatarItemId: boxCustomAvatarItemId(gift.drop),
 		EquipmentPrefabName: gift.drop.EquipmentPrefabName,
 		EquipmentModificationGuid: gift.drop.EquipmentModificationGuid,
 		CurrencyType: gift.drop.CurrencyType,
@@ -2187,7 +2209,7 @@ function toGiftPackage(
 		ConsumableItemDesc: drop.ConsumableItemDesc,
 		AvatarItemType: boxAvatarItemType(drop),
 		AvatarItemDesc: drop.AvatarItemDesc,
-		CustomAvatarItemId: null,
+		CustomAvatarItemId: boxCustomAvatarItemId(drop),
 		EquipmentPrefabName: drop.EquipmentPrefabName,
 		EquipmentModificationGuid: drop.EquipmentModificationGuid,
 		CurrencyType: drop.CurrencyType,
@@ -5848,16 +5870,39 @@ const app = new Hono<App>({ strict: false })
 		}
 	)
 
-	// The rest of the room-economy surface the client asks for on entering a room: the
-	// room's offers and gift-drop shops, and the caller's slice of them. Nothing here is
-	// stored yet, so every one is an empty list — the client reads that as "this room
-	// sells nothing" and renders no shop, where a 404 stalls the room load instead.
-	//
-	// The `purchaseCounts` variant is caller-scoped but deliberately unauthed: an empty
-	// list is the same answer for every caller, so there's nothing to protect until
-	// something writes here. Gate it when it starts returning real data.
-	.get('/econ/roomOffer/room/:roomId', listRoute('A room’s offers', 'Empty stub'), (c) =>
-		c.json([])
+	// A room's offers. Public, like the items they sell. A BARE ARRAY, the shape the stub it
+	// replaced answered and the client accepted on room entry; each element is the offer the
+	// create answers in `Value`. The client asks on entering a room, so it must be an array
+	// whatever happens — an unknown room, or an id that isn't a number, is `[]`.
+	.get(
+		'/econ/roomOffer/room/:roomId',
+		describeRoute({
+			tags: ['Econ'],
+			summary: 'A room’s offers',
+			description: [
+				'A bare array of the room’s offers, oldest first — each the same offer the create',
+				'(`POST` on this path) answers in `Value`. Every offer is listed, whatever its',
+				'`Visibility` (whose values are not yet known).',
+				'',
+				'Public. A room with no offers, and an unknown room, are both `[]` — never null and',
+				'never `{}`, which the client cannot read.',
+			].join('\n'),
+			parameters: [
+				{
+					name: 'roomId',
+					in: 'path',
+					required: true,
+					description: 'The room whose offers to list',
+					schema: { type: 'integer' },
+				},
+			],
+			responses: { 200: json(RoomOfferDto.array(), 'The room’s offers, oldest first') },
+		}),
+		async (c) => {
+			const roomId = Number.parseInt(c.req.param('roomId'), 10)
+			if (!Number.isInteger(roomId)) return c.json([])
+			return c.json(await getRoomOffers(c.env.DB, roomId))
+		}
 	)
 	// Create a room offer: a price, and the room's inventory items it gives. Auth-gated (401)
 	// and gated to the room's creator or a co-owner (403), like the items themselves. The body
@@ -5874,8 +5919,11 @@ const app = new Hono<App>({ strict: false })
 				'',
 				'Each `ItemMappings` entry is `{ ItemType, ItemOriginId, Count }`; `ItemType` 1 is the',
 				'only type accepted, and its `ItemOriginId` must be an inventory item THIS room',
-				'defines. `Count` and `MaxCountPerPurchase` are at least 1, `Price` at least 0,',
-				'`MaxNumPurchasesPerPlayer` null (no limit) or at least 1.',
+				'defines. The list may be empty (absent or null is empty): an offer can be saved',
+				'before its contents are picked. `Count` and `MaxCountPerPurchase` are at least 1,',
+				'`Price` at least 0, `MaxNumPurchasesPerPlayer` null (no limit) or at least 1.',
+				'`Name` is 1–40 characters and `Description` at most 180, counted in code points;',
+				'an over-long one is refused, not cut.',
 				'',
 				'`OriginId` absent, null or all-zero mints an id; one naming an offer this room',
 				'already has REPLACES it, keeping its `CreatedAt`; one naming another room’s offer',
@@ -5921,8 +5969,12 @@ const app = new Hono<App>({ strict: false })
 			const optInt = (v: unknown): number | null | undefined =>
 				v === undefined || v === null ? null : isInt(v) ? v : undefined
 
+			// Limits are counted in characters (code points), and an over-long value is refused
+			// rather than cut: the shop shows what the owner typed, or nothing.
 			const name = str(body.Name)?.trim() ?? ''
-			if (name === '') return failed()
+			if (name === '' || Array.from(name).length > MAX_ROOM_OFFER_NAME_LENGTH) return failed()
+			const description = str(body.Description) ?? ''
+			if (Array.from(description).length > MAX_ROOM_OFFER_DESCRIPTION_LENGTH) return failed()
 			if (!isInt(body.Price) || body.Price < 0) return failed()
 			const maxCount = body.MaxCountPerPurchase ?? 1
 			if (!isInt(maxCount) || maxCount < 1) return failed()
@@ -5933,10 +5985,13 @@ const app = new Hono<App>({ strict: false })
 			if (minDynamic === undefined || maxDynamic === undefined) return failed()
 
 			// Shape-check the mappings before the room is read; whether each names one of the
-			// room's items is checked once the room is known to be the caller's.
-			if (!Array.isArray(body.ItemMappings) || body.ItemMappings.length === 0) return failed()
+			// room's items is checked once the room is known to be the caller's. An offer may be
+			// saved with NO items — the client saves one before its contents are picked — so an
+			// absent or null list is an empty one; anything else that isn't an array is refused.
+			const rawMappings = body.ItemMappings ?? []
+			if (!Array.isArray(rawMappings)) return failed()
 			const mappings: RoomOfferItemMapping[] = []
-			for (const raw of body.ItemMappings as unknown[]) {
+			for (const raw of rawMappings as unknown[]) {
 				const m = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
 				const itemOriginId = str(m.ItemOriginId)?.toLowerCase() ?? ''
 				if (
@@ -5976,7 +6031,7 @@ const app = new Hono<App>({ strict: false })
 				RoomId: roomId,
 				// Masked like every other player-typed string a room shows its visitors.
 				Name: censorSwears(name),
-				Description: censorSwears(str(body.Description) ?? ''),
+				Description: censorSwears(description),
 				ImageName: str(body.ImageName),
 				Price: body.Price,
 				HasDynamicPrice: body.HasDynamicPrice === true,
@@ -5993,6 +6048,14 @@ const app = new Hono<App>({ strict: false })
 			return roomOfferEnvelope(c, offer)
 		}
 	)
+	// The rest of the room-economy surface the client asks for on entering a room: the
+	// offers' purchase counts and recent purchases, and the room's gift-drop shops. Nothing
+	// records these yet, so every one is empty — the client reads that as "nothing bought"
+	// or "no shop", where a 404 stalls the room load instead.
+	//
+	// The `purchaseCounts` variant is caller-scoped but deliberately unauthed: an empty
+	// list is the same answer for every caller, so there's nothing to protect until
+	// something writes here. Gate it when it starts returning real data.
 	.get(
 		'/econ/roomOffer/room/:roomId/purchaseCounts',
 		describeRoute({

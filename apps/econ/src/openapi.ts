@@ -1107,8 +1107,8 @@ export const RoomOfferItemMappingDto = z.object({
 
 /** `POST /econ/roomOffer/room/{roomId}` — JSON, as the live client sends it. */
 export const CreateRoomOfferRequest = z.object({
-	Name: z.string(),
-	Description: z.string().optional().describe('Defaults to empty'),
+	Name: z.string().describe('1–40 characters'),
+	Description: z.string().optional().describe('At most 180 characters; defaults to empty'),
 	ImageName: z.string().nullable().optional(),
 	Price: z.int().describe('At least 0'),
 	HasDynamicPrice: z.boolean().optional(),
@@ -1116,7 +1116,11 @@ export const CreateRoomOfferRequest = z.object({
 	MaximumDynamicPrice: z.int().nullable().optional(),
 	MaxNumPurchasesPerPlayer: z.int().nullable().optional().describe('Null: no limit'),
 	MaxCountPerPurchase: z.int().optional().describe('Defaults to 1'),
-	ItemMappings: z.array(RoomOfferItemMappingDto).describe('At least one'),
+	ItemMappings: z
+		.array(RoomOfferItemMappingDto)
+		.nullable()
+		.optional()
+		.describe('May be empty; absent or null is empty'),
 	PriceUnitId: z.unknown().optional().describe('Only seen null; stored and served as sent'),
 	OriginId: z
 		.string()
