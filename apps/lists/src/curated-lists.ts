@@ -118,7 +118,11 @@ export function isReservedListName(name: string | undefined): boolean {
 function emptyReservedList(creatorAccountId: string | undefined, type: number, name: string) {
 	return {
 		ListId: '0',
-		CreatorAccountId: Number.parseInt(creatorAccountId ?? '', 10) || 0,
+		CreatorAccountId: (() => {
+			const raw = (creatorAccountId ?? '').trim()
+			const id = /^\d+$/.test(raw) ? Number(raw) : Number.NaN
+			return Number.isSafeInteger(id) ? id : 0
+		})(),
 		Name: name,
 		Description: null,
 		ImageName: DEFAULT_LIST_IMAGE,
