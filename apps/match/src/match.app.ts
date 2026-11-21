@@ -1189,7 +1189,9 @@ const NO_INSTANCE = 0
  *
  * `subRoomId` picks which of the room's subrooms to enter (the client matchmakes
  * into one with `/matchmake/room/{roomId}/{subRoomId}`); an unknown or unspecified
- * subroom falls back to the room's first, which is its default entrance.
+ * subroom falls back to the first public (entry) subroom. Older rooms without
+ * an entry setting retain their first-subroom fallback. Explicit subroom IDs stay
+ * authoritative, including native RRO joins that select an Unlisted lobby.
  */
 function instanceFieldsFromRoom(room: Room, subRoomId?: number) {
 	const subRooms = (Array.isArray(room.SubRooms) ? room.SubRooms : []) as Array<
@@ -1197,6 +1199,7 @@ function instanceFieldsFromRoom(room: Room, subRoomId?: number) {
 	>
 	const sub =
 		(subRoomId === undefined ? undefined : subRooms.find((s) => s.SubRoomId === subRoomId)) ??
+		subRooms.find((s) => s.Accessibility === Accessibility.Public) ??
 		subRooms[0]
 	const str = (v: unknown, fallback = '') => (typeof v === 'string' ? v : fallback)
 	const num = (v: unknown, fallback: number) => (typeof v === 'number' ? v : fallback)
