@@ -180,11 +180,9 @@ export async function createRoomInstance(
 	db: D1Database,
 	input: NewRoomInstance
 ): Promise<RoomInstanceDto> {
-	const idRow = await db
-		.prepare(`SELECT COALESCE(MAX(id), ${ID_BASE}) + 1 AS next FROM room_instance`)
-		.first<{ next: number }>()
 	const stored: StoredRoomInstance = {
-		roomInstanceId: idRow?.next ?? ID_BASE + 1,
+		// Assigned by the INSERT below; a placeholder until it answers.
+		roomInstanceId: 0,
 		ownerAccountId: input.ownerAccountId,
 		roomId: input.roomId,
 		subRoomId: input.subRoomId ?? 0,
@@ -208,10 +206,22 @@ export async function createRoomInstance(
 		gameVersion: gameBuild(input.gameVersion) ?? '',
 		createdAt: new Date().toISOString(),
 	}
-	await db
-		.prepare('INSERT INTO room_instance (data) VALUES (?1)')
+	// The id is allocated INSIDE the insert, as one statement. Reading `MAX(id) + 1` first
+	// and inserting second let two matchmakes that overlapped read the same number, and the
+	// slower one failed the unique index (`UNIQUE constraint failed: room_instance.id`) —
+	// a 500 on a matchmake. D1 runs one statement at a time, so allocate-and-insert in a
+	// single statement cannot interleave.
+	const row = await db
+		.prepare(
+			`INSERT INTO room_instance (data)
+			 SELECT json_set(?1, '$.roomInstanceId',
+			   (SELECT COALESCE(MAX(id), ${ID_BASE}) + 1 FROM room_instance))
+			 RETURNING json_extract(data, '$.roomInstanceId') AS id`
+		)
 		.bind(JSON.stringify(stored))
-		.run()
+		.first<{ id: number }>()
+	if (!row) throw new Error('room_instance insert returned no id')
+	stored.roomInstanceId = row.id
 	return toDto(stored)
 }
 

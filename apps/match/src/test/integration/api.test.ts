@@ -1779,6 +1779,28 @@ describe('auth-gated endpoints', () => {
 		expect(claims['rn.env']).toBe('prod')
 	})
 
+	test('instances created at the same moment each get their own id', async () => {
+		// Two matchmakes that overlap used to read the same `MAX(id) + 1` and the slower
+		// insert failed the unique index, 500ing the matchmake.
+		const created = await Promise.all(
+			Array.from({ length: 8 }, (_, i) =>
+				createRoomInstance(env.DB, {
+					ownerAccountId: 962,
+					roomId: 2,
+					photonRoomId: `concurrent-instance-${i}`,
+					maxCapacity: 12,
+				})
+			)
+		)
+		const ids = created.map((instance) => instance.roomInstanceId)
+		expect(new Set(ids).size).toBe(ids.length)
+		for (const instance of created) {
+			// The id answered is the id stored, under the photon room it was created for.
+			const stored = await getRoomInstance(env.DB, instance.roomInstanceId)
+			expect(stored?.photonRoomId).toBe(instance.photonRoomId)
+		}
+	})
+
 	test('GET /player/connection-info falls back to ?roomInstanceId when presence has no room', async () => {
 		// Player 962 never matchmade, so there's no presence to read the room from; the
 		// param names the instance they're trying to connect to.
