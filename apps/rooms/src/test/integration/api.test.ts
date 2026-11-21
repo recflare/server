@@ -1897,10 +1897,24 @@ describe('rooms endpoints', () => {
 		expect(noName).toMatchObject({ success: false, value: null })
 		expect(noName.error).toMatch(/must enter a name/i)
 
-		// The dorm (RoomId 1) disallows cloning.
-		const notCloneable = await post(1, new URLSearchParams({ name: 'CannotCloneDorm' }).toString())
+		// A room that disallows cloning. (Not the dorm template, RoomId 1: cloning that is how the
+		// 2026 client makes a custom dorm - see the custom-dorms test.)
+		await env.DB.prepare('INSERT INTO room (data) VALUES (?1)')
+			.bind(
+				JSON.stringify({
+					RoomId: 30611,
+					Name: 'NoCloningHere',
+					CreatorAccountId: 1,
+					CloningAllowed: false,
+					SubRooms: [],
+					Roles: [{ AccountId: 1, Role: 255 }],
+				})
+			)
+			.run()
+		const notCloneable = await post(30611, new URLSearchParams({ name: 'CannotClone' }).toString())
 		expect(notCloneable).toMatchObject({ success: false, value: null })
 		expect(notCloneable.error).toMatch(/can't clone/i)
+		await env.DB.prepare('DELETE FROM room WHERE room_id = 30611').run()
 
 		// A source room not in D1.
 		const missing = await post(99999, new URLSearchParams({ name: 'CloneOfNothing' }).toString())
@@ -8221,4 +8235,88 @@ it("GET /rooms/:id hydrates the room's published badges", async () => {
 		const room = (await res.json()) as { Badges: Array<{ CustomAvatarItemId: string }> }
 		expect(room.Badges.map((b) => b.CustomAvatarItemId)).toEqual(['badge-published'])
 	}
+})
+
+// Last in the file: a new dorm draws subroom ids (AUTOINCREMENT, never reused), so running
+// this earlier would shift the ids every later test's subrooms get.
+describe('custom dorms', () => {
+	// The 2026 client's "Create new Dorm": look the template up by NAME, clone it, pick the clone.
+	it('custom dorms: the template names find the dorm template, and cloning it makes a dorm', async () => {
+		const lookup = async (name: string, sub?: string) =>
+			(await (
+				await SELF.fetch(
+					`${ORIGIN}/rooms?name=${name}`,
+					sub ? { headers: await bearer(sub) } : undefined
+				)
+			).json()) as { RoomId?: number; IsDorm?: boolean }
+		const clone = async (roomId: number, name: string, sub = '880') =>
+			(await (
+				await SELF.fetch(`${ORIGIN}/rooms/${roomId}/clone`, {
+					method: 'POST',
+					headers: {
+						...(await bearer(sub)),
+						'Content-Type': 'application/x-www-form-urlencoded',
+					},
+					body: new URLSearchParams({ name }).toString(),
+				})
+			).json()) as {
+				success: boolean
+				error: string
+				value: {
+					RoomId: number
+					Name: string
+					IsDorm: boolean
+					CreatorAccountId: number
+					SubRooms: Array<{ UnitySceneId: string }>
+				} | null
+			}
+
+		// Both names, any case, signed in or not, are the dorm template (RoomId 1).
+		for (const name of ['CustomDormRoomTemplate', 'customdormroomr2template']) {
+			expect(await lookup(name, '880')).toMatchObject({ RoomId: 1, IsDorm: true })
+			expect(await lookup(name)).toMatchObject({ RoomId: 1 })
+		}
+
+		// Cloning it makes a dorm the caller created, named as asked, on the base dorm scene,
+		// though the template itself disallows cloning.
+		const made = await clone(1, 'MyCustomDorm')
+		expect(made.success).toBe(true)
+		expect(made.value).toMatchObject({ Name: 'MyCustomDorm', IsDorm: true, CreatorAccountId: 880 })
+		const template = (await (await SELF.fetch(`${ORIGIN}/rooms/1`)).json()) as {
+			SubRooms: Array<{ UnitySceneId: string }>
+		}
+		expect(made.value!.SubRooms[0]!.UnitySceneId).toBe(template.SubRooms[0]!.UnitySceneId)
+
+		// The names are reserved: no room can take them.
+		const taken = await clone(24, 'CustomDormRoomTemplate')
+		expect(taken).toMatchObject({ success: false, value: null })
+
+		// A room that took a template name before the names were reserved still clones the
+		// template: the client caches the name lookup and clones whatever id it got.
+		await env.DB.prepare('INSERT INTO room (data) VALUES (?1)')
+			.bind(
+				JSON.stringify({
+					RoomId: 30601,
+					Name: 'CustomDormRoomTemplate',
+					CreatorAccountId: 881,
+					SubRooms: [],
+					Roles: [{ AccountId: 881, Role: 255 }],
+				})
+			)
+			.run()
+		const fromSquatter = await clone(30601, 'MySecondDorm')
+		expect(fromSquatter.value).toMatchObject({ IsDorm: true, CreatorAccountId: 880 })
+
+		// Room ids are MAX + 1: leave nothing behind.
+		await env.DB.batch([
+			env.DB.prepare('DELETE FROM room WHERE room_id IN (?1, ?2, 30601)').bind(
+				made.value!.RoomId,
+				fromSquatter.value!.RoomId
+			),
+			env.DB.prepare('DELETE FROM subroom WHERE room_id IN (?1, ?2)').bind(
+				made.value!.RoomId,
+				fromSquatter.value!.RoomId
+			),
+		])
+	})
 })
