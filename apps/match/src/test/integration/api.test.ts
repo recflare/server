@@ -926,6 +926,41 @@ describe('public endpoints', () => {
 		expect(unknown).toMatchObject({ subRoomId: 34, location: RECCENTER_SCENE })
 	})
 
+	test('default entry skips a private non-entry subroom while explicit travel still reaches it', async () => {
+		const saved = await env.DB.prepare(
+			'SELECT sub_room_id,data FROM subroom WHERE room_id=77'
+		).all<{ sub_room_id: number; data: string }>()
+		try {
+			await env.DB.prepare(
+				"UPDATE subroom SET data=json_set(data,'$.Accessibility',CASE WHEN sub_room_id=34 THEN 0 ELSE 1 END) WHERE room_id=77"
+			).run()
+			for (const [path, expected] of [
+				['/matchmake/v2/room/77/34', 34], // Explicit outside travel is preserved.
+				['/matchmake/v2/room/77', 35],
+				['/matchmake/room/77', 35],
+				['/matchmake/room/77/999', 35],
+				['/matchmake/room/77/34', 34],
+			] as const) {
+				const response = await exports.default.fetch(ORIGIN + path, {
+					method: 'POST',
+					headers: { ...(await bearer('94')), 'Content-Type': 'application/x-www-form-urlencoded' },
+					body: 'JoinMode=0',
+				})
+				expect(response.status).toBe(200)
+				expect(await response.json()).toMatchObject(
+					path.includes('/v2/')
+						? { ErrorCode: 0, RoomInstance: { SubRoomId: expected } }
+						: { errorCode: 0, roomInstance: { subRoomId: expected } }
+				)
+			}
+		} finally {
+			for (const row of saved.results)
+				await env.DB.prepare('UPDATE subroom SET data=? WHERE sub_room_id=?')
+					.bind(row.data, row.sub_room_id)
+					.run()
+		}
+	})
+
 	test('the /matchmake/v2 routes take a JSON body and answer the PascalCase envelope', async () => {
 		// The newer client posts JSON with real types (JoinMode a number, AdditionalPlayerIds
 		// null when alone) and reads back `ErrorCode`/`CorrelationId`/`RoomInstance`.
