@@ -85,7 +85,16 @@ import {
 import { banEvasionMatch, resolveBan } from '../../api/src/bans-db'
 // The player-event tables are the api worker's too (same plain-D1 shape as bans-db):
 // `/matchmake/event` needs the event's room and the caller's invite row.
-import { getEventById, getEventResponse } from '../../api/src/events-db'
+import {
+	canBroadcastEvent,
+	getEventById,
+	getEventResponse,
+	getEventTags,
+	getGoingPlayerIds,
+	startEventBroadcast,
+	stopEventBroadcast,
+	toEventNotification,
+} from '../../api/src/events-db'
 // Value import of the notify worker's NotificationType enum (its bundle has no runtime
 // deps), so /invite sends a typed MessageReceived frame instead of a magic number.
 import { NotificationType } from '../../notify/src/notification-types'
@@ -119,6 +128,9 @@ import {
 	RoomInstanceDto,
 	RoomInstanceSummaryDto,
 	StatusVisibilityRequest,
+	TachyonBroadcastRequest,
+	TachyonBroadcastResponse,
+	TachyonEventResponse,
 	UNAUTHORIZED_RESPONSE,
 	VrMovementModeRequest,
 } from './openapi'
@@ -1030,6 +1042,54 @@ const EVENT_IS_PRIVATE = MatchmakingErrorCode.EventIsPrivate
 const HUB_INSTANCE = 'global'
 
 /**
+ * The player event a room instance was matchmade for (its `eventId` stamp), 0 for none or
+ * for an id that is not a positive integer.
+ */
+async function instanceEventId(db: D1Database, instanceId: number): Promise<number> {
+	if (!Number.isInteger(instanceId) || instanceId <= 0) return 0
+	const row = await db
+		.prepare('SELECT event_id FROM room_instance WHERE id = ?1')
+		.bind(instanceId)
+		.first<{ event_id: number | null }>()
+	return row?.event_id ?? 0
+}
+
+/**
+ * Push a `PlayerEventUpdated` carrying an event's new broadcast state to everyone Going and
+ * everyone standing in one of its instances: an event's instances let people in without an
+ * RSVP, and those clients cache the event too (its page's Broadcasters button and the
+ * Start/Stop Broadcasting buttons read it). Ephemeral: it is a live state change, not news
+ * to deliver later. Hub failures are logged and swallowed; the state is already stored.
+ */
+async function notifyEventBroadcast(env: Env, eventId: number): Promise<void> {
+	try {
+		const event = await getEventById(env.DB, eventId)
+		if (event === null) return
+		const { results } = await env.DB.prepare(
+			`SELECT DISTINCT p.account_id AS id FROM presence p
+			 JOIN room_instance ri ON ri.id = p.room_instance_id
+			 WHERE ri.event_id = ?1 AND p.expires_at > ?2`
+		)
+			.bind(eventId, Math.floor(Date.now() / 1000))
+			.all<{ id: number }>()
+		const audience = [
+			...new Set([...(await getGoingPlayerIds(env.DB, eventId)), ...results.map((r) => r.id)]),
+		]
+		if (audience.length === 0) return
+		await env.RECFLARE_NOTIFICATIONS_HUB.getByName(HUB_INSTANCE).notifyPlayersEphemeral(
+			audience,
+			NotificationType.PlayerEventUpdated,
+			{ ...toEventNotification(event, await getEventTags(env.DB, eventId)) }
+		)
+	} catch (err) {
+		logger.error('failed to push broadcast update', {
+			eventId,
+			error: err instanceof Error ? err.message : String(err),
+		})
+	}
+}
+
+/**
  * A fresh id for a *live* (non-persisted) message — the reference's
  * `NextLiveMessageID`. A game invite is ephemeral (never stored), so there's no
  * database sequence to draw from; epoch milliseconds give a monotonically increasing,
@@ -1246,7 +1306,7 @@ function roomInstanceFromRoom(
 		roomInstanceId: instanceId,
 		roomId: f.roomId,
 		subRoomId: f.subRoomId,
-		roomInstanceType: f.roomInstanceType,
+		roomInstanceType: eventId > 0 ? RoomInstanceType.MultiInstanceEvent : f.roomInstanceType,
 		location: f.location,
 		dataBlob: f.dataBlob,
 		eventId,
@@ -1812,7 +1872,9 @@ async function resolveRoomInstance(
 			name: f.name,
 			maxCapacity: f.maxCapacity,
 			isPrivate: privateInstance || f.isDorm,
-			roomInstanceType: f.roomInstanceType,
+			// An event's session is the client's MultiInstanceEvent, which is what makes the
+			// 2026 client load the event behind it and run broadcasting there.
+			roomInstanceType: eventId > 0 ? RoomInstanceType.MultiInstanceEvent : f.roomInstanceType,
 			gameVersion,
 			eventId,
 		})
@@ -2220,6 +2282,137 @@ const app = new Hono<App>()
 
 			const presence = await getPresence<RoomInstance>(c.env.DB, playerId)
 			return c.json(presence?.roomInstance?.roomInstanceId ?? NO_INSTANCE)
+		}
+	)
+
+	// What Tachyon needs to know about an instance to run a 2026 broadcast in it: the event
+	// it belongs to, and whether `account` may broadcast that event. Asked when a player joins
+	// (so the room server knows which instances are siblings, and whether to clear a stale
+	// broadcast of theirs) and again on `RR_StartBroadcast`, which carries no body: this
+	// answer is the only authorization a broadcast gets.
+	//
+	// Ungated, like `/tachyon`: it discloses an instance's event id and a yes/no.
+	.get(
+		'/tachyon/event',
+		describeRoute({
+			tags: ['Presence'],
+			summary: 'The event a room instance belongs to, for Tachyon',
+			description: [
+				'`?instance=<roomInstanceId>&account=<accountId>` → `{ eventId, canBroadcast }`.',
+				'`eventId` is the player event the instance was matchmade for, 0 for none.',
+				'`canBroadcast` is true when `account` created that event, it is multi-instance, and',
+				'it has not ended (five minutes of grace). There is no start bound: matchmaking lets',
+				'people in early, and the client offers Start Broadcasting whenever the creator stands',
+				'in one of the event’s instances. Unparseable parameters answer',
+				'`{ eventId: 0, canBroadcast: false }`. Ungated: it discloses an instance’s event id',
+				'and nothing more.',
+			].join(' '),
+			parameters: [
+				{
+					name: 'instance',
+					in: 'query',
+					required: true,
+					description: 'The room instance',
+					schema: { type: 'integer' },
+				},
+				{
+					name: 'account',
+					in: 'query',
+					required: false,
+					description: 'The account that would broadcast',
+					schema: { type: 'integer' },
+				},
+			],
+			responses: {
+				200: json(TachyonEventResponse, 'The event, and whether the account may broadcast it'),
+			},
+		}),
+		async (c) => {
+			const instanceId = Number.parseInt(c.req.query('instance') ?? '', 10)
+			const accountId = Number.parseInt(c.req.query('account') ?? '', 10)
+			const eventId = await instanceEventId(c.env.DB, instanceId)
+			const event = eventId === 0 ? null : await getEventById(c.env.DB, eventId)
+			if (event === null) return c.json({ eventId: 0, canBroadcast: false })
+			return c.json({
+				eventId,
+				canBroadcast: Number.isInteger(accountId) && canBroadcastEvent(event, accountId),
+			})
+		}
+	)
+
+	// Tachyon reporting a broadcast it STARTED or STOPPED (2026). This, not the client's own
+	// `POST /api/playerevents/v1/broadcast`, is what makes an event broadcasting: the
+	// organizer's client posts that route on every spawn, broadcasting or not, while the room
+	// server only reports a broadcast it is really relaying. Records it in `event_broadcast`
+	// (every event read carries it as `BroadcastingRoomInstanceId`) and pushes
+	// `PlayerEventUpdated` to everyone Going and everyone in one of the event's instances, so
+	// open event pages flip their broadcast buttons at once.
+	//
+	// Authenticated with the BROADCASTER's own token, which Tachyon keeps from the connection
+	// handshake, so a report can only be about the caller's own broadcast: starting needs what
+	// `/tachyon/event` grants, stopping only needs to be the broadcaster on record.
+	.post(
+		'/tachyon/broadcast',
+		describeRoute({
+			tags: ['Presence'],
+			summary: 'Tachyon reports a broadcast started or stopped',
+			description: [
+				'JSON `{ instance, active, joined? }`, sent by Tachyon with the broadcaster’s own',
+				'bearer token when it starts (`active: true`) or stops a broadcast. A start records',
+				'the instance as the event’s broadcast if the caller may broadcast it (creator of a',
+				'multi-instance event that has not ended); a stop clears it if the caller is the',
+				'broadcaster on record for that instance, or for any instance with `joined: true`',
+				'(the reset Tachyon sends when the creator joins an instance). A change pushes',
+				'`PlayerEventUpdated` to everyone Going and everyone in one of the event’s',
+				'instances. Answers `{ eventId, broadcasting }`; `eventId` is 0 when the instance',
+				'belongs to no event.',
+			].join(' '),
+			security: AUTHED,
+			requestBody: jsonBody(TachyonBroadcastRequest, 'The instance and what happened'),
+			responses: {
+				200: json(TachyonBroadcastResponse, 'The event and whether it now broadcasts from there'),
+				400: { description: 'No usable `instance` or `active` (empty body)' },
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return c.body(null, 401)
+			const body = (await c.req.json().catch(() => null)) as {
+				instance?: unknown
+				active?: unknown
+				joined?: unknown
+			} | null
+			const instanceId = Number(body?.instance)
+			if (!Number.isInteger(instanceId) || typeof body?.active !== 'boolean') {
+				return c.body(null, 400)
+			}
+			const active = body.active
+			const eventId = await instanceEventId(c.env.DB, instanceId)
+			const event = eventId === 0 ? null : await getEventById(c.env.DB, eventId)
+			if (event === null) return c.json({ eventId: 0, broadcasting: false })
+
+			let changed: boolean
+			if (active) {
+				if (!canBroadcastEvent(event, id)) {
+					logger.info('tachyon broadcast refused', { eventId, instanceId, accountId: id })
+					return c.json({ eventId, broadcasting: false })
+				}
+				changed = event.BroadcastingRoomInstanceId !== instanceId
+				await startEventBroadcast(c.env.DB, eventId, instanceId, id)
+			} else {
+				changed = await stopEventBroadcast(
+					c.env.DB,
+					eventId,
+					id,
+					body.joined === true ? undefined : instanceId
+				)
+			}
+			if (changed) {
+				logger.info('tachyon broadcast', { eventId, instanceId, accountId: id, active })
+				await notifyEventBroadcast(c.env, eventId)
+			}
+			return c.json({ eventId, broadcasting: active })
 		}
 	)
 
