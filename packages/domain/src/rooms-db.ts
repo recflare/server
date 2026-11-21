@@ -4078,14 +4078,23 @@ export async function getHotRooms(
  * A room with no published save is ABSENT from the map rather than mapped to 0, so the
  * caller can tell "never published" from "published at the epoch" and choose its own
  * fallback.
+ *
+ * LISTABLE rooms only — the one caller ranks nothing else. Driven from `room` so the walk
+ * starts on `idx_room_public` and reaches only those rooms' subrooms (`idx_subroom_room`).
+ * Starting from `subroom` instead scans the whole table, and most of it is dorms: one per
+ * account, each costing a read past its subroom blob plus a save lookup and JSON parse,
+ * all for rows the caller then throws away.
  */
 async function lastPublishedAtByRoom(db: D1Database): Promise<Map<number, number>> {
-	// `json_extract` rather than parsing the row: a save blob carries the whole scene and
-	// only its timestamp is wanted, so the DataBlob never has to cross the wire.
+	// `json_extract` rather than parsing the row: only the save's timestamp is wanted, so
+	// the rest of the save record never has to cross the wire.
 	const { results } = await db
 		.prepare(
 			`SELECT s.room_id AS room_id, json_extract(sv.data, '$.CreatedAt') AS created_at
-			 FROM subroom s JOIN subroom_save sv ON sv.sub_room_data_save_id = s.current_save_id`
+			 FROM room r
+			 JOIN subroom s ON s.room_id = r.room_id
+			 JOIN subroom_save sv ON sv.sub_room_data_save_id = s.current_save_id
+			 WHERE ${LISTABLE_WHERE}`
 		)
 		.all<{ room_id: number; created_at: string | null }>()
 
