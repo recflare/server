@@ -10530,6 +10530,9 @@ describe('player events', () => {
 			body: JSON.stringify({ PlayerEventId: id }),
 		})
 		expect(anonymous.status).toBe(401)
+
+		// A live public event would skew the feed and profile tests that count events.
+		expect((await post(`/api/playerevents/v2/delete/${id}`, undefined)).status).toBe(200)
 	})
 
 	test('POST /api/playerevents/v1/respond rejects a bad body, an unknown event and no token', async () => {
@@ -11353,6 +11356,7 @@ describe('openapi', () => {
 			'POST /api/messages/v3/delete',
 			'POST /api/playerReputation/v1/bulk',
 			'POST /api/playerReputation/v2/bulk',
+			'POST /api/playerevents/v1/broadcast',
 			'POST /api/playerevents/v1/bulk',
 			'POST /api/playerevents/v1/bulkInvite',
 			'POST /api/playerevents/v1/report',
