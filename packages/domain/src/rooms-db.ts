@@ -18,7 +18,7 @@
  */
 
 import { escapeLike, prefixUpperBound } from './accounts-db'
-import { chunkForBinds, MAX_BOUND_PARAMS } from './d1-binds'
+import { chunkForBinds } from './d1-binds'
 import { Accessibility, Role } from './enums'
 import { readPlayerSettings } from './player-settings-kv'
 import { countPlayersByRoom } from './presence-db'
@@ -2720,15 +2720,11 @@ function groupTags(rows: RoomTagRow[]): Map<number, RoomTag[]> {
  * empty `IN ()` isn't valid SQL, and "no rooms asked about" must not come to mean "all of
  * them".
  *
- * Two shapes, because the callers are two different questions. A page slice fits D1's
- * 100-parameter cap and is fetched by id. Attaching tags to EVERY room does not fit — and
- * chunking it would mean ceil(n/100) round trips to answer what one unfiltered read
- * answers, on a table of three small columns. So past the cap this reads the whole table
- * and narrows in memory.
- *
- * This is what the D1 error "variable number must be between ?1 and ?100" was: the hot feed
- * attaches tags to every room, so the bound list grew with the database and the query blew
- * up the moment a server had more than a hundred rooms.
+ * The ids go in as ONE JSON array (`json_each`), so the list can be any length without
+ * meeting D1's 100-parameter cap, and every lookup is a seek on the `(room_id, tag)` key:
+ * the rows read are the rows returned. Past the cap this used to read the WHOLE table and
+ * narrow in memory, so any caller with more than a hundred rooms pulled every tag on the
+ * server to keep a handful — the query's row count tracked the table, not the request.
  *
  * Tags come back alphabetical, so a room's array is stable between reads.
  */
@@ -2736,21 +2732,12 @@ async function tagsByRoom(db: D1Database, roomIds: number[]): Promise<Map<number
 	const ids = [...new Set(roomIds)]
 	if (ids.length === 0) return new Map()
 
-	if (ids.length > MAX_BOUND_PARAMS) {
-		const { results } = await db
-			.prepare('SELECT room_id, tag, type, is_primary_genre FROM room_tag ORDER BY tag')
-			.all<RoomTagRow>()
-		const wanted = new Set(ids)
-		return groupTags(results.filter((row) => wanted.has(row.room_id)))
-	}
-
-	const placeholders = ids.map((_, i) => `?${i + 1}`).join(',')
 	const { results } = await db
 		.prepare(
 			`SELECT room_id, tag, type, is_primary_genre FROM room_tag
-			 WHERE room_id IN (${placeholders}) ORDER BY tag`
+			 WHERE room_id IN (SELECT value FROM json_each(?1)) ORDER BY tag`
 		)
-		.bind(...ids)
+		.bind(JSON.stringify(ids))
 		.all<RoomTagRow>()
 	return groupTags(results)
 }
