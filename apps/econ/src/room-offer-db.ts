@@ -1,11 +1,13 @@
 /**
  * Room offers — what a room SELLS of its own inventory items. One offer is a price and a list
  * of `ItemMappings`, each naming a `room_inventory_item` (see `room-inventory-item-db.ts`) by
- * its `OriginId` and how many of it the offer gives. Buying an offer is not implemented yet.
+ * its `OriginId` and how many of it the offer gives.
  *
  * The endpoints:
  *  - `POST /econ/roomOffer/room/{roomId}` creates an offer (or replaces the one `OriginId` names)
  *  - `GET  /econ/roomOffer/room/{roomId}` lists a room's offers
+ *  - `PUT  /econ/roomOffer/{roomId}/{originId}` replaces an offer the room has
+ *  - `POST /econ/roomOffer/{roomId}/{originId}/purchase` buys one (nothing records the sale)
  *
  * This worker (`econ`) owns the table and its migration — see apps/econ/migrations/0031.
  */

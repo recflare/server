@@ -1170,6 +1170,51 @@ export const PlayerRoomInventoryItemDto = z.object({
 	ModifiedAt: z.string().describe('ISO-8601 UTC'),
 })
 
+/** `POST /econ/roomOffer/{roomId}/{originId}/purchase` — JSON, as the live client sends it. */
+export const PurchaseRoomOfferRequest = z.object({
+	NumOffersPurchased: z.int().describe('At least 1, at most the offer’s `MaxCountPerPurchase`'),
+	TransactionId: z.string().optional().describe('GUID. Accepted, not checked'),
+	ExpectedTotalPrice: z
+		.int()
+		.describe('`Price` × `NumOffersPurchased`; 0 from the room’s creator or a co-owner'),
+	ExpectedPriceUnitOriginId: z
+		.string()
+		.nullable()
+		.optional()
+		.describe('The offer’s `PriceUnitId`: null for tokens, else a room currency id'),
+	ExpectedRoomOfferVersion: z.int().optional().describe('Accepted, not checked'),
+	ConcurrencyCodeByItemOriginIdMap: z
+		.record(z.string(), z.string().nullable())
+		.optional()
+		.describe('Accepted, not checked'),
+	GiftRecipientAccountId: z
+		.int()
+		.nullable()
+		.optional()
+		.describe('Who gets the items; null is the buyer. Only an `IsGiftable` offer'),
+})
+
+/** The purchase's answer, as observed from the live client. */
+export const PurchaseRoomOfferResponse = z.object({
+	OperationResult: z.int().describe('0 on success; 1 on a refusal (assumed — not observed)'),
+	BalanceUpdateResult: z
+		.int()
+		.describe(
+			'An UpdateResponse: 0 OK, 2 NotEnoughCredit, 4 NoItemAvailable, ' +
+				'6 RequestedPriceDoesNotMatch, 7 RequestedAmountNotAllowed, 8 PlayerNotEligible'
+		),
+	TokenBalanceResponse: z
+		.object({
+			Balance: z.int().describe('The BUYER’s resulting token total'),
+			CurrencyType: z.int().describe('2: tokens'),
+			Platform: z.int().describe('-2: the one bucket this server uses'),
+		})
+		.describe('What the buyer now holds of tokens, whatever the offer was priced in'),
+	PlayerRoomInventoryItems: z
+		.array(PlayerRoomInventoryItemDto)
+		.describe('The RECIPIENT’s holdings of the offer’s items, `Count` the resulting total'),
+})
+
 /** `POST /econ/roomInventory/v2/award` — a BARE JSON ARRAY, as the live client sends it. */
 export const AwardRoomInventoryItemsRequest = z.array(
 	z.object({

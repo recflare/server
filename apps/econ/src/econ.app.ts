@@ -151,6 +151,8 @@ import {
 	PurchaseRoomCurrencyRequest,
 	PurchaseRoomKeyWithCurrencyRequest,
 	PurchaseRoomKeyWithCurrencyResponse,
+	PurchaseRoomOfferRequest,
+	PurchaseRoomOfferResponse,
 	QueryConsumablesRequest,
 	ReferralProgressResponse,
 	RemoveInfluencerBody,
@@ -276,9 +278,9 @@ import type { Equipment } from './equipment-db'
 import type { AvatarItem } from './inventory-db'
 import type { RoomConsumable, RoomConsumableInventoryItem } from './room-consumable-db'
 import type { RoomCurrency, RoomCurrencyPurchaseOffer } from './room-currency-db'
-import type { RoomInventoryItem } from './room-inventory-item-db'
+import type { PlayerRoomInventoryItem, RoomInventoryItem } from './room-inventory-item-db'
 import type { RoomKey, RoomKeyHolding } from './room-key-db'
-import type { RoomOffer, RoomOfferItemMapping } from './room-offer-db'
+import type { NewRoomOffer, RoomOffer, RoomOfferItemMapping } from './room-offer-db'
 import type { WishlistItem } from './wishlist-db'
 
 // Invention storage (owned by the `api` worker, on this same `recflare` database).
@@ -509,6 +511,84 @@ function roomOfferEnvelope(c: Context<App>, value: RoomOffer | null, error?: str
 		Error: error ?? null,
 		error_id: null,
 	})
+}
+
+/**
+ * A room offer write's body — the whole DTO, as the client sends it to both the create and the
+ * edit — checked and normalised, or null when it is unusable. Shape only: whether each mapping
+ * names one of the room's items is the caller's to check once the room is known to be the
+ * caller's. `OriginId` is not read here; the create and the edit each decide it.
+ */
+function parseRoomOfferBody(body: Record<string, unknown>): Omit<NewRoomOffer, 'RoomId'> | null {
+	const str = (v: unknown): string | null => (typeof v === 'string' ? v : null)
+	const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v)
+	/** An optional int: absent or null is null, an int is itself, anything else undefined. */
+	const optInt = (v: unknown): number | null | undefined =>
+		v === undefined || v === null ? null : isInt(v) ? v : undefined
+
+	// Limits are counted in characters (code points), and an over-long value is refused
+	// rather than cut: the shop shows what the owner typed, or nothing.
+	const name = str(body.Name)?.trim() ?? ''
+	if (name === '' || Array.from(name).length > MAX_ROOM_OFFER_NAME_LENGTH) return null
+	const description = str(body.Description) ?? ''
+	if (Array.from(description).length > MAX_ROOM_OFFER_DESCRIPTION_LENGTH) return null
+	if (!isInt(body.Price) || body.Price < 0) return null
+	const maxCount = body.MaxCountPerPurchase ?? 1
+	if (!isInt(maxCount) || maxCount < 1) return null
+	const maxPurchases = optInt(body.MaxNumPurchasesPerPlayer)
+	if (maxPurchases === undefined || (maxPurchases !== null && maxPurchases < 1)) return null
+	const minDynamic = optInt(body.MinimumDynamicPrice)
+	const maxDynamic = optInt(body.MaximumDynamicPrice)
+	if (minDynamic === undefined || maxDynamic === undefined) return null
+
+	// An offer may be saved with NO items — the client saves one before its contents are
+	// picked — so an absent or null list is an empty one; anything else that isn't an array
+	// is refused.
+	const rawMappings = body.ItemMappings ?? []
+	if (!Array.isArray(rawMappings)) return null
+	const mappings: RoomOfferItemMapping[] = []
+	for (const raw of rawMappings as unknown[]) {
+		const m = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+		const itemOriginId = str(m.ItemOriginId)?.toLowerCase() ?? ''
+		if (
+			m.ItemType !== ROOM_OFFER_ITEM_TYPE_INVENTORY_ITEM ||
+			!GUID_PATTERN.test(itemOriginId) ||
+			!isInt(m.Count) ||
+			m.Count < 1
+		) {
+			return null
+		}
+		mappings.push({ ItemType: m.ItemType, ItemOriginId: itemOriginId, Count: m.Count })
+	}
+
+	return {
+		// Masked like every other player-typed string a room shows its visitors.
+		Name: censorSwears(name),
+		Description: censorSwears(description),
+		ImageName: str(body.ImageName),
+		Price: body.Price,
+		HasDynamicPrice: body.HasDynamicPrice === true,
+		MinimumDynamicPrice: minDynamic,
+		MaximumDynamicPrice: maxDynamic,
+		MaxNumPurchasesPerPlayer: maxPurchases,
+		MaxCountPerPurchase: maxCount,
+		ItemMappings: mappings,
+		PriceUnitId: body.PriceUnitId ?? null,
+		AllowRename: body.AllowRename === true,
+		Visibility: isInt(body.Visibility) ? body.Visibility : 0,
+		IsGiftable: body.IsGiftable === true,
+	}
+}
+
+/** Whether every mapping names an inventory item the room defines. */
+async function roomDefinesMappedItems(
+	db: D1Database,
+	roomId: number,
+	mappings: RoomOfferItemMapping[]
+): Promise<boolean> {
+	if (mappings.length === 0) return true
+	const roomItems = new Set((await getRoomInventoryItems(db, roomId)).map((item) => item.OriginId))
+	return mappings.every((m) => roomItems.has(m.ItemOriginId))
 }
 
 function roomInventoryItemEnvelope(
@@ -5963,47 +6043,8 @@ const app = new Hono<App>({ strict: false })
 			> | null
 			if (!body || typeof body !== 'object' || Array.isArray(body)) return failed()
 
-			const str = (v: unknown): string | null => (typeof v === 'string' ? v : null)
-			const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v)
-			/** An optional int: absent or null is null, an int is itself, anything else undefined. */
-			const optInt = (v: unknown): number | null | undefined =>
-				v === undefined || v === null ? null : isInt(v) ? v : undefined
-
-			// Limits are counted in characters (code points), and an over-long value is refused
-			// rather than cut: the shop shows what the owner typed, or nothing.
-			const name = str(body.Name)?.trim() ?? ''
-			if (name === '' || Array.from(name).length > MAX_ROOM_OFFER_NAME_LENGTH) return failed()
-			const description = str(body.Description) ?? ''
-			if (Array.from(description).length > MAX_ROOM_OFFER_DESCRIPTION_LENGTH) return failed()
-			if (!isInt(body.Price) || body.Price < 0) return failed()
-			const maxCount = body.MaxCountPerPurchase ?? 1
-			if (!isInt(maxCount) || maxCount < 1) return failed()
-			const maxPurchases = optInt(body.MaxNumPurchasesPerPlayer)
-			if (maxPurchases === undefined || (maxPurchases !== null && maxPurchases < 1)) return failed()
-			const minDynamic = optInt(body.MinimumDynamicPrice)
-			const maxDynamic = optInt(body.MaximumDynamicPrice)
-			if (minDynamic === undefined || maxDynamic === undefined) return failed()
-
-			// Shape-check the mappings before the room is read; whether each names one of the
-			// room's items is checked once the room is known to be the caller's. An offer may be
-			// saved with NO items — the client saves one before its contents are picked — so an
-			// absent or null list is an empty one; anything else that isn't an array is refused.
-			const rawMappings = body.ItemMappings ?? []
-			if (!Array.isArray(rawMappings)) return failed()
-			const mappings: RoomOfferItemMapping[] = []
-			for (const raw of rawMappings as unknown[]) {
-				const m = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
-				const itemOriginId = str(m.ItemOriginId)?.toLowerCase() ?? ''
-				if (
-					m.ItemType !== ROOM_OFFER_ITEM_TYPE_INVENTORY_ITEM ||
-					!GUID_PATTERN.test(itemOriginId) ||
-					!isInt(m.Count) ||
-					m.Count < 1
-				) {
-					return failed()
-				}
-				mappings.push({ ItemType: m.ItemType, ItemOriginId: itemOriginId, Count: m.Count })
-			}
+			const parsed = parseRoomOfferBody(body)
+			if (!parsed) return failed()
 
 			const canManage = await canManageRoomById(c.env.DB, roomId, accountId)
 			if (canManage === null) return failed()
@@ -6011,14 +6052,11 @@ const app = new Hono<App>({ strict: false })
 
 			// Every mapped item must be one THIS room defines: the permission check was against
 			// the path's room, and an offer must not sell another room's items.
-			const roomItems = new Set(
-				(await getRoomInventoryItems(c.env.DB, roomId)).map((item) => item.OriginId)
-			)
-			if (mappings.some((m) => !roomItems.has(m.ItemOriginId))) return failed()
+			if (!(await roomDefinesMappedItems(c.env.DB, roomId, parsed.ItemMappings))) return failed()
 
 			// A non-nullable Guid arrives as all zeroes when the client has none to give, so
 			// that mints one just as null does. An id already in use must be this room's.
-			let originId = str(body.OriginId)?.toLowerCase() ?? null
+			let originId = typeof body.OriginId === 'string' ? body.OriginId.toLowerCase() : null
 			if (originId === null || originId === EMPTY_GUID) {
 				originId = crypto.randomUUID()
 			} else {
@@ -6027,25 +6065,275 @@ const app = new Hono<App>({ strict: false })
 				if (existing && existing.RoomId !== roomId) return failed()
 			}
 
-			const offer = await upsertRoomOffer(c.env.DB, originId, {
+			const offer = await upsertRoomOffer(c.env.DB, originId, { RoomId: roomId, ...parsed })
+			return roomOfferEnvelope(c, offer)
+		}
+	)
+	// Edit an offer. The body is the WHOLE offer as the create takes it (observed: the client
+	// sends every key back, with `OriginId` null — the id is the path's), so this REPLACES
+	// rather than merges, under the create's checks and gates. The path has no `room/` segment,
+	// unlike the create and the list.
+	.put(
+		'/econ/roomOffer/:roomId/:originId',
+		describeRoute({
+			tags: ['Econ'],
+			summary: 'Update a room offer',
+			description: [
+				'Replaces an offer the room has with the body — the same JSON the create takes, with',
+				'the same limits — and answers it inside the `{ Value, Success, Error, error_id }`',
+				'envelope, like the create. The offer is the path’s `originId`; the body’s `OriginId`',
+				'(sent null) is ignored. `RoomId` and `CreatedAt` never change; `ModifiedAt` is now.',
+				'',
+				'Gated to the room’s creator or a co-owner; a valid token from anyone else is a 403.',
+				'An offer that is not this room’s, an unknown room, a mapping naming an item the room',
+				'does not define, or an unusable body is a 200 carrying `Success: false`.',
+			].join('\n'),
+			security: AUTHED,
+			parameters: [
+				{
+					name: 'roomId',
+					in: 'path',
+					required: true,
+					description: 'The room that has the offer',
+					schema: { type: 'integer' },
+				},
+				{
+					name: 'originId',
+					in: 'path',
+					required: true,
+					description: 'The offer’s `OriginId`',
+					schema: { type: 'string' },
+				},
+			],
+			requestBody: jsonBody(CreateRoomOfferRequest, 'The offer as it should now stand'),
+			responses: {
+				200: json(
+					RoomOfferEnvelope,
+					'The offer as it now stands, or a rejection with `Success: false`'
+				),
+				401: UNAUTHORIZED_RESPONSE,
+				403: { description: 'Not the room’s creator or a co-owner (empty body)' },
+			},
+		}),
+		async (c) => {
+			const accountId = await authedId(c)
+			if (accountId === null) return unauthorized(c)
+			const failed = () => roomOfferEnvelope(c, null, SAVE_ROOM_OFFER_FAILED)
+
+			const roomId = Number.parseInt(c.req.param('roomId'), 10)
+			if (!Number.isInteger(roomId)) return failed()
+
+			const body = (await c.req.json<Record<string, unknown>>().catch(() => null)) as Record<
+				string,
+				unknown
+			> | null
+			if (!body || typeof body !== 'object' || Array.isArray(body)) return failed()
+			const parsed = parseRoomOfferBody(body)
+			if (!parsed) return failed()
+
+			const canManage = await canManageRoomById(c.env.DB, roomId, accountId)
+			if (canManage === null) return failed()
+			if (!canManage) return c.body(null, 403)
+
+			// The offer must be the PATH room's: that is the room the check above was made against.
+			const existing = await getRoomOffer(c.env.DB, c.req.param('originId').toLowerCase())
+			if (!existing || existing.RoomId !== roomId) return failed()
+			if (!(await roomDefinesMappedItems(c.env.DB, roomId, parsed.ItemMappings))) return failed()
+
+			const offer = await upsertRoomOffer(c.env.DB, existing.OriginId, {
 				RoomId: roomId,
-				// Masked like every other player-typed string a room shows its visitors.
-				Name: censorSwears(name),
-				Description: censorSwears(description),
-				ImageName: str(body.ImageName),
-				Price: body.Price,
-				HasDynamicPrice: body.HasDynamicPrice === true,
-				MinimumDynamicPrice: minDynamic,
-				MaximumDynamicPrice: maxDynamic,
-				MaxNumPurchasesPerPlayer: maxPurchases,
-				MaxCountPerPurchase: maxCount,
-				ItemMappings: mappings,
-				PriceUnitId: body.PriceUnitId ?? null,
-				AllowRename: body.AllowRename === true,
-				Visibility: isInt(body.Visibility) ? body.Visibility : 0,
-				IsGiftable: body.IsGiftable === true,
+				...parsed,
 			})
 			return roomOfferEnvelope(c, offer)
+		}
+	)
+	// Buy an offer: the room's inventory items it maps, for the caller or as a gift. Priced in
+	// TOKENS (`PriceUnitId` null) the money goes to the room's owner, as a consumable's does; in a
+	// ROOM CURRENCY it goes to nobody. What is bought lands in `room_inventory_item_player`.
+	.post(
+		'/econ/roomOffer/:roomId/:originId/purchase',
+		describeRoute({
+			tags: ['Storefront'],
+			summary: 'Buy a room offer',
+			description: [
+				'Buys `NumOffersPurchased` of the offer: each mapping’s `Count` × that many of the',
+				'room inventory item, added to the recipient’s holding. The price is the offer’s',
+				'`Price` × `NumOffersPurchased`, in tokens when its `PriceUnitId` is null (paid to the',
+				'room’s OWNER, who gets a StorefrontBalanceUpdate; the buyer gets a',
+				'StorefrontBalancePurchase) or in that room currency (paid to nobody).',
+				'',
+				'`ExpectedTotalPrice` and `ExpectedPriceUnitOriginId` must be what the offer would',
+				'charge. The room’s creator and co-owners pay nothing and send 0 (the full price is',
+				'accepted too). `NumOffersPurchased` is 1 to `MaxCountPerPurchase`.',
+				'`GiftRecipientAccountId` sends the items to that player — only for an `IsGiftable`',
+				'offer — while the buyer still pays. `TransactionId`, `ExpectedRoomOfferVersion` and',
+				'`ConcurrencyCodeByItemOriginIdMap` are accepted and IGNORED; every holding written',
+				'gets a fresh `ConcurrencyCode`. Nothing records purchases, so',
+				'`MaxNumPurchasesPerPlayer` is not enforced, and `HasDynamicPrice` is not',
+				'implemented: `Price` is charged.',
+				'',
+				'Answers the purchase result observed from the live client: `OperationResult`,',
+				'`BalanceUpdateResult`, `TokenBalanceResponse` (the BUYER’s token total, whatever the',
+				'offer is priced in) and `PlayerRoomInventoryItems`, the RECIPIENT’s holdings of the',
+				'offer’s items. A refusal is a 200 in the same shape — `OperationResult` 1, no',
+				'holdings — with the reason in `BalanceUpdateResult`: 4 no such offer, room or item,',
+				'7 a bad count, 8 a bad or',
+				'unallowed gift recipient, 6 a price or currency that is not the offer’s, 2 not',
+				'enough to pay. Nothing is charged or given. The refusal form is an ASSUMPTION.',
+			].join('\n'),
+			security: AUTHED,
+			parameters: [
+				{
+					name: 'roomId',
+					in: 'path',
+					required: true,
+					description: 'The room that has the offer',
+					schema: { type: 'integer' },
+				},
+				{
+					name: 'originId',
+					in: 'path',
+					required: true,
+					description: 'The offer’s `OriginId`',
+					schema: { type: 'string' },
+				},
+			],
+			requestBody: jsonBody(PurchaseRoomOfferRequest, 'What to buy, and what the client saw'),
+			responses: {
+				200: json(PurchaseRoomOfferResponse, 'What the recipient now holds, or a refusal'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const buyerId = await authedId(c)
+			if (buyerId === null) return unauthorized(c)
+
+			const startingTokens = intVar(c.env.STARTING_TOKENS, DEFAULT_STARTING_TOKENS)
+			const tokens = CurrencyType.RecCenterTokens
+			const answer = async (code: number, held: PlayerRoomInventoryItem[] = []) =>
+				c.json({
+					OperationResult: code === UpdateResponse.OK ? ROOM_KEY_STATUS_OK : ROOM_KEY_STATUS_FAILED,
+					BalanceUpdateResult: code,
+					TokenBalanceResponse: {
+						Balance: await getBalance(c.env.DB, buyerId, tokens, startingTokens),
+						CurrencyType: tokens,
+						Platform: ALL_PLATFORMS,
+					},
+					PlayerRoomInventoryItems: held,
+				})
+
+			const body = (await c.req.json<Record<string, unknown>>().catch(() => null)) as Record<
+				string,
+				unknown
+			> | null
+			const request = body !== null && typeof body === 'object' && !Array.isArray(body) ? body : {}
+
+			const roomId = Number.parseInt(c.req.param('roomId'), 10)
+			const offer = await getRoomOffer(c.env.DB, c.req.param('originId').toLowerCase())
+			if (!Number.isInteger(roomId) || !offer || offer.RoomId !== roomId) {
+				return answer(UpdateResponse.NoItemAvailable)
+			}
+
+			const n = request.NumOffersPurchased
+			if (typeof n !== 'number' || !Number.isInteger(n) || n < 1 || n > offer.MaxCountPerPurchase) {
+				return answer(UpdateResponse.RequestedAmountNotAllowed)
+			}
+
+			const gift = request.GiftRecipientAccountId
+			if (
+				gift !== null &&
+				gift !== undefined &&
+				!(Number.isInteger(gift) && (gift as number) > 0)
+			) {
+				return answer(UpdateResponse.PlayerNotEligible)
+			}
+			const recipientId = (gift as number | null | undefined) ?? buyerId
+			if (recipientId !== buyerId && !offer.IsGiftable) {
+				return answer(UpdateResponse.PlayerNotEligible)
+			}
+
+			// Paid in the offer's own unit only. A string `PriceUnitId` names a room currency,
+			// which must be this room's; anything else the create stored is unsellable.
+			const priceUnit = offer.PriceUnitId
+			if (priceUnit !== null && typeof priceUnit !== 'string') {
+				return answer(UpdateResponse.NoItemAvailable)
+			}
+			const currencyId = priceUnit === null ? null : priceUnit.toLowerCase()
+			if (currencyId !== null) {
+				const currency = await getRoomCurrency(c.env.DB, currencyId)
+				if (!currency || currency.RoomId !== roomId) return answer(UpdateResponse.NoItemAvailable)
+			}
+			const expectedUnit =
+				typeof request.ExpectedPriceUnitOriginId === 'string' &&
+				request.ExpectedPriceUnitOriginId !== ''
+					? request.ExpectedPriceUnitOriginId.toLowerCase()
+					: null
+			if (expectedUnit !== currencyId) return answer(UpdateResponse.RequestedPriceDoesNotMatch)
+
+			const canManage = await canManageRoomById(c.env.DB, roomId, buyerId)
+			if (canManage === null) return answer(UpdateResponse.NoItemAvailable)
+			const listed = offer.Price * n
+			const expectedTotal = request.ExpectedTotalPrice
+			if (expectedTotal !== listed && !(canManage && expectedTotal === 0)) {
+				return answer(UpdateResponse.RequestedPriceDoesNotMatch)
+			}
+			const total = canManage ? 0 : listed
+
+			// What the purchase gives, one entry per item (a mapping may repeat one). An offer
+			// that gives nothing, or names an item the room no longer defines, is not sold.
+			const quantities = new Map<string, number>()
+			for (const m of offer.ItemMappings) {
+				quantities.set(m.ItemOriginId, (quantities.get(m.ItemOriginId) ?? 0) + m.Count * n)
+			}
+			if (
+				quantities.size === 0 ||
+				!(await roomDefinesMappedItems(c.env.DB, roomId, offer.ItemMappings))
+			) {
+				return answer(UpdateResponse.NoItemAvailable)
+			}
+			const holdings = async (accountId: number) =>
+				(await getPlayerRoomInventoryItems(c.env.DB, roomId, accountId)).filter((h) =>
+					quantities.has(h.RoomInventoryItemOriginId)
+				)
+
+			if (total > 0 && currencyId !== null) {
+				if (!(await spendRoomCurrency(c.env.DB, currencyId, buyerId, total))) {
+					return answer(UpdateResponse.NotEnoughCredit)
+				}
+			} else if (total > 0) {
+				const ownerId = await getRoomOwnerId(c.env.DB, roomId)
+				if (
+					ownerId === null ||
+					!(await spendCurrency(c.env.DB, buyerId, tokens, total, startingTokens))
+				) {
+					return answer(
+						ownerId === null ? UpdateResponse.NoItemAvailable : UpdateResponse.NotEnoughCredit
+					)
+				}
+				// Seed the owner's signup grant BEFORE crediting them, as the key sale does.
+				await ensureStartingBalances(c.env.DB, ownerId, startingTokens)
+				const ownerBalance = await creditCurrency(c.env.DB, ownerId, tokens, total, startingTokens)
+				await pushBalanceUpdate(c, ownerId, tokens, ownerBalance)
+				await pushBalancePurchase(
+					c,
+					buyerId,
+					tokens,
+					-total,
+					await getBalance(c.env.DB, buyerId, tokens, startingTokens)
+				)
+			}
+
+			for (const [itemId, quantity] of quantities) {
+				await awardRoomInventoryItem(
+					c.env.DB,
+					recipientId,
+					roomId,
+					itemId,
+					quantity,
+					crypto.randomUUID()
+				)
+			}
+			return answer(UpdateResponse.OK, await holdings(recipientId))
 		}
 	)
 	// The rest of the room-economy surface the client asks for on entering a room: the

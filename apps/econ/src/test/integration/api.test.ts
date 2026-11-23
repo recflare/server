@@ -4470,6 +4470,311 @@ describe('econ endpoints', () => {
 		await env.DB.prepare('DELETE FROM room_inventory_item').run()
 	})
 
+	// The edit: `PUT /econ/roomOffer/{roomId}/{originId}` (no `room/` segment), the whole DTO
+	// in the body with `OriginId` null, as the live client sends it.
+	test('room offers: PUT replaces an offer the room has', async () => {
+		const define = async (name: string) =>
+			(
+				(await (
+					await exports.default.fetch(`${ORIGIN}/econ/roomInventory/room/2511`, {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json', ...(await bearer('1')) },
+						body: JSON.stringify({ Name: name }),
+					})
+				).json()) as { Value: { OriginId: string } }
+			).Value.OriginId
+		const voucher = await define('Voucher')
+		const FAILED = {
+			Value: null,
+			Success: false,
+			Error: 'Failed to save room offer',
+			error_id: null,
+		}
+
+		const created = (await (
+			await exports.default.fetch(`${ORIGIN}/econ/roomOffer/room/2511`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', ...(await bearer('1')) },
+				body: JSON.stringify({ Name: 'offer', Price: 5, ItemMappings: [] }),
+			})
+		).json()) as { Value: { OriginId: string; CreatedAt: string } }
+		const id = created.Value.OriginId
+
+		const put = async (roomId: number, originId: string, payload: unknown, sub = '1') =>
+			exports.default.fetch(`${ORIGIN}/econ/roomOffer/${roomId}/${originId}`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json', ...(await bearer(sub)) },
+				body: JSON.stringify(payload),
+			})
+		const edit = {
+			Name: 'Last one standing voucher',
+			Description: 'offer 4',
+			ImageName: null,
+			Price: 1,
+			HasDynamicPrice: false,
+			MinimumDynamicPrice: null,
+			MaximumDynamicPrice: null,
+			MaxNumPurchasesPerPlayer: null,
+			MaxCountPerPurchase: 1,
+			ItemMappings: [{ ItemType: 1, ItemOriginId: voucher, Count: 1 }],
+			PriceUnitId: null,
+			OriginId: null,
+			AllowRename: false,
+			Visibility: 0,
+			IsGiftable: true,
+		}
+
+		expect(
+			(
+				await exports.default.fetch(`${ORIGIN}/econ/roomOffer/2511/${id}`, {
+					method: 'PUT',
+					body: '{}',
+				})
+			).status
+		).toBe(401)
+		expect((await put(2511, id, edit, '3')).status).toBe(403)
+		for (const [roomId, originId, payload] of [
+			[2511, '33333333-3333-3333-3333-333333333333', edit],
+			[999999, id, edit],
+			[2511, id, { ...edit, Name: '' }],
+			[2511, id, { ...edit, Price: -1 }],
+			[
+				2511,
+				id,
+				{
+					...edit,
+					ItemMappings: [
+						{ ItemType: 1, ItemOriginId: '33333333-3333-3333-3333-333333333333', Count: 1 },
+					],
+				},
+			],
+		] as const) {
+			expect(await (await put(roomId, originId, payload)).json()).toEqual(FAILED)
+		}
+
+		// The co-owner edits it, naming the id in upper case: same id, same CreatedAt.
+		const updated = (await (await put(2511, id.toUpperCase(), edit, '2')).json()) as {
+			Value: Record<string, unknown>
+		}
+		expect(updated).toMatchObject({ Success: true, Error: null, error_id: null })
+		expect(updated.Value).toMatchObject({
+			...edit,
+			OriginId: id,
+			RoomId: 2511,
+			CreatedAt: created.Value.CreatedAt,
+		})
+		expect(
+			await (await exports.default.fetch(`${ORIGIN}/econ/roomOffer/room/2511`)).json()
+		).toEqual([updated.Value])
+
+		// Another room's offer is refused, not moved.
+		await env.DB.prepare(`UPDATE room_offer SET room_id = 9999 WHERE origin_id = ?1`).bind(id).run()
+		expect(await (await put(2511, id, edit)).json()).toEqual(FAILED)
+
+		await env.DB.prepare('DELETE FROM room_offer').run()
+		await env.DB.prepare('DELETE FROM room_inventory_item').run()
+	})
+
+	// Buying an offer. Room 2511 is account 1's, with 2 as co-owner; 7801 and 7802 are
+	// visitors. The body and the answer's shape are the live client's.
+	test('room offers: purchase for tokens (paying the owner) or room currency (paying nobody)', async () => {
+		const define = async (name: string) =>
+			(
+				(await (
+					await exports.default.fetch(`${ORIGIN}/econ/roomInventory/room/2511`, {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json', ...(await bearer('1')) },
+						body: JSON.stringify({ Name: name }),
+					})
+				).json()) as { Value: { OriginId: string } }
+			).Value.OriginId
+		const [voucher, gem] = [await define('Voucher'), await define('Gem')]
+		const coin = '7c0ffee0-0000-4000-8000-000000000001'
+		const now = '2026-01-01T00:00:00.000Z'
+		await env.DB.prepare(
+			`INSERT INTO room_currency (currency_id, room_id, name, description, limit_amount, shape, color, created_at, modified_at)
+			 VALUES (?1, 2511, 'Coin', '', 100, 0, 0, ?2, ?2)`
+		)
+			.bind(coin, now)
+			.run()
+
+		const createOffer = async (fields: Record<string, unknown>) =>
+			(
+				(await (
+					await exports.default.fetch(`${ORIGIN}/econ/roomOffer/room/2511`, {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json', ...(await bearer('1')) },
+						body: JSON.stringify({
+							Name: 'offer',
+							Price: 10,
+							MaxCountPerPurchase: 3,
+							IsGiftable: true,
+							ItemMappings: [
+								{ ItemType: 1, ItemOriginId: voucher, Count: 1 },
+								{ ItemType: 1, ItemOriginId: gem, Count: 2 },
+								{ ItemType: 1, ItemOriginId: voucher, Count: 1 },
+							],
+							...fields,
+						}),
+					})
+				).json()) as { Value: { OriginId: string } }
+			).Value.OriginId
+		const tokenOffer = await createOffer({})
+		const coinOffer = await createOffer({ PriceUnitId: coin, IsGiftable: false })
+		const emptyOffer = await createOffer({ ItemMappings: [] })
+
+		const setTokens = (accountId: number, amount: number) =>
+			env.DB.prepare(
+				'INSERT OR REPLACE INTO balance (account_id, currency_type, amount) VALUES (?1, 2, ?2)'
+			)
+				.bind(accountId, amount)
+				.run()
+		const tokens = async (accountId: number) =>
+			(
+				await env.DB.prepare(
+					'SELECT amount FROM balance WHERE account_id = ?1 AND currency_type = 2'
+				)
+					.bind(accountId)
+					.first<{ amount: number }>()
+			)?.amount
+		const coins = async (playerId: number) =>
+			(
+				await env.DB.prepare(
+					'SELECT amount FROM room_balance WHERE currency_id = ?1 AND player_id = ?2'
+				)
+					.bind(coin, playerId)
+					.first<{ amount: number }>()
+			)?.amount ?? 0
+		await setTokens(1, 1000)
+		await setTokens(7801, 100)
+		await setTokens(7802, 5)
+		await env.DB.prepare(
+			'INSERT OR REPLACE INTO room_balance (currency_id, player_id, amount) VALUES (?1, 7801, 25)'
+		)
+			.bind(coin)
+			.run()
+
+		const buy = async (
+			sub: string | null,
+			originId: string,
+			fields: Record<string, unknown> = {},
+			roomId = 2511
+		) =>
+			exports.default.fetch(`${ORIGIN}/econ/roomOffer/${roomId}/${originId}/purchase`, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					...(sub === null ? {} : await bearer(sub)),
+				},
+				body: JSON.stringify({
+					NumOffersPurchased: 1,
+					TransactionId: '55ff061c-c65d-47b5-ace8-75c98b785639',
+					ExpectedTotalPrice: 10,
+					ExpectedPriceUnitOriginId: null,
+					ExpectedRoomOfferVersion: 0,
+					ConcurrencyCodeByItemOriginIdMap: { [voucher]: null },
+					GiftRecipientAccountId: null,
+					...fields,
+				}),
+			})
+		type Answer = {
+			OperationResult: number
+			BalanceUpdateResult: number
+			TokenBalanceResponse: { Balance: number; CurrencyType: number; Platform: number }
+			PlayerRoomInventoryItems: Array<{
+				RoomId: number
+				RoomInventoryItemOriginId: string
+				Count: number
+				ConcurrencyCode: string
+			}>
+		}
+		const answer = async (res: Response) => {
+			expect(res.status).toBe(200)
+			return (await res.json()) as Answer
+		}
+		const refused = (code: number, balance: number) => ({
+			OperationResult: 1,
+			BalanceUpdateResult: code,
+			TokenBalanceResponse: { Balance: balance, CurrencyType: 2, Platform: -2 },
+			PlayerRoomInventoryItems: [],
+		})
+		const counts = (a: Answer) =>
+			Object.fromEntries(
+				a.PlayerRoomInventoryItems.map((h) => [h.RoomInventoryItemOriginId, h.Count])
+			)
+
+		expect((await buy(null, tokenOffer)).status).toBe(401)
+
+		// The refusals: nothing charged, nothing given.
+		for (const [fields, code, originId, roomId] of [
+			[{}, 4, '33333333-3333-3333-3333-333333333333', 2511],
+			[{}, 4, tokenOffer, 9999],
+			[{}, 4, emptyOffer, 2511],
+			[{ NumOffersPurchased: 0 }, 7, tokenOffer, 2511],
+			[{ NumOffersPurchased: 4, ExpectedTotalPrice: 40 }, 7, tokenOffer, 2511],
+			[{ GiftRecipientAccountId: -1 }, 8, tokenOffer, 2511],
+			[{ GiftRecipientAccountId: 7802, ExpectedPriceUnitOriginId: coin }, 8, coinOffer, 2511],
+			[{ ExpectedTotalPrice: 0 }, 6, tokenOffer, 2511],
+			[{ ExpectedPriceUnitOriginId: coin }, 6, tokenOffer, 2511],
+			[{}, 6, coinOffer, 2511],
+		] as const) {
+			expect(
+				await answer(await buy('7801', originId, fields, roomId)),
+				JSON.stringify(fields)
+			).toEqual(refused(code, 100))
+		}
+		expect(await answer(await buy('7802', tokenOffer))).toEqual(refused(2, 5))
+		expect(await tokens(7801)).toBe(100)
+		expect(
+			await env.DB.prepare('SELECT COUNT(*) AS n FROM room_inventory_item_player').first()
+		).toEqual({ n: 0 })
+
+		// For tokens: 2 offers at 10 each leave the buyer and reach the owner. Each mapping gives
+		// its Count per offer, a repeated item summed.
+		const bought = await answer(
+			await buy('7801', tokenOffer, { NumOffersPurchased: 2, ExpectedTotalPrice: 20 })
+		)
+		expect(bought).toMatchObject({
+			OperationResult: 0,
+			BalanceUpdateResult: 0,
+			TokenBalanceResponse: { Balance: 80, CurrencyType: 2, Platform: -2 },
+		})
+		expect(counts(bought)).toEqual({ [voucher]: 4, [gem]: 4 })
+		expect(bought.PlayerRoomInventoryItems[0]).toMatchObject({ RoomId: 2511 })
+		expect(bought.PlayerRoomInventoryItems[0]!.ConcurrencyCode).toMatch(/^[0-9a-f-]{36}$/)
+		expect(await tokens(1)).toBe(1020)
+
+		// A gift: 7801 pays, 7802 gets the items.
+		const gifted = await answer(await buy('7801', tokenOffer, { GiftRecipientAccountId: 7802 }))
+		expect(gifted.TokenBalanceResponse.Balance).toBe(70)
+		expect(counts(gifted)).toEqual({ [voucher]: 2, [gem]: 2 })
+		expect(await tokens(1)).toBe(1030)
+
+		// The room's managers pay nothing, sending 0 — the live client's body for the owner.
+		const free = await answer(await buy('2', tokenOffer, { ExpectedTotalPrice: 0 }))
+		expect(free).toMatchObject({ OperationResult: 0, BalanceUpdateResult: 0 })
+		expect(await tokens(1)).toBe(1030)
+
+		// For room currency: it leaves the buyer and nobody is paid; tokens are untouched.
+		const coinBuy = { ExpectedPriceUnitOriginId: coin.toUpperCase() }
+		const withCoins = await answer(await buy('7801', coinOffer, coinBuy))
+		expect(withCoins).toMatchObject({
+			BalanceUpdateResult: 0,
+			TokenBalanceResponse: { Balance: 70 },
+		})
+		expect(await coins(7801)).toBe(15)
+		expect(await tokens(1)).toBe(1030)
+		await buy('7801', coinOffer, coinBuy)
+		expect(await answer(await buy('7801', coinOffer, coinBuy))).toEqual(refused(2, 70))
+		expect(await coins(7801)).toBe(5)
+
+		await env.DB.prepare('DELETE FROM room_offer').run()
+		await env.DB.prepare('DELETE FROM room_inventory_item').run()
+		await env.DB.prepare('DELETE FROM room_inventory_item_player').run()
+		await env.DB.prepare('DELETE FROM room_currency WHERE currency_id = ?1').bind(coin).run()
+		await env.DB.prepare('DELETE FROM room_balance WHERE currency_id = ?1').bind(coin).run()
+	})
+
 	test('GET /api/ugcPurchasables/v1/items/room/:roomId lists keys, consumables and currency packs as one shop', async () => {
 		const shop = async (roomId: number) =>
 			(await (
@@ -9064,12 +9369,14 @@ describe('econ endpoints', () => {
 			'POST /econ/roomInventory/room/{roomId}',
 			'POST /econ/roomInventory/v2/award',
 			'POST /econ/roomOffer/room/{roomId}',
+			'POST /econ/roomOffer/{roomId}/{originId}/purchase',
 			'PUT /api/equipment/v1/update',
 			'PUT /api/roomconsumables/v1/roomConsumable',
 			'PUT /api/roomconsumables/v1/roomConsumable/{id}/consume',
 			'PUT /api/roomconsumables/v1/roomconsumable/{id}/purchase/{via}',
 			'PUT /api/roomkeys/v1/updateAll',
 			'PUT /econ/roomInventory/items/{roomId}/{originId}',
+			'PUT /econ/roomOffer/{roomId}/{originId}',
 		])
 
 		// Every operation carries a summary — a path present but undescribed is not
