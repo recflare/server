@@ -388,9 +388,11 @@ export const RoomDto = z.object({
 			CanSaveAsBeta: z.boolean(),
 			CanSaveAsUpdate: z.boolean(),
 			AvailableUpdateTokenCount: z.int(),
-			NextAvailableUpdateDateTimeUtc: z.string().nullable(),
+			NextAvailableUpdateDateTimeUtc: z.string().describe('ISO-8601 UTC; fixed, in the past'),
 		})
-		.describe('Fixed on every served room: republishing is always available, 99 tokens'),
+		.describe(
+			'Fixed on every served room: republishing is always available, 99 tokens, next update already due'
+		),
 })
 
 /** A paged room list (`PagedResultsDTO<RoomDTO>`) — search, hot, similar. */

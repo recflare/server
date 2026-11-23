@@ -1235,7 +1235,8 @@ function toSaveDetail(save: Record<string, unknown>, target: number | null) {
  *
  * It also carries a fixed `PublishStateAvailability`: whether the client may republish the
  * room, and how many update tokens it has. Nothing here limits republishing (see
- * `/publishState/configs`), so every room says yes, with tokens to spare. A fresh object
+ * `/publishState/configs`), so every room says yes, with tokens to spare and a next-update
+ * time already passed. A fresh object
  * per room, never a shared one a caller could mutate for every other room.
  *
  * Every room this worker answers — alone, in a list, in the mutation envelope or pushed as
@@ -1247,7 +1248,8 @@ const serveRoom = <T extends Room>(room: T): T => ({
 		CanSaveAsBeta: true,
 		CanSaveAsUpdate: true,
 		AvailableUpdateTokenCount: 99,
-		NextAvailableUpdateDateTimeUtc: null,
+		// Fixed, in the past: the next update is already available.
+		NextAvailableUpdateDateTimeUtc: '2026-10-22T00:00:00Z',
 	},
 })
 

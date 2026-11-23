@@ -212,7 +212,7 @@ describe('rooms endpoints', () => {
 			CanSaveAsBeta: true,
 			CanSaveAsUpdate: true,
 			AvailableUpdateTokenCount: 99,
-			NextAvailableUpdateDateTimeUtc: null,
+			NextAvailableUpdateDateTimeUtc: '2026-10-22T00:00:00Z',
 		}
 		const one = (await (
 			await SELF.fetch(`${ORIGIN}/rooms/1`, { headers: await bearer('1', ['developer']) })
