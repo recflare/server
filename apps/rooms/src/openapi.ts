@@ -353,10 +353,15 @@ export const RoomDto = z.object({
 	MaxPlayerCalculationMode: z
 		.int()
 		.describe(
-			'0 AllSubrooms, 1 OnlyEntrySubrooms — set by `PUT …/max_player_calculation_mode`. A ' +
-				'stored setting; `MaxPlayers` is not derived from it here'
+			'0 AllSubrooms, 1 OnlyEntrySubrooms — set by `PUT …/max_player_calculation_mode`. ' +
+				'Decides how `MaxPlayers` is derived'
 		),
-	MaxPlayers: z.int(),
+	MaxPlayers: z
+		.int()
+		.describe(
+			'Derived on every read: the smallest subroom cap of all subrooms (mode 0) or of the ' +
+				'public entry subrooms (mode 1, all when none is public)'
+		),
 	CloningAllowed: z.boolean().describe('False blocks `POST /rooms/{roomId}/clone`'),
 	DisableMicAutoMute: z.boolean(),
 	DisableRoomComments: z.boolean(),

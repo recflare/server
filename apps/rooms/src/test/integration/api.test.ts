@@ -207,6 +207,58 @@ describe('rooms endpoints', () => {
 	})
 
 	// Every served room carries the same fixed republish availability — alone and in a list.
+	// The room's MaxPlayers is derived from its subrooms on every read, never the stored
+	// figure (which a clone copies and nothing updates): the SMALLEST cap of all subrooms in
+	// mode 0, of the public (entry) subrooms in mode 1 — all of them when none is public.
+	it('served rooms derive MaxPlayers from their subrooms by MaxPlayerCalculationMode', async () => {
+		const sub = (SubRoomId: number, MaxPlayers: number, Accessibility: number) => ({
+			SubRoomId,
+			Name: `Sub${SubRoomId}`,
+			UnitySceneId: '76d98498-60a1-430c-ab76-b54a29b7a163',
+			MaxPlayers,
+			Accessibility,
+		})
+		const cases: Array<[number, Record<string, unknown>, number]> = [
+			// Room 21536's shape: stored 20, its only subroom 10.
+			[97_001, { MaxPlayers: 20, SubRooms: [sub(970_011, 10, 2)] }, 10],
+			[97_002, { MaxPlayers: 20, SubRooms: [sub(970_021, 12, 1), sub(970_022, 4, 2)] }, 4],
+			[
+				97_003,
+				{
+					MaxPlayers: 20,
+					MaxPlayerCalculationMode: 1,
+					SubRooms: [sub(970_031, 12, 1), sub(970_032, 4, 2), sub(970_033, 16, 1)],
+				},
+				12,
+			],
+			[
+				97_004,
+				{
+					MaxPlayers: 20,
+					MaxPlayerCalculationMode: 1,
+					SubRooms: [sub(970_041, 8, 2), sub(970_042, 6, 0)],
+				},
+				6,
+			],
+		]
+		for (const [RoomId, room, expected] of cases) {
+			await seedRoomWithSubRooms(env.DB, {
+				Name: `CapRoom${RoomId}`,
+				CreatorAccountId: 2,
+				Accessibility: 2,
+				MaxPlayerCalculationMode: 0,
+				RoomId,
+				...room,
+			})
+			const served = (await (
+				await SELF.fetch(`${ORIGIN}/rooms/${RoomId}`, { headers: await bearer('2') })
+			).json()) as { MaxPlayers: number }
+			expect(served.MaxPlayers, String(RoomId)).toBe(expected)
+		}
+		await env.DB.prepare('DELETE FROM subroom WHERE room_id BETWEEN 97001 AND 97004').run()
+		await env.DB.prepare('DELETE FROM room WHERE room_id BETWEEN 97001 AND 97004').run()
+	})
+
 	it('served rooms carry a fixed PublishStateAvailability', async () => {
 		const availability = {
 			CanSaveAsBeta: true,
@@ -6175,7 +6227,7 @@ describe('rooms endpoints', () => {
 		expect(coOwnerAdded[0]!.CreatorAccountId).toBe(2)
 	})
 
-	it('PUT /rooms/:id/max_player_calculation_mode stores the mode without touching MaxPlayers', async () => {
+	it('PUT /rooms/:id/max_player_calculation_mode stores the mode; MaxPlayers is derived on read', async () => {
 		await seedRoomWithSubRooms(env.DB, {
 			RoomId: 720,
 			Name: 'CapMode',
@@ -6217,20 +6269,26 @@ describe('rooms endpoints', () => {
 			expect(await envelope(res)).toMatchObject({ Value: null, Success: false, error_id: null })
 		}
 
-		// A co-owner sets it by NAME (what the client sends). Stored as the ordinal, and
-		// MaxPlayers is left exactly as it was — the mode is a setting, not a recompute.
+		// A co-owner sets it by NAME (what the client sends). Stored as the ordinal; the stored
+		// MaxPlayers is untouched, and the SERVED one is derived — neither subroom is public, so
+		// "only entry" counts them all, and the smallest is 4.
 		const res = await put(720, 'OnlyEntrySubrooms', '1')
 		expect(res.status).toBe(200)
 		const body = await envelope(res)
 		expect(body).toMatchObject({ Success: true, Error: null, error_id: null })
-		expect(body.Value).toMatchObject({ RoomId: 720, MaxPlayerCalculationMode: 1, MaxPlayers: 12 })
+		expect(body.Value).toMatchObject({ RoomId: 720, MaxPlayerCalculationMode: 1, MaxPlayers: 4 })
+		expect(
+			await env.DB.prepare(
+				"SELECT json_extract(data, '$.MaxPlayers') AS max FROM room WHERE room_id = 720"
+			).first()
+		).toEqual({ max: 12 })
 		const stored = (await (
 			await SELF.fetch(`${ORIGIN}/rooms/720`, { headers: await bearer('1', ['developer']) })
 		).json()) as {
 			MaxPlayerCalculationMode: number
 			MaxPlayers: number
 		}
-		expect(stored).toMatchObject({ MaxPlayerCalculationMode: 1, MaxPlayers: 12 })
+		expect(stored).toMatchObject({ MaxPlayerCalculationMode: 1, MaxPlayers: 4 })
 
 		// Case-insensitive names and the bare ordinal are accepted too.
 		expect(

@@ -734,9 +734,9 @@ const RESTRICTION_FIELDS: Record<string, string> = {
  * so a hub hiccup must not fail the request.
  */
 /**
- * The room's `MaxPlayerCalculationMode` enum: how its player cap is meant to be read.
- * `AllSubrooms` (0) and `OnlyEntrySubrooms` (1). A stored setting — nothing here derives
- * `MaxPlayers` from it.
+ * The room's `MaxPlayerCalculationMode` enum: how its player cap is read off its subrooms.
+ * `AllSubrooms` (0) and `OnlyEntrySubrooms` (1) — see {@link roomMaxPlayers}, which is
+ * where the served `MaxPlayers` is derived from it.
  */
 const MAX_PLAYER_CALCULATION_MODES: Readonly<Record<string, number>> = {
 	allsubrooms: 0,
@@ -1225,6 +1225,33 @@ function toSaveDetail(save: Record<string, unknown>, target: number | null) {
 }
 
 /**
+ * A room's player cap, as the game defines it from its subrooms under
+ * `MaxPlayerCalculationMode`:
+ *  - `AllSubrooms` (0, and anything unrecognised): the SMALLEST cap of all its subrooms
+ *  - `OnlyEntrySubrooms` (1): the smallest cap among its ENTRY subrooms — the public ones,
+ *    which is what `match` treats as a room's entrances; all of them when none is public
+ *
+ * A room served without its subrooms (or whose subrooms carry no cap) keeps its stored
+ * `MaxPlayers`, which is the only figure it has.
+ */
+function roomMaxPlayers(room: Room): unknown {
+	const subRooms = (Array.isArray(room.SubRooms) ? room.SubRooms : []) as Array<
+		Record<string, unknown>
+	>
+	const capped = subRooms.filter(
+		(s) => typeof s.MaxPlayers === 'number' && Number.isFinite(s.MaxPlayers)
+	)
+	const entry = capped.filter((s) => s.Accessibility === Accessibility.Public)
+	const counted =
+		room.MaxPlayerCalculationMode === MAX_PLAYER_CALCULATION_MODES.onlyentrysubrooms &&
+		entry.length > 0
+			? entry
+			: capped
+	if (counted.length === 0) return room.MaxPlayers
+	return Math.min(...counted.map((s) => s.MaxPlayers as number))
+}
+
+/**
  * A room as the client is shown it. The stored room is served whole EXCEPT for its pending
  * role invites: a `Roles` entry with `Role` 0 and an `InvitedRole` is an offer the player
  * has not answered, and served as-is it put the invited player on the room's member list
@@ -1239,11 +1266,16 @@ function toSaveDetail(save: Record<string, unknown>, target: number | null) {
  * time already passed. A fresh object
  * per room, never a shared one a caller could mutate for every other room.
  *
+ * `MaxPlayers` is DERIVED from the subrooms ({@link roomMaxPlayers}), never the stored
+ * field: that is set once when the room is made (a clone copies its source's) and nothing
+ * moves it when a subroom's cap changes, so it drifted on most rooms.
+ *
  * Every room this worker answers — alone, in a list, in the mutation envelope or pushed as
  * a `RoomUpdate` — goes through this (or {@link serveRooms}).
  */
 const serveRoom = <T extends Room>(room: T): T => ({
 	...withConfirmedRoles(room),
+	MaxPlayers: roomMaxPlayers(room),
 	PublishStateAvailability: {
 		CanSaveAsBeta: true,
 		CanSaveAsUpdate: true,
@@ -3899,8 +3931,8 @@ const app = new Hono<App>()
 	)
 
 	// Set a room's MaxPlayerCalculationMode (form body `maxPlayerCalculationMode`, the enum
-	// NAME). Auth-gated (401) and owner/co-owner-only. A stored setting only: it does not
-	// touch `MaxPlayers`. Answers the room in the PascalCase `{ Value, Success, Error,
+	// NAME). Auth-gated (401) and owner/co-owner-only. Nothing is recomputed on write: the
+	// served `MaxPlayers` is derived from it on every read (`roomMaxPlayers`). Answers the room in the PascalCase `{ Value, Success, Error,
 	// error_id }` envelope, like the subroom move — not the lowercase one its neighbours use.
 	.put(
 		'/rooms/:roomId{[0-9]+}/max_player_calculation_mode',
@@ -3910,8 +3942,9 @@ const app = new Hono<App>()
 			description: [
 				'Sets `MaxPlayerCalculationMode`: `AllSubrooms` (0) or `OnlyEntrySubrooms` (1). The',
 				'client sends the enum name (`maxPlayerCalculationMode=OnlyEntrySubrooms`); the',
-				'ordinal is accepted too, and anything else is rejected. It is a stored setting:',
-				'`MaxPlayers` is not recomputed from the subrooms here.',
+				'ordinal is accepted too, and anything else is rejected. Every served room derives',
+				'`MaxPlayers` from it: the smallest cap of all subrooms (0), or of the public entry',
+				'subrooms (1).',
 				'',
 				'Owner or co-owner only. Answers the updated room under `Value` in the PascalCase',
 				'`{ Value, Success, Error, error_id }` envelope — NOT the lowercase',
