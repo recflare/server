@@ -6519,6 +6519,189 @@ function MyRooms({ navigate }: { navigate: Navigate }) {
 	)
 }
 
+/** How many matches {@link RoomPicker} lists at once; typing narrows past it. */
+const ROOM_PICKER_TAKE = 8
+
+/** Why a room can't be showcased, or null when it can. */
+function showcaseIneligibility(room: OwnedRoom): string | null {
+	if (room.ExcludeFromLists) return 'unlisted by staff'
+	if (room.Accessibility !== Accessibility.Public) {
+		return `${accessibilityLabel(room.Accessibility)} — make it public to showcase it`
+	}
+	return null
+}
+
+/**
+ * Pick one of the player's rooms by typing its name — a combobox over the rooms already
+ * fetched, so nothing is asked of the server per keystroke. Matches rank a name that STARTS
+ * with the query first, then one with a word that does, then any that contain it; a room
+ * that can't be showcased is still listed (so "where's my room?" has an answer) but
+ * disabled with the reason. Rooms already picked are left out. An empty box suggests the
+ * first few, so a player with a handful of rooms needn't type at all.
+ */
+function RoomPicker({
+	rooms,
+	picked,
+	full,
+	onPick,
+}: {
+	rooms: OwnedRoom[]
+	picked: number[]
+	full: boolean
+	onPick: (roomId: number) => void
+}) {
+	const [query, setQuery] = useState('')
+	const [open, setOpen] = useState(false)
+	const [active, setActive] = useState(0)
+	const containerRef = useRef<HTMLDivElement>(null)
+	const inputRef = useRef<HTMLInputElement>(null)
+	const listId = 'room-picker-list'
+
+	// A leading `^` is how room names are written in game; it isn't part of the name.
+	const needle = query.trim().replace(/^\^/, '').toLowerCase()
+	const matches = useMemo(() => {
+		const rank = (name: string) => {
+			const n = name.toLowerCase()
+			if (needle === '') return 0
+			if (n.startsWith(needle)) return 0
+			if (n.split(/[\s_\-.]+/).some((word) => word.startsWith(needle))) return 1
+			return n.includes(needle) ? 2 : -1
+		}
+		return rooms
+			.filter((r) => !picked.includes(r.RoomId))
+			.map((room) => ({ room, rank: rank(room.Name), why: showcaseIneligibility(room) }))
+			.filter((m) => m.rank >= 0)
+			.sort(
+				(a, b) =>
+					a.rank - b.rank ||
+					Number(a.why !== null) - Number(b.why !== null) ||
+					a.room.Name.localeCompare(b.room.Name)
+			)
+	}, [rooms, picked, needle])
+	const shown = matches.slice(0, ROOM_PICKER_TAKE)
+	const more = matches.length - shown.length
+
+	useEffect(() => setActive(0), [needle])
+
+	useEffect(() => {
+		if (!open) return
+		const onPointerDown = (e: PointerEvent) => {
+			if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+				setOpen(false)
+			}
+		}
+		document.addEventListener('pointerdown', onPointerDown)
+		return () => document.removeEventListener('pointerdown', onPointerDown)
+	}, [open])
+
+	const choose = (room: OwnedRoom) => {
+		if (showcaseIneligibility(room) !== null) return
+		onPick(room.RoomId)
+		setQuery('')
+		setActive(0)
+		inputRef.current?.focus()
+	}
+
+	// Arrow keys step over disabled rows, so Enter always lands on something pickable.
+	const step = (by: number) => {
+		if (shown.length === 0) return
+		let i = active
+		for (let n = 0; n < shown.length; n++) {
+			i = (i + by + shown.length) % shown.length
+			if (shown[i]!.why === null) break
+		}
+		setActive(i)
+	}
+
+	const expanded = open && !full
+	return (
+		<div className="room-picker" ref={containerRef}>
+			<input
+				ref={inputRef}
+				type="search"
+				role="combobox"
+				aria-expanded={expanded}
+				aria-controls={listId}
+				aria-autocomplete="list"
+				aria-activedescendant={
+					expanded && shown[active] ? `room-picker-${shown[active].room.RoomId}` : undefined
+				}
+				placeholder={
+					full
+						? 'Showcase is full — remove a room to add another'
+						: `Search your ${rooms.length} room${rooms.length === 1 ? '' : 's'}…`
+				}
+				aria-label="Search your rooms"
+				disabled={full}
+				value={query}
+				onChange={(e) => {
+					setQuery(e.target.value)
+					setOpen(true)
+				}}
+				onFocus={() => setOpen(true)}
+				onKeyDown={(e) => {
+					if (e.key === 'ArrowDown') {
+						e.preventDefault()
+						if (!open) setOpen(true)
+						else step(1)
+					} else if (e.key === 'ArrowUp') {
+						e.preventDefault()
+						step(-1)
+					} else if (e.key === 'Enter') {
+						e.preventDefault()
+						const target = shown[active]
+						if (expanded && target) choose(target.room)
+					} else if (e.key === 'Escape') {
+						setOpen(false)
+					}
+				}}
+			/>
+			{expanded && (
+				<div className="room-picker-panel" id={listId} role="listbox">
+					{shown.length === 0 ? (
+						<p className="site-search-empty">
+							{needle === '' ? 'Every room is already showcased.' : 'No rooms match.'}
+						</p>
+					) : (
+						shown.map(({ room, why }, i) => (
+							<button
+								key={room.RoomId}
+								id={`room-picker-${room.RoomId}`}
+								type="button"
+								role="option"
+								aria-selected={i === active}
+								aria-disabled={why !== null}
+								tabIndex={-1}
+								className={`site-search-result${i === active ? ' active' : ''}`}
+								disabled={why !== null}
+								onMouseEnter={() => why === null && setActive(i)}
+								// Keep focus in the box, so the panel stays open for the next pick.
+								onMouseDown={(e) => e.preventDefault()}
+								onClick={() => choose(room)}
+							>
+								<img
+									className="site-search-thumb"
+									src={`${where().img}/${room.ImageName}?width=128`}
+									alt=""
+								/>
+								<span>
+									<span className="site-search-name">^{room.Name}</span>
+									<span className="site-search-sub">
+										{why ?? accessibilityLabel(room.Accessibility)}
+									</span>
+								</span>
+							</button>
+						))
+					)}
+					{more > 0 && (
+						<p className="site-search-empty">{more} more — keep typing to narrow it down.</p>
+					)}
+				</div>
+			)}
+		</div>
+	)
+}
+
 /** How many rooms a showcase holds — `MAX_SHOWCASED_ROOMS`, which www's PUT enforces. */
 const MAX_SHOWCASED = 5
 
@@ -6528,7 +6711,9 @@ const MAX_SHOWCASED = 5
  * for it: tick up to five, order them, and Save replaces the whole list
  * (`PUT /api/account/showcase` on www). Only PUBLIC rooms the player CREATED are offered —
  * "My rooms" also lists co-owned rooms, which www refuses, and the showcase endpoint serves
- * only public rooms, so a private pick would vanish on reload.
+ * only public rooms, so a private pick would vanish on reload. Rooms are added through
+ * {@link RoomPicker}, which searches them by name rather than listing them all — a creator
+ * with dozens of rooms would otherwise scroll a wall of checkboxes.
  */
 function ShowcasePanel({ account }: { account: SelfAccount }) {
 	const [rooms, setRooms] = useState<OwnedRoom[] | null>(null)
@@ -6602,7 +6787,7 @@ function ShowcasePanel({ account }: { account: SelfAccount }) {
 						Showcase ({picks.length}/{max})
 					</h3>
 					{picks.length === 0 ? (
-						<p className="muted">Nothing showcased yet — tick rooms below.</p>
+						<p className="muted">Nothing showcased yet — add rooms below.</p>
 					) : (
 						<ol className="studio-access-list">
 							{picks.map((roomId, i) => {
@@ -6633,38 +6818,13 @@ function ShowcasePanel({ account }: { account: SelfAccount }) {
 						</ol>
 					)}
 
-					<h3>Your rooms</h3>
-					<ul className="studio-access-list">
-						{rooms.map((room) => {
-							const picked = picks.includes(room.RoomId)
-							const eligible = room.Accessibility === Accessibility.Public && !room.ExcludeFromLists
-							return (
-								<li key={room.RoomId} className="studio-access-row">
-									<label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-										<input
-											type="checkbox"
-											checked={picked}
-											disabled={!picked && (!eligible || picks.length >= max)}
-											onChange={() => toggle(room.RoomId)}
-										/>
-										<span>
-											<strong>^{room.Name}</strong>
-											<span className="muted"> · {accessibilityLabel(room.Accessibility)}</span>
-											{!eligible && (
-												<span className="muted">
-													{' '}
-													·{' '}
-													{room.ExcludeFromLists
-														? 'unlisted by staff'
-														: 'make it public to showcase it'}
-												</span>
-											)}
-										</span>
-									</label>
-								</li>
-							)
-						})}
-					</ul>
+					<h3>Add a room</h3>
+					<RoomPicker
+						rooms={rooms}
+						picked={picks}
+						full={picks.length >= max}
+						onPick={(roomId) => setPicks([...picks, roomId])}
+					/>
 
 					<p style={{ display: 'flex', gap: 8, marginTop: 16 }}>
 						<button type="button" disabled={!dirty || save.pending} onClick={submit}>
