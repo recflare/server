@@ -44,6 +44,9 @@ import { SCHEMA_DDL as CUSTOM_AVATAR_ITEM_SCHEMA_DDL } from '../../../../api/src
 import { SCHEMA_DDL as INVENTION_SCHEMA_DDL } from '../../../../api/src/inventions-db'
 import { SCHEMA_DDL as ROOM_VOTE_SCHEMA_DDL } from '../../../../api/src/votes-db'
 import { NotificationType } from '../../../../notify/src/notification-types'
+import makerTemplates from '../../../migrations/0035_maker_templates.sql?raw'
+import templateImages from '../../../migrations/0036_maker_template_images.sql?raw'
+import templateDescriptions from '../../../migrations/0037_maker_template_descriptions.sql?raw'
 import importRooms from '../../../static/ImportRooms.json'
 import { scheduled } from '../../rooms.app'
 
@@ -156,6 +159,14 @@ beforeAll(async () => {
 	for (const stmt of ROOM_XP_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	// Seed each room and split its subrooms into the subroom table (mirrors 0007's backfill).
 	for (const r of importRooms) await seedRoomWithSubRooms(env.DB, r as Record<string, unknown>)
+
+	for (let pass = 0; pass < 2; pass++) {
+		for (const sql of [makerTemplates, templateImages, templateDescriptions]) {
+			for (const stmt of sql.replace(/--[^\n]*/g, '').split(';')) {
+				if (stmt.trim()) await env.DB.prepare(stmt).run()
+			}
+		}
+	}
 
 	// Accounts table (owned by the auth worker) — provisioning a dorm reads the username
 	// to name the room. Seed the player `dormroom/me` provisions a fresh dorm for.
@@ -1611,6 +1622,49 @@ describe('rooms endpoints', () => {
 		// Includes rooms that aren't publicly listed (Accessibility != 1) — base
 		// rooms bypass the public filter the feeds use.
 		expect(body.some((r) => r.Accessibility !== 1)).toBe(true)
+	})
+
+	it('modern maker templates clone into independent R1 and R2 rooms', async () => {
+		const templates = await (await SELF.fetch(`${ORIGIN}/rooms/base`)).json<Room[]>()
+		for (const [name, version, scene] of [
+			['DefaultMakerRoom', 1, 'a75f7547-79eb-47c6-8986-6767abcb4f92'],
+			['AdvancedMakerRoom', 2, '5d4e40d8-f289-4295-a6e1-4f907835007d'],
+		] as const) {
+			const matches = templates.filter((r) => r.Name === name)
+			expect(matches).toHaveLength(1)
+			const template = matches[0]!
+			expect(template.ImageName).toBe(
+				version === 1 ? '3ss6lkjmuddib0maid1bay1jp.png' : '1d2nvft6te5npx362qx9f098s.png'
+			)
+			expect(template.Description).toContain(
+				version === 1 ? 'Previously called: MakerRoom (R1)' : 'Previously called: MakerRoom2 (R2)'
+			)
+			const response = await SELF.fetch(`${ORIGIN}/rooms/${template.RoomId}/clone`, {
+				method: 'POST',
+				headers: { ...(await bearer('893')), 'Content-Type': 'application/x-www-form-urlencoded' },
+				body: new URLSearchParams({ name: `Clone${name}` }),
+			})
+			const result = await response.json<{ success: boolean; value: Room }>()
+			expect(result.success).toBe(true)
+			expect(result.value).toMatchObject({
+				UgcVersion: version,
+				CreatorAccountId: 893,
+				Accessibility: 0,
+			})
+			const room = await getRoomById(env.DB, Number(result.value.RoomId))
+			const sub = (room!.SubRooms as Array<Record<string, unknown>>)[0]!
+			expect(sub.UnitySceneId).toBe(scene)
+			expect(sub.SubRoomId).not.toBe(
+				(template.SubRooms as Array<Record<string, unknown>>)[0]!.SubRoomId
+			)
+			if (version === 2) {
+				expect(sub.CurrentSave).toMatchObject({
+					OMVersion: 198,
+					DataBlob: null,
+					SubRoomId: sub.SubRoomId,
+				})
+			}
+		}
 	})
 
 	it('GET /rooms/base respects take pagination', async () => {
