@@ -3107,16 +3107,16 @@ export async function getSubRoomSaveById(
  * STRING, not a boolean — usually `"True"`/`"False"`, but a permission whose UI isn't a
  * True/False picker carries something else, so it is stored and served verbatim. `Role`
  * is the tier the entry applies to (0 = everyone, 30 = co-owner, …). `Permission` + `Role`
- * identify an entry: the client PUTs the pair it wants changed, and the same pair
- * overwrites the matching default in the photon access token's table.
+ * identify an entry: the client PUTs the pair it wants changed. Each pair replaces
+ * only that role's own default; overrides never supply values for other roles.
  *
  * `Override` is the row's own existence, not data: the client's UI is a checkbox ("is
  * this permission overridden in this subroom?") plus a True/False picker for the value.
  * Unchecking it means "fall back to the default", so an entry arriving with
  * `Override: false` DELETES the stored row rather than storing anything. Every stored
  * entry is therefore an override and reads back `Override: true` at its own role; the
- * `false` rows in a manager's token table are defaults the `rooms` worker fills in around
- * them, never stored.
+ * token table resolves role defaults with `Override: true` as well, to stop native
+ * cross-role inheritance. Those resolved defaults are not persisted as overrides.
  */
 export interface RoomPermission {
 	Permission: string
