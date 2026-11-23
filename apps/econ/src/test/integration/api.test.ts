@@ -4845,7 +4845,7 @@ describe('econ endpoints', () => {
 				ModifiedAt: consumable.ModifiedAt,
 			},
 			{
-				ItemType: 3,
+				ItemType: 2,
 				ItemId: offer.CurrencyPurchaseOfferId,
 				// So a pack is labelled by what it is, and wears the currency's description.
 				Name: '100 Gems',
@@ -4861,6 +4861,70 @@ describe('econ endpoints', () => {
 		])
 		// Another room's shop is untouched.
 		expect(await shop(92)).toEqual([])
+	})
+
+	// Room offers join the shop as ItemType 5, after the other kinds: ItemId is the offer's
+	// OriginId and PurchaseCurrencyId its PriceUnitId (null: tokens).
+	test('GET /api/ugcPurchasables/v1/items/room/:roomId lists room offers as ItemType 5', async () => {
+		const coin = 'c0ffee00-0000-4000-8000-000000009401'
+		const insert = (
+			originId: string,
+			name: string,
+			price: number,
+			unit: string | null,
+			at: string
+		) =>
+			env.DB.prepare(
+				`INSERT INTO room_offer (origin_id, room_id, name, description, image_name, price, item_mappings, price_unit_id, created_at, modified_at)
+				 VALUES (?1, 94, ?2, 'offer 4', NULL, ?3, '[]', ?4, ?5, ?5)`
+			)
+				.bind(originId, name, price, JSON.stringify(unit), at)
+				.run()
+		await insert(
+			'5a3c4b24-2970-54d6-9548-ae35a77ffb11',
+			'Last one standing voucher',
+			1,
+			null,
+			'2026-11-01T00:00:00.000Z'
+		)
+		await insert(
+			'5a3c4b24-2970-54d6-9548-ae35a77ffb12',
+			'Coin deal',
+			30,
+			coin,
+			'2026-11-02T00:00:00.000Z'
+		)
+
+		const res = await exports.default.fetch(`${ORIGIN}/api/ugcPurchasables/v1/items/room/94`)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual([
+			{
+				ItemType: 5,
+				ItemId: '5a3c4b24-2970-54d6-9548-ae35a77ffb11',
+				Name: 'Last one standing voucher',
+				Description: 'offer 4',
+				ImageName: null,
+				RoomId: 94,
+				Price: 1,
+				PurchaseCurrencyId: null,
+				CreatedAt: '2026-11-01T00:00:00.000Z',
+				ModifiedAt: '2026-11-01T00:00:00.000Z',
+			},
+			{
+				ItemType: 5,
+				ItemId: '5a3c4b24-2970-54d6-9548-ae35a77ffb12',
+				Name: 'Coin deal',
+				Description: 'offer 4',
+				ImageName: null,
+				RoomId: 94,
+				Price: 30,
+				PurchaseCurrencyId: coin,
+				CreatedAt: '2026-11-02T00:00:00.000Z',
+				ModifiedAt: '2026-11-02T00:00:00.000Z',
+			},
+		])
+
+		await env.DB.prepare('DELETE FROM room_offer WHERE room_id = 94').run()
 	})
 
 	test('2026 room-offer purchase counts use the captured result envelope', async () => {

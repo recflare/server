@@ -1,29 +1,32 @@
 /**
  * Everything a room sells, in one list — what `GET /api/ugcPurchasables/v1/items/room/:roomId`
- * answers. There is no table of its own: the list is assembled on read from the three tables
- * that hold a room's listings — `room_key` (room-key-db), `room_consumable`
- * (room-consumable-db) and the purchase offers inside `room_currency` (room-currency-db) —
- * each projected into the client's 10-key `UgcPurchasableItem` with `ItemType` saying which
- * it is. One shape for three kinds of thing, which is the point of the route: the client
+ * answers. There is no table of its own: the list is assembled on read from the tables that
+ * hold a room's listings — `room_key` (room-key-db), `room_consumable` (room-consumable-db),
+ * the purchase offers inside `room_currency` (room-currency-db) and `room_offer`
+ * (room-offer-db) — each projected into the client's 10-key `UgcPurchasableItem` with
+ * `ItemType` saying which it is. One shape for four kinds of thing, which is the point of the route: the client
  * draws the room's shop from it without knowing which table a line came from.
  */
 import { getRoomConsumables } from './room-consumable-db'
 import { getPurchaseOffers, getRoomCurrencies } from './room-currency-db'
 import { getRoomKeys } from './room-key-db'
+import { getRoomOffers } from './room-offer-db'
 
 /**
- * The client's `ItemType` enum for a UGC purchasable, numeric on the wire. Recovered from the
- * client: RoomKey 0, RoomConsumable 1, RoomCurrencyItem 3, StoreUGCAvatarItem 4, UNDEFINED 5
- * — 2 is unassigned. Note this is NOT the `itemType` inside the `{ itemType, itemId }`
- * reference `…/items/bulk` and `/api/items/purchaseInfos` take, where a custom avatar item
- * is 3 (`UGC_ITEM_TYPE_CUSTOM_AVATAR_ITEM`); the two enums share a name and little else.
+ * The client's `UGCPurchasableItemType` enum, numeric on the wire: RoomKey 0, RoomConsumable 1,
+ * RoomCurrencyPurchaseOffer 2, CustomAvatarItem 3, StoreUGCAvatarItem 4, RoomOffer 5,
+ * UNDEFINED 6. The same numbering as the `itemType` inside the `{ itemType, itemId }`
+ * reference `…/items/bulk` and `/api/items/purchaseInfos` take, where a custom avatar item is
+ * 3 (`UGC_ITEM_TYPE_CUSTOM_AVATAR_ITEM`). Currency packs were once served as 3 here, from an
+ * earlier misreading of the enum — which the client reads as a custom avatar item.
  */
 export const ROOM_PURCHASABLE_TYPE = {
 	roomKey: 0,
 	roomConsumable: 1,
-	roomCurrencyItem: 3,
+	roomCurrencyPurchaseOffer: 2,
+	customAvatarItem: 3,
 	storeUgcAvatarItem: 4,
-	undefined: 5,
+	roomOffer: 5,
 } as const
 
 /**
@@ -50,7 +53,7 @@ export interface RoomPurchasable {
 
 /**
  * A room's shop: its keys, then its consumables, then the purchase offers of each of its
- * currencies. Each kind keeps its own module's order. A room that sells nothing is `[]` —
+ * currencies, then its room offers. Each kind keeps its own module's order. A room that sells nothing is `[]` —
  * never `{}` or an empty body, which the client's decoder throws on.
  *
  * What stands in for what each table lacks:
@@ -63,15 +66,19 @@ export interface RoomPurchasable {
  *    is `<amount> <currency name>` ("444 Gems"), NOT the stored `Name`: the client names an
  *    offer by a GUID when it creates one, and that is what the shop showed. It takes the
  *    currency's description and coin art, having none of its own.
+ *  - A room offer is named by its `OriginId`. Its `PriceUnitId` is the room currency it is
+ *    priced in (null: tokens), the same value its purchase checks. Every offer is listed,
+ *    whatever its `Visibility`, as `GET /econ/roomOffer/room/{roomId}` lists them.
  */
 export async function getRoomPurchasables(
 	db: D1Database,
 	roomId: number
 ): Promise<RoomPurchasable[]> {
-	const [keys, consumables, currencies] = await Promise.all([
+	const [keys, consumables, currencies, roomOffers] = await Promise.all([
 		getRoomKeys(db, roomId),
 		getRoomConsumables(db, roomId),
 		getRoomCurrencies(db, roomId),
+		getRoomOffers(db, roomId),
 	])
 	const offers = await getPurchaseOffers(
 		db,
@@ -107,7 +114,7 @@ export async function getRoomPurchasables(
 		...offers.flatMap((shop) => {
 			const currency = currencyById.get(shop.CurrencyId)
 			return shop.PurchaseOffers.map((offer): RoomPurchasable => ({
-				ItemType: ROOM_PURCHASABLE_TYPE.roomCurrencyItem,
+				ItemType: ROOM_PURCHASABLE_TYPE.roomCurrencyPurchaseOffer,
 				ItemId: offer.CurrencyPurchaseOfferId,
 				Name: `${offer.CurrencyAmount} ${currency?.Name ?? ''}`.trim(),
 				Description: currency?.Description ?? '',
@@ -119,5 +126,17 @@ export async function getRoomPurchasables(
 				ModifiedAt: offer.ModifiedAt,
 			}))
 		}),
+		...roomOffers.map((offer): RoomPurchasable => ({
+			ItemType: ROOM_PURCHASABLE_TYPE.roomOffer,
+			ItemId: offer.OriginId,
+			Name: offer.Name,
+			Description: offer.Description,
+			ImageName: offer.ImageName,
+			RoomId: offer.RoomId,
+			Price: offer.Price,
+			PurchaseCurrencyId: typeof offer.PriceUnitId === 'string' ? offer.PriceUnitId : null,
+			CreatedAt: offer.CreatedAt,
+			ModifiedAt: offer.ModifiedAt,
+		})),
 	]
 }

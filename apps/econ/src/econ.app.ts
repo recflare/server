@@ -6514,10 +6514,11 @@ const app = new Hono<App>({ strict: false })
 			summary: 'A room’s purchasables',
 			description:
 				'The room’s shop as one flat list: its room keys (`ItemType` 0), room consumables ' +
-				'(1) and the purchase offers of each of its currencies (3), assembled from the ' +
-				'`room_key`, `room_consumable` and `room_currency` tables. `ItemId` is a bare GUID ' +
-				'— a key’s `ReplicationId`, a consumable’s `RoomConsumableId`, an offer’s ' +
-				'`CurrencyPurchaseOfferId` — with the kind beside it as `ItemType`, not the ' +
+				'(1), the purchase offers of each of its currencies (2) and its room offers (5), ' +
+				'assembled from the `room_key`, `room_consumable`, `room_currency` and `room_offer` ' +
+				'tables. `ItemId` is a bare GUID — a key’s `ReplicationId`, a consumable’s ' +
+				'`RoomConsumableId`, a currency offer’s `CurrencyPurchaseOfferId`, a room offer’s ' +
+				'`OriginId` — with the kind beside it as `ItemType`, not the ' +
 				'`{ itemType, itemId }` struct the bulk lookup takes. `PurchaseCurrencyId` is the ' +
 				'room currency a line is charged in, or null for tokens (every currency pack). A room ' +
 				'that sells nothing is an empty array.',

@@ -613,17 +613,21 @@ export const UgcPurchasableItemList = z.array(UgcPurchasableItemDto)
 /**
  * `GET /api/ugcPurchasables/v1/items/room/{roomId}` — one line of a room's shop. The same
  * 10 keys as the bulk lookup's item, with `ItemType` naming the kind (0 room key, 1 room
- * consumable, 3 currency purchase offer) and `ImageName` nullable, as a key or consumable
+ * consumable, 2 currency purchase offer, 5 room offer) and `ImageName` nullable, as a key or consumable
  * without art is served everywhere else.
  */
 export const RoomPurchasableDto = UgcPurchasableItemDto.extend({
 	ItemType: z
 		.number()
 		.int()
-		.describe('0 RoomKey, 1 RoomConsumable, 3 RoomCurrencyItem (a currency pack for tokens)'),
+		.describe(
+			'0 RoomKey, 1 RoomConsumable, 2 RoomCurrencyPurchaseOffer (a currency pack for tokens), 5 RoomOffer'
+		),
 	ItemId: z
 		.string()
-		.describe('A bare GUID — the key’s ReplicationId, the consumable’s or offer’s id'),
+		.describe(
+			'A bare GUID — the key’s ReplicationId, the consumable’s or currency offer’s id, the room offer’s OriginId'
+		),
 	ImageName: z.string().nullable().describe('Null for a listing with no art'),
 	PurchaseCurrencyId: z
 		.string()
