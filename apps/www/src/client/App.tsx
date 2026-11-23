@@ -6726,10 +6726,10 @@ function ShowcasePanel({ account }: { account: SelfAccount }) {
 	useEffect(() => {
 		void Promise.all([
 			fetchMyRooms(),
-			call<Array<{ RoomId: number }>>(`${where().rooms}/showcase/${account.accountId}`),
+			call<number[]>(`${where().rooms}/showcase/${account.accountId}`),
 		])
 			.then(([mine, showcase]) => {
-				const ids = Array.isArray(showcase) ? showcase.map((r) => r.RoomId) : []
+				const ids = Array.isArray(showcase) ? showcase : []
 				setRooms(mine.filter((r) => r.CreatorAccountId === account.accountId))
 				setSaved(ids)
 				setPicks(ids)

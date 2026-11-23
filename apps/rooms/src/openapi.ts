@@ -1221,11 +1221,11 @@ export const VisitedRoomCount = z
 
 /**
  * `GET /showcase/{playerId}` — the rooms a player showcases on their profile: a bare array
- * of the same RoomDTO `rooms/hot` pages, in the player's order, at most five.
+ * of room ids, in the player's order, at most five.
  */
-export const ShowcasedRooms = RoomDto.array().describe(
-	'The showcased rooms, in the order the player picked them'
-)
+export const ShowcasedRooms = z
+	.array(z.int())
+	.describe('The showcased rooms’ ids, in the order the player picked them')
 
 /**
  * `GET /rooms/curated_playlists` — the curated room playlists the discovery pages'

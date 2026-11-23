@@ -2136,10 +2136,10 @@ const app = new Hono<App>()
 	// A player's showcased rooms — the hand-picked rail the client draws on a profile,
 	// separate from `ownedby/{accountId}` (which is everything public they own). Stored as
 	// the player's `__Showcase_Rooms` list (`lists-db`), picked on www's account page; up to
-	// five, in their order. A bare array of the full RoomDTO — the 2026 client's element is
-	// the `rooms/hot` one, unpaged and unenveloped (the 2025 client read bare room ids, not
-	// served). Rooms that stopped being public since are dropped on read. A player who picked
-	// nothing gets `[]`, which the client draws as an empty rail. No auth: a profile is public.
+	// five, in their order. A bare array of room IDS (numbers), not rooms — the client resolves
+	// each id itself. Rooms that stopped being public since are dropped on read. A player who
+	// picked nothing gets `[]`, which the client draws as an empty rail. No auth: a profile is
+	// public.
 	.get(
 		'/showcase/:playerId{[0-9]+}',
 		describeRoute({
@@ -2147,17 +2147,19 @@ const app = new Hono<App>()
 			summary: 'A player’s showcased rooms',
 			description: [
 				'The rooms a player has showcased on their profile, in the order they picked them, as',
-				'a bare array of rooms — not paged and not enveloped. Picked on the website (at most',
+				'a bare array of room ids (numbers) — not rooms, not paged and not enveloped. Picked on the website (at most',
 				'five); a room that is no longer public, or was deleted, is left out. Empty when the',
 				'player has picked none. Unlike `ownedby/{accountId}`, which lists everything public',
 				'the account owns, a showcase is a chosen subset. No auth: a profile is public.',
 			].join(' '),
 			parameters: [playerIdParam],
-			responses: { 200: json(ShowcasedRooms, 'The showcased rooms') },
+			responses: { 200: json(ShowcasedRooms, 'The showcased rooms’ ids') },
 		}),
 		async (c) =>
 			c.json(
-				serveRooms(await getShowcasedRooms(c.env.DB, Number.parseInt(c.req.param('playerId'), 10)))
+				(await getShowcasedRooms(c.env.DB, Number.parseInt(c.req.param('playerId'), 10))).map(
+					(room) => room.RoomId
+				)
 			)
 	)
 

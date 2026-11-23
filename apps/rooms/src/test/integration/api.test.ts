@@ -244,9 +244,9 @@ describe('rooms endpoints', () => {
 		expect(await unknown.json()).toEqual([])
 	})
 
-	// The 2026 client reads a bare array of whole rooms, in the player's order. A room that
-	// stopped being public, or isn't the player's own, is left off.
-	it('GET /showcase/:playerId serves the showcased rooms, in order, public and own only', async () => {
+	// A bare array of room ids, in the player's order. A room that stopped being public, or
+	// isn't the player's own, is left off.
+	it('GET /showcase/:playerId serves the showcased room ids, in order, public and own only', async () => {
 		for (const room of [
 			{ RoomId: 96_101, Name: 'ShowA', CreatorAccountId: 9610, Accessibility: 1 },
 			{ RoomId: 96_102, Name: 'ShowB', CreatorAccountId: 9610, Accessibility: 1 },
@@ -259,10 +259,7 @@ describe('rooms endpoints', () => {
 
 		const res = await SELF.fetch(`${ORIGIN}/showcase/9610`)
 		expect(res.status).toBe(200)
-		const body = (await res.json()) as Array<{ RoomId: number; Name: string; Stats: unknown }>
-		expect(Array.isArray(body)).toBe(true)
-		expect(body.map((r) => r.RoomId)).toEqual([96_102, 96_101])
-		expect(body[0]).toMatchObject({ Name: 'ShowB', Stats: expect.any(Object) })
+		expect(await res.json()).toEqual([96_102, 96_101])
 
 		// Public player rooms would otherwise surface in the feed tests that expect none.
 		await env.DB.prepare('DELETE FROM room WHERE room_id BETWEEN 96101 AND 96104').run()
