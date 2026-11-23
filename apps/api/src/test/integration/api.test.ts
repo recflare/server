@@ -63,7 +63,13 @@ import {
 	getEventAttendees,
 	getEventResponse,
 } from '../../events-db'
-import { SCHEMA_DDL as INVENTIONS_SCHEMA_DDL, MAX_INVENTION_PRICE } from '../../inventions-db'
+import {
+	getInventionById,
+	SCHEMA_DDL as INVENTIONS_SCHEMA_DDL,
+	MAX_INVENTION_PRICE,
+	setInventionTags,
+	updateInvention,
+} from '../../inventions-db'
 import {
 	banFromReport,
 	createReport,
@@ -401,6 +407,35 @@ describe('public endpoints', () => {
 		return new Set(((await res.json()) as Array<{ Key: string }>).map((e) => e.Key))
 	}
 	const KEY_2025_ONLY = 'Avatars.AdvancedFaceCustomizationEnabled'
+
+	test('GET /api/gameconfigs/v1/all enables RRUI invention flows only for the 2026 build', async () => {
+		const keys = [
+			'UGC.Room2InventionsUseRruiMenu',
+			'UGC.InventionCreationUseRruiMenuFromMakerPenPalette',
+		]
+		for (const version of ['20260323.14', '20260323.15', '20250718.01', '20230414']) {
+			for (const accountId of ['42', '43']) {
+				const res = await exports.default.fetch(`${ORIGIN}/api/gameconfigs/v1/all`, {
+					headers: await bearer(accountId, undefined, version),
+				})
+				expect(res.status).toBe(200)
+				const entries = (await res.json()) as Array<{ Key: string; Value: string }>
+				for (const key of keys) {
+					const matches = entries.filter((entry) => entry.Key === key)
+					const expected = version.startsWith('20260323')
+						? 'true'
+						: version === '20230414'
+							? key === 'RRUI.UseRRUIHomeScreen'
+								? 'true'
+								: key === 'UGC.Room2InventionsUseRruiMenu'
+									? 'false'
+									: undefined
+							: 'false'
+					expect(matches[0]?.Value).toBe(expected)
+				}
+			}
+		}
+	})
 
 	test('GET /api/gameconfigs/v1/all enables only the 2026 Roomie companion', async () => {
 		for (const version of ['20260323.14', '20250718.01']) {
@@ -3108,11 +3143,11 @@ describe('public endpoints', () => {
 		if (value === null) throw new Error('a refused tag must not refuse the edit')
 		// The metadata edit lands; the tags are what didn't.
 		expect(value.Invention.Description).toBe('edited anyway')
-		expect(value.TagsResponse).toEqual({ Result: 1, Tags: [] })
+		expect(value.TagsResponse).toEqual({ Result: 1, Tags: ['small'] })
 		const details = await exports.default.fetch(
 			`${ORIGIN}/api/inventions/v1/details?inventionId=${inventionId}`
 		)
-		expect(await details.json()).toEqual({ Tags: [] })
+		expect(await details.json()).toEqual({ Tags: [{ Tag: 'small', Type: 2 }] })
 	})
 
 	test('POST /api/inventions/v4/publish publishes with the permission and accessibility sent', async () => {
@@ -4539,6 +4574,140 @@ describe('public endpoints', () => {
 				ReferencedInventions: [39],
 			})
 		}
+	})
+
+	test.each([4, 8])(
+		'invention v%s revision saves retain independent blobs, costs and references',
+		async (apiVersion) => {
+			await env.CDN_ASSETS.put('invention/history-shared.inv', new Uint8Array([1, 2, 3]))
+			const save = await exports.default.fetch(`${ORIGIN}/api/inventions/v9/save`, {
+				method: 'POST',
+				headers: { ...(await bearer('7373')), 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					name: 'History Test',
+					inventionDataFilename: 'history-shared.inv',
+					instantiationCost: 7,
+					referencedInventions: [11],
+				}),
+			})
+			const saved = (await save.json()) as InventionSaveV9Result
+			const id = saved.Value!.Invention.InventionId
+			// Simulate the client reusing its upload filename; revision 1 already owns a snapshot.
+			await env.CDN_ASSETS.put('invention/history-shared.inv', new Uint8Array([4, 5, 6]))
+			const input = {
+				inventionId: id,
+				inventionDataFilename: 'history-shared.inv',
+				instantiationCost: 19,
+				referencedInventions: [22],
+			}
+			const append = async (player: string) =>
+				exports.default.fetch(`${ORIGIN}/api/inventions/v${apiVersion}/addversion`, {
+					method: 'POST',
+					headers: { ...(await bearer(player)), 'Content-Type': 'application/json' },
+					body: JSON.stringify(input),
+				})
+			expect(((await (await append('42')).json()) as InventionSaveV9Result).Success).toBe(false)
+			const updated = (await (await append('7373')).json()) as InventionSaveV9Result
+			expect(updated.Success).toBe(true)
+			expect(updated.Value!.Invention.CurrentVersionNumber).toBe(2)
+			const response = await exports.default.fetch(
+				`${ORIGIN}/api/inventions/v1/versions?inventionId=${id}`
+			)
+			const versions = (await response.json()) as Array<{
+				VersionNumber: number
+				BlobName: string
+				InstantiationCost: number
+				ReferencedInventions: number[]
+				UgcAccessibility: number | null
+			}>
+			expect(versions.map((version) => version.VersionNumber)).toEqual([1, 2])
+			// The native label builder excludes null and Unlisted (2) revisions.
+			expect(
+				versions.filter(
+					(version) => version.UgcAccessibility === 0 || version.UgcAccessibility === 1
+				)
+			).toHaveLength(2)
+			// Migration-era rows carried null; they must remain selectable too.
+			await env.DB.prepare(
+				"UPDATE invention_version SET data = json_set(data, '$.UgcAccessibility', NULL) WHERE invention_id = ?1"
+			)
+				.bind(id)
+				.run()
+			const legacy = (await (
+				await exports.default.fetch(`${ORIGIN}/api/inventions/v1/versions?inventionId=${id}`)
+			).json()) as typeof versions
+			expect(legacy.map((version) => version.UgcAccessibility)).toEqual([0, 0])
+			expect(versions[1]).toMatchObject({ InstantiationCost: 19, ReferencedInventions: [22] })
+			expect(versions[0]).toMatchObject({ InstantiationCost: 7, ReferencedInventions: [11] })
+			const old = await exports.default.fetch(
+				`${ORIGIN}/api/inventions/v1/version?inventionId=${id}&version=1`
+			)
+			const revision = (await old.json()) as { BlobName: string }
+			expect([
+				...new Uint8Array(
+					await (await env.CDN_ASSETS.get(`invention/${revision.BlobName}`))!.arrayBuffer()
+				),
+			]).toEqual([1, 2, 3])
+			expect(versions[0]!.BlobName).not.toBe(versions[1]!.BlobName)
+			const db = env.DB
+			await Promise.all([
+				updateInvention(db, id, { description: 'concurrent description' }),
+				setInventionTags(db, id, [], ['persist']),
+			])
+			const record = await getInventionById(db, id)
+			expect(record).toMatchObject({
+				Description: 'concurrent description',
+				Tags: [{ Tag: 'persist', Type: 0 }],
+				CurrentVersionNumber: 2,
+			})
+		}
+	)
+
+	test('RRUI invention reads return retained versions and non-null tag lists', async () => {
+		const save = await exports.default.fetch(`${ORIGIN}/api/inventions/v9/save`, {
+			method: 'POST',
+			headers: { ...(await bearer('7373')), 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				name: 'RRUI Contract',
+				inventionDataFilename: 'rrui-contract.inv',
+				referencedUnityAssetIds: ['55555555-3333-4444-8555-666666666666'],
+			}),
+		})
+		const saved = (await save.json()) as { Value: { Invention: { InventionId: number } } }
+		const id = saved.Value.Invention.InventionId
+		const versions = await exports.default.fetch(
+			`${ORIGIN}/api/inventions/v1/versions?inventionId=${id}`
+		)
+		expect(versions.status).toBe(200)
+		expect(await versions.json()).toEqual([
+			expect.objectContaining({
+				InventionId: id,
+				VersionNumber: 1,
+				HasBetaContent: false,
+				CreatedAt: expect.any(String),
+				UgcAccessibility: 0,
+				ReferencedUnityAssetIds: ['55555555-3333-4444-8555-666666666666'],
+			}),
+		])
+		for (const invalid of ['', 'abc', '1.5', '-1', '1junk']) {
+			expect(
+				(await exports.default.fetch(`${ORIGIN}/api/inventions/v1/versions?inventionId=${invalid}`))
+					.status
+			).toBe(400)
+		}
+		expect(
+			(await exports.default.fetch(`${ORIGIN}/api/inventions/v1/versions?inventionId=99999999`))
+				.status
+		).toBe(404)
+		const settings = await exports.default.fetch(`${ORIGIN}/api/inventions/v1/settings`)
+		expect(settings.status).toBe(200)
+		expect(await settings.json()).toMatchObject({
+			PinnedFilters: expect.any(Array),
+			PopularFilters: expect.any(Array),
+		})
+		const special = await exports.default.fetch(`${ORIGIN}/api/inventions/v1/specialTags`)
+		expect(special.status).toBe(200)
+		expect(await special.json()).toEqual({ AutoTags: expect.any(Array), AGOnlyTags: [] })
 	})
 
 	test('GET /api/inventions/v1/version serves the version; unknown versions 404', async () => {
@@ -11180,10 +11349,13 @@ describe('openapi', () => {
 			'GET /api/inventions/v1/fulllineageowner',
 			'GET /api/inventions/v1/personaldetails/{inventionId}',
 			'GET /api/inventions/v1/room',
+			'GET /api/inventions/v1/settings',
+			'GET /api/inventions/v1/specialTags',
 			'GET /api/inventions/v1/tagfilters',
 			'GET /api/inventions/v1/toptoday',
 			'GET /api/inventions/v1/update',
 			'GET /api/inventions/v1/version',
+			'GET /api/inventions/v1/versions',
 			'GET /api/inventions/v2/batch',
 			'GET /api/inventions/v2/mine',
 			'GET /api/inventions/v2/search',
@@ -11274,8 +11446,10 @@ describe('openapi', () => {
 			'POST /api/inventions/v2/delete',
 			'POST /api/inventions/v2/unpublish',
 			'POST /api/inventions/v2/update',
+			'POST /api/inventions/v4/addversion',
 			'POST /api/inventions/v4/publish',
 			'POST /api/inventions/v6/save',
+			'POST /api/inventions/v8/addversion',
 			'POST /api/inventions/v9/save',
 			'POST /api/messages/v1/friendOnlineStatus',
 			'POST /api/messages/v1/sendMultiple',

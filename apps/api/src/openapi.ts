@@ -700,6 +700,12 @@ export const TagFilters = z.object({
 		.describe('Null — needs recent-activity data we don‘t keep'),
 })
 
+/** Reserved tag lists consumed by the RRUI invention tag editor. */
+export const InventionSpecialTags = z.object({
+	AutoTags: z.array(z.string()),
+	AGOnlyTags: z.array(z.string()),
+})
+
 /** `GET /api/inventions/v1/details` — an invention's detail card is just its tags. */
 export const InventionDetails = z.object({ Tags: z.array(InventionTagDto) })
 

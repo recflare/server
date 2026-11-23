@@ -23,11 +23,16 @@ import type { App } from '../context'
 
 // The fingerprinted 2026 client has local low/no-energy activities. Enable its
 // Roomie system and both fallback gates together; the AI Worker supplies zero
-// energy and refuses realtime credentials. Keep the archived catalogs unchanged.
+// energy and refuses realtime credentials. Enable the RRUI invention flows with their
+// endpoint support for this build. Keep the archived catalogs unchanged.
 const roomieCompanionConfigs = gameConfigsV1All2025.map((entry) =>
-	['RoomieAI.System.Enabled', 'RoomieAI.SupportNoAIMode', 'RoomieAI.SupportLowEnergyMode'].includes(
-		entry.Key
-	)
+	[
+		'RoomieAI.System.Enabled',
+		'RoomieAI.SupportNoAIMode',
+		'RoomieAI.SupportLowEnergyMode',
+		'UGC.Room2InventionsUseRruiMenu',
+		'UGC.InventionCreationUseRruiMenuFromMakerPenPalette',
+	].includes(entry.Key)
 		? { ...entry, Value: 'true' }
 		: entry
 )

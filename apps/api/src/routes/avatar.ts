@@ -34,6 +34,7 @@ import {
 } from '../custom-avatar-items-db'
 import { authedId, authedPlus, authedStaff, unauthorized } from '../http'
 import {
+	addInventionVersion,
 	createInvention,
 	deleteInvention,
 	getFeaturedInventions,
@@ -41,9 +42,11 @@ import {
 	getInventionsByCreators,
 	getInventionsByIds,
 	getInventionsByRoom,
+	getInventionSpecialTags,
 	getInventionTagFilters,
 	getInventionTags,
 	getInventionVersion,
+	getInventionVersions,
 	getMyInventions,
 	getTopInventions,
 	INVENTION_TAG_RESULT,
@@ -91,8 +94,10 @@ import {
 	InventionReportRequest,
 	InventionSaveResult,
 	InventionSaveV9Result,
+	InventionSpecialTags,
 	InventionV9Dto,
 	InventionVersionDto,
+	InventionVersionV9Dto,
 	json,
 	JsonArray,
 	jsonBody,
@@ -1542,14 +1547,130 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 		}
 	)
 
-	// A single version of an invention (`?inventionId=…&version=…`) — the bare
-	// RRInventionVersion, which carries the blob name the client downloads and the
-	// SHA-256 of that blob. Public. Only the current version exists (nothing writes
-	// version history yet), so any other version number 404s rather than naming a
-	// blob that isn't there — except `version=0`, which means "whichever is current"
-	// rather than a number to match. Nothing has a version 0, so a caller sending it
-	// doesn't know which version it wants, and matching it literally 404s an invention
-	// that exists.
+	.get(
+		'/api/inventions/v1/versions',
+		describeRoute({
+			tags: ['Inventions'],
+			summary: 'Retained invention version history',
+			parameters: [intQuery('inventionId', 'Invention id; required')],
+			responses: {
+				200: json(
+					InventionVersionV9Dto.array(),
+					'Revisions in chronological order for client version labeling'
+				),
+				400: json(ErrorResponse, 'Invalid id'),
+				404: { description: 'No such invention' },
+			},
+		}),
+		async (c) => {
+			const id = Number(c.req.query('inventionId'))
+			if (!Number.isSafeInteger(id) || id <= 0)
+				return c.json({ error: 'inventionId is required' }, 400)
+			const versions = await getInventionVersions(c.env.DB, id)
+			return versions
+				? c.json(
+						versions.map((version) => ({
+							...version,
+							HasBetaContent: version.HasBetaContent ?? false,
+							CreatedAt: version.CreatedAt ?? '',
+							UgcAccessibility: version.UgcAccessibility ?? null,
+						}))
+					)
+				: c.notFound()
+		}
+	)
+	// The 20260323.14 AddVersionInventionRequestDTO posts to v8 (live request).
+	.on(
+		'POST',
+		['/api/inventions/v4/addversion', '/api/inventions/v8/addversion'],
+		describeRoute({
+			tags: ['Inventions'],
+			summary: 'Save a new invention revision',
+			security: AUTHED,
+			requestBody: jsonBody(
+				SaveInventionV9Request.extend({ inventionId: InventionDto.shape.InventionId }),
+				'Revision metadata'
+			),
+			responses: {
+				200: json(InventionSaveV9Result, 'Saved revision or refusal'),
+				401: json(InventionSaveV9Result, 'Unauthorized'),
+			},
+		}),
+		async (c) => {
+			const body = await c.req.json<Record<string, unknown>>().catch(() => null)
+			if (!body) return c.json(inventionSaveV9Failure('Invalid request body'))
+			const gate = await creatorsInventionResult(
+				c,
+				typeof body.inventionId === 'number' ? body.inventionId : NaN
+			)
+			if ('rejection' in gate)
+				return c.json(inventionSaveV9Failure(gate.rejection), gate.status === 401 ? 401 : 200)
+			const filename =
+				typeof body.inventionDataFilename === 'string' ? body.inventionDataFilename.trim() : ''
+			if (!filename) return c.json(inventionSaveV9Failure('inventionDataFilename is required'))
+			const number = (key: string) =>
+				typeof body[key] === 'number' ? (body[key] as number) : undefined
+			try {
+				const updated = await addInventionVersion(
+					c.env.DB,
+					c.env.CDN_ASSETS,
+					gate.invention.InventionId,
+					{
+						creatorPlayerId: gate.invention.CreatorPlayerId,
+						inventionDataFilename: filename,
+						instantiationCost: number('instantiationCost'),
+						lightsCost: number('lightsCost'),
+						chipsCost: number('chipsCost'),
+						cloudVariablesCost: number('cloudVariablesCost'),
+						aiCost: number('aiCost'),
+						hasBetaContent:
+							typeof body.hasBetaContent === 'boolean' ? body.hasBetaContent : undefined,
+						referencedInventions: Array.isArray(body.referencedInventions)
+							? body.referencedInventions.filter((v): v is number => typeof v === 'number')
+							: [],
+						referencedUnityAssetIds: Array.isArray(body.referencedUnityAssetIds)
+							? body.referencedUnityAssetIds.filter((v): v is string => typeof v === 'string')
+							: [],
+					}
+				)
+				return c.json(
+					updated
+						? toSaveResultV9(updated, updated.Tags ?? [])
+						: inventionSaveV9Failure('No such invention')
+				)
+			} catch (error) {
+				if (
+					error instanceof Error &&
+					[
+						'The invention changed during this save. Please retry.',
+						'The saved revision blob was overwritten; its original bytes cannot be recovered.',
+					].includes(error.message)
+				)
+					return c.json(inventionSaveV9Failure(error.message))
+				throw error
+			}
+		}
+	)
+	.get(
+		'/api/inventions/v1/settings',
+		describeRoute({
+			tags: ['Inventions'],
+			summary: 'Invention tag settings',
+			responses: { 200: json(TagFilters, 'Pinned and popular tag filters') },
+		}),
+		async (c) => c.json(await getInventionTagFilters(c.env.DB))
+	)
+	.get(
+		'/api/inventions/v1/specialTags',
+		describeRoute({
+			tags: ['Inventions'],
+			summary: 'Reserved invention tag lists',
+			responses: { 200: json(InventionSpecialTags, 'Auto and AG-only tag lists') },
+		}),
+		async (c) => c.json(await getInventionSpecialTags(c.env.DB))
+	)
+
+	// Fetch the current or a retained revision, including its downloadable blob and hash.
 	.get(
 		'/api/inventions/v1/version',
 		describeRoute({
@@ -1558,9 +1679,7 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 			description:
 				'The bare `RRInventionVersion`, which carries the blob name the client downloads ' +
 				'and `BlobHash`, the base64 SHA-256 of that blob (null when the named blob was ' +
-				'never uploaded). Only the current version exists — nothing writes version ' +
-				'history yet — so any other version number 404s rather than naming a blob that ' +
-				'is not there.\n\n' +
+				'never uploaded). Retained revisions can be fetched by version number.\n\n' +
 				'`version=0` is the exception: it means “whichever is current” rather than a ' +
 				'number to match, and gets the current version. No invention has a version 0 — a ' +
 				'fresh save is version 1 — so a caller sending it does not know which version it ' +
@@ -1572,7 +1691,7 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 			responses: {
 				200: json(InventionVersionDto, 'The version'),
 				400: json(ErrorResponse, 'Missing inventionId or version'),
-				404: { description: 'No such invention, or a version number that is not the current one' },
+				404: { description: 'No such invention or retained version' },
 			},
 		}),
 		async (c) => {
@@ -2403,7 +2522,7 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 				description,
 				longDescription,
 				imageName: edited('ImageName'),
-				tags: requested?.tags,
+				tags: requested?.tagResult === INVENTION_TAG_RESULT.success ? requested.tags : undefined,
 			})
 			if (updated === null) return c.json(inventionSaveV9Failure('No such invention'))
 			return c.json(
