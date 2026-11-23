@@ -28,6 +28,7 @@
 		"enabled": false
 	},
 	"vars": {
+		"DOMAIN": "rec.example.com", // overridden during deployment
 		"ENVIRONMENT": "development", // overridden during deployment
 		"SENTRY_RELEASE": "unknown" // overridden during deployment
 	}

@@ -2,6 +2,8 @@ import type { HonoApp } from '@repo/hono-helpers'
 import type { SharedHonoEnv, SharedHonoVariables } from '@repo/hono-helpers/src/types'
 
 export type Env = SharedHonoEnv & {
+	/** Public website base domain, supplied by the operator at deployment. */
+	DOMAIN: string
 	/**
 	 * Shared Secrets Store binding for the HS256 JWT signing key. Resolve the value with
 	 * `await env.JWT_SECRET.get()`; every worker binds the same store, so tokens signed by

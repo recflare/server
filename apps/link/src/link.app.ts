@@ -45,7 +45,7 @@ const app = new Hono<App>()
 	//   validHours   how long the code lives (8760 room · 2160 club · 8640 event seen)
 	//   codeType     the link's kind (5 room · 3 club · 4 event seen)
 	//   extraDataId  the id of the thing linked to
-	// Answers the code as a bare JSON string (`"ABC123"`), nothing else. Auth-gated: the
+	// Answers the full share URL as a JSON string (`"https://rec.example.com?a=ABC123"`). Auth-gated: the
 	// row records who made it.
 	.post('/actionlink', async (c) => {
 		const accountId = await validateAndGetAccountId(c.req.raw, await c.env.JWT_SECRET.get())
@@ -66,7 +66,7 @@ const app = new Hono<App>()
 			data: typeof body.data === 'string' ? body.data : null,
 			validHours,
 		})
-		return c.json(code)
+		return c.json(`https://${c.env.DOMAIN}?a=${code}`)
 	})
 
 export default app

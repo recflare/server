@@ -88,16 +88,20 @@ describe('POST /actionlink', () => {
 		extraDataId: '174',
 	}
 
-	it('answers a bare JSON string code and stores what the client sent', async () => {
+	it('answers a full share URL as a JSON string and stores what the client sent', async () => {
 		for (const body of [ROOM, CLUB, EVENT]) {
 			const before = Date.now()
 			const res = await actionlink(950001, body)
 			expect(res.status).toBe(200)
 			expect(res.headers.get('content-type')).toContain('application/json')
 			const text = await res.text()
-			const code = JSON.parse(text) as unknown
+			const url = JSON.parse(text) as string
+			const parsed = new URL(url)
+			expect(parsed.origin).toBe('https://rec.example.com')
+			expect(parsed.pathname).toBe('/')
+			const code = parsed.searchParams.get('a')
 			expect(typeof code).toBe('string')
-			expect(text).toBe(JSON.stringify(code))
+			expect(text).toBe(JSON.stringify(url))
 			expect(code).toMatch(/^[A-Z2-9]{6}$/)
 
 			const row = await getLink(env.DB, code as string)
