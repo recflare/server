@@ -3351,8 +3351,13 @@ export async function deleteRoom(db: D1Database, roomId: number): Promise<void> 
 	])
 }
 
-/** Look up a single room by name (case-insensitive exact match). */
+/**
+ * Look up a single room by name (case-insensitive exact match). The custom-dorm template
+ * names ({@link isDormTemplateName}) always resolve to the dorm template, whatever room may
+ * carry the name, so no player can own them.
+ */
 export async function getRoomByName(db: D1Database, name: string): Promise<Room | null> {
+	if (isDormTemplateName(name)) return getRoomById(db, DORM_TEMPLATE_ROOM_ID)
 	return hydrateRoom(
 		db,
 		parseOne(
@@ -4385,6 +4390,38 @@ export async function getBaseRooms(db: D1Database, skip: number, take: number): 
 /** The seeded template dorm (RoomId 1) that personal dorms are cloned from. */
 const DORM_TEMPLATE_ROOM_ID = 1
 
+/**
+ * The names the 2026 client looks the custom-dorm template up by. "Create new Dorm"
+ * (`DormRoomModel.CloneAndGoToNewCustomDormRoom`, 20260323.14) does not clone the player's
+ * dorm: it finds the room NAMED `CustomDormRoomTemplate` (`CustomDormRoomR2Template` for the
+ * Rooms 2 variant), clones it with `POST /rooms/{id}/clone`, and may then pick the clone with
+ * `PUT /dormroom/me`.
+ *
+ * Rec Room's own template room cannot be recovered (no archive holds its files), so both
+ * names stand for the stock dorm template here (RoomId 1, the base dorm scene), and a new
+ * custom dorm is a fresh dorm made from it, like the one every player is provisioned with.
+ */
+const DORM_TEMPLATE_NAMES: readonly string[] = ['customdormroomtemplate', 'customdormroomr2template']
+
+/** Whether `name` is one of the custom-dorm template names ({@link DORM_TEMPLATE_NAMES}). */
+export function isDormTemplateName(name: string): boolean {
+	return DORM_TEMPLATE_NAMES.includes(name.trim().toLowerCase())
+}
+
+/**
+ * Whether a clone of `roomId` makes a custom dorm: it is the dorm template, or a room still
+ * named like it. The client caches name lookups, so a room that took a template name before
+ * the names were reserved can still be what it clones.
+ */
+export async function clonesDormTemplate(db: D1Database, roomId: number): Promise<boolean> {
+	if (roomId === DORM_TEMPLATE_ROOM_ID) return true
+	const row = await db
+		.prepare('SELECT name_lower FROM room WHERE room_id = ?1')
+		.bind(roomId)
+		.first<{ name_lower: string | null }>()
+	return row?.name_lower != null && isDormTemplateName(row.name_lower)
+}
+
 /** A player's username from the shared accounts table (for naming their dorm), or null. */
 export async function getUsername(db: D1Database, accountId: number): Promise<string | null> {
 	const row = await db
@@ -4555,7 +4592,20 @@ export async function getPlayerDormRoom(
 export async function getOrCreateDormRoom(db: D1Database, accountId: number): Promise<Room> {
 	const existing = await getDormRoom(db, accountId)
 	if (existing) return existing
+	return createDormRoom(db, accountId)
+}
 
+/**
+ * Make a new dorm for `accountId` from the dorm template: the one every player is
+ * provisioned with ({@link getOrCreateDormRoom}), or a custom dorm the 2026 client's
+ * "Create new Dorm" asked for (`name` is then the name the player gave it). Either way it is
+ * the base dorm scene with a clean save; see {@link DORM_TEMPLATE_NAMES}.
+ */
+export async function createDormRoom(
+	db: D1Database,
+	accountId: number,
+	name?: string
+): Promise<Room> {
 	const template = await getRoomById(db, DORM_TEMPLATE_ROOM_ID)
 	const idRow = await db
 		.prepare('SELECT COALESCE(MAX(room_id), 1) + 1 AS next FROM room')
@@ -4569,13 +4619,14 @@ export async function getOrCreateDormRoom(db: D1Database, accountId: number): Pr
 			? (template.SubRooms[0] as Record<string, unknown>)
 			: { SubRoomId: 1, UnitySceneId: '76d98498-60a1-430c-ab76-b54a29b7a163', MaxPlayers: 4 }
 
-	// Named after the owner: `@<username>'s Dorm` (falls back to the account id).
-	const username = (await getUsername(db, accountId)) ?? `Player${accountId}`
+	// Named after the owner: `@<username>'s Dorm` (falls back to the account id), unless the
+	// player named a custom dorm.
+	const username = name === undefined ? ((await getUsername(db, accountId)) ?? `Player${accountId}`) : ''
 
 	const room: Room = {
 		...(template ?? { Accessibility: Accessibility.Unlisted }),
 		RoomId: roomId,
-		Name: `@${username}'s Dorm`,
+		Name: name ?? `@${username}'s Dorm`,
 		CreatorAccountId: accountId,
 		IsDorm: true,
 		// The template dorm is Coach's and developer-owned; the player's copy is neither.

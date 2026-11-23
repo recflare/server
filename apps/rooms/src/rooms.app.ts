@@ -13,9 +13,11 @@ import {
 	canManageRoom,
 	canManageRoomById,
 	cloneRoom,
+	clonesDormTemplate,
 	cloneSubRoom,
 	countRoomsByCreator,
 	countVisitedRooms,
+	createDormRoom,
 	createNotification,
 	createStudioRoom,
 	createSubRoom,
@@ -59,6 +61,7 @@ import {
 	hasRoomInviteTo,
 	incrementRoomExperience,
 	inviteRoomRole,
+	isDormTemplateName,
 	isPickableDorm,
 	isPlayerBannedFromRoom,
 	isRoomOwner,
@@ -1522,7 +1525,9 @@ const app = new Hono<App>()
 				return c.json(room ? serveRoom(room) : c.req.query('include') === '525581' ? null : {})
 			}
 			const found = await getRoomByName(c.env.DB, nameParam ?? '')
-			const room = found && (await canSeeRoom(c, found)) ? found : null
+			// The custom-dorm template is found by name by everyone: "Create new Dorm" clones it.
+			const room =
+				found && (isDormTemplateName(nameParam ?? '') || (await canSeeRoom(c, found))) ? found : null
 			return c.json(room ? serveRoom(room) : c.req.query('include') === '525581' ? null : {})
 		}
 	)
@@ -1916,7 +1921,11 @@ const app = new Hono<App>()
 				)
 			}
 			const room = await getRoomByName(c.env.DB, nameParam ?? '')
-			return c.json(room && (await canSeeRoom(c, room)) ? [serveRoom(room)] : [])
+			return c.json(
+				room && (isDormTemplateName(nameParam ?? '') || (await canSeeRoom(c, room)))
+					? [serveRoom(room)]
+					: []
+			)
 		}
 	)
 
@@ -2536,12 +2545,12 @@ const app = new Hono<App>()
 				logger.info('room create rejected: per-account room limit', { accountId })
 				return roomEnvelope(c, null, `You can only have ${maxRooms} rooms.`)
 			}
-			const room = await cloneRoom(
-				c.env.DB,
-				Number.parseInt(c.req.param('roomId'), 10),
-				name,
-				accountId
-			)
+			const sourceRoomId = Number.parseInt(c.req.param('roomId'), 10)
+			// The 2026 client's "Create new Dorm" clones the custom-dorm template (see
+			// isDormTemplateName): that makes a new dorm from the base dorm scene.
+			const room = (await clonesDormTemplate(c.env.DB, sourceRoomId))
+				? await createDormRoom(c.env.DB, accountId, name)
+				: await cloneRoom(c.env.DB, sourceRoomId, name, accountId)
 			if (!room) return roomEnvelope(c, null, "You can't clone this room!")
 			return roomEnvelope(c, room)
 		}
