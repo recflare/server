@@ -20,6 +20,7 @@
 import { escapeLike, prefixUpperBound } from './accounts-db'
 import { chunkForBinds } from './d1-binds'
 import { Accessibility, Role } from './enums'
+import { getShowcasedRoomIds } from './lists-db'
 import { readPlayerSettings } from './player-settings-kv'
 import { countPlayersByRoom } from './presence-db'
 import { resyncInstanceCapacity } from './room-instance-db'
@@ -3464,6 +3465,23 @@ export async function getContributedRooms(
  */
 export async function getPublicRoomsByCreator(db: D1Database, accountId: number): Promise<Room[]> {
 	return (await getRoomsByCreator(db, accountId)).filter(isListable)
+}
+
+/**
+ * A player's showcased rooms (`GET /showcase/:playerId`), in the order they picked them.
+ * Picked rooms are checked when they're SET (www's account page), but a room can stop being
+ * public afterwards, so the read narrows to {@link isListable} as every public profile list
+ * does — otherwise making a showcased room private would leave it on the profile. Only rooms
+ * the player CREATED are served (the write refuses others too; this keeps the rule in one
+ * read even if a row was written some other way). A room deleted since is simply absent.
+ */
+export async function getShowcasedRooms(db: D1Database, accountId: number): Promise<Room[]> {
+	const ids = await getShowcasedRoomIds(db, accountId)
+	const byId = new Map((await getRoomsByIds(db, ids)).map((r) => [roomIdOf(r), r] as const))
+	return ids.flatMap((id) => {
+		const room = byId.get(id)
+		return room && room.CreatorAccountId === accountId && isListable(room) ? [room] : []
+	})
 }
 
 /**

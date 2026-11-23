@@ -335,3 +335,32 @@ export async function removePlayerListItem(
 
 	return { ok: true, list: toCuratedList(row, await getListItems(db, listId)) }
 }
+
+/**
+ * A player's SHOWCASED rooms — the hand-picked rail the game draws on their profile
+ * (`rooms`: `GET /showcase/:playerId`). Stored as one more of the player's own lists, beside
+ * `__SavedForLater_Rooms`: owned by the player, of rooms (`ListEntityType` 1), in the order
+ * they picked them. The double-underscore name keeps it out of the way of any list a player
+ * names themselves. The game has no screen that edits it; www's account page does.
+ */
+export const SHOWCASE_LIST_NAME = '__Showcase_Rooms'
+
+/** How many rooms a player may showcase. */
+export const MAX_SHOWCASED_ROOMS = 5
+
+/** The list key behind a player's showcase. Public: a showcase is on their profile. */
+export function showcaseListKey(accountId: number): PlayerListKey {
+	return {
+		creatorAccountId: accountId,
+		type: CURATED_ROW_TYPE,
+		name: SHOWCASE_LIST_NAME,
+		accessibility: 1,
+	}
+}
+
+/** A player's showcased room ids, in their order. Empty when they never picked any. */
+export async function getShowcasedRoomIds(db: D1Database, accountId: number): Promise<number[]> {
+	const key = showcaseListKey(accountId)
+	const list = await getPlayerList(db, key.creatorAccountId, key.type, key.name)
+	return (list?.ItemIds ?? []).map(Number).filter((id) => Number.isSafeInteger(id) && id > 0)
+}

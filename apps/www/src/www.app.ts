@@ -49,6 +49,7 @@ import {
 import { refreshDiscordRoles } from './discord-roles'
 import { docsPage, fetchSpec } from './docs'
 import { privacyPage } from './privacy'
+import { setShowcaseHandler } from './showcase'
 import {
 	addUsernameChangeHandler,
 	banReportHandler,
@@ -862,6 +863,11 @@ const app = new Hono<App>()
 		}
 		return c.json({ isDeleted: true, deletedAt })
 	})
+
+	// Sets the caller's profile showcase (src/showcase.ts). Read back from the game's own
+	// `rooms` `GET /showcase/:playerId`. Token-checked here for the same reason as the
+	// deletion above: www writes the row, so it decides whose row.
+	.put('/api/account/showcase', setShowcaseHandler)
 
 	.get('/api/studio-access', studioAccessStatusHandler)
 

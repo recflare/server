@@ -5705,18 +5705,10 @@ function SubRoomRow({
 			{/* The published save's blob first: that's the copy of the room worth keeping,
 			    and the one the client resolves ahead of the subroom's own key. */}
 			{save?.DataBlob && (
-				<BlobDownload
-					label="Save DataBlob"
-					blobKey={save.DataBlob}
-					cdnHost={cdnHost}
-				/>
+				<BlobDownload label="Save DataBlob" blobKey={save.DataBlob} cdnHost={cdnHost} />
 			)}
 			{sub.DataBlob && (
-				<BlobDownload
-					label="Subroom DataBlob"
-					blobKey={sub.DataBlob}
-					cdnHost={cdnHost}
-				/>
+				<BlobDownload label="Subroom DataBlob" blobKey={sub.DataBlob} cdnHost={cdnHost} />
 			)}
 			<BlobUpload roomId={roomId} sub={sub} onRoomChange={onRoomChange} />
 		</li>
@@ -6390,6 +6382,11 @@ function Dashboard({
 		// settings form they opened the page to avoid.
 		{ id: 'rooms', label: 'My rooms', render: () => <MyRooms navigate={navigate} /> },
 		{
+			id: 'showcase',
+			label: 'Showcased rooms',
+			render: () => <ShowcasePanel account={account} />,
+		},
+		{
 			id: 'banner',
 			label: 'Profile banner',
 			render: () => <BannerUpload account={account} onChange={onChange} />,
@@ -6517,6 +6514,169 @@ function MyRooms({ navigate }: { navigate: Navigate }) {
 						<RoomCard key={room.RoomId} room={room} imgHost={where().img} navigate={navigate} />
 					))}
 				</ul>
+			)}
+		</section>
+	)
+}
+
+/** How many rooms a showcase holds — `MAX_SHOWCASED_ROOMS`, which www's PUT enforces. */
+const MAX_SHOWCASED = 5
+
+/**
+ * The rooms on the player's profile showcase — the rail the game draws from `rooms`'
+ * `GET /showcase/:playerId`, which this reads too. Picked here because the game has no screen
+ * for it: tick up to five, order them, and Save replaces the whole list
+ * (`PUT /api/account/showcase` on www). Only PUBLIC rooms the player CREATED are offered —
+ * "My rooms" also lists co-owned rooms, which www refuses, and the showcase endpoint serves
+ * only public rooms, so a private pick would vanish on reload.
+ */
+function ShowcasePanel({ account }: { account: SelfAccount }) {
+	const [rooms, setRooms] = useState<OwnedRoom[] | null>(null)
+	const [saved, setSaved] = useState<number[] | null>(null)
+	const [picks, setPicks] = useState<number[]>([])
+	const [error, setError] = useState('')
+	const save = useAction()
+	const max = MAX_SHOWCASED
+
+	useEffect(() => {
+		void Promise.all([
+			fetchMyRooms(),
+			call<Array<{ RoomId: number }>>(`${where().rooms}/showcase/${account.accountId}`),
+		])
+			.then(([mine, showcase]) => {
+				const ids = Array.isArray(showcase) ? showcase.map((r) => r.RoomId) : []
+				setRooms(mine.filter((r) => r.CreatorAccountId === account.accountId))
+				setSaved(ids)
+				setPicks(ids)
+			})
+			.catch((e) => setError(e instanceof Error ? e.message : String(e)))
+	}, [account.accountId])
+
+	const dirty =
+		saved !== null && (saved.length !== picks.length || saved.some((id, i) => id !== picks[i]))
+	const byId = new Map((rooms ?? []).map((r) => [r.RoomId, r] as const))
+
+	const toggle = (roomId: number) =>
+		setPicks(picks.includes(roomId) ? picks.filter((id) => id !== roomId) : [...picks, roomId])
+
+	const move = (index: number, by: number) => {
+		const to = index + by
+		if (to < 0 || to >= picks.length) return
+		const next = [...picks]
+		;[next[index], next[to]] = [next[to], next[index]]
+		setPicks(next)
+	}
+
+	const submit = () =>
+		void save.run(async () => {
+			const result = await call<{ roomIds: number[] }>('/api/account/showcase', {
+				method: 'PUT',
+				authed: true,
+				json: { roomIds: picks },
+			})
+			setSaved(result.roomIds)
+			setPicks(result.roomIds)
+			return result.roomIds.length === 0
+				? 'Showcase cleared.'
+				: `Showcasing ${result.roomIds.length} room${result.roomIds.length === 1 ? '' : 's'}.`
+		})
+
+	return (
+		<section className="card">
+			<h2>Showcased rooms</h2>
+			<p className="muted">
+				Pick up to {max} of your rooms to feature on your profile in game, in the order shown. Only
+				rooms you made can be showcased, and only public ones appear.
+			</p>
+			{error ? (
+				<p className="error">{error}</p>
+			) : rooms === null || saved === null ? (
+				<p className="muted">Loading…</p>
+			) : rooms.length === 0 ? (
+				<p className="muted">
+					You haven&apos;t made a room yet, so there&apos;s nothing to showcase.
+				</p>
+			) : (
+				<>
+					<h3>
+						Showcase ({picks.length}/{max})
+					</h3>
+					{picks.length === 0 ? (
+						<p className="muted">Nothing showcased yet — tick rooms below.</p>
+					) : (
+						<ol className="studio-access-list">
+							{picks.map((roomId, i) => {
+								const room = byId.get(roomId)
+								return (
+									<li key={roomId} className="studio-access-row">
+										<span>
+											<strong>{room ? `^${room.Name}` : `Room #${roomId}`}</strong>
+										</span>
+										<span style={{ display: 'flex', gap: 6 }}>
+											<button type="button" disabled={i === 0} onClick={() => move(i, -1)}>
+												↑
+											</button>
+											<button
+												type="button"
+												disabled={i === picks.length - 1}
+												onClick={() => move(i, 1)}
+											>
+												↓
+											</button>
+											<button type="button" onClick={() => toggle(roomId)}>
+												Remove
+											</button>
+										</span>
+									</li>
+								)
+							})}
+						</ol>
+					)}
+
+					<h3>Your rooms</h3>
+					<ul className="studio-access-list">
+						{rooms.map((room) => {
+							const picked = picks.includes(room.RoomId)
+							const eligible = room.Accessibility === Accessibility.Public && !room.ExcludeFromLists
+							return (
+								<li key={room.RoomId} className="studio-access-row">
+									<label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+										<input
+											type="checkbox"
+											checked={picked}
+											disabled={!picked && (!eligible || picks.length >= max)}
+											onChange={() => toggle(room.RoomId)}
+										/>
+										<span>
+											<strong>^{room.Name}</strong>
+											<span className="muted"> · {accessibilityLabel(room.Accessibility)}</span>
+											{!eligible && (
+												<span className="muted">
+													{' '}
+													·{' '}
+													{room.ExcludeFromLists
+														? 'unlisted by staff'
+														: 'make it public to showcase it'}
+												</span>
+											)}
+										</span>
+									</label>
+								</li>
+							)
+						})}
+					</ul>
+
+					<p style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+						<button type="button" disabled={!dirty || save.pending} onClick={submit}>
+							{save.pending ? 'Saving…' : 'Save'}
+						</button>
+						<button type="button" disabled={!dirty || save.pending} onClick={() => setPicks(saved)}>
+							Discard changes
+						</button>
+					</p>
+					{save.error && <p className="error">{save.error}</p>}
+					{save.done && !dirty && <p className="ok">{save.done}</p>}
+				</>
 			)}
 		</section>
 	)
@@ -7674,8 +7834,8 @@ function TwoFactorForm() {
 				}}
 			>
 				<p className="muted">
-					Scan this with your authenticator app (Google Authenticator, Authy, 1Password…), or
-					on this device <a href={setup.uri}>open it in the app</a>.
+					Scan this with your authenticator app (Google Authenticator, Authy, 1Password…), or on
+					this device <a href={setup.uri}>open it in the app</a>.
 				</p>
 				<img
 					src={qr}

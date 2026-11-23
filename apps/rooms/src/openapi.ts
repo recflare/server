@@ -1215,17 +1215,17 @@ export const RoomExperiencePlayerEnvelope = z.object({
 	error_id: z.string().nullable().describe('Null. Lowercase, unlike its siblings'),
 })
 
-/**
- * `GET /showcase/{playerId}` — the rooms a player showcases on their profile. Stubbed
- * empty; nothing stores a showcase, so the element shape is unknown until something does.
- */
 export const VisitedRoomCount = z
 	.int()
 	.describe('How many distinct rooms the caller has visited — a bare number, not an envelope')
 
-export const ShowcasedRooms = z
-	.array(z.unknown())
-	.describe('Always empty — no room showcase is stored')
+/**
+ * `GET /showcase/{playerId}` — the rooms a player showcases on their profile: a bare array
+ * of the same RoomDTO `rooms/hot` pages, in the player's order, at most five.
+ */
+export const ShowcasedRooms = RoomDto.array().describe(
+	'The showcased rooms, in the order the player picked them'
+)
 
 /**
  * `GET /rooms/curated_playlists` — the curated room playlists the discovery pages'

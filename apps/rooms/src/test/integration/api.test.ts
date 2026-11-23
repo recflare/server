@@ -13,6 +13,7 @@ import {
 	AUDIT_LOG_SCHEMA_DDL,
 	countRoomsUsingInvention,
 	createRoomInstance,
+	CURATED_LIST_SCHEMA_DDL,
 	decodeInventionUsage,
 	getRoomById,
 	getRoomInstance,
@@ -20,10 +21,10 @@ import {
 	NOTIFICATION_SCHEMA_DDL,
 	PRESENCE_SCHEMA_DDL,
 	publicStudioBundleFilename,
-	RELATIONSHIP_SCHEMA_DDL,
-	RelationshipType,
 	putUnityAsset,
 	recordRoomVisit,
+	RELATIONSHIP_SCHEMA_DDL,
+	RelationshipType,
 	removeRoomRole,
 	ROOM_INSTANCE_SCHEMA_DDL,
 	ROOM_INVITE_SCHEMA_DDL,
@@ -31,7 +32,9 @@ import {
 	ROOM_XP_SCHEMA_DDL,
 	roomRoleWrites,
 	seedRoomWithSubRooms,
+	setListItems,
 	setRoomRole,
+	showcaseListKey,
 	STUDIO_CLOUD_BUILD_SCHEMA_DDL,
 	SUBROOM_SCHEMA_DDL,
 	UNITY_ASSET_SCHEMA_DDL,
@@ -127,6 +130,8 @@ beforeAll(async () => {
 	await adminSecretsStore(env.JWT_SECRET).create('test-signing-key')
 	for (const stmt of ROOM_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of SUBROOM_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	// Player lists (owned by `lists`) — a showcase is one.
+	for (const stmt of CURATED_LIST_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of ROOM_INSTANCE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	// Presence table (read by the photon access-token handler).
 	for (const stmt of PRESENCE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
@@ -227,10 +232,9 @@ describe('rooms endpoints', () => {
 		})
 	})
 
-	// Stub, same reasoning: the profile asks for a showcase for any player, and an
-	// unregistered path leaves the profile half-drawn. No auth, and no such player is
-	// still [] rather than a 404.
-	it('GET /showcase/:playerId returns [] for any player', async () => {
+	// A player who picked nothing (or doesn't exist) has an empty rail, not a 404 — an
+	// unregistered path left the profile half-drawn. No auth.
+	it('GET /showcase/:playerId returns [] when nothing is showcased', async () => {
 		const res = await SELF.fetch(`${ORIGIN}/showcase/205`)
 		expect(res.status).toBe(200)
 		expect(await res.json()).toEqual([])
@@ -238,6 +242,30 @@ describe('rooms endpoints', () => {
 		const unknown = await SELF.fetch(`${ORIGIN}/showcase/99999`)
 		expect(unknown.status).toBe(200)
 		expect(await unknown.json()).toEqual([])
+	})
+
+	// The 2026 client reads a bare array of whole rooms, in the player's order. A room that
+	// stopped being public, or isn't the player's own, is left off.
+	it('GET /showcase/:playerId serves the showcased rooms, in order, public and own only', async () => {
+		for (const room of [
+			{ RoomId: 96_101, Name: 'ShowA', CreatorAccountId: 9610, Accessibility: 1 },
+			{ RoomId: 96_102, Name: 'ShowB', CreatorAccountId: 9610, Accessibility: 1 },
+			{ RoomId: 96_103, Name: 'ShowPrivate', CreatorAccountId: 9610, Accessibility: 0 },
+			{ RoomId: 96_104, Name: 'NotMine', CreatorAccountId: 9611, Accessibility: 1 },
+		]) {
+			await env.DB.prepare('INSERT INTO room (data) VALUES (?1)').bind(JSON.stringify(room)).run()
+		}
+		await setListItems(env.DB, showcaseListKey(9610), ['96102', '96103', '96104', '96101', '96199'])
+
+		const res = await SELF.fetch(`${ORIGIN}/showcase/9610`)
+		expect(res.status).toBe(200)
+		const body = (await res.json()) as Array<{ RoomId: number; Name: string; Stats: unknown }>
+		expect(Array.isArray(body)).toBe(true)
+		expect(body.map((r) => r.RoomId)).toEqual([96_102, 96_101])
+		expect(body[0]).toMatchObject({ Name: 'ShowB', Stats: expect.any(Object) })
+
+		// Public player rooms would otherwise surface in the feed tests that expect none.
+		await env.DB.prepare('DELETE FROM room WHERE room_id BETWEEN 96101 AND 96104').run()
 	})
 
 	it('GET /showcase/:playerId 404s on a non-numeric id', async () => {

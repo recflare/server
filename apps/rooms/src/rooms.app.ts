@@ -47,6 +47,7 @@ import {
 	getRoomExperience,
 	getRoomsByCreator,
 	getRoomsByIds,
+	getShowcasedRooms,
 	getSimilarRooms,
 	getStudioUnityAsset,
 	getSubRoomPermissions,
@@ -185,7 +186,6 @@ import {
 	SearchSuggestions,
 	ServiceStatus,
 	ShowcasedRooms,
-	VisitedRoomCount,
 	stringQuery,
 	SubRoomAccessibilityRequest,
 	SubRoomDataSaveDetailDto,
@@ -201,6 +201,7 @@ import {
 	UNAUTHORIZED_RESPONSE,
 	UnbanBulkRequest,
 	UnityAssetWithSourceDto,
+	VisitedRoomCount,
 	WarningRequest,
 } from './openapi'
 
@@ -570,7 +571,12 @@ async function auditStaffRoomEdit(
 		await writeAuditLog(c.env.DB, {
 			playerId: accountId,
 			action,
-			data: { roomId: room.RoomId, name: room.Name, creatorAccountId: room.CreatorAccountId, ...data },
+			data: {
+				roomId: room.RoomId,
+				name: room.Name,
+				creatorAccountId: room.CreatorAccountId,
+				...data,
+			},
 		})
 	} catch (err) {
 		logger.error('could not write an audit log row', {
@@ -2128,26 +2134,31 @@ const app = new Hono<App>()
 	)
 
 	// A player's showcased rooms — the hand-picked rail the client draws on a profile,
-	// separate from `ownedby/{accountId}` (which is everything public they own). Stub →
-	// empty list: nothing stores a showcase yet, and an empty rail is what a player who
-	// has picked nothing looks like, where a 404 leaves the profile half-drawn. No auth,
-	// matching the profile list it sits beside — a showcase is public by definition.
+	// separate from `ownedby/{accountId}` (which is everything public they own). Stored as
+	// the player's `__Showcase_Rooms` list (`lists-db`), picked on www's account page; up to
+	// five, in their order. A bare array of the full RoomDTO — the 2026 client's element is
+	// the `rooms/hot` one, unpaged and unenveloped (the 2025 client read bare room ids, not
+	// served). Rooms that stopped being public since are dropped on read. A player who picked
+	// nothing gets `[]`, which the client draws as an empty rail. No auth: a profile is public.
 	.get(
 		'/showcase/:playerId{[0-9]+}',
 		describeRoute({
 			tags: ['Rooms'],
 			summary: 'A player’s showcased rooms',
 			description: [
-				'The rooms a player has showcased on their profile, as a bare array. Nothing stores a',
-				'showcase yet, so this is a stub serving an empty list — which the client reads as',
-				'“nothing showcased”, the same as a player who has picked none. Unlike',
-				'`ownedby/{accountId}`, which lists everything public the account owns, a showcase is',
-				'a chosen subset. No auth: a profile is public.',
+				'The rooms a player has showcased on their profile, in the order they picked them, as',
+				'a bare array of rooms — not paged and not enveloped. Picked on the website (at most',
+				'five); a room that is no longer public, or was deleted, is left out. Empty when the',
+				'player has picked none. Unlike `ownedby/{accountId}`, which lists everything public',
+				'the account owns, a showcase is a chosen subset. No auth: a profile is public.',
 			].join(' '),
 			parameters: [playerIdParam],
-			responses: { 200: json(ShowcasedRooms, 'An empty list') },
+			responses: { 200: json(ShowcasedRooms, 'The showcased rooms') },
 		}),
-		(c) => c.json([])
+		async (c) =>
+			c.json(
+				serveRooms(await getShowcasedRooms(c.env.DB, Number.parseInt(c.req.param('playerId'), 10)))
+			)
 	)
 
 	// Rooms the caller has favorited (from the interaction table). Auth-gated.
@@ -4650,7 +4661,9 @@ const app = new Hono<App>()
 				inventionUsage: typeof body.InventionUsage === 'string' ? body.InventionUsage : undefined,
 				// A staff save leaves an uncreated subroom filed under the room's creator.
 				subRoomCreatorId:
-					!isManager && typeof room.CreatorAccountId === 'number' ? room.CreatorAccountId : undefined,
+					!isManager && typeof room.CreatorAccountId === 'number'
+						? room.CreatorAccountId
+						: undefined,
 			})
 			if (!result) {
 				return c.json({ success: false, error: 'This subroom does not exist!', value: null })

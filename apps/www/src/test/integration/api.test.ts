@@ -4175,3 +4175,65 @@ it('lets staff set a curated row, in order', async () => {
 		[8400, { row: 'inkshowcase', roomIds: [97_302], previous: [] }],
 	])
 })
+
+// A player's profile showcase: up to five public rooms they CREATED, set from the account
+// page and read back by the game (and the page) from `rooms`' `GET /showcase/:playerId`.
+it('lets a player set their own room showcase', async () => {
+	for (const room of [
+		{ RoomId: 97_401, Name: 'MineA', CreatorAccountId: 8450, Accessibility: 1 },
+		{ RoomId: 97_402, Name: 'MineB', CreatorAccountId: 8450, Accessibility: 1 },
+		{ RoomId: 97_403, Name: 'MinePrivate', CreatorAccountId: 8450, Accessibility: 0 },
+		{ RoomId: 97_404, Name: 'MyDorm', CreatorAccountId: 8450, Accessibility: 1, IsDorm: true },
+		{
+			RoomId: 97_405,
+			Name: 'CoOwned',
+			CreatorAccountId: 8451,
+			Accessibility: 1,
+			Roles: [{ AccountId: 8450, Role: 30, InvitedRole: 0 }],
+		},
+		...[97_406, 97_407, 97_408, 97_409].map((id) => ({
+			RoomId: id,
+			Name: `Extra${id}`,
+			CreatorAccountId: 8450,
+			Accessibility: 1,
+		})),
+	]) {
+		await env.DB.prepare('INSERT INTO room (data) VALUES (?1)').bind(JSON.stringify(room)).run()
+	}
+	const put = async (body: unknown, accountId: number | null = 8450) =>
+		SELF.fetch('https://example.com/api/account/showcase', {
+			method: 'PUT',
+			headers: {
+				...(accountId === null ? {} : { authorization: `Bearer ${await tokenFor(accountId)}` }),
+				'content-type': 'application/json',
+			},
+			body: JSON.stringify(body),
+		})
+	const stored = async () =>
+		(await getPlayerList(env.DB, 8450, 1, '__Showcase_Rooms'))?.ItemIds ?? []
+
+	expect((await put({ roomIds: [97_401] }, null)).status).toBe(401)
+	expect((await put({ roomIds: '97401' })).status).toBe(400)
+	expect((await put({ roomIds: ['97401'] })).status).toBe(400)
+	// Six rooms is one too many.
+	expect((await put({ roomIds: [97_401, 97_402, 97_406, 97_407, 97_408, 97_409] })).status).toBe(
+		400
+	)
+	// Not theirs (co-owned or someone else's), not public, a dorm, or no such room.
+	for (const id of [97_405, 97_403, 97_404, 97_499]) {
+		expect((await put({ roomIds: [97_401, id] })).status).toBe(403)
+	}
+	expect((await put({ roomIds: [97_401] }, 8451)).status).toBe(403)
+	expect(await stored()).toEqual([])
+
+	const set = await put({ roomIds: [97_402, 97_401, 97_402] })
+	expect(set.status).toBe(200)
+	expect(await set.json()).toEqual({ roomIds: [97_402, 97_401] })
+	expect(await stored()).toEqual(['97402', '97401'])
+
+	// Reorder, remove and clear are each one write.
+	await put({ roomIds: [97_401] })
+	expect(await stored()).toEqual(['97401'])
+	await put({ roomIds: [] })
+	expect(await stored()).toEqual([])
+})
