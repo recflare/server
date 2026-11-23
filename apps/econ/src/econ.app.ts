@@ -243,6 +243,7 @@ import {
 	getRoomOffer,
 	getRoomOffers,
 	ROOM_OFFER_ITEM_TYPE_INVENTORY_ITEM,
+	toRoomOfferDto,
 	upsertRoomOffer,
 } from './room-offer-db'
 import { getRoomPurchasables } from './room-purchasables-db'
@@ -502,11 +503,11 @@ function roomKeyEnvelope(c: Context<App>, key: RoomKey | null) {
  */
 /**
  * The room offer create's envelope — `{ Value, Success, Error, error_id }`, as observed from
- * the live server. The keys of the offer inside `Value` are not yet confirmed (see `RoomOffer`).
+ * the live server, with the offer projected to the client's `RoomOfferDTO` (`toRoomOfferDto`).
  */
 function roomOfferEnvelope(c: Context<App>, value: RoomOffer | null, error?: string) {
 	return c.json({
-		Value: value,
+		Value: value ? toRoomOfferDto(value) : null,
 		Success: error === undefined,
 		Error: error ?? null,
 		error_id: null,
@@ -573,7 +574,9 @@ function parseRoomOfferBody(body: Record<string, unknown>): Omit<NewRoomOffer, '
 		MaxNumPurchasesPerPlayer: maxPurchases,
 		MaxCountPerPurchase: maxCount,
 		ItemMappings: mappings,
-		PriceUnitId: body.PriceUnitId ?? null,
+		// The create sends `PriceUnitId`; `PriceUnitOriginId` is the DTO's name for it, accepted
+		// in case a client echoes a read offer back.
+		PriceUnitId: body.PriceUnitId ?? body.PriceUnitOriginId ?? null,
 		AllowRename: body.AllowRename === true,
 		Visibility: isInt(body.Visibility) ? body.Visibility : 0,
 		IsGiftable: body.IsGiftable === true,
@@ -5981,12 +5984,12 @@ const app = new Hono<App>({ strict: false })
 		async (c) => {
 			const roomId = Number.parseInt(c.req.param('roomId'), 10)
 			if (!Number.isInteger(roomId)) return c.json([])
-			return c.json(await getRoomOffers(c.env.DB, roomId))
+			return c.json((await getRoomOffers(c.env.DB, roomId)).map(toRoomOfferDto))
 		}
 	)
 	// Create a room offer: a price, and the room's inventory items it gives. Auth-gated (401)
 	// and gated to the room's creator or a co-owner (403), like the items themselves. The body
-	// and the response envelope are as observed; the offer's own keys are not yet confirmed.
+	// and the response envelope are as observed; `Value` is the client's 18-key RoomOfferDTO.
 	.post(
 		'/econ/roomOffer/room/:roomId',
 		describeRoute({
@@ -5995,7 +5998,8 @@ const app = new Hono<App>({ strict: false })
 			description: [
 				'Creates an offer that sells some of the room’s inventory items, and answers it inside',
 				'the `{ Value, Success, Error, error_id }` envelope, as observed. The keys of the offer',
-				'in `Value` are PROVISIONAL: the request’s, plus `OriginId`, `RoomId` and timestamps.',
+				'in `Value` are the client’s `RoomOfferDTO` — NOT the request’s: no `AllowRename`, the',
+				'price unit as `PriceUnitOriginId`, and a `Version` (1 on create, +1 on each replace).',
 				'',
 				'Each `ItemMappings` entry is `{ ItemType, ItemOriginId, Count }`; `ItemType` 1 is the',
 				'only type accepted, and its `ItemOriginId` must be an inventory item THIS room',

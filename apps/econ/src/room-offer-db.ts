@@ -12,7 +12,7 @@
  * This worker (`econ`) owns the table and its migration — see apps/econ/migrations/0031.
  */
 
-/** Schema DDL — also builds the table in tests. Mirrors migration 0031. */
+/** Schema DDL — also builds the table in tests. Mirrors migrations 0031 and 0032. */
 export const ROOM_OFFER_SCHEMA_DDL: string[] = [
 	// `origin_id` is a GUID, the client's `OriginId`. `item_mappings` is a JSON array of
 	// `{ ItemType, ItemOriginId, Count }`, read back whole and never queried into, the same
@@ -35,6 +35,7 @@ export const ROOM_OFFER_SCHEMA_DDL: string[] = [
 		allow_rename INTEGER NOT NULL DEFAULT 0,
 		visibility INTEGER NOT NULL DEFAULT 0,
 		is_giftable INTEGER NOT NULL DEFAULT 0,
+		version INTEGER NOT NULL DEFAULT 1,
 		created_at TEXT NOT NULL,
 		modified_at TEXT NOT NULL
 	)`,
@@ -77,9 +78,9 @@ export interface NewRoomOffer {
 }
 
 /**
- * An offer as stored, served as the create's `Value`. PROVISIONAL as a wire shape: the
- * envelope around it is observed, its own keys are not, so this is the request body's keys in
- * its order with `OriginId` filled in and `RoomId`/`CreatedAt`/`ModifiedAt` added.
+ * An offer as stored. NOT the wire shape — the client is served `toRoomOfferDto`, which
+ * renames, drops and reorders keys. This keeps the request body's names (`PriceUnitId`,
+ * `AllowRename`) because that is what a write supplies and the purchase checks.
  */
 export interface RoomOffer {
 	OriginId: string
@@ -98,11 +99,68 @@ export interface RoomOffer {
 	AllowRename: boolean
 	Visibility: number
 	IsGiftable: boolean
+	/**
+	 * 1 on create, +1 on every replace. The client reads it off the list and sends it back as
+	 * the purchase's `ExpectedRoomOfferVersion`.
+	 */
+	Version: number
 	/** ISO-8601 UTC. */
 	CreatedAt: string
 	/** ISO-8601 UTC. */
 	ModifiedAt: string
 }
+
+/**
+ * The client's `RoomOfferDTO` — 18 keys, in the order its formatter writes them. It is NOT the
+ * create request's shape: no `AllowRename`, the price unit is `PriceUnitOriginId` (not
+ * `PriceUnitId`), and it carries `Version`. Served by `GET /econ/roomOffer/room/{roomId}` and
+ * as the create/edit envelope's `Value`.
+ */
+export interface RoomOfferDto {
+	OriginId: string
+	RoomId: number
+	Name: string
+	Description: string
+	ImageName: string | null
+	Price: number
+	IsGiftable: boolean
+	Visibility: number
+	HasDynamicPrice: boolean
+	MinimumDynamicPrice: number | null
+	MaximumDynamicPrice: number | null
+	/** A room currency id, or null for tokens. */
+	PriceUnitOriginId: string | null
+	Version: number
+	MaxNumPurchasesPerPlayer: number | null
+	MaxCountPerPurchase: number
+	ItemMappings: RoomOfferItemMapping[]
+	/** ISO-8601 UTC. */
+	CreatedAt: string
+	/** ISO-8601 UTC. */
+	ModifiedAt: string
+}
+
+/** An offer as the client reads it. A stored price unit that isn't a string is served null. */
+export const toRoomOfferDto = (offer: RoomOffer): RoomOfferDto => ({
+	OriginId: offer.OriginId,
+	RoomId: offer.RoomId,
+	Name: offer.Name,
+	Description: offer.Description,
+	ImageName: offer.ImageName,
+	Price: offer.Price,
+	IsGiftable: offer.IsGiftable,
+	Visibility: offer.Visibility,
+	HasDynamicPrice: offer.HasDynamicPrice,
+	MinimumDynamicPrice: offer.MinimumDynamicPrice,
+	MaximumDynamicPrice: offer.MaximumDynamicPrice,
+	PriceUnitOriginId: typeof offer.PriceUnitId === 'string' ? offer.PriceUnitId : null,
+	Version: offer.Version,
+	MaxNumPurchasesPerPlayer: offer.MaxNumPurchasesPerPlayer,
+	MaxCountPerPurchase: offer.MaxCountPerPurchase,
+	ItemMappings: offer.ItemMappings,
+	CreatedAt: offer.CreatedAt,
+	ModifiedAt: offer.ModifiedAt,
+})
 
 interface OfferRow {
 	origin_id: string
@@ -121,11 +179,12 @@ interface OfferRow {
 	allow_rename: number
 	visibility: number
 	is_giftable: number
+	version: number
 	created_at: string
 	modified_at: string
 }
 
-const OFFER_COLUMNS = `origin_id, room_id, name, description, image_name, price, has_dynamic_price, minimum_dynamic_price, maximum_dynamic_price, max_num_purchases_per_player, max_count_per_purchase, item_mappings, price_unit_id, allow_rename, visibility, is_giftable, created_at, modified_at`
+const OFFER_COLUMNS = `origin_id, room_id, name, description, image_name, price, has_dynamic_price, minimum_dynamic_price, maximum_dynamic_price, max_num_purchases_per_player, max_count_per_purchase, item_mappings, price_unit_id, allow_rename, visibility, is_giftable, version, created_at, modified_at`
 
 function parseJson<T>(raw: string, fallback: T): T {
 	try {
@@ -152,6 +211,7 @@ const toOffer = (row: OfferRow): RoomOffer => ({
 	AllowRename: row.allow_rename !== 0,
 	Visibility: row.visibility,
 	IsGiftable: row.is_giftable !== 0,
+	Version: row.version,
 	CreatedAt: row.created_at,
 	ModifiedAt: row.modified_at,
 })
@@ -179,7 +239,8 @@ export async function getRoomOffers(db: D1Database, roomId: number): Promise<Roo
 /**
  * Create an offer, or replace the one `originId` already names. The caller has checked that
  * an existing `originId` belongs to `offer.RoomId` and that every mapping names one of that
- * room's items; a replace keeps the offer's `CreatedAt` and never moves it between rooms.
+ * room's items; a replace keeps the offer's `CreatedAt`, bumps its `Version`, and never
+ * moves it between rooms.
  */
 export async function upsertRoomOffer(
 	db: D1Database,
@@ -190,7 +251,7 @@ export async function upsertRoomOffer(
 	const row = await db
 		.prepare(
 			`INSERT INTO room_offer (${OFFER_COLUMNS})
-			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?17)
+			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 1, ?17, ?17)
 			 ON CONFLICT (origin_id) DO UPDATE SET
 			   name = excluded.name,
 			   description = excluded.description,
@@ -206,6 +267,7 @@ export async function upsertRoomOffer(
 			   allow_rename = excluded.allow_rename,
 			   visibility = excluded.visibility,
 			   is_giftable = excluded.is_giftable,
+			   version = room_offer.version + 1,
 			   modified_at = excluded.modified_at
 			 RETURNING ${OFFER_COLUMNS}`
 		)

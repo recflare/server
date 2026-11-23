@@ -1138,15 +1138,34 @@ export const CreateRoomOfferRequest = z.object({
 	IsGiftable: z.boolean().optional(),
 })
 
-/** A room offer as stored. PROVISIONAL: the create's response has not been observed. */
-export const RoomOfferDto = CreateRoomOfferRequest.extend({
+/**
+ * The client's `RoomOfferDTO`, 18 keys in its formatter's order. Not the create request's
+ * shape: no `AllowRename`, `PriceUnitOriginId` rather than `PriceUnitId`, and a `Version`.
+ */
+export const RoomOfferDto = z.object({
 	OriginId: z.string().describe('GUID'),
 	RoomId: z.int(),
+	Name: z.string(),
+	Description: z.string(),
+	ImageName: z.string().nullable(),
+	Price: z.int(),
+	IsGiftable: z.boolean(),
+	Visibility: z.int(),
+	HasDynamicPrice: z.boolean(),
+	MinimumDynamicPrice: z.int().nullable(),
+	MaximumDynamicPrice: z.int().nullable(),
+	PriceUnitOriginId: z.string().nullable().describe('A room currency id; null for tokens'),
+	Version: z
+		.int()
+		.describe('1 on create, +1 on each replace; the purchase’s `ExpectedRoomOfferVersion`'),
+	MaxNumPurchasesPerPlayer: z.int().nullable().describe('Null: no limit'),
+	MaxCountPerPurchase: z.int(),
+	ItemMappings: z.array(RoomOfferItemMappingDto),
 	CreatedAt: z.string().describe('ISO-8601 UTC'),
 	ModifiedAt: z.string().describe('ISO-8601 UTC'),
 })
 
-/** The offer create's envelope, as observed. The DTO inside it is still provisional. */
+/** The offer create's envelope, as observed, carrying the `RoomOfferDTO`. */
 export const RoomOfferEnvelope = z.object({
 	Value: RoomOfferDto.nullable(),
 	Success: z.boolean(),

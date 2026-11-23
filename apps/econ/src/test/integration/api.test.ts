@@ -4285,7 +4285,7 @@ describe('econ endpoints', () => {
 	})
 
 	// Room offers: a price and the room's inventory items it gives. Room 2511 is account 1's,
-	// with 2 as co-owner. The body and the envelope are the live client's; the DTO is provisional.
+	// with 2 as co-owner. The body, the envelope and the 18-key RoomOfferDTO are the live client's.
 	test('room offers: create an offer selling the room’s inventory items', async () => {
 		const post = async (roomId: number | string, payload: unknown, sub = '1') =>
 			exports.default.fetch(`${ORIGIN}/econ/roomOffer/room/${roomId}`, {
@@ -4403,12 +4403,34 @@ describe('econ endpoints', () => {
 				{ ItemType: 1, ItemOriginId: gem, Count: 1 },
 				{ ItemType: 1, ItemOriginId: coin, Count: 3 },
 			],
-			PriceUnitId: null,
-			AllowRename: false,
+			PriceUnitOriginId: null,
+			Version: 1,
 			Visibility: 0,
 			IsGiftable: true,
 		})
 		expect(created.Value.OriginId).toMatch(/^[0-9a-f-]{36}$/)
+		// The DTO is the client's, not the request's: its 18 keys in its formatter's order, with
+		// no `AllowRename` and the price unit as `PriceUnitOriginId`.
+		expect(Object.keys(created.Value)).toEqual([
+			'OriginId',
+			'RoomId',
+			'Name',
+			'Description',
+			'ImageName',
+			'Price',
+			'IsGiftable',
+			'Visibility',
+			'HasDynamicPrice',
+			'MinimumDynamicPrice',
+			'MaximumDynamicPrice',
+			'PriceUnitOriginId',
+			'Version',
+			'MaxNumPurchasesPerPlayer',
+			'MaxCountPerPurchase',
+			'ItemMappings',
+			'CreatedAt',
+			'ModifiedAt',
+		])
 
 		// Naming that id again replaces the offer and keeps its CreatedAt.
 		const replaced = (await (
@@ -4423,6 +4445,7 @@ describe('econ endpoints', () => {
 			OriginId: created.Value.OriginId,
 			Price: 25,
 			MaxNumPurchasesPerPlayer: 2,
+			Version: 2,
 			CreatedAt: created.Value.CreatedAt,
 		})
 		expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM room_offer').first()).toEqual({ n: 1 })
@@ -4557,12 +4580,17 @@ describe('econ endpoints', () => {
 			Value: Record<string, unknown>
 		}
 		expect(updated).toMatchObject({ Success: true, Error: null, error_id: null })
+		const { PriceUnitId: _unit, AllowRename: _rename, OriginId: _id, ...served } = edit
 		expect(updated.Value).toMatchObject({
-			...edit,
+			...served,
+			PriceUnitOriginId: null,
+			Version: 2,
 			OriginId: id,
 			RoomId: 2511,
 			CreatedAt: created.Value.CreatedAt,
 		})
+		expect(updated.Value).not.toHaveProperty('AllowRename')
+		expect(updated.Value).not.toHaveProperty('PriceUnitId')
 		expect(
 			await (await exports.default.fetch(`${ORIGIN}/econ/roomOffer/room/2511`)).json()
 		).toEqual([updated.Value])
