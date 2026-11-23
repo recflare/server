@@ -3578,99 +3578,99 @@
 	},
 	{
 		"Key": "Retention.Coordinate.AllowVRPlayerBeaconControls",
-		"Value": "false",
-		"ActiveExperiments": "retention_2024q4_coordinate_vr",
+		"Value": "true",
+		"ActiveExperiments": null,
 		"StartTime": null,
 		"EndTime": null
 	},
 	{
-		"Key": "Retention.Coordinate.BeaconBeaconDurationS",
+		"Key": "Retention.Coordinate.BeaconDurationS",
 		"Value": "8",
-		"ActiveExperiments": "retention_2024q4_coordinate_mvp",
+		"ActiveExperiments": null,
 		"StartTime": null,
 		"EndTime": null
 	},
 	{
 		"Key": "Retention.Coordinate.BeaconComeHereRadius",
 		"Value": "2",
-		"ActiveExperiments": "retention_2024q4_coordinate_mvp",
+		"ActiveExperiments": null,
 		"StartTime": null,
 		"EndTime": null
 	},
 	{
 		"Key": "Retention.Coordinate.BeaconFovMaxHeightPercentage",
 		"Value": "0.2",
-		"ActiveExperiments": "retention_2024q4_coordinate_mvp",
+		"ActiveExperiments": null,
 		"StartTime": null,
 		"EndTime": null
 	},
 	{
 		"Key": "Retention.Coordinate.BeaconFovMinHeightPercentage",
 		"Value": "0.1",
-		"ActiveExperiments": "retention_2024q4_coordinate_mvp",
+		"ActiveExperiments": null,
 		"StartTime": null,
 		"EndTime": null
 	},
 	{
 		"Key": "Retention.Coordinate.BeaconMaxDistanceM",
 		"Value": "200",
-		"ActiveExperiments": "retention_2024q4_coordinate_mvp",
+		"ActiveExperiments": null,
 		"StartTime": null,
 		"EndTime": null
 	},
 	{
 		"Key": "Retention.Coordinate.BeaconMVPEnabled",
-		"Value": "false",
-		"ActiveExperiments": "retention_2024q4_coordinate_mvp\r\nretention_2024q4_coordinate_vr",
+		"Value": "true",
+		"ActiveExperiments": null,
 		"StartTime": null,
 		"EndTime": null
 	},
 	{
 		"Key": "Retention.Coordinate.BeaconRateLimitingCooldownTimeS",
 		"Value": "10",
-		"ActiveExperiments": "retention_2024q4_coordinate_mvp",
+		"ActiveExperiments": null,
 		"StartTime": null,
 		"EndTime": null
 	},
 	{
 		"Key": "Retention.Coordinate.BeaconRateLimitingSpamCount",
 		"Value": "3",
-		"ActiveExperiments": "retention_2024q4_coordinate_mvp",
+		"ActiveExperiments": null,
 		"StartTime": null,
 		"EndTime": null
 	},
 	{
 		"Key": "Retention.Coordinate.BeaconRateLimitingSpamTimeWindowS",
 		"Value": "3",
-		"ActiveExperiments": "retention_2024q4_coordinate_mvp",
+		"ActiveExperiments": null,
 		"StartTime": null,
 		"EndTime": null
 	},
 	{
 		"Key": "Retention.Coordinate.ReceiveAnnouncement",
-		"Value": "false",
-		"ActiveExperiments": "retention_2024q4_coordinate_mvp",
+		"Value": "true",
+		"ActiveExperiments": null,
 		"StartTime": null,
 		"EndTime": null
 	},
 	{
 		"Key": "Retention.Coordinate.UseWiderVRLaserWhenBeaconsEnabled",
 		"Value": "false",
-		"ActiveExperiments": "retention_2024q4_coordinate_vr",
+		"ActiveExperiments": null,
 		"StartTime": null,
 		"EndTime": null
 	},
 	{
 		"Key": "Retention.Coordinate.VRBeaconFovMaxScale",
 		"Value": "0.075",
-		"ActiveExperiments": "retention_2024q4_coordinate_vr",
+		"ActiveExperiments": null,
 		"StartTime": null,
 		"EndTime": null
 	},
 	{
 		"Key": "Retention.Coordinate.VRBeaconFovMinScale",
 		"Value": "0.07",
-		"ActiveExperiments": "retention_2024q4_coordinate_vr",
+		"ActiveExperiments": null,
 		"StartTime": null,
 		"EndTime": null
 	},
