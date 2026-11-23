@@ -206,6 +206,26 @@ describe('rooms endpoints', () => {
 		expect(body).not.toHaveProperty('FriendlyName')
 	})
 
+	// Every served room carries the same fixed republish availability — alone and in a list.
+	it('served rooms carry a fixed PublishStateAvailability', async () => {
+		const availability = {
+			CanSaveAsBeta: true,
+			CanSaveAsUpdate: true,
+			AvailableUpdateTokenCount: 99,
+			NextAvailableUpdateDateTimeUtc: null,
+		}
+		const one = (await (
+			await SELF.fetch(`${ORIGIN}/rooms/1`, { headers: await bearer('1', ['developer']) })
+		).json()) as Record<string, unknown>
+		expect(one.PublishStateAvailability).toEqual(availability)
+
+		const hot = (await (await SELF.fetch(`${ORIGIN}/rooms/hot`)).json()) as {
+			Results: Array<Record<string, unknown>>
+		}
+		expect(hot.Results.length).toBeGreaterThan(0)
+		for (const room of hot.Results) expect(room.PublishStateAvailability).toEqual(availability)
+	})
+
 	// A stub: boosts aren't implemented, so the count is a bare 0 for any room and player.
 	it('GET /rooms/:id/boosts/:playerId/count answers a bare 0', async () => {
 		const res = await SELF.fetch(`${ORIGIN}/rooms/112/boosts/205/count`)

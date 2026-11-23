@@ -383,6 +383,14 @@ export const RoomDto = z.object({
 		.string()
 		.optional()
 		.describe('Legacy: room saves used to write this here; it now lives on the SUBROOM'),
+	PublishStateAvailability: z
+		.object({
+			CanSaveAsBeta: z.boolean(),
+			CanSaveAsUpdate: z.boolean(),
+			AvailableUpdateTokenCount: z.int(),
+			NextAvailableUpdateDateTimeUtc: z.string().nullable(),
+		})
+		.describe('Fixed on every served room: republishing is always available, 99 tokens'),
 })
 
 /** A paged room list (`PagedResultsDTO<RoomDTO>`) — search, hot, similar. */

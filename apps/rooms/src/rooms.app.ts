@@ -761,12 +761,11 @@ function parseMaxPlayerCalculationMode(value: unknown): number | undefined {
 
 async function pushRoomUpdate(c: Context<App>, playerId: number, room: Room): Promise<void> {
 	try {
-		// The pushed room is the client's room, like any served one: pending invites are not
-		// part of its `Roles` (see `serveRoom`).
+		// The pushed room is the client's room, like any served one (see `serveRoom`).
 		await c.env.RECFLARE_NOTIFICATIONS_HUB.getByName(HUB_INSTANCE).notifyPlayer(
 			playerId,
 			NotificationType.SubscriptionUpdateRoom,
-			withConfirmedRoles(room)
+			serveRoom(room)
 		)
 	} catch (err) {
 		logger.error('failed to push RoomUpdate notification', {
@@ -1234,10 +1233,23 @@ function toSaveDetail(save: Record<string, unknown>, target: number | null) {
  * for the accept to promote, which is why this is applied where the room leaves the worker
  * and never to a room about to be written back.
  *
+ * It also carries a fixed `PublishStateAvailability`: whether the client may republish the
+ * room, and how many update tokens it has. Nothing here limits republishing (see
+ * `/publishState/configs`), so every room says yes, with tokens to spare. A fresh object
+ * per room, never a shared one a caller could mutate for every other room.
+ *
  * Every room this worker answers — alone, in a list, in the mutation envelope or pushed as
  * a `RoomUpdate` — goes through this (or {@link serveRooms}).
  */
-const serveRoom = withConfirmedRoles
+const serveRoom = <T extends Room>(room: T): T => ({
+	...withConfirmedRoles(room),
+	PublishStateAvailability: {
+		CanSaveAsBeta: true,
+		CanSaveAsUpdate: true,
+		AvailableUpdateTokenCount: 99,
+		NextAvailableUpdateDateTimeUtc: null,
+	},
+})
 
 /** {@link serveRoom} over a list. */
 const serveRooms = (rooms: Room[]): Room[] => rooms.map(serveRoom)
@@ -3932,7 +3944,7 @@ const app = new Hono<App>()
 				MaxPlayerCalculationMode: mode,
 			})
 			await pushRoomUpdate(c, accountId, updated)
-			return c.json({ Value: updated, Success: true, Error: null, error_id: null })
+			return c.json({ Value: serveRoom(updated), Success: true, Error: null, error_id: null })
 		}
 	)
 
@@ -3996,7 +4008,7 @@ const app = new Hono<App>()
 			const updated = await updateRoomFields(c.env.DB, roomId, room, patch)
 			await pushRoomUpdate(c, accountId, updated)
 			if (c.req.path.endsWith('/v2/restrictions'))
-				return c.json({ Success: true, Error: null, Value: updated })
+				return c.json({ Success: true, Error: null, Value: serveRoom(updated) })
 			return roomEnvelope(c, updated)
 		}
 	)
@@ -4990,7 +5002,7 @@ const app = new Hono<App>()
 
 			const permissions = parseRoomPermissions(await c.req.json().catch(() => null))
 			await setSubRoomPermissions(c.env.DB, subRoomId, permissions)
-			return c.json({ Value: room, Success: true, Error: null, error_id: null })
+			return c.json({ Value: serveRoom(room), Success: true, Error: null, error_id: null })
 		}
 	)
 
@@ -5110,7 +5122,7 @@ const app = new Hono<App>()
 			await pushRoomUpdate(c, accountId, result.room)
 			const target = await getRoomById(c.env.DB, newRoomId)
 			if (target) await pushRoomUpdate(c, accountId, target)
-			return c.json({ Value: result.room, Success: true, Error: null, error_id: null })
+			return c.json({ Value: serveRoom(result.room), Success: true, Error: null, error_id: null })
 		}
 	)
 
