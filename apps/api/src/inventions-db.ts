@@ -33,6 +33,12 @@ import {
  * missing, which fails a `= 1` or `= 0` test either way.
  */
 export const SCHEMA_DDL: string[] = [
+	`CREATE TABLE IF NOT EXISTS invention_version (
+		invention_id INTEGER NOT NULL,
+		version_number INTEGER NOT NULL,
+		data TEXT NOT NULL,
+		PRIMARY KEY (invention_id, version_number)
+	)`,
 	`CREATE TABLE IF NOT EXISTS invention (
 		data TEXT NOT NULL,
 		id INTEGER GENERATED ALWAYS AS (json_extract(data, '$.InventionId')) VIRTUAL,
@@ -83,6 +89,8 @@ export interface InventionVersion {
 	 * neither; the client's decoder reads a missing member as its default, so an old
 	 * record is not retroactively wrong.
 	 */
+	CreatedAt?: string
+	UgcAccessibility?: number | null
 	HasBetaContent?: boolean
 	ReferencedInventions?: number[]
 	ReferencedUnityAssetIds?: string[]
@@ -390,8 +398,8 @@ export function toSaveResultV9(
 				BlobName: version.BlobName,
 				BlobHash: version.BlobHash,
 				// The version is minted with the invention, so they share a timestamp.
-				CreatedAt: invention.CreatedAt,
-				UgcAccessibility: null,
+				CreatedAt: version.CreatedAt ?? invention.CreatedAt,
+				UgcAccessibility: version.UgcAccessibility ?? null,
 				ReferencedInventions: invention.ReferencedInventions,
 				ReferencedUnityAssetIds: invention.ReferencedUnityAssetIds ?? [],
 			},
@@ -510,7 +518,9 @@ export async function createInvention(
 ): Promise<SavedInvention> {
 	// Sequential id: one past the current max (the table starts empty).
 	const row = await db
-		.prepare('SELECT COALESCE(MAX(id), 0) + 1 AS next FROM invention')
+		.prepare(
+			'SELECT COALESCE(MAX(id), 0) + 1 AS next FROM (SELECT id FROM invention UNION ALL SELECT invention_id AS id FROM invention_version)'
+		)
 		.first<{ next: number }>()
 	const inventionId = row?.next ?? 1
 	const now = new Date().toISOString()
@@ -565,7 +575,21 @@ export async function createInvention(
 			: {}),
 		...(input.tags?.length ? { Tags: input.tags } : {}),
 	}
-	await db.prepare('INSERT INTO invention (data) VALUES (?1)').bind(JSON.stringify(invention)).run()
+	const snapshot = await snapshotInventionVersion(bucket, {
+		...invention.CurrentVersion,
+		CreatedAt: now,
+		UgcAccessibility: INVENTION_ACCESSIBILITY.private,
+		ReferencedInventions: invention.ReferencedInventions,
+		ReferencedUnityAssetIds: invention.ReferencedUnityAssetIds ?? [],
+	})
+	await db.batch([
+		db.prepare('INSERT INTO invention (data) VALUES (?1)').bind(JSON.stringify(invention)),
+		db
+			.prepare(
+				'INSERT INTO invention_version (invention_id, version_number, data) VALUES (?1, 1, ?2)'
+			)
+			.bind(inventionId, JSON.stringify(snapshot)),
+	])
 	return invention
 }
 
@@ -890,12 +914,12 @@ export async function setInventionTags(
 	autoTags: string[],
 	customTags: string[]
 ): Promise<InventionTag[] | null> {
-	const invention = await getInventionById(db, inventionId)
-	if (invention === null) return null
-
 	const tags = normalizeInventionTags(autoTags, customTags)
-	await writeInvention(db, { ...invention, Tags: tags })
-	return tags
+	const updated = await patchInvention(db, inventionId, {
+		Tags: tags,
+		ModifiedAt: new Date().toISOString(),
+	})
+	return updated ? tags : null
 }
 
 /**
@@ -1020,24 +1044,19 @@ export async function updateInvention(
 	inventionId: number,
 	patch: InventionPatch
 ): Promise<SavedInvention | null> {
-	const invention = await getInventionById(db, inventionId)
-	if (invention === null) return null
-
-	const updated: SavedInvention = {
-		...invention,
-		Name: patch.name ?? invention.Name,
-		Description: patch.description ?? invention.Description,
-		ImageName: patch.imageName ?? invention.ImageName,
-		AllowTrial: patch.allowTrial ?? invention.AllowTrial,
-		GeneralPermission: patch.generalPermission ?? invention.GeneralPermission,
-		// Both of these are optional ON the record, so an untouched one resolves to
-		// undefined and JSON.stringify drops the key — an invention that never had a long
-		// description doesn't acquire an empty one by being edited.
-		LongDescription: patch.longDescription ?? invention.LongDescription,
-		Tags: patch.tags ?? invention.Tags,
+	const values: Record<string, unknown> = { ModifiedAt: new Date().toISOString() }
+	for (const [source, target] of [
+		['name', 'Name'],
+		['description', 'Description'],
+		['imageName', 'ImageName'],
+		['allowTrial', 'AllowTrial'],
+		['generalPermission', 'GeneralPermission'],
+		['longDescription', 'LongDescription'],
+		['tags', 'Tags'],
+	] as const) {
+		if (patch[source] !== undefined) values[target] = patch[source]
 	}
-	await writeInvention(db, updated)
-	return updated
+	return patchInvention(db, inventionId, values)
 }
 
 /**
@@ -1157,6 +1176,7 @@ export async function deleteInvention(
 	if (invention === null) return null
 	await db.batch([
 		db.prepare('DELETE FROM invention WHERE id = ?1').bind(inventionId),
+		db.prepare('DELETE FROM invention_version WHERE invention_id = ?1').bind(inventionId),
 		db.prepare('DELETE FROM invention_interaction WHERE invention_id = ?1').bind(inventionId),
 	])
 	return invention
@@ -1249,6 +1269,17 @@ export interface InventionTagFilters {
  *
  * With no published, tagged inventions this is empty, which just means no chips.
  */
+export async function getInventionSpecialTags(db: D1Database) {
+	const autoTags = new Set<string>()
+	for (const invention of await publicInventions(db)) {
+		for (const tag of invention.Tags ?? []) {
+			if (tag.Type === INVENTION_TAG_TYPE.auto) autoTags.add(tag.Tag)
+		}
+	}
+	// This server has no configured AG-only tag catalog.
+	return { AutoTags: [...autoTags].sort(), AGOnlyTags: [] as string[] }
+}
+
 export async function getInventionTagFilters(db: D1Database): Promise<InventionTagFilters> {
 	const counts = new Map<string, number>()
 	for (const invention of await publicInventions(db)) {
@@ -1352,34 +1383,163 @@ export async function getInventionVersion(
 	versionNumber: number
 ): Promise<InventionVersion | null> {
 	const invention = await getInventionById(db, inventionId)
-	if (invention === null) return null
-	if (
-		versionNumber !== CURRENT_INVENTION_VERSION &&
-		invention.CurrentVersionNumber !== versionNumber
-	) {
-		return null
+	if (!invention) return null
+	const number = versionNumber === 0 ? invention.CurrentVersionNumber : versionNumber
+	if (number !== invention.CurrentVersionNumber) {
+		const row = await db
+			.prepare('SELECT data FROM invention_version WHERE invention_id = ?1 AND version_number = ?2')
+			.bind(inventionId, number)
+			.first<InventionRow>()
+		return row ? (JSON.parse(row.data) as InventionVersion) : null
 	}
-
-	// A version saved before its blob finished uploading (or before we hashed on
-	// save at all) carries no hash. Hash it now and keep the result, so the other
-	// invention endpoints serve it too and this stays a one-time cost per blob.
-	// ModifiedAt is deliberately left alone: reading a version is not an edit.
-	if (invention.CurrentVersion.BlobHash === null) {
-		const hash = await inventionBlobHash(bucket, invention.CurrentVersion.BlobName)
-		if (hash !== null) {
-			invention.CurrentVersion = { ...invention.CurrentVersion, BlobHash: hash }
-			await storeInvention(db, invention)
-		}
+	const version = invention.CurrentVersion
+	const hash = version.BlobHash ?? (await inventionBlobHash(bucket, version.BlobName))
+	if (hash !== version.BlobHash) {
+		// A read must not replace a metadata/tag edit that happened during the R2 read.
+		await db
+			.prepare(
+				"UPDATE invention SET data = json_set(data, '$.CurrentVersion.BlobHash', ?3) WHERE id = ?1 AND json_extract(data, '$.CurrentVersionNumber') = ?2"
+			)
+			.bind(inventionId, number, hash)
+			.run()
 	}
-	// The spawn path fetches this version independently of the save response. Studio
-	// prefab bundles must be loaded before decoding its objects, including in rooms
-	// that have never loaded the source room's assets. Older records keep references
-	// on the invention, so project them here rather than requiring a resave.
 	return {
-		...invention.CurrentVersion,
+		...version,
+		BlobHash: hash,
 		ReferencedInventions: invention.ReferencedInventions,
 		ReferencedUnityAssetIds: invention.ReferencedUnityAssetIds ?? [],
 	}
+}
+
+/** A revision gets its own blob even if a later client upload reuses its source name. */
+async function snapshotInventionVersion(
+	bucket: R2Bucket,
+	version: InventionVersion
+): Promise<InventionVersion> {
+	const source = await bucket.get(`invention/${inventionBlobName(version.BlobName)}`)
+	if (!source) return version
+	const bytes = await source.arrayBuffer()
+	const hash = toBase64(await crypto.subtle.digest('SHA-256', bytes))
+	if (version.BlobHash && hash !== version.BlobHash)
+		throw new Error(
+			'The saved revision blob was overwritten; its original bytes cannot be recovered.'
+		)
+	const name = `versions/${version.InventionId}/${crypto.randomUUID()}.inv`
+	await bucket.put(`invention/${name}`, bytes, { httpMetadata: source.httpMetadata })
+	return { ...version, BlobName: name, BlobHash: hash }
+}
+
+export async function getInventionVersions(
+	db: D1Database,
+	id: number
+): Promise<InventionVersion[] | null> {
+	const invention = await getInventionById(db, id)
+	if (!invention) return null
+	const { results } = await db
+		.prepare(
+			'SELECT data FROM invention_version WHERE invention_id = ?1 ORDER BY version_number ASC'
+		)
+		.bind(id)
+		.all<InventionRow>()
+	const versions = results.map((row) => JSON.parse(row.data) as InventionVersion)
+	if (!versions.some((version) => version.VersionNumber === invention.CurrentVersionNumber)) {
+		versions.push({
+			...invention.CurrentVersion,
+			CreatedAt: invention.CreatedAt,
+			ReferencedInventions: invention.ReferencedInventions,
+			ReferencedUnityAssetIds: invention.ReferencedUnityAssetIds ?? [],
+		})
+	}
+	// RRUI GetInventionVersionLabelMap skips null accessibility entirely (2668E57).
+	// Legacy rows have no per-revision visibility. Current visibility is known from
+	// the invention; older revisions default to Private rather than disappearing.
+	// Native GetInventionVersionLabelMap (2668D60) assigns major/minor labels
+	// while walking this list; it requires chronological input, not newest-first.
+	return versions
+		.map((version) => ({
+			...version,
+			UgcAccessibility:
+				version.VersionNumber === invention.CurrentVersionNumber
+					? toInventionV9(invention).Accessibility
+					: (version.UgcAccessibility ?? INVENTION_ACCESSIBILITY.private),
+		}))
+		.sort((a, b) => a.VersionNumber - b.VersionNumber)
+}
+
+/** Creator authorization is checked by the caller. CAS protects concurrent revision saves. */
+export async function addInventionVersion(
+	db: D1Database,
+	bucket: R2Bucket,
+	id: number,
+	input: NewInvention
+): Promise<SavedInvention | null> {
+	const previous = await getInventionById(db, id)
+	if (!previous) return null
+	const stored = await db
+		.prepare('SELECT data FROM invention_version WHERE invention_id = ?1 AND version_number = ?2')
+		.bind(id, previous.CurrentVersionNumber)
+		.first<InventionRow>()
+	if (!stored || !(JSON.parse(stored.data) as InventionVersion).BlobName.startsWith('versions/')) {
+		const snapshot = await snapshotInventionVersion(bucket, {
+			...previous.CurrentVersion,
+			CreatedAt: previous.CurrentVersion.CreatedAt ?? previous.CreatedAt,
+			ReferencedInventions: previous.ReferencedInventions,
+			ReferencedUnityAssetIds: previous.ReferencedUnityAssetIds ?? [],
+		})
+		await db
+			.prepare(
+				'INSERT INTO invention_version (invention_id, version_number, data) VALUES (?1, ?2, ?3) ON CONFLICT(invention_id, version_number) DO UPDATE SET data = excluded.data'
+			)
+			.bind(id, snapshot.VersionNumber, JSON.stringify(snapshot))
+			.run()
+	}
+	await db
+		.prepare(
+			"UPDATE invention_version SET data = json_set(data, '$.UgcAccessibility', ?3) WHERE invention_id = ?1 AND version_number = ?2"
+		)
+		.bind(id, previous.CurrentVersionNumber, toInventionV9(previous).Accessibility)
+		.run()
+	const version: InventionVersion = {
+		InventionId: id,
+		ReplicationId: crypto.randomUUID(),
+		VersionNumber: previous.CurrentVersionNumber + 1,
+		BlobName: inventionBlobName(input.inventionDataFilename),
+		BlobHash: await inventionBlobHash(bucket, input.inventionDataFilename),
+		CreatedAt: new Date().toISOString(),
+		UgcAccessibility: INVENTION_ACCESSIBILITY.private,
+		HasBetaContent: input.hasBetaContent ?? false,
+		InstantiationCost: input.instantiationCost ?? 0,
+		LightsCost: input.lightsCost ?? 0,
+		ChipsCost: input.chipsCost ?? 0,
+		CloudVariablesCost: input.cloudVariablesCost ?? 0,
+		AICost: input.aiCost ?? 0,
+		ReferencedInventions: input.referencedInventions ?? [],
+		ReferencedUnityAssetIds: input.referencedUnityAssetIds ?? [],
+	}
+	const snapshot = await snapshotInventionVersion(bucket, version)
+	const results = await db.batch([
+		db
+			.prepare(
+				"UPDATE invention SET data = json_set(data, '$.CurrentVersion', json(?3), '$.CurrentVersionNumber', ?4, '$.ReferencedInventions', json(?5), '$.ReferencedUnityAssetIds', json(?6), '$.ModifiedAt', ?7) WHERE id = ?1 AND json_extract(data, '$.CurrentVersionNumber') = ?2 RETURNING data"
+			)
+			.bind(
+				id,
+				previous.CurrentVersionNumber,
+				JSON.stringify(version),
+				version.VersionNumber,
+				JSON.stringify(version.ReferencedInventions),
+				JSON.stringify(version.ReferencedUnityAssetIds),
+				version.CreatedAt
+			),
+		db
+			.prepare(
+				'INSERT INTO invention_version (invention_id, version_number, data) SELECT ?1, ?2, ?3 WHERE changes() = 1'
+			)
+			.bind(id, version.VersionNumber, JSON.stringify(snapshot)),
+	])
+	const row = results[0]?.results[0] as InventionRow | undefined
+	if (!row) throw new Error('The invention changed during this save. Please retry.')
+	return JSON.parse(row.data) as SavedInvention
 }
 
 /** Persist an edited invention record, bumping ModifiedAt. */
@@ -1417,6 +1577,21 @@ export async function getInventionById(
 	const row = await db
 		.prepare('SELECT data FROM invention WHERE id = ?1')
 		.bind(inventionId)
+		.first<InventionRow>()
+	return row ? (JSON.parse(row.data) as SavedInvention) : null
+}
+
+/** Atomically change only named fields, preserving concurrent metadata/tag writes. */
+async function patchInvention(
+	db: D1Database,
+	id: number,
+	fields: Record<string, unknown>
+): Promise<SavedInvention | null> {
+	const entries = Object.entries(fields)
+	const args = entries.map((_, i) => `?${i * 2 + 2}, json(?${i * 2 + 3})`).join(', ')
+	const row = await db
+		.prepare(`UPDATE invention SET data = json_set(data, ${args}) WHERE id = ?1 RETURNING data`)
+		.bind(id, ...entries.flatMap(([key, value]) => [`$.${key}`, JSON.stringify(value)]))
 		.first<InventionRow>()
 	return row ? (JSON.parse(row.data) as SavedInvention) : null
 }
