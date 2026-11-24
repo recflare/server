@@ -402,6 +402,44 @@ describe('public endpoints', () => {
 	}
 	const KEY_2025_ONLY = 'Avatars.AdvancedFaceCustomizationEnabled'
 
+	test('GET /api/gameconfigs/v1/all enables world-marker beacons for every newer-client account', async () => {
+		for (const version of ['20260323.14', '20250718.01']) {
+			for (const accountId of ['42', '43']) {
+				const res = await exports.default.fetch(`${ORIGIN}/api/gameconfigs/v1/all`, {
+					headers: await bearer(accountId, undefined, version),
+				})
+				const entries = (await res.json()) as Array<{
+					Key: string
+					Value: string
+					ActiveExperiments: string | null
+				}>
+				const configs = Object.fromEntries(entries.map((entry) => [entry.Key, entry]))
+				for (const key of [
+					'BeaconMVPEnabled',
+					'AllowVRPlayerBeaconControls',
+					'ReceiveAnnouncement',
+				]) {
+					expect(configs[`Retention.Coordinate.${key}`]).toMatchObject({
+						Value: 'true',
+						ActiveExperiments: null,
+					})
+				}
+				expect(configs['Retention.Coordinate.BeaconDurationS']).toMatchObject({
+					Value: '8',
+					ActiveExperiments: null,
+				})
+				expect(configs['Retention.Coordinate.BeaconBeaconDurationS']).toBeUndefined()
+				expect(
+					entries.some(
+						(entry) =>
+							entry.Key.startsWith('Retention.Coordinate.') &&
+							entry.ActiveExperiments?.includes('retention_2024q4_coordinate_')
+					)
+				).toBe(false)
+			}
+		}
+	})
+
 	test('GET /api/gameconfigs/v1/all enables only the 2026 Roomie companion', async () => {
 		for (const version of ['20260323.14', '20250718.01']) {
 			const res = await exports.default.fetch(`${ORIGIN}/api/gameconfigs/v1/all`, {
