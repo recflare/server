@@ -213,6 +213,7 @@ export enum Role {
 	None = 0,
 	Host = 10,
 	Moderator = 20,
+	Contributor = 25,
 	CoOwner = 30,
 	Creator = 255,
 }

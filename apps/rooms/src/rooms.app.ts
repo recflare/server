@@ -340,38 +340,20 @@ function roleIn(room: Room, accountId: number): number {
  * reads each cell from the row at exactly that role, so every tier needs its rows whether
  * or not anything is stored there.
  */
-const PERMISSION_ROLES = [Role.None, Role.Host, Role.Moderator, Role.CoOwner, Role.Creator]
+const PERMISSION_ROLES = [
+	Role.None,
+	Role.Host,
+	Role.Moderator,
+	Role.Contributor,
+	Role.CoOwner,
+	Role.Creator,
+]
 
 /**
- * Room permissions + Photon token the client needs to spawn into a room. `RoomInstanceId`
- * is the caller's current instance from presence (null when they aren't in one).
- * `PhotonAccessToken` stays empty — the reference server signs it via `ClientSecurity`,
- * whose secret/algorithm we don't have; our Photon setup accepts an empty token.
- *
- * The table depends on who is asking, because two different screens read it:
- *
- * A MANAGER — the creator or a co-owner (`role` at or above {@link Role.CoOwner}, the same
- * set `canManageRoom` admits) — gets the WHOLE table, one row per (permission, role) for
- * every tier in {@link PERMISSION_ROLES}. The permissions screen (fed by
- * `PUT …/subrooms/{subRoomId}/permissions`) draws a cell per pair and reads each cell from
- * the row at exactly that role, so a stored entry is served at its own role with
- * `Override: true`, and every other cell carries the value that reaches that role with
- * `Override: false` — the entry stored at the highest lower role, else the default. A
- * cell with no row snaps back to the default the moment it is toggled (a Host grant served
- * only at Role 0 and the creator's own role, as this once did, did exactly that), and a
- * default served with `Override: true` can never be un-overridden, so the flags matter as
- * much as the values.
- *
- * Everyone else gets THEIR rows only: each permission's value for the role they hold — the
- * override stored at their own role, else the one stored at the highest lower role (a grant
- * to "everyone" reaches a host too), else the default — served at Role 0 AND, for a role
- * holder, again at their role, every row `Override: true`. The client has been seen applying
- * Role 0 rows to a visitor, and which rows it reads for a host or moderator is not known, so
- * both readings land on the same values. Pairs stored under a role they don't hold are not
- * theirs and are left out, so a visitor never sees — or gets — a co-owner's grants.
- *
- * Defaults: managers may build, nobody else may ({@link buildsByDefault}). The global maker
- * pen stays with the hardcoded dev accounts, whatever the room says.
+ * Send independent role settings. The native client inherits lower-role values when
+ * Override is false, so every served cell must be active, including role defaults.
+ * Override=false in a PUT still clears that exact stored pair; it is not a wire flag
+ * for defaults in this resolved table. No other role supplies a fallback value.
  */
 function photonAccessToken(
 	accountId: number,
@@ -386,20 +368,51 @@ function photonAccessToken(
 	)
 	const storedAt = (permission: string, at: number): RoomPermission | undefined =>
 		overrides.find((o) => o.Permission === permission && o.Role === at)
-	// The override that reaches a role from below it: the highest role under `at` with one.
-	const reachingFromBelow = (permission: string, at: number): RoomPermission | undefined =>
-		overrides
-			.filter((o) => o.Permission === permission && o.Role < at)
-			.reduce<RoomPermission | undefined>(
-				(best, o) => (best && best.Role > o.Role ? best : o),
-				undefined
-			)
-	// The value a role holds for a permission with nothing stored at that role; undefined
-	// for a creator-added pair nothing below the role names either.
-	const inherited = (permission: string, at: number): string | undefined => {
-		const below = reachingFromBelow(permission, at)
-		if (below) return below.Value
-		return isBuild(permission) ? (buildsByDefault(at) ? 'True' : 'False') : undefined
+	// Defaults for non-build boolean permissions on the 20260323.14 client. Build
+	// defaults retain this server's existing policy. Only names present in the table
+	// are emitted, so untouched native permissions continue using their native defaults.
+	const contributorDefaults = new Set([
+		'CAN_EDIT_CIRCUITS',
+		'CAN_TALK',
+		'CAN_SELF_REVIVE',
+		'CAN_END_GAMES_EARLY',
+		'CAN_MODIFY_ROOM_WIDE_ASSETS',
+	])
+	const managerDefaults = new Set([
+		'CAN_EDIT_ROOM_ROLES',
+		'CAN_SAVE_ROOM',
+		'CAN_PUBLISH_ROOM',
+		'CAN_RESTORE_ROOM',
+		'CAN_EDIT_MAIN_ROOM_SETTINGS',
+		'CAN_EDIT_ROOM_ECON_SETTINGS',
+		'CAN_CREATE_SUBROOMS',
+		'CAN_NAME_SUBROOMS',
+		'CAN_EDIT_SUBROOM_SETTINGS',
+		'CAN_RESET_CLOUD_VARIABLES',
+		'CAN_DELETE_CLOUD_VARIABLES',
+		'CAN_EDIT_ROOM_PROGRESSION',
+	])
+	const creatorDefaults = new Set([
+		'CAN_CLONE_ROOM',
+		'CAN_CLONE_SUBROOMS',
+		'CAN_MOVE_SUBROOMS',
+		'CAN_DELETE_SUBROOMS',
+	])
+	const typeOf = (permission: string): number =>
+		overrides.find((o) => o.Permission === permission)?.Type ?? 0
+	const defaultValue = (permission: string, at: number): string => {
+		if (typeOf(permission) === 1) return '0'
+		if (typeOf(permission) === 2) return '[]'
+		const allowed = isBuild(permission)
+			? buildsByDefault(at)
+			: contributorDefaults.has(permission)
+				? at >= Role.Contributor
+				: managerDefaults.has(permission)
+					? at >= Role.CoOwner
+					: creatorDefaults.has(permission)
+						? at === Role.Creator
+						: false
+		return allowed ? 'True' : 'False'
 	}
 	const row = (
 		Permission: string,
@@ -412,14 +425,16 @@ function photonAccessToken(
 	const permissions: RoomPermission[] = []
 	if (buildsByDefault(role)) {
 		// A manager: the whole table, grouped by role.
-		for (const at of PERMISSION_ROLES) {
+		// Preserve stored tiers even if a newer client adds roles beyond this enum.
+		const tiers = [...new Set([...PERMISSION_ROLES, ...overrides.map((o) => o.Role)])].sort(
+			(a, b) => a - b
+		)
+		for (const at of tiers) {
 			for (const name of names) {
 				const own = storedAt(name, at)
-				if (own) permissions.push(row(name, at, own.Value, true, own.Type))
-				else {
-					const value = inherited(name, at)
-					if (value !== undefined) permissions.push(row(name, at, value, false))
-				}
+				permissions.push(
+					row(name, at, own?.Value ?? defaultValue(name, at), true, own?.Type ?? typeOf(name))
+				)
 			}
 		}
 		if (MAKER_PEN_ACCOUNT_IDS.has(accountId)) {
@@ -430,12 +445,12 @@ function photonAccessToken(
 		// Anyone else: their own values, at Role 0 and at their role.
 		const values = new Map<string, string>()
 		for (const name of names) {
-			const value = storedAt(name, role)?.Value ?? inherited(name, role)
+			const value = storedAt(name, role)?.Value ?? defaultValue(name, role)
 			if (value !== undefined) values.set(name, value)
 		}
 		if (MAKER_PEN_ACCOUNT_IDS.has(accountId)) values.set('CAN_USE_MAKER_PEN', 'True')
 		for (const at of role === Role.None ? [Role.None] : [Role.None, role]) {
-			for (const [name, value] of values) permissions.push(row(name, at, value, true))
+			for (const [name, value] of values) permissions.push(row(name, at, value, true, typeOf(name)))
 		}
 	}
 	return {
@@ -3256,12 +3271,8 @@ const app = new Hono<App>()
 		}
 	)
 
-	// Invite a player to a room role (`Roles[].InvitedRole`). Auth-gated (401) and gated to
-	// the room's OWNER alone (403 otherwise) — narrower than the role WRITE above, which a
-	// co-owner may also use. Body is the `role` form field. Records the pending offer on the
-	// target's role entry (adding one at `Role` 0 when they have none), pushes the
-	// `RoomCoOwnerInvited` message that raises the invite on their client, and answers a
-	// bare `{ success: true }` — the inviter's client re-renders nothing from it.
+	// Invite a player to a room role. Owners and co-owners may offer a role;
+	// it remains pending until the recipient accepts the durable invite message.
 	.put(
 		'/rooms/:roomId{[0-9]+}/roles/:accountId{[0-9]+}/invite',
 		describeRoute({
@@ -3273,10 +3284,8 @@ const app = new Hono<App>()
 				'accept, at which point the role proper is granted. Someone who already holds a role',
 				'keeps it while a higher one is pending.',
 				'',
-				'Gated to the room’s OWNER — its creator, or the holder of the Creator role. Narrower',
-				'than setting a role outright, which a co-owner may also do: otherwise a co-owner',
-				'could quietly grow the set of people who can change the room. A valid token from',
-				'anyone else is a 403.',
+				'Gated to the room creator or a holder of the Creator or CoOwner role, matching',
+				'the role management endpoint. A valid token from anyone else is a 403.',
 				'',
 				'The INVITED player gets a durable `MessageReceived` frame carrying a Message of type',
 				'62 (`RoomCoOwnerInvited`), naming the inviter, the room, and the offered role as its',
@@ -3311,9 +3320,8 @@ const app = new Hono<App>()
 			const roomId = Number.parseInt(c.req.param('roomId'), 10)
 			const targetAccountId = Number.parseInt(c.req.param('accountId'), 10)
 			const room = await getRoomById(c.env.DB, roomId)
-			// An unknown room and a room somebody else owns answer the same 403: the gate is
-			// the owner check, and there is no envelope here to carry a message in.
-			if (!room || !isRoomOwner(room, accountId)) return c.body(null, 403)
+			// Unknown rooms and callers without management rights both answer 403.
+			if (!room || !canManageRoom(room, accountId)) return c.body(null, 403)
 
 			const body = (await c.req.parseBody().catch(() => ({}))) as Record<string, unknown>
 			const role = typeof body.role === 'string' ? Number.parseInt(body.role, 10) : Number.NaN
@@ -5069,15 +5077,14 @@ const app = new Hono<App>()
 				'reads back with `true` at its own role. `Value` is a string — usually `True`/`False`,',
 				'but it is kept verbatim, since not every permission’s UI is a True/False picker.',
 				'',
-				'What this feeds is `GET /photon_access_token`. For a manager it serves the WHOLE',
-				'table — a row per (permission, role) for every role tier, stored entries with',
-				'`Override: true` and the rest `false` — which is what this screen reads back: a',
-				'cell with no row at its exact role snaps back to the default as soon as it is',
-				'toggled. For everyone else it serves only the entries that reach THEIR role: one at',
-				'their role, else one at a lower role (a Role 0 grant reaches everyone), over the',
-				'role’s defaults. One naming a pair the defaults don’t carry (e.g. `CAN_INVITE`) is',
-				'served too. The overrides apply to the subroom the caller is standing in, resolved',
-				'from presence.',
+				'Feeds `GET /photon_access_token` and live `PhotonAccessToken` updates. A manager',
+				'receives a resolved table for every role; everyone else receives their own values.',
+				'Each role uses its exact stored override or its own default. Visitor, Host,',
+				'Moderator, Contributor, CoOwner and Creator settings do not inherit from each other.',
+				'All resolved rows use `Override: true` so the native client applies independent',
+				'values. Sending `Override: false` in a PUT still clears only that',
+				'stored pair and restores the default for that role. Saved updates reach players in the',
+				'affected subroom through refreshed `PhotonAccessToken` notifications.',
 				'',
 				'Gated to the room’s managers — its creator or a co-owner (`canManageRoom`), as the',
 				'other room-admin writes are. Answers the whole ROOM under `Value` in the PascalCase',
@@ -5113,6 +5120,30 @@ const app = new Hono<App>()
 
 			const permissions = parseRoomPermissions(await c.req.json().catch(() => null))
 			await setSubRoomPermissions(c.env.DB, subRoomId, permissions)
+			// Refresh the live table: the Room DTO response does not contain permissions.
+			const overrides = await getSubRoomPermissions(c.env.DB, subRoomId)
+			const playerIds = new Set(await getPlayerIdsInRoom(c.env.DB, roomId))
+			playerIds.add(accountId)
+			await Promise.all(
+				[...playerIds].map(async (playerId) => {
+					const instance = (await getPresence<PresenceView>(c.env.DB, playerId))?.roomInstance
+					if (instance?.roomId !== roomId || instance.subRoomId !== subRoomId) return
+					try {
+						await c.env.RECFLARE_NOTIFICATIONS_HUB.getByName(HUB_INSTANCE).notifyPlayer(
+							playerId,
+							NotificationType.PhotonAccessToken,
+							photonAccessToken(
+								playerId,
+								instance.roomInstanceId ?? null,
+								roleIn(room, playerId),
+								overrides
+							)
+						)
+					} catch (err) {
+						logger.error('could not push permission update', { err, playerId, roomId, subRoomId })
+					}
+				})
+			)
 			return c.json({ Value: serveRoom(room), Success: true, Error: null, error_id: null })
 		}
 	)
@@ -5759,19 +5790,11 @@ const app = new Hono<App>()
 				'`RoomInstanceId` is the caller’s current instance, read from the shared `presence`',
 				'table (null when they’re in none).',
 				'',
-				'The table depends on who asks. A MANAGER — the creator or a co-owner — gets the',
-				'whole table: a row per (permission, role) for every role tier (0, 10, 20, 30, 255),',
-				'because the permissions screen (`PUT …/subrooms/{subRoomId}/permissions`) reads',
-				'each cell from the row at exactly that role. An entry stored on the subroom is',
-				'served at its own role with `Override: true`; every other cell carries the value',
-				'that reaches that role (the entry at the highest lower role, else the default) with',
-				'`Override: false`, so an un-overridden cell shows and stays at its default.',
-				'',
-				'Everyone else gets their own rows only: each permission’s value for the role they',
-				'hold in the room they are standing in — the entry stored at their role, else one',
-				'stored at a lower role, else the default: managers may build, nobody else may.',
-				'Entries stored under a role they do not hold are left out. Every value is served at',
-				'Role 0 and, for a host or moderator, again at their role, all with `Override: true`.',
+				'Managers receive a resolved table for every role, including Contributor (25). Other',
+				'players receive only their own effective values, at Role 0 and their own role.',
+				'Each role uses only its exact saved overrides or its own defaults. All served',
+				'rows use `Override: true` to prevent native cross-role inheritance; the PUT clear',
+				'operation remains independent and restores its default.',
 				'',
 				'`PhotonAccessToken` is always empty: the reference server signs it with a',
 				'secret/algorithm we don’t have, and our Photon setup accepts an empty token. The',
