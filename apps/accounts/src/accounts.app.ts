@@ -17,6 +17,7 @@ import {
 	getAccountsByIds,
 	isUniqueViolation,
 	pendingEmailCode,
+	renameAutoNamedDorms,
 	SEARCH_LIMIT,
 	searchAccounts,
 	updateAccount,
@@ -771,6 +772,8 @@ const app = new Hono<App>()
 				}
 				throw err
 			}
+			// The dorm is named after its owner (`@<username>'s Dorm`); it follows the new name.
+			await renameAutoNamedDorms(c.env.DB, id, updated.username)
 			await pushAccountUpdate(c, updated)
 			return usernameResult(c, '', toAccountDto(updated))
 		}
