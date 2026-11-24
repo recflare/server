@@ -136,6 +136,44 @@ describe('POST /actionlink', () => {
 	})
 })
 
+describe('GET /actionlink/:code', () => {
+	const EVENT_DATA = '{"ExtraJson":"{\\u0022PlayerEventId\\u0022:385}","Platform":0,"Type":4}'
+
+	it('answers the bare { CreatorPlayerId, Data, IsValid } object for a minted code', async () => {
+		const url = (await (
+			await actionlink(205, {
+				data: EVENT_DATA,
+				validHours: '8640',
+				codeType: '4',
+				extraDataId: '385',
+			})
+		).json()) as string
+		const code = new URL(url).searchParams.get('a')!
+		const res = await SELF.fetch(`${ORIGIN}/actionlink/${code}`)
+		expect(res.status).toBe(200)
+		expect(await res.json()).toStrictEqual({
+			CreatorPlayerId: 205,
+			Data: EVENT_DATA,
+			IsValid: true,
+		})
+	})
+
+	it('marks an expired code invalid', async () => {
+		await env.DB.prepare(
+			`INSERT INTO link (code, creator_account_id, code_type, extra_data_id, data, valid_hours, created_at, expires_at)
+			 VALUES ('OLD234', 205, 4, 385, ?1, 1, '2020-01-01T00:00:00.000Z', '2020-01-01T01:00:00.000Z')`
+		)
+			.bind(EVENT_DATA)
+			.run()
+		const res = await SELF.fetch(`${ORIGIN}/actionlink/OLD234`)
+		expect(await res.json()).toMatchObject({ IsValid: false })
+	})
+
+	it('404s an unknown code', async () => {
+		expect((await SELF.fetch(`${ORIGIN}/actionlink/ZZZZZZ`)).status).toBe(404)
+	})
+})
+
 describe('randomCode', () => {
 	it('draws six symbols with no look-alikes', () => {
 		for (let i = 0; i < 200; i++) expect(randomCode()).toMatch(/^[A-HJKMNP-Z2-9]{6}$/)

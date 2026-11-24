@@ -210,9 +210,13 @@ function formatDuration(start: Date, end: Date): string {
 	return h === 0 ? `${m}m` : m === 0 ? `${h}h` : `${h}h ${m}m`
 }
 
-/** The `/event/<id>` path's numeric event id, or null for any other path. */
+/**
+ * The event id in `/event/<id>`, or in the game's share link `/d/event/<id>/<code>` (the
+ * code is the `link` worker's share code; the id alone is enough to show the event, so it
+ * isn't resolved). Null for any other path.
+ */
 export function eventIdFromPath(path: string): number | null {
-	const match = /^\/event\/(\d+)\/?$/.exec(path)
+	const match = /^\/(?:event|d\/event)\/(\d+)(?:\/[A-Za-z0-9]+)?\/?$/.exec(path)
 	return match ? Number(match[1]) : null
 }
 

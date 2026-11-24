@@ -4,7 +4,7 @@ import { useWorkersLogger } from 'workers-tagged-logger'
 import { withNotFound, withOnError } from '@repo/hono-helpers'
 import { validateAndGetAccountId } from '@repo/jwt'
 
-import { createLink } from './link-db'
+import { createLink, getLink } from './link-db'
 
 import type { App } from './context'
 
@@ -67,6 +67,21 @@ const app = new Hono<App>()
 			validHours,
 		})
 		return c.json(`https://${c.env.DOMAIN}?a=${code}`)
+	})
+
+	// Resolve a share code back to what was shared. Answers a bare object, no envelope:
+	//   { CreatorPlayerId, Data, IsValid }
+	// `Data` is the stored `data` field verbatim (the escaped `{ ExtraJson, Platform, Type }`
+	// string the client minted it with); `IsValid` is false once the code has expired, so the
+	// client can say so rather than see it vanish. An unknown code is an empty 404.
+	.get('/actionlink/:code', async (c) => {
+		const link = await getLink(c.env.DB, c.req.param('code').trim().toUpperCase())
+		if (!link) return c.body(null, 404)
+		return c.json({
+			CreatorPlayerId: link.creator_account_id,
+			Data: link.data,
+			IsValid: Date.parse(link.expires_at) > Date.now(),
+		})
 	})
 
 export default app

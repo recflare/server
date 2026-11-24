@@ -1238,6 +1238,21 @@ function roomIdFromPath(path: string): number | null {
 	return match ? Number.parseInt(match[1], 10) : null
 }
 
+/**
+ * The room name in the game's share link `/d/room/<name>` (decoded), or null for any other
+ * path. The client links a room by NAME there, so the page resolves it to the id and moves
+ * to `/rooms/<id>` — see RoomNameRedirect.
+ */
+function roomNameFromPath(path: string): string | null {
+	const match = /^\/d\/room\/([^/]+)\/?$/.exec(path)
+	if (!match) return null
+	try {
+		return decodeURIComponent(match[1])
+	} catch {
+		return null
+	}
+}
+
 /** Whether a room path (see roomIdFromPath) asks for the owner's editor rather than the view. */
 function isRoomEditPath(path: string): boolean {
 	return /^\/rooms\/\d+\/edit$/.test(path)
@@ -1305,6 +1320,59 @@ const fetchPublicRooms = (accountId: number): Promise<PublicRoom[]> =>
 async function fetchPublicRoom(roomId: number): Promise<OwnedRoom | null> {
 	const room = await call<OwnedRoom | Record<string, never>>(`${where().rooms}/rooms?id=${roomId}`)
 	return 'RoomId' in room ? (room as OwnedRoom) : null
+}
+
+/**
+ * One room by name (case-insensitive), through the same lookup. An unpublished room comes
+ * back only to those `rooms` serves it to, so the token goes along; anyone else gets `{}`.
+ */
+async function fetchRoomByName(name: string): Promise<OwnedRoom | null> {
+	const room = await call<OwnedRoom | Record<string, never>>(
+		`${where().rooms}/rooms?name=${encodeURIComponent(name)}`
+	)
+	return 'RoomId' in room ? (room as OwnedRoom) : null
+}
+
+/**
+ * The game's room share link, `/d/room/<name>`. Resolves the name and REPLACES the URL
+ * with `/rooms/<id>` rather than pushing it, so Back leaves the page instead of landing on
+ * this resolver and being sent forward again. The router picks the change up through the
+ * popstate it listens for. A name nobody has gets RoomPage's own sentence.
+ */
+function RoomNameRedirect({ name, config }: { name: string; config: SiteConfig | undefined }) {
+	const [missing, setMissing] = useState(false)
+	const [error, setError] = useState('')
+	useEffect(() => {
+		if (config === undefined) return
+		let cancelled = false
+		setMissing(false)
+		void fetchRoomByName(name)
+			.then((room) => {
+				if (cancelled) return
+				if (!room) return setMissing(true)
+				window.history.replaceState(null, '', `/rooms/${room.RoomId}`)
+				window.dispatchEvent(new PopStateEvent('popstate'))
+			})
+			.catch((e) => {
+				if (!cancelled) setError(e instanceof Error ? e.message : String(e))
+			})
+		return () => {
+			cancelled = true
+		}
+	}, [name, config])
+	return (
+		<main className="shell wide">
+			{error ? (
+				<p className="error">{error}</p>
+			) : missing ? (
+				<p className="muted">
+					There&apos;s no room here — it&apos;s private, or it doesn&apos;t exist.
+				</p>
+			) : (
+				<p className="muted">Loading…</p>
+			)}
+		</main>
+	)
 }
 
 /**
@@ -3330,6 +3398,7 @@ export function App() {
 	const [config, setConfig] = useState<SiteConfig | undefined>(undefined)
 	const { path, search, navigate } = useRouter()
 	const roomId = roomIdFromPath(path)
+	const roomName = roomNameFromPath(path)
 	const lookupUsername = usernameFromPath(path)
 	const customAvatarItemId = customAvatarItemIdFromPath(path)
 	const imageId = imageIdFromPath(path)
@@ -3491,6 +3560,10 @@ export function App() {
 					config={config}
 					navigate={navigate}
 				/>
+			) : roomName !== null ? (
+				// The game's share link for a room, by name. Resolves and replaces itself with
+				// `/rooms/<id>`; a client-side route like the other `/d/` links.
+				<RoomNameRedirect name={roomName} config={config} />
 			) : roomId !== null ? (
 				<RoomPage
 					account={account}
