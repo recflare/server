@@ -1684,6 +1684,16 @@ export const BulkPurchaseRequest = z.object({
 export const ConsumeConsumableRequest = z.object({
 	Id: z.int().describe('The consumable row id to spend from'),
 	DeltaCount: z.int().optional().describe('How many to spend; defaults to 1'),
+	IsRRO: z.boolean().optional().describe('Sent by the 2026 client; ignored'),
+	RequestId: z
+		.string()
+		.optional()
+		.describe('2026: a fresh GUID per consume. A Room Boost request is recorded once per id'),
+	RoomId: z
+		.int()
+		.nullable()
+		.optional()
+		.describe('2026: the room of the caller’s instance; where a Room Boost is spent'),
 })
 
 /**

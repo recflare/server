@@ -36,17 +36,20 @@ import {
 	getPlayerData,
 	getPlayerDormRoom,
 	getPlayerIdsInRoom,
+	getPlayerRoomBoostCounts,
 	getPresence,
 	getPublicRoomsByCreator,
 	getPublicVisitedRooms,
 	getRecommendedRooms,
 	getRoomBanHistory,
 	getRoomBans,
+	getRoomBoostCount,
 	getRoomById,
 	getRoomByName,
 	getRoomExperience,
 	getRoomsByCreator,
 	getRoomsByIds,
+	getRoomsWithLapsedBoosts,
 	getShowcasedRooms,
 	getSimilarRooms,
 	getStudioUnityAsset,
@@ -169,6 +172,8 @@ import {
 	RoomBanHistoryEnvelope,
 	RoomBansRemovedEnvelope,
 	RoomBoostCount,
+	RoomBoostCounts,
+	RoomBoostCountsRequest,
 	RoomDto,
 	RoomEnvelope,
 	RoomExperience,
@@ -207,7 +212,10 @@ import {
 
 import type { Context } from 'hono'
 import type { Room, RoomBan, RoomBanRecord, RoomPermission } from '@repo/domain'
-import type { MessageReceivedPayload } from '../../notify/src/notification-payloads'
+import type {
+	MessageReceivedPayload,
+	RoomBoostCountUpdatedPayload,
+} from '../../notify/src/notification-payloads'
 import type { App, Env } from './context'
 
 /**
@@ -237,6 +245,9 @@ function firstId(idParam: string): number | undefined {
  * so than gets served.
  */
 const MAX_BULK_ROOM_IDS = 100
+
+/** `POST /rooms/{id}/boosts/counts` reads at most this many account ids. */
+const MAX_BOOST_COUNT_IDS = 200
 
 /** The 400 an over-cap bulk lookup answers, in the bare-string style the other 400 uses. */
 function tooManyIds(c: Context<App>) {
@@ -2333,23 +2344,88 @@ const app = new Hono<App>()
 		}
 	)
 
-	// How many boosts a player has put on a room. Boosts are not implemented — nothing
-	// grants or spends them, and the room DTO's `BoostCount` is a constant 0 for the same
-	// reason — so this is a stub that answers a bare integer 0 for any room and player,
-	// known or not, rather than leaving the client's request to 404.
+	// Room boosts (2026; see @repo/domain room-boosts-db). The client only READS boosts here:
+	// they are spent through econ's consume route. Every answer is bare (no envelope), and an
+	// unknown room or player is 0 rather than a 404 — a failed answer leaves the client's
+	// per-player count cache holding a faulted task.
+	//
+	// The room's active count: room cards and the room panel.
+	.get(
+		'/rooms/:roomId{[0-9]+}/boosts/count',
+		describeRoute({
+			tags: ['Interaction'],
+			summary: 'A room’s active boost count',
+			description: [
+				'The room’s active boost units — Room Boosts spent on it in the last 30 days — as a',
+				'bare integer. `0` for none, and for an unknown room. No auth.',
+			].join(' '),
+			parameters: [roomIdParam],
+			responses: { 200: json(RoomBoostCount, 'The active boost count') },
+		}),
+		async (c) =>
+			c.json(await getRoomBoostCount(c.env.DB, Number.parseInt(c.req.param('roomId'), 10)))
+	)
+
+	// One player's active count in a room: their "is boosting" badge.
 	.get(
 		'/rooms/:roomId{[0-9]+}/boosts/:playerId{[0-9]+}/count',
 		describeRoute({
 			tags: ['Interaction'],
-			summary: 'A player’s boost count on a room',
+			summary: 'A player’s active boost count on a room',
 			description: [
-				'Stub: boosts are not implemented, so this answers a bare `0` for every room and',
-				'player, whether or not either exists. No envelope — the body is the integer.',
+				'The units the player spent boosting the room in the last 30 days, as a bare',
+				'integer. `0` for none, and for an unknown room or player. No auth.',
 			].join(' '),
 			parameters: [roomIdParam, playerIdParam],
-			responses: { 200: json(RoomBoostCount, 'The boost count, always 0') },
+			responses: { 200: json(RoomBoostCount, 'The player’s active boost count') },
 		}),
-		(c) => c.json(0)
+		async (c) => {
+			const playerId = Number.parseInt(c.req.param('playerId'), 10)
+			const counts = await getPlayerRoomBoostCounts(
+				c.env.DB,
+				Number.parseInt(c.req.param('roomId'), 10),
+				[playerId]
+			)
+			return c.json(counts.get(playerId) ?? 0)
+		}
+	)
+
+	// Several players' counts at once: the client asks for everyone else in the room as it
+	// joins (`id` repeated in a FORM body, not the query string — the verb is POST).
+	.post(
+		'/rooms/:roomId{[0-9]+}/boosts/counts',
+		describeRoute({
+			tags: ['Interaction'],
+			summary: 'Several players’ active boost counts on a room',
+			description: [
+				'Form body with `id` repeated once per account (`id=12&id=205`; ids in the query',
+				'string are read too). Answers a bare object mapping each asked id, as a string key,',
+				`to its active boost units in the room, \`0\` included: \`{"12":3,"205":0}\`. Ids`,
+				`that are not integers are skipped, duplicates merged, and at most ${MAX_BOOST_COUNT_IDS}`,
+				'are read. No ids is `{}`; an unknown room maps every id to 0. No auth.',
+			].join(' '),
+			parameters: [roomIdParam],
+			requestBody: form(RoomBoostCountsRequest, 'The accounts to count'),
+			responses: { 200: json(RoomBoostCounts, 'Each account’s active boost count') },
+		}),
+		async (c) => {
+			const body = (await c.req.parseBody({ all: true }).catch(() => ({}))) as Record<
+				string,
+				unknown
+			>
+			const raw = [body.id, c.req.queries('id')].flat().filter((v) => typeof v === 'string')
+			const ids = [
+				...new Set(
+					raw.map((v) => Number(v.trim())).filter((n) => Number.isInteger(n) && n > 0)
+				),
+			].slice(0, MAX_BOOST_COUNT_IDS)
+			const counts = await getPlayerRoomBoostCounts(
+				c.env.DB,
+				Number.parseInt(c.req.param('roomId'), 10),
+				ids
+			)
+			return c.json(Object.fromEntries([...counts].map(([id, n]) => [String(id), n])))
+		}
 	)
 
 	// The current player's interaction state with a room (cheered/favorited/last
@@ -5784,13 +5860,46 @@ async function deleteStaleRoomVotes(db: D1Database, now = Date.now()): Promise<n
 	return res.meta.changes ?? 0
 }
 
+/** The cron's period (every five minutes, wrangler.jsonc): the window each boost sweep looks back over. */
+const BOOST_SWEEP_MS = 5 * 60 * 1000
+
+/**
+ * Re-announce the rooms whose boosts lapsed since the previous run: a boost's 30-day window
+ * ends without any request, so nothing else would tell a client in the room that its count
+ * dropped. `RoomBoostCountUpdated` with the new active count goes to everyone standing in each
+ * such room (nobody present, nothing sent). Best-effort, like the rest of the sweep.
+ */
+async function announceLapsedBoosts(env: Env, scheduledTime: number): Promise<void> {
+	try {
+		const to = new Date(scheduledTime)
+		const rooms = await getRoomsWithLapsedBoosts(
+			env.DB,
+			new Date(scheduledTime - BOOST_SWEEP_MS),
+			to
+		)
+		const hub = env.RECFLARE_NOTIFICATIONS_HUB.getByName(HUB_INSTANCE)
+		for (const roomId of rooms) {
+			const present = await getPlayerIdsInRoom(env.DB, roomId)
+			if (present.length === 0) continue
+			await hub.notifyPlayersEphemeral(present, NotificationType.RoomBoostCountUpdated, {
+				RoomId: roomId,
+				GlobalBoostCount: await getRoomBoostCount(env.DB, roomId),
+			} satisfies RoomBoostCountUpdatedPayload)
+		}
+		if (rooms.length > 0) console.log(`room sweep: ${rooms.length} rooms' boosts lapsed`)
+	} catch (err) {
+		console.error('room sweep: boost expiry announce failed', err)
+	}
+}
+
 /**
  * Cron: sweep the short-lived rows on the shared database — `room_vote` ballots older than
  * {@link ROOM_VOTE_RETENTION_MS} and `room_invite` rows older than
  * `ROOM_INVITE_TTL_SECONDS` (both 5 minutes). Neither table is this worker's — `api` and
  * `match` own them — but both are room housekeeping, so it runs here.
  */
-async function sweepStaleRows(env: Env): Promise<void> {
+async function sweepStaleRows(env: Env, scheduledTime = Date.now()): Promise<void> {
+	await announceLapsedBoosts(env, scheduledTime)
 	const votes = await deleteStaleRoomVotes(env.DB)
 	const invites = await deleteExpiredRoomInvites(env.DB)
 	// The tagged logger is request-scoped (its middleware never runs for a cron), so
@@ -5804,7 +5913,7 @@ async function sweepStaleRows(env: Env): Promise<void> {
 export { app }
 
 export const scheduled: ExportedHandlerScheduledHandler<Env> = (_controller, env, ctx) => {
-	ctx.waitUntil(sweepStaleRows(env))
+	ctx.waitUntil(sweepStaleRows(env, _controller.scheduledTime))
 }
 
 // Standalone entry: a Worker only runs `scheduled` when it's on the default export,

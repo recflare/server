@@ -338,7 +338,7 @@ export const RoomDto = z.object({
 	DataBlobHash: z.string().nullable().optional().describe('`RoomData.Hash` from that save'),
 	BoostCount: z
 		.int()
-		.describe('Boosts on the room. Nothing grants boosts here, so always 0 — but present'),
+		.describe('The room’s active boost units (Room Boosts spent on it in the last 30 days)'),
 	CurrentSnapshotId: z
 		.int()
 		.nullable()
@@ -469,10 +469,23 @@ export const DormRoomRequest = z.object({
 	roomId: z.string().describe('A dorm (`IsDorm`) the caller created or co-owns, as an integer'),
 })
 
-/** `GET /rooms/{roomId}/boosts/{playerId}/count` — a bare integer, no envelope. */
+/** `GET /rooms/{roomId}/boosts/count` and `…/boosts/{playerId}/count` — a bare integer, no envelope. */
 export const RoomBoostCount = z
 	.int()
-	.describe('Boosts the player has put on the room. Nothing grants boosts here, so always 0')
+	.describe('Active boost units (Room Boosts spent in the last 30 days); 0 for none or unknown')
+
+/**
+ * `POST /rooms/{roomId}/boosts/counts` — each asked account id (a decimal string key) to its
+ * active boost units in the room, 0 included. A bare object, no envelope.
+ */
+export const RoomBoostCounts = z
+	.record(z.string(), z.int())
+	.describe('Account id → that player’s active boost units in the room')
+
+/** `POST /rooms/{roomId}/boosts/counts` form body — `id` repeated once per account. */
+export const RoomBoostCountsRequest = z.object({
+	id: z.array(z.string()).describe('Account ids, the key repeated once per account'),
+})
 
 /**
  * A room lookup result: the room, or `{}` when nothing matched. The by-id/by-name

@@ -6,6 +6,7 @@ import { z } from 'zod'
 import {
 	addXp,
 	canManageRoomById,
+	claimRoomBoost,
 	consumeGift,
 	createGift,
 	getAccount,
@@ -14,6 +15,7 @@ import {
 	getPendingGifts,
 	getPlayerIdsInRoom,
 	getPresence,
+	getRoomBoostCount,
 	grantInvention,
 	levelReward,
 	levelsReached,
@@ -21,7 +23,9 @@ import {
 	MAX_ROOM_OFFER_DESCRIPTION_LENGTH,
 	MAX_ROOM_OFFER_NAME_LENGTH,
 	ownsInvention,
+	ROOM_BOOST_DESC,
 	setOutfit,
+	settleRoomBoost,
 	updateAccount,
 } from '@repo/domain'
 import { intVar, logger, withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
@@ -70,6 +74,7 @@ import { claimChallengeGift, getChallengeStatuses, recordChallengeProgress } fro
 import { buildRotation, rotationMapId, withWeeklyGift } from './challenge-rotation'
 import {
 	consumeConsumable,
+	getOwnedConsumableDesc,
 	countConsumable,
 	getConsumables,
 	grantConsumable,
@@ -264,6 +269,8 @@ import type {
 	ConsumableMappingPayload,
 	LocalRoomKeyPayload,
 	PurchaseBalanceModificationPayload,
+	RoomBoostCountUpdatedPayload,
+	RoomBoostedPayload,
 	RoomCurrencyPayload,
 } from '../../notify/src/notification-payloads'
 import type { Avatar } from './avatar-db'
@@ -781,6 +788,44 @@ const isRroConsumable = (consumableItemDesc: string): boolean =>
  * client uses it to update/remove the item from inventory. Best-effort: a hub failure
  * is logged and swallowed, since the consume has already committed.
  */
+const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * Announce a recorded room boost (2026): `RoomBoosted` to the booster, whose client then
+ * refetches the room's count and its own, and `RoomBoostCountUpdated` with the room's new active
+ * count to everyone standing in the room and the booster, whose clients redraw the room's boost
+ * text and badges from it. Ephemeral and best-effort: the boost is already stored.
+ */
+async function pushRoomBoosted(
+	c: Context<App>,
+	boost: { roomId: number; accountId: number; requestId: string }
+): Promise<void> {
+	try {
+		const hub = c.env.RECFLARE_NOTIFICATIONS_HUB.getByName(HUB_INSTANCE)
+		await hub.notifyPlayersEphemeral([boost.accountId], NotificationType.RoomBoosted, {
+			// A System.Guid on the client: anything else fails the frame.
+			RequestId: GUID.test(boost.requestId) ? boost.requestId : crypto.randomUUID(),
+			RoomId: boost.roomId,
+			AccountId: boost.accountId,
+		} satisfies RoomBoostedPayload)
+		const present = await getPlayerIdsInRoom(c.env.DB, boost.roomId)
+		await hub.notifyPlayersEphemeral(
+			[...new Set([...present, boost.accountId])],
+			NotificationType.RoomBoostCountUpdated,
+			{
+				RoomId: boost.roomId,
+				GlobalBoostCount: await getRoomBoostCount(c.env.DB, boost.roomId),
+			} satisfies RoomBoostCountUpdatedPayload
+		)
+	} catch (err) {
+		logger.error('failed to push room boost notifications', {
+			roomId: boost.roomId,
+			accountId: boost.accountId,
+			error: err instanceof Error ? err.message : String(err),
+		})
+	}
+}
+
 async function pushConsumableRemoved(
 	c: Context<App>,
 	accountId: number,
@@ -6751,6 +6796,11 @@ const app = new Hono<App>({ strict: false })
 	// `{ Id, DeltaCount }` where `Id` is the consumable row id. Reduces that instance's
 	// count by DeltaCount, deleting the row once it hits zero. Scoped to the caller so
 	// they can only consume their own. Envelope mirrors the gift-consume ack.
+	//
+	// It is also how a Room Boost is spent: the 2026 client's Boost button posts this once per
+	// unit, each with a fresh GUID `RequestId` and the `RoomId` of the caller's instance, and
+	// has no other route that applies a boost. The boost is recorded in `room_boost` and
+	// announced; a retried `RequestId` changes nothing.
 	.post(
 		'/api/consumables/v1/consume',
 		describeRoute({
@@ -6761,6 +6811,12 @@ const app = new Hono<App>({ strict: false })
 				'the row at zero. Scoped to the caller. Pushes a ConsumableMappingRemoved socket',
 				'notification only when the row is deleted — the client drops the whole instance on',
 				'that frame. Envelope mirrors the gift-consume ack.',
+				'',
+				'A Room Boost (`ConsumableItemDesc` `wH7shWdU0E6xpw0d60ZdtA`) is spent on the room',
+				'`RoomId` names: the units spent are recorded as a boost of that room, active for',
+				'30 days, and `RoomBoosted` / `RoomBoostCountUpdated` are pushed. A `RequestId`',
+				'already recorded spends nothing (the client retries), and a Room Boost with no',
+				'existing room is not spent at all, as it would be lost.',
 			].join(' '),
 			security: AUTHED,
 			requestBody: jsonBody(ConsumeConsumableRequest, 'The consumable id and delta'),
@@ -6772,11 +6828,38 @@ const app = new Hono<App>({ strict: false })
 		async (c) => {
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
-			const body = await c.req
-				.json<{ Id?: unknown; DeltaCount?: unknown }>()
-				.catch(() => ({}) as { Id?: unknown; DeltaCount?: unknown })
+			type ConsumeBody = { Id?: unknown; DeltaCount?: unknown; RequestId?: unknown; RoomId?: unknown }
+			const body = await c.req.json<ConsumeBody>().catch(() => ({}) as ConsumeBody)
 			const consumableId = typeof body.Id === 'number' ? body.Id : Number.NaN
 			const delta = typeof body.DeltaCount === 'number' ? body.DeltaCount : 1
+			const ok = () => c.json({ error: '', success: true, value: null })
+			if (
+				!Number.isNaN(consumableId) &&
+				delta > 0 &&
+				(await getOwnedConsumableDesc(c.env.DB, id, consumableId)) === ROOM_BOOST_DESC
+			) {
+				// A boost outside an existing room would be lost: spend nothing.
+				const roomId = typeof body.RoomId === 'number' ? body.RoomId : Number.NaN
+				// The blob alone (canManageRoomById's null is "no such room"): econ has no subrooms.
+				if (!Number.isInteger(roomId) || (await canManageRoomById(c.env.DB, roomId, id)) === null) {
+					return ok()
+				}
+				const requestId =
+					typeof body.RequestId === 'string' && body.RequestId.trim() !== ''
+						? body.RequestId.trim()
+						: crypto.randomUUID()
+				// Claimed before spending, so a retried (or doubled) request spends once.
+				const boost = { roomId, accountId: id, requestId, units: delta }
+				if (!(await claimRoomBoost(c.env.DB, boost))) return ok()
+				const consumed = await consumeConsumable(c.env.DB, id, consumableId, delta)
+				const units = consumed === null ? 0 : consumed.previousCount - consumed.remaining
+				await settleRoomBoost(c.env.DB, requestId, units)
+				if (consumed !== null && consumed.remaining === 0) {
+					await pushConsumableRemoved(c, id, consumed)
+				}
+				if (units > 0) await pushRoomBoosted(c, boost)
+				return ok()
+			}
 			if (!Number.isNaN(consumableId) && delta > 0) {
 				const consumed = await consumeConsumable(c.env.DB, id, consumableId, delta)
 				// ConsumableMappingRemoved drops the whole INSTANCE on the client, whatever `Count`

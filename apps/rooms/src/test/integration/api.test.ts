@@ -6979,6 +6979,7 @@ describe('rooms endpoints', () => {
 			'GET /rooms/{roomId}/bans',
 			'GET /rooms/{roomId}/bans/history',
 			'GET /rooms/{roomId}/bans/{playerId}/isBanned',
+			'GET /rooms/{roomId}/boosts/count',
 			'GET /rooms/{roomId}/boosts/{playerId}/count',
 			'GET /rooms/{roomId}/experience',
 			'GET /rooms/{roomId}/experience/player',
@@ -6995,6 +6996,7 @@ describe('rooms endpoints', () => {
 			'POST /rooms/bulk',
 			'POST /rooms/create',
 			'POST /rooms/{roomId}/bans',
+			'POST /rooms/{roomId}/boosts/counts',
 			'POST /rooms/{roomId}/clone',
 			'POST /rooms/{roomId}/experience',
 			'POST /rooms/{roomId}/experience/player',
@@ -8378,4 +8380,45 @@ it("GET /rooms/:id hydrates the room's published badges", async () => {
 		const room = (await res.json()) as { Badges: Array<{ CustomAvatarItemId: string }> }
 		expect(room.Badges.map((b) => b.CustomAvatarItemId)).toEqual(['badge-published'])
 	}
+})
+
+describe('room boosts', () => {
+	it('serves active boost counts: the room, one player, several players, and BoostCount', async () => {
+		const day = 24 * 60 * 60 * 1000
+		const insert = env.DB.prepare(
+			`INSERT INTO room_boost (room_id, account_id, request_id, amount, created_at)
+			 VALUES (1, ?1, ?2, ?3, ?4)`
+		)
+		await env.DB.batch([
+			insert.bind(900, 'boost-a', 3, new Date().toISOString()),
+			insert.bind(901, 'boost-b', 1, new Date(Date.now() - day).toISOString()),
+			// Older than the 30-day window: no longer active.
+			insert.bind(900, 'boost-c', 5, new Date(Date.now() - 40 * day).toISOString()),
+		])
+		const get = async (path: string) => (await SELF.fetch(`${ORIGIN}${path}`)).json()
+
+		expect(await get('/rooms/1/boosts/count')).toBe(4)
+		expect(await get('/rooms/99999999/boosts/count')).toBe(0)
+		expect(await get('/rooms/1/boosts/900/count')).toBe(3)
+		expect(await get('/rooms/1/boosts/902/count')).toBe(0)
+
+		// `id` repeated in a form body; junk skipped, duplicates merged, 0 kept.
+		const counts = async (body: string, roomId = 1) =>
+			(
+				await SELF.fetch(`${ORIGIN}/rooms/${roomId}/boosts/counts`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+					body,
+				})
+			).json()
+		expect(await counts('id=900&id=901&id=902&id=abc&id=900')).toEqual({ '900': 3, '901': 1, '902': 0 })
+		expect(await counts('')).toEqual({})
+		expect(await counts('id=900', 99999999)).toEqual({ '900': 0 })
+
+		// Every room read carries the active count as BoostCount.
+		expect(((await get('/rooms/1')) as { BoostCount: number }).BoostCount).toBe(4)
+		expect(((await get('/rooms/2')) as { BoostCount: number }).BoostCount).toBe(0)
+
+		await env.DB.prepare('DELETE FROM room_boost WHERE room_id = 1').run()
+	})
 })

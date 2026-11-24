@@ -165,6 +165,10 @@ export enum NotificationType {
 	ReputationUpdate = 'ReputationUpdate',
 	/** Distinct from {@link GiftPackageRewardSelectionReceived} — different payload. */
 	RewardSelectionReceived = 'RewardSelectionReceived',
+	/** A room boost was recorded (2026): to the booster only. See `RoomBoostedPayload`. */
+	RoomBoosted = 'RoomBoosted',
+	/** A room's active boost count changed (2026). See `RoomBoostCountUpdatedPayload`. */
+	RoomBoostCountUpdated = 'RoomBoostCountUpdated',
 	RoomCommentDeleted = 'RoomCommentDeleted',
 	RoomCurrencyCreated = 'RoomCurrencyCreated',
 	RoomCurrencyModified = 'RoomCurrencyModified',
