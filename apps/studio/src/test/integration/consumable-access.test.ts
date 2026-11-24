@@ -1,7 +1,12 @@
 import { adminSecretsStore, env, SELF } from 'cloudflare:test'
 import { beforeAll, beforeEach, expect, it } from 'vitest'
 
-import { SCHEMA_DDL as ACCOUNT_SCHEMA, AVATAR_STUDIO_SCHEMA, ROOM_SCHEMA_DDL } from '@repo/domain'
+import {
+	SCHEMA_DDL as ACCOUNT_SCHEMA,
+	AVATAR_STUDIO_SCHEMA,
+	ROOM_SCHEMA_DDL,
+	roomRoleWrites,
+} from '@repo/domain'
 import { generateStudioBuildValidationToken, generateToken } from '@repo/jwt'
 
 import { CLOUD_JOB_SCHEMA } from '../../cloud-builds'
@@ -71,14 +76,17 @@ it('rejects cancelled and expired jobs', async () => {
 	expect((await request(42)).status).toBe(403)
 })
 it('lets co-owners validate each other’s grants without exposing unrelated accounts', async () => {
-	await env.DB.prepare("UPDATE room SET data=json_set(data,'$.Roles',json(?)) WHERE room_id=3000")
-		.bind(
-			JSON.stringify([
-				{ AccountId: 42, Role: 255 },
-				{ AccountId: 43, Role: 30 },
-			])
-		)
-		.run()
+	const Roles = [
+		{ AccountId: 42, Role: 255 },
+		{ AccountId: 43, Role: 30 },
+	]
+	// The peer check reads `room_role`, so write the index with the blob as rooms-db does.
+	await env.DB.batch([
+		env.DB.prepare("UPDATE room SET data=json_set(data,'$.Roles',json(?)) WHERE room_id=3000").bind(
+			JSON.stringify(Roles)
+		),
+		...roomRoleWrites(env.DB, 3000, { Roles } as Parameters<typeof roomRoleWrites>[2]),
+	])
 	const headers = {
 		Authorization:
 			'Bearer ' + (await generateToken('43', 'fixture', 0, 'test-key', ['betastudio'])),

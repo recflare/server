@@ -222,9 +222,16 @@ const app = new Hono<App>()
 			// The SDK validates a registry against every owner of its room. Allow
 			// peers to inspect grants only when both currently manage the same room.
 			const shared = await c.env.DB.prepare(
-				`SELECT 1 FROM room r WHERE
-			 (r.creator_account_id=?1 OR EXISTS (SELECT 1 FROM json_each(r.data,'$.Roles') role WHERE json_extract(role.value,'$.AccountId')=?1 AND json_extract(role.value,'$.Role') IN (30,255))) AND
-			 (r.creator_account_id=?2 OR EXISTS (SELECT 1 FROM json_each(r.data,'$.Roles') role WHERE json_extract(role.value,'$.AccountId')=?2 AND json_extract(role.value,'$.Role') IN (30,255))) LIMIT 1`
+				// Each side is the rooms an account manages: created (idx_rooms_creator) or held
+				// at CoOwner/Creator in `room_role` (its primary key). A `json_each` over
+				// `room.data` here parsed every room's blob, twice, on every call.
+				`SELECT 1 FROM (
+				   SELECT room_id FROM room WHERE creator_account_id = ?1
+				   UNION SELECT room_id FROM room_role WHERE account_id = ?1 AND role IN (30, 255)
+				 ) WHERE room_id IN (
+				   SELECT room_id FROM room WHERE creator_account_id = ?2
+				   UNION SELECT room_id FROM room_role WHERE account_id = ?2 AND role IN (30, 255)
+				 ) LIMIT 1`
 			)
 				.bind(caller, id)
 				.first()
