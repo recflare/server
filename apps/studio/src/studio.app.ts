@@ -20,7 +20,13 @@ import { hasStudioAccess } from '../../auth/src/platform-db'
 import { uploadAvatarItemHandler } from './avatar-upload'
 import cloudBuilds from './cloud-builds'
 import distribution from './distribution'
-import { getUserBuildCount, listCloudBuilds, storeLocalCloudBuild } from './local-builds'
+import editorUploads from './editor-uploads'
+import {
+	getUserBuildCount,
+	listCloudBuilds,
+	MAX_BUILDS_PER_INTERVAL,
+	storeLocalCloudBuild,
+} from './local-builds'
 import { parseMultipart } from './multipart'
 
 import type { Context } from 'hono'
@@ -281,6 +287,9 @@ const app = new Hono<App>()
 
 	// Local Windows + Android bundles from the editor button under Upload.
 	.post('/cloud-builds/from-editor', (c) => postLocalCloudBuild(c))
+	// The same upload through presigned R2 parts, for pairs over Cloudflare's 100 MB
+	// request cap. See editor-uploads.ts.
+	.route('/cloud-builds/from-editor/uploads', editorUploads)
 
 	// CloudBuildRateLimitConfigDTO reads these three fields directly (no Result
 	// envelope). Missing MaxBuildsPerInterval becomes zero and blocks the first build.
@@ -288,7 +297,7 @@ const app = new Hono<App>()
 		c.json({
 			buildThrottleIntervalHours: 1,
 			warnAfterBuildsPerInterval: 90,
-			maxBuildsPerInterval: 100,
+			maxBuildsPerInterval: MAX_BUILDS_PER_INTERVAL,
 		})
 	)
 
