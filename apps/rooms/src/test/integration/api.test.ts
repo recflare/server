@@ -1076,6 +1076,51 @@ describe('rooms endpoints', () => {
 		expect(aliased.TotalResults).toBeGreaterThan(0)
 	})
 
+	// Search scans ids and names, narrowing ASCII terms in SQL on `name_lower` — which SQLite
+	// lowercases in ASCII only — and reads full rooms just for the page it serves.
+	it('GET /rooms/search matches every term, pages in creation order, and finds non-ASCII names', async () => {
+		for (const [RoomId, Name] of [
+			[97_201, 'ZZQSEARCH Alpha'],
+			[97_202, 'CAFÉ Zzqsearch'],
+			[97_203, 'Zzqsearch Gamma'],
+			[97_204, 'Zzqother Alpha'],
+		] as const) {
+			await env.DB.prepare('INSERT INTO room (data) VALUES (?1)')
+				.bind(JSON.stringify({ RoomId, Name, CreatorAccountId: 1, Accessibility: 1 }))
+				.run()
+		}
+		const search = async (query: string, page = '') => {
+			const res = await SELF.fetch(
+				`${ORIGIN}/rooms/search?query=${encodeURIComponent(query)}${page}`
+			)
+			const body = (await res.json()) as {
+				Results: Array<{ RoomId: number; Name: string; SubRooms: unknown[] }>
+				TotalResults: number
+			}
+			return { ids: body.Results.map((r) => r.RoomId), total: body.TotalResults, body }
+		}
+
+		// Case-insensitive substring, in the order the rooms were created.
+		const all = await search('zzqsearch')
+		expect(all.ids).toEqual([97_201, 97_202, 97_203])
+		expect(all.total).toBe(3)
+		// What comes back is the whole hydrated room, not the scan's id-and-name row.
+		expect(all.body.Results[0]).toMatchObject({ Name: 'ZZQSEARCH Alpha', SubRooms: [] })
+		// Every term has to match.
+		expect((await search('zzqsearch alpha')).ids).toEqual([97_201])
+		// A page is cut from the matches; the total still counts them all.
+		expect(await search('zzqsearch', '&skip=1&take=1')).toMatchObject({ ids: [97_202], total: 3 })
+		// A non-ASCII term can't be matched by SQLite's `lower()`; it still finds the room.
+		expect((await search('café')).ids).toEqual([97_202])
+		expect((await search('café zzqsearch')).ids).toEqual([97_202])
+		// The total is the count of matches even past the last page, and with nothing to serve.
+		expect(await search('zzqsearch', '&skip=50&take=10')).toMatchObject({ ids: [], total: 3 })
+		expect(await search('zzqnothing')).toMatchObject({ ids: [], total: 0 })
+
+		// The feed tests below count the public rooms; leave them as they were.
+		await env.DB.prepare('DELETE FROM room WHERE room_id BETWEEN 97201 AND 97204').run()
+	})
+
 	it('GET /rooms/search?query=#community serves rooms the Coach account did not create', async () => {
 		// The browse chip's word reaches search as a tag term, but no room CARRIES a
 		// `community` tag — it is the same pseudo-tag `/rooms/hot?tag=community` applies, so it

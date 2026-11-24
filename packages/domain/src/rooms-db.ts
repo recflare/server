@@ -3798,8 +3798,8 @@ function roomTags(room: Room): string[] {
  * Search public, non-dorm rooms not opted out of search. The query is split into terms
  * (space/`+`): `#tag` terms match the room's Tags; plain terms match the room name
  * (substring). All terms must match. Returns a paginated `{ Results, TotalResults }`.
- * The rows narrow in SQL — public, non-dorm, searchable ({@link SEARCHABLE_WHERE}) — and
- * the name terms match in memory over what comes back.
+ * The rows narrow in SQL — public, non-dorm, searchable ({@link SEARCHABLE_WHERE}), and by
+ * name where SQL can — over ids and names alone; only the served page's rooms are read.
  *
  * `#community` is the one tag term that isn't a tag lookup — see {@link COMMUNITY_TAG}.
  */
@@ -3827,28 +3827,95 @@ export async function searchRooms(
 	const tagSets = tagTerms
 		.filter((tag) => tag !== COMMUNITY_TAG)
 		.map((tag) => [tag, ...(TAG_ALIASES[tag] ?? [])])
-	const { sql, binds } = roomsByTagsQuery(tagSets, SEARCHABLE_WHERE)
+	// The scan reads three small values per room, never the blob: it has to consider every
+	// searchable room, but serves one page of them, and selecting `data` (plus the boost
+	// subquery, once per row) shipped ~4.7MB out of D1 on every search to serve a dozen rooms.
+	// The page's full rooms are read by id afterwards ({@link loadRankedPage}).
+	//
+	// The plain terms narrow in SQL where they can. An ASCII term is a substring test on
+	// `name_lower`, which `idx_room_search_name` holds for exactly the searchable rooms, so
+	// the hinted scan walks index entries alone and reads a row only for a name that matched
+	// (~1ms against ~45-90ms on production). The planner won't pick that index by itself —
+	// it prefers `idx_room_public`, which reads every row to test `exclude_from_search` — so
+	// the hint is load-bearing wherever it appears below; it is left off under a tag join,
+	// where the tags drive.
+	// A NON-ASCII term can't narrow there: `name_lower` is SQLite's `lower()`, which folds
+	// ASCII only, so `café` would miss a room named `CAFÉ` that the match below finds.
+	const nameTerms = terms.filter((t) => !t.startsWith('#'))
+	const sqlTerms = nameTerms.filter((t) => /^[\x20-\x7e]+$/.test(t))
+	const tagBindCount = tagSets.flat().length
+	const where = [
+		SEARCHABLE_WHERE,
+		...sqlTerms.map((_, i) => `instr(name_lower, ?${tagBindCount + i + 1}) > 0`),
+	].join(' AND ')
+
+	// The usual search — plain ASCII terms, nothing else — never leaves the index until it
+	// knows its page. Both statements walk `idx_room_search_name` entries alone: one counts
+	// the matches, the other orders them by rowid (which every index entry carries) and
+	// reads a row only for the `take` it serves. A one-letter search matches most of the
+	// catalogue, and used to fetch every one of those rows to serve a hundred.
+	if (tagSets.length === 0 && !communityOnly && sqlTerms.length === nameTerms.length) {
+		const limit = `?${sqlTerms.length + 1} OFFSET ?${sqlTerms.length + 2}`
+		const [count, page] = await db.batch<RoomRow & { total: number }>([
+			db
+				.prepare(
+					`SELECT COUNT(*) AS total FROM room INDEXED BY idx_room_search_name WHERE ${where}`
+				)
+				.bind(...sqlTerms),
+			db
+				.prepare(
+					`SELECT ${ROOM_COLUMNS} FROM room WHERE room.rowid IN (
+					   SELECT s.rowid FROM room s INDEXED BY idx_room_search_name
+					   WHERE ${where} ORDER BY s.rowid LIMIT ${limit})
+					 ORDER BY room.rowid`
+				)
+				.bind(...sqlTerms, Math.max(0, take), Math.max(0, skip)),
+		])
+		return {
+			Results: await hydrateRooms(db, parseAll(page.results).filter(isSearchable)),
+			TotalResults: count.results[0]?.total ?? 0,
+		}
+	}
+
+	// Everything else — a tag term, `#community`, a non-ASCII term — scans ids and names and
+	// pages in memory; the tag joins keep those scans to the rooms carrying the tags.
+	const columns = 'room.rowid AS row_id, room.room_id AS room_id, name, creator_account_id'
+	const { sql, binds } =
+		tagSets.length === 0 && sqlTerms.length > 0
+			? {
+					sql: `SELECT ${columns} FROM room INDEXED BY idx_room_search_name WHERE ${where}`,
+					binds: [] as string[],
+				}
+			: roomsByTagsQuery(tagSets, where, columns)
 	const { results } = await db
 		.prepare(sql)
-		.bind(...binds)
-		.all<RoomRow>()
-	let rooms = parseAll(results).filter(isSearchable)
+		.bind(...binds, ...sqlTerms)
+		.all<{
+			row_id: number
+			room_id: number
+			name: string | null
+			creator_account_id: number | null
+		}>()
+	let rows = results
 
 	// The same test the hot feed's `community` chip applies: every room a player made, which
 	// is every room the Coach account doesn't own. It narrows the other terms rather than
 	// replacing them, so `#community horror` is still a name search within player-made rooms.
-	if (communityOnly) rooms = rooms.filter(isPlayerMade)
+	if (communityOnly) rows = rows.filter((r) => r.creator_account_id !== COACH_ACCOUNT_ID)
 
-	// The plain terms still match in memory: they are substring matches on the name, which
-	// no index helps with.
-	for (const term of terms) {
-		if (term.startsWith('#')) continue
-		rooms = rooms.filter((r) => typeof r.Name === 'string' && r.Name.toLowerCase().includes(term))
+	// Every plain term is matched here, in JS's lowercasing — the definition of a match. For
+	// the ASCII terms the SQL above already agreed; this is what catches the rest.
+	for (const term of nameTerms) {
+		rows = rows.filter((r) => typeof r.name === 'string' && r.name.toLowerCase().includes(term))
 	}
 
+	// By rowid, like the page above: the order rooms were made in, which is room id order
+	// but for rooms inserted with an id of their own choosing.
+	const ids = rows.sort((x, y) => x.row_id - y.row_id).map((r) => r.room_id)
+	const page = ids.slice(skip, skip + take).map((RoomId): Room => ({ RoomId }))
 	return {
-		Results: await hydrateRooms(db, rooms.slice(skip, skip + take)),
-		TotalResults: rooms.length,
+		Results: await hydrateRooms(db, (await loadRankedPage(db, page)).filter(isSearchable)),
+		TotalResults: ids.length,
 	}
 }
 
