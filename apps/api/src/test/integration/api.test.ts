@@ -442,6 +442,54 @@ describe('public endpoints', () => {
 		}
 	})
 
+	test('GET /api/gameconfigs/v1/all configures RecCenter visuals and bootstrap with token precedence', async () => {
+		const original = env.RECFLARE_BOOTSTRAP_GAME_CONFIG_BUILD
+		try {
+			for (const setting of [undefined, '', 'invalid', '20250718', '20260323']) {
+				env.RECFLARE_BOOTSTRAP_GAME_CONFIG_BUILD = setting
+				for (const version of [
+					undefined,
+					'20230414',
+					'20250718.01',
+					'20260323.14',
+					'20260323.15',
+				]) {
+					const res = await exports.default.fetch(`${ORIGIN}/api/gameconfigs/v1/all`, {
+						headers: version ? await bearer('42', undefined, version) : {},
+					})
+					expect(res.status).toBe(200)
+					const entries = (await res.json()) as Array<{ Key: string; Value: string }>
+					const is2026 = version?.startsWith('20260323') || (!version && setting === '20260323')
+					for (const key of [
+						'Door.Dormroom.Query',
+						'Door.Dormroom.Title',
+						'LiveOps.DormExit.CustomDisplayName',
+						'LiveOps.DormExit.CustomInteractionLabel',
+					]) {
+						const matches = entries.filter((e) => e.Key === key)
+						if (is2026) {
+							expect(matches).toHaveLength(1)
+							expect(matches[0]?.Value).toBe('^RecCenter')
+						} else {
+							const expected =
+								key === 'Door.Dormroom.Query'
+									? ''
+									: key === 'Door.Dormroom.Title'
+										? 'EXIT'
+										: undefined
+							expect(matches[0]?.Value).toBe(expected)
+						}
+					}
+					expect(entries.some((e) => e.Key === KEY_2025_ONLY)).toBe(
+						Boolean(is2026) || version === '20250718.01'
+					)
+				}
+			}
+		} finally {
+			env.RECFLARE_BOOTSTRAP_GAME_CONFIG_BUILD = original
+		}
+	})
+
 	test('GET /api/gameconfigs/v1/all enables only the 2026 Roomie companion', async () => {
 		for (const version of ['20260323.14', '20250718.01']) {
 			const res = await exports.default.fetch(`${ORIGIN}/api/gameconfigs/v1/all`, {

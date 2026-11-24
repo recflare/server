@@ -24,13 +24,30 @@ import type { App } from '../context'
 // The fingerprinted 2026 client has local low/no-energy activities. Enable its
 // Roomie system and both fallback gates together; the AI Worker supplies zero
 // energy and refuses realtime credentials. Keep the archived catalogs unchanged.
-const roomieCompanionConfigs = gameConfigsV1All2025.map((entry) =>
-	['RoomieAI.System.Enabled', 'RoomieAI.SupportNoAIMode', 'RoomieAI.SupportLowEnergyMode'].includes(
-		entry.Key
+// The DormRoom sign and interaction label use separate LiveOps overrides.
+const gameConfigs2026 = gameConfigsV1All2025
+	.map((entry) =>
+		[
+			'RoomieAI.System.Enabled',
+			'RoomieAI.SupportNoAIMode',
+			'RoomieAI.SupportLowEnergyMode',
+		].includes(entry.Key)
+			? { ...entry, Value: 'true' }
+			: ['Door.Dormroom.Query', 'Door.Dormroom.Title'].includes(entry.Key)
+				? { ...entry, Value: '^RecCenter' }
+				: entry
 	)
-		? { ...entry, Value: 'true' }
-		: entry
-)
+	.concat(
+		['LiveOps.DormExit.CustomDisplayName', 'LiveOps.DormExit.CustomInteractionLabel'].map(
+			(Key) => ({
+				Key,
+				Value: '^RecCenter',
+				ActiveExperiments: null,
+				StartTime: null,
+				EndTime: null,
+			})
+		)
+	)
 
 // ---- Config / version ------------------------------------------------------
 export const configRoutes = new Hono<App>({ strict: false })
@@ -160,8 +177,8 @@ export const configRoutes = new Hono<App>({ strict: false })
 	// so a same-day point release of the target (`20230414.01`) stays on the 2023 catalog.
 	//
 	// A request with no readable token version gets the 2023 catalog, the same body this
-	// route has always served: unauthenticated is not evidence of a newer client, and this
-	// stack targets `GAME_VERSION`. Like the version gate on `featuredrooms`, the claim is
+	// route has always served unless a dedicated server opts into the 2026 bootstrap
+	// catalog. Like the version gate on `featuredrooms`, the claim is
 	// unverified — a client that lies about its build only misconfigures itself.
 	.get(
 		'/api/gameconfigs/v1/all',
@@ -170,18 +187,25 @@ export const configRoutes = new Hono<App>({ strict: false })
 			summary: 'Per-game configuration',
 			description:
 				'An opaque catalog of per-game settings. 20260323.14 enables Roomie and its ' +
-				'low/no-energy companion gates over the archived 2025 catalog. Otherwise, a ' +
+				'low/no-energy companion gates and the RecCenter DormRoom exit over the archived ' +
+				'2025 catalog. Otherwise, a ' +
 				'build NEWER than `20230414` gets the 2025 catalog, which carries keys the older one ' +
 				'never had; that build and anything older get the 2023 catalog. Builds are ' +
 				'date-stamped, so they compare as strings. The build is read from the token’s ' +
 				'`rn.ver` claim — the request carries no version of its own — so auth is optional ' +
-				'here and only selects the catalog; a request without a readable token version gets ' +
-				'the 2023 one.',
+				'here and only selects the catalog. Without a readable token version, the optional ' +
+				'RECFLARE_BOOTSTRAP_GAME_CONFIG_BUILD=20260323 setting selects the 2026 catalog; ' +
+				'otherwise the 2023 catalog is served.',
 			responses: { 200: json(JsonObject, 'The game config catalog for the caller’s build') },
 		}),
 		async (c) => {
-			const build = await validateAndGetBuild(c.req.raw, await c.env.JWT_SECRET.get())
-			if (build === '20260323') return c.json(roomieCompanionConfigs)
+			const authenticatedBuild = await validateAndGetBuild(c.req.raw, await c.env.JWT_SECRET.get())
+			// Dedicated 2026 servers can supply the same catalog during pre-login bootstrap.
+			// A valid token always takes precedence over the optional bootstrap setting.
+			const build =
+				authenticatedBuild ??
+				(c.env.RECFLARE_BOOTSTRAP_GAME_CONFIG_BUILD === '20260323' ? '20260323' : null)
+			if (build === '20260323') return c.json(gameConfigs2026)
 			const newerThanTarget = build !== null && build > GAME_VERSION
 			return c.json(newerThanTarget ? gameConfigsV1All2025 : gameConfigsV1All)
 		}
