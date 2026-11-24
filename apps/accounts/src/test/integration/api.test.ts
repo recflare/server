@@ -8,6 +8,7 @@ import {
 	EMAIL_CODE_SCHEMA_DDL,
 	hashPassword,
 	RATE_LIMIT_SCHEMA_DDL,
+	ROOM_SCHEMA_DDL,
 	SCHEMA_DDL,
 } from '@repo/domain'
 
@@ -31,6 +32,8 @@ beforeAll(async () => {
 	for (const stmt of EMAIL_CODE_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	// The counters that cap how many of those go out per account and day.
 	for (const stmt of RATE_LIMIT_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	// Rooms (owned by `rooms`): a username change renames the account's dorm.
+	for (const stmt of ROOM_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	const insert = env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
 	await env.DB.batch([
 		insert.bind(JSON.stringify({ accountId: 0, username: 'RecRoom', displayName: 'Rec Room' })),
@@ -382,6 +385,32 @@ describe('auth-gated endpoints', () => {
 			await exports.default.fetch(`${ORIGIN}/account/me`, { headers: await bearer('894') })
 		).json()) as { username: string; availableUsernameChanges: number }
 		expect(me.availableUsernameChanges).toBe(3)
+	})
+
+	test('PUT /account/me/username renames the dorm after the new username, not custom dorms', async () => {
+		const room = (roomId: number, name: string, creator: number, isDorm = true) =>
+			env.DB.prepare('INSERT INTO room (data) VALUES (?1)').bind(
+				JSON.stringify({ RoomId: roomId, Name: name, CreatorAccountId: creator, IsDorm: isDorm })
+			)
+		await env.DB.batch([
+			room(40101, "@CleverFalcon26637's Dorm", 896),
+			room(40102, 'MyCustomDorm', 896),
+			room(40103, "@SomeoneElse's Dorm", 897),
+		])
+		const res = await exports.default.fetch(`${ORIGIN}/account/me/username`, {
+			...form({ username: 'Scyte' }),
+			headers: { ...(await bearer('896')), 'Content-Type': 'application/x-www-form-urlencoded' },
+		})
+		expect(((await res.json()) as { success: boolean }).success).toBe(true)
+		const name = async (roomId: number) =>
+			(
+				await env.DB.prepare("SELECT json_extract(data, '$.Name') AS name FROM room WHERE room_id = ?1")
+					.bind(roomId)
+					.first<{ name: string }>()
+			)?.name
+		expect(await name(40101)).toBe("@Scyte's Dorm")
+		expect(await name(40102)).toBe('MyCustomDorm')
+		expect(await name(40103)).toBe("@SomeoneElse's Dorm")
 	})
 
 	test('PUT /account/me/username allows three changes, decrements the counter, then blocks', async () => {

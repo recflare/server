@@ -1102,6 +1102,29 @@ export async function setRoomName(db: D1Database, roomId: number, name: string):
 		.run()
 }
 
+/**
+ * Follow a username change on the account's dorms: every dorm it created that still carries an
+ * owner-prefixed name (`@<username>'s Dorm`, the name {@link getOrCreateDormRoom} gives it) is
+ * renamed after the new username. A custom dorm the player named stays as named: room names
+ * can't start with `@` (see validation.ts), so only the server's own names match. Without this
+ * the dorm kept the name it was provisioned under forever, sign-up's generated one included.
+ * Answers how many dorms were renamed.
+ */
+export async function renameAutoNamedDorms(
+	db: D1Database,
+	accountId: number,
+	username: string
+): Promise<number> {
+	const { meta } = await db
+		.prepare(
+			`UPDATE room SET data = json_set(data, '$.Name', ?2)
+			 WHERE creator_account_id = ?1 AND is_dorm = 1 AND name_lower LIKE '@%''s dorm'`
+		)
+		.bind(accountId, `@${username}'s Dorm`)
+		.run()
+	return meta.changes
+}
+
 /** Set a room's ImageName in place (the caller is responsible for the owner check). */
 export async function setRoomImage(
 	db: D1Database,
