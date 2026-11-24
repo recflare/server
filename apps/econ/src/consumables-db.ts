@@ -97,6 +97,19 @@ export interface ConsumeResult {
  * instance's details plus the resulting count, or null when the row didn't exist /
  * isn't the caller's.
  */
+/** The `ConsumableItemDesc` of a consumable instance the account owns, or null. */
+export async function getOwnedConsumableDesc(
+	db: D1Database,
+	accountId: number,
+	id: number
+): Promise<string | null> {
+	const row = await db
+		.prepare('SELECT consumable_item_desc FROM consumable WHERE id = ?1 AND account_id = ?2')
+		.bind(id, accountId)
+		.first<{ consumable_item_desc: string }>()
+	return row?.consumable_item_desc ?? null
+}
+
 export async function consumeConsumable(
 	db: D1Database,
 	accountId: number,

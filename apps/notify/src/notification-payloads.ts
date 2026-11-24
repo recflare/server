@@ -389,6 +389,28 @@ export interface CreatorClubSubscriptionPayload {
 }
 
 /**
+ * `RoomBoosted` (2026, `RecNet.Rooms.RoomBoostConsumedNotificationDTO`): a boost this player
+ * just spent was recorded. The client acts on it only when `AccountId` is the local player and
+ * `RoomId` is its current room: it drops its cached count and refetches the room's and its own.
+ * `RequestId` is a `System.Guid` on the client: a non-GUID string fails the whole frame.
+ */
+export interface RoomBoostedPayload {
+	RequestId: string
+	RoomId: number
+	AccountId: number
+}
+
+/**
+ * `RoomBoostCountUpdated` (2026, `RecNet.Rooms.RoomBoostNotificationDTO`): a room's active boost
+ * count, which the client stores in its per-room cache and its badges, stat texts and the CV2
+ * *Room Boost Count Changed* event read from.
+ */
+export interface RoomBoostCountUpdatedPayload {
+	RoomId: number
+	GlobalBoostCount: number
+}
+
+/**
  * `RoomCurrencyCreated` / `RoomCurrencyModified` — and the same object
  * `POST /api/roomcurrencies/v1/createCurrency` answers with.
  *

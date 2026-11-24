@@ -22,6 +22,7 @@ import { chunkForBinds } from './d1-binds'
 import { Accessibility, Role } from './enums'
 import { getShowcasedRoomIds } from './lists-db'
 import { readPlayerSettings } from './player-settings-kv'
+import { activeBoostsSql, ROOM_BOOST_SCHEMA_DDL } from './room-boosts-db'
 import { countPlayersByRoom } from './presence-db'
 import { resyncInstanceCapacity } from './room-instance-db'
 import { isStudioBundleFilename } from './studio-unity-assets'
@@ -201,6 +202,9 @@ export const ROOM_SCHEMA_DDL: string[] = [
 		data TEXT NOT NULL,
 		PRIMARY KEY (room_id, player_id)
 	)`,
+	// Room boosts (room-boosts-db.ts): every room read joins in the active count, so the table
+	// belongs with the room schema wherever that is built.
+	...ROOM_BOOST_SCHEMA_DDL,
 ]
 
 /**
@@ -2337,18 +2341,21 @@ interface RoomRow {
 	visits: number
 	cheers: number
 	favorites: number
+	/** Active boost units; absent on the ranking stubs ({@link RANK_COLUMNS}). */
+	boosts?: number
 }
 
 /**
  * The columns every room read selects. `visits`, `cheers` and `favorites` are
  * authoritative for the room's `Stats.VisitCount`/`CheerCount`/`FavoriteCount` (the blob
  * keeps them at 0 — see {@link storedStats}), so they have to come back with the blob on
- * every read; a join aliases them (`r.data AS data`), see {@link COUNTER_COLUMNS}.
+ * every read; a join aliases them (`r.data AS data`), see {@link COUNTER_COLUMNS}. `boosts`
+ * is the room's active boost units (`room_boost`), served as `BoostCount`.
  */
-const ROOM_COLUMNS = 'data, visits, cheers, favorites'
+const ROOM_COLUMNS = `data, visits, cheers, favorites, ${activeBoostsSql('room')} AS boosts`
 
 /** The counter columns of {@link ROOM_COLUMNS} as a join selects them, aliased to the row's names. */
-const COUNTER_COLUMNS = 'r.visits AS visits, r.cheers AS cheers, r.favorites AS favorites'
+const COUNTER_COLUMNS = `r.visits AS visits, r.cheers AS cheers, r.favorites AS favorites, ${activeBoostsSql('r')} AS boosts`
 
 /**
  * The rooms a public feed may consider, as a SQL predicate: public, not a dorm, and not
@@ -2437,8 +2444,8 @@ async function loadRankedPage(db: D1Database, stubs: Room[]): Promise<Room[]> {
  * key is PRESENT rather than absent — the seed blobs and every room written since predate
  * them, so they can't come from the data:
  *
- * - `BoostCount` — how many boosts the room is carrying. No boost feature exists here, so
- *   it is 0 for every room.
+ * - `BoostCount` — the room's active boost units. Every room read selects them
+ *   ({@link ROOM_COLUMNS}); this only covers a room built in code rather than read.
  * - `CurrentSnapshotId` — the room's published snapshot. Nothing takes snapshots, so it is
  *   null, which is also what the reference serves for a room that has none.
  * - `CCU` — concurrent users. No live-population counter exists here, so it is null, which
@@ -2467,6 +2474,7 @@ const parseRow = (row: RoomRow): Room => {
 		CheerCount: row.cheers ?? 0,
 		FavoriteCount: row.favorites ?? 0,
 	}
+	if (row.boosts !== undefined) room.BoostCount = row.boosts
 	attachRoomDtoDefaults(room)
 	return room
 }
@@ -2842,12 +2850,13 @@ function roomsByTagsQuery(
 			.join(' OR ')
 		binds.push(...tags)
 		return `JOIN (SELECT DISTINCT room_id FROM room_tag WHERE ${matches}) f${i}
-		         ON f${i}.room_id = r.room_id`
+		         ON f${i}.room_id = room.room_id`
 	})
 	// `data` and the counters — in {@link ROOM_COLUMNS} or the ranking stub
 	// {@link RANK_COLUMNS} — are unqualified but unambiguous: the joined subqueries expose
-	// only `room_id`.
-	return { sql: `SELECT ${columns} FROM room r ${joins.join(' ')}${filter}`, binds }
+	// only `room_id`. The table keeps its own name (no alias): ROOM_COLUMNS' boost count
+	// correlates on `room.room_id`.
+	return { sql: `SELECT ${columns} FROM room ${joins.join(' ')}${filter}`, binds }
 }
 
 /** Parse subroom rows and resolve their `CurrentSave` in one batched query. */

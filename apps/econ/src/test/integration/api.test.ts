@@ -13,11 +13,13 @@ import {
 	getOwnedInventionIds,
 	getPendingGifts,
 	getProgression,
+	getRoomBoostCount,
 	INVENTORY_INVENTION_SCHEMA_DDL,
 	OUTFIT_SCHEMA_DDL,
 	PRESENCE_SCHEMA_DDL,
 	PROGRESSION_SCHEMA_DDL,
 	RECEIVED_GIFT_SCHEMA_DDL,
+	ROOM_BOOST_DESC,
 	ROOM_SCHEMA_DDL,
 	setPresence,
 	updateAccount,
@@ -10537,5 +10539,66 @@ describe('cai-grant-legacy', () => {
 			).first()
 		).toEqual(first)
 		expect(first!.acquired_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
+	})
+})
+
+describe('room boosts', () => {
+	// The 2026 client spends a Room Boost through the ordinary consume route, once per unit, with
+	// the room of its instance and a fresh GUID per request.
+	test('consuming a Room Boost in a room records a boost, once per RequestId', async () => {
+		const consume = async (body: Record<string, unknown>) =>
+			exports.default.fetch(`${ORIGIN}/api/consumables/v1/consume`, {
+				method: 'POST',
+				headers: { ...(await bearer('701')), 'Content-Type': 'application/json' },
+				body: JSON.stringify(body),
+			})
+		const boosts = async () =>
+			(
+				await env.DB.prepare(
+					'SELECT account_id, request_id, amount FROM room_boost WHERE room_id = 2511 ORDER BY id'
+				).all<{ account_id: number; request_id: string; amount: number }>()
+			).results
+		const owned = async (id: number) =>
+			(
+				await env.DB.prepare('SELECT count FROM consumable WHERE id = ?1')
+					.bind(id)
+					.first<{ count: number }>()
+			)?.count ?? 0
+		const first = '6f1d7a52-2c55-4b0e-9a8e-4f6a1c3b2d10'
+		const second = '0b9e3c4d-7a1f-4e2b-8c5d-1a2b3c4d5e6f'
+
+		const id = await grantConsumable(env.DB, 701, ROOM_BOOST_DESC, 10)
+		expect(
+			(await consume({ Id: id, DeltaCount: 1, IsRRO: true, RequestId: first, RoomId: 2511 })).status
+		).toBe(200)
+		expect(await boosts()).toEqual([{ account_id: 701, request_id: first, amount: 1 }])
+		expect(await owned(id)).toBe(9)
+
+		// The client retries a consume it got no answer to: the same RequestId spends nothing.
+		await consume({ Id: id, DeltaCount: 1, RequestId: first, RoomId: 2511 })
+		expect(await boosts()).toHaveLength(1)
+		expect(await owned(id)).toBe(9)
+
+		// Asking for more than is left records what was actually spent.
+		await consume({ Id: id, DeltaCount: 10, RequestId: second, RoomId: 2511 })
+		expect((await boosts())[1]).toEqual({ account_id: 701, request_id: second, amount: 9 })
+		expect(await owned(id)).toBe(0)
+		expect(await getRoomBoostCount(env.DB, 2511)).toBe(10)
+
+		// A boost with no existing room would be lost: it is not spent at all.
+		const kept = await grantConsumable(env.DB, 701, ROOM_BOOST_DESC, 2)
+		await consume({ Id: kept, DeltaCount: 1, RequestId: crypto.randomUUID(), RoomId: 99999999 })
+		await consume({ Id: kept, DeltaCount: 1, RequestId: crypto.randomUUID(), RoomId: null })
+		await consume({ Id: kept, DeltaCount: 1 })
+		expect(await owned(kept)).toBe(2)
+		expect(await boosts()).toHaveLength(2)
+
+		// Any other consumable ignores RequestId and RoomId, as before.
+		const pizza = await grantConsumable(env.DB, 701, 'Supreme Pizza', 2)
+		await consume({ Id: pizza, DeltaCount: 1, RequestId: crypto.randomUUID(), RoomId: 2511 })
+		expect(await owned(pizza)).toBe(1)
+		expect(await boosts()).toHaveLength(2)
+
+		await env.DB.prepare('DELETE FROM room_boost WHERE room_id = 2511').run()
 	})
 })
