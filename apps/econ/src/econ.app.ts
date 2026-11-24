@@ -66,7 +66,12 @@ import {
 	isSpendable,
 	spendCurrency,
 } from './balance-db'
-import { getCatalogItem, getStoreListings, toCatalogAvatarItem } from './catalog-db'
+import {
+	CATALOG_AVATAR_ITEM_COLUMNS,
+	getCatalogItem,
+	getStoreListings,
+	toCatalogAvatarItem,
+} from './catalog-db'
 // `LEGACY_CLIENT_BUILD` is shared with the storefront generator rather than restated: it picks
 // which store FILE a caller is served here, and is what the generator's help names.
 import { CatalogKind, LEGACY_CLIENT_BUILD } from './catalog-load'
@@ -274,7 +279,7 @@ import type {
 	RoomCurrencyPayload,
 } from '../../notify/src/notification-payloads'
 import type { Avatar } from './avatar-db'
-import type { CatalogRow } from './catalog-db'
+import type { CatalogAvatarItemRow, CatalogRow } from './catalog-db'
 import type {
 	ChallengeGiftBlock,
 	EquipmentGift,
@@ -3264,11 +3269,16 @@ const app = new Hono<App>({ strict: false })
 			// closest thing to the reference's "catalogue order" there is — then filtered here.
 			// One statement whatever was asked: the client posts hundreds of descs at a time, and
 			// D1 binds at most a hundred parameters, so an `IN (...)` of the request cannot be.
+			// Named columns, not `*`: `listing` is megabytes this never reads. And `+kind`, which
+			// keeps the planner off `idx_catalog_name` — that index answers in NAME order and
+			// costs a sort of the whole kind, where a plain scan is already in rowid order (and
+			// avatar items are most of the table, so the index saves it nothing).
 			const { results } = await c.env.DB.prepare(
-				'SELECT * FROM catalog WHERE kind = ?1 ORDER BY rowid'
+				`SELECT ${CATALOG_AVATAR_ITEM_COLUMNS.join(', ')} FROM catalog
+				 WHERE +kind = ?1 ORDER BY rowid`
 			)
 				.bind(CatalogKind.AvatarItem)
-				.all<CatalogRow>()
+				.all<CatalogAvatarItemRow>()
 			const catalogue = results.map(toCatalogAvatarItem)
 			if (requested.length === 0) return c.json(catalogue)
 

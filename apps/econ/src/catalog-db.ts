@@ -198,8 +198,31 @@ export interface CatalogSkin {
 	ThumbnailImage: string | null
 }
 
+/**
+ * The columns {@link toCatalogAvatarItem} reads — what a query that only projects avatar items
+ * should select. Notably NOT `listing`: it is the row's whole store listing (~3 MB across the
+ * avatar items), and `SELECT *` hauls it out of D1 for a projection that never looks at it.
+ */
+export const CATALOG_AVATAR_ITEM_COLUMNS = [
+	'item_key',
+	'kind',
+	'friendly_name',
+	'tooltip',
+	'rarity',
+	'platform_mask',
+	'thumbnail_image',
+	'avatar_item_type',
+	'avatar_item_id',
+	'is_base_avatar_item',
+	'tag_list',
+	'created_at',
+] as const satisfies ReadonlyArray<keyof CatalogRow>
+
+/** A row narrowed to {@link CATALOG_AVATAR_ITEM_COLUMNS}. A whole {@link CatalogRow} is one too. */
+export type CatalogAvatarItemRow = Pick<CatalogRow, (typeof CATALOG_AVATAR_ITEM_COLUMNS)[number]>
+
 /** Projects a row to the avatar-item record. Throws on a row of the wrong kind. */
-export function toCatalogAvatarItem(row: CatalogRow): CatalogAvatarItem {
+export function toCatalogAvatarItem(row: CatalogAvatarItemRow): CatalogAvatarItem {
 	if (row.kind !== CatalogKind.AvatarItem) {
 		throw new Error(`catalog row ${row.item_key} is a ${row.kind}, not an avatar item`)
 	}
