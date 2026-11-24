@@ -4339,10 +4339,10 @@ export async function getFeaturedRooms(db: D1Database): Promise<FeaturedRoomGrou
 
 /**
  * Rooms similar to a target room: public, non-dorm rooms (excluding the target)
- * that share at least one tag with it, ranked by shared-tag count then
+ * that share at least one non-system tag with it, ranked by shared-tag count then
  * engagement. Returns a paginated `{ Results, TotalResults }` (the client's
  * RoomSimilarity source expects an object, not a bare array); empty if the target
- * isn't in D1 or is untagged. Eligibility is filtered in SQL ({@link LISTABLE_WHERE}); the
+ * isn't in D1 or carries no tag but system ones. Eligibility is filtered in SQL ({@link LISTABLE_WHERE}); the
  * tag ranking is in memory.
  */
 export async function getSimilarRooms(
@@ -4354,7 +4354,16 @@ export async function getSimilarRooms(
 	const empty = { Results: [] as Room[], TotalResults: 0 }
 	const target = await getRoomById(db, roomId)
 	if (!target) return empty
-	const targetTags = new Set(roomTags(target))
+	// SYSTEM tags (`Type` 1: `limitsv2`, `beta`) say nothing about what a room is LIKE — the
+	// client stamps them on thousands of rooms to describe the build they were made with —
+	// so they are left out on both sides: off the target's list here, and off the matched
+	// rows in the query (a player can type `beta` as a user tag, and that must not match
+	// every room carrying the system one). A room with only system tags has no similar rooms.
+	const targetTags = new Set(
+		(Array.isArray(target.Tags) ? (target.Tags as RoomTag[]) : [])
+			.filter((t) => typeof t?.Tag === 'string' && t.Type !== RoomTagType.auto)
+			.map((t) => t.Tag.toLowerCase())
+	)
 	if (targetTags.size === 0) return empty
 
 	// Ranking is by SHARED TAG COUNT, which `room_tag` answers on its own: the tag index
@@ -4363,11 +4372,19 @@ export async function getSimilarRooms(
 	// sharing a tag are read at all. This used to read every listable room AND every tag in
 	// the table to work the same thing out in memory. The tags go in as one JSON array, so
 	// a heavily tagged room can't hit D1's bound-parameter cap.
+	//
+	// `INDEXED BY idx_room_public` is load-bearing. Left to itself the planner joins through
+	// `idx_rooms_room_id`, which fetches the row — and parses the blob — of EVERY room sharing
+	// a tag before the listable filter throws it out. The system tags (`limitsv2`, `beta`) sit
+	// on thousands of private rooms, so that was ~9,300 rows fetched to serve ~1,000. The
+	// partial index holds only public non-dorm rooms, so the rest are rejected in the index:
+	// ~90ms to ~22ms on production, same rows.
 	const { results } = await db
 		.prepare(
-			`SELECT ${RANK_COLUMNS}, s.shared AS shared FROM room r
+			`SELECT ${RANK_COLUMNS}, s.shared AS shared FROM room r INDEXED BY idx_room_public
 			 JOIN (SELECT room_id, COUNT(*) AS shared FROM room_tag
-			       WHERE tag IN (SELECT value FROM json_each(?1)) GROUP BY room_id) s
+			       WHERE tag IN (SELECT value FROM json_each(?1)) AND type != ${RoomTagType.auto}
+			       GROUP BY room_id) s
 			   ON s.room_id = r.room_id
 			 WHERE ${LISTABLE_WHERE} AND r.room_id != ?2`
 		)

@@ -1865,6 +1865,36 @@ describe('rooms endpoints', () => {
 		expect(body.TotalResults).toBeGreaterThan(body.Results.length)
 	})
 
+	// The client stamps `limitsv2`/`beta` (Type 1) on thousands of rooms; sharing one says
+	// nothing about what a room is like, so they neither find nor rank similar rooms.
+	it('GET /rooms/:id/similar ignores system tags on both sides', async () => {
+		for (const RoomId of [97_101, 97_102, 97_103, 97_104, 97_105]) {
+			await env.DB.prepare('INSERT INTO room (data) VALUES (?1)')
+				.bind(JSON.stringify({ RoomId, Name: `Sim${RoomId}`, CreatorAccountId: 9710, Accessibility: 1 }))
+				.run()
+		}
+		await env.DB.prepare(
+			`INSERT INTO room_tag (room_id, tag, type) VALUES
+			 (97101, 'limitsv2', 1),
+			 (97102, 'limitsv2', 1), (97102, 'zzsimilar', 0),
+			 (97103, 'limitsv2', 1), (97103, 'zzsimilar', 0),
+			 (97104, 'beta', 0),
+			 (97105, 'beta', 1)`
+		).run()
+		const similar = async (id: number) => {
+			const res = await SELF.fetch(`${ORIGIN}/rooms/${id}/similar`)
+			const body = (await res.json()) as { Results: Array<{ RoomId: number }>; TotalResults: number }
+			return { ids: body.Results.map((r) => r.RoomId), total: body.TotalResults }
+		}
+
+		// Only system tags: nothing is similar, though three rooms share `limitsv2`.
+		expect(await similar(97_101)).toEqual({ ids: [], total: 0 })
+		// The user tag still matches, and the shared system tag adds no one else.
+		expect(await similar(97_102)).toEqual({ ids: [97_103], total: 1 })
+		// A user tag NAMED like a system tag doesn't match the rooms carrying the system one.
+		expect((await similar(97_104)).ids).not.toContain(97_105)
+	})
+
 	it('GET /rooms/:id/similar returns an empty result for a room not in D1', async () => {
 		const res = await SELF.fetch(`${ORIGIN}/rooms/99999/similar`)
 		expect(res.status).toBe(200)
