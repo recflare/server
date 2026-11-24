@@ -4188,6 +4188,12 @@ export async function getHotRooms(
  * Starting from `subroom` instead scans the whole table, and most of it is dorms: one per
  * account, each costing a read past its subroom blob plus a save lookup and JSON parse,
  * all for rows the caller then throws away.
+ *
+ * The join order is FORCED (`CROSS JOIN` pins it in SQLite; `INDEXED BY` pins the indexes).
+ * Merely listing `room` first is not enough: the planner reorders a plain JOIN, and it
+ * chose to scan `subroom` anyway and look each room up last — every dorm's subroom, save
+ * and room blob read to keep a tenth of them (132,690 rows and 450-1500ms on production,
+ * against 13,332 rows and ~48ms in this order).
  */
 async function lastPublishedAtByRoom(db: D1Database): Promise<Map<number, number>> {
 	// `json_extract` rather than parsing the row: only the save's timestamp is wanted, so
@@ -4195,9 +4201,9 @@ async function lastPublishedAtByRoom(db: D1Database): Promise<Map<number, number
 	const { results } = await db
 		.prepare(
 			`SELECT s.room_id AS room_id, json_extract(sv.data, '$.CreatedAt') AS created_at
-			 FROM room r
-			 JOIN subroom s ON s.room_id = r.room_id
-			 JOIN subroom_save sv ON sv.sub_room_data_save_id = s.current_save_id
+			 FROM room r INDEXED BY idx_room_public
+			 CROSS JOIN subroom s INDEXED BY idx_subroom_room ON s.room_id = r.room_id
+			 CROSS JOIN subroom_save sv ON sv.sub_room_data_save_id = s.current_save_id
 			 WHERE ${LISTABLE_WHERE}`
 		)
 		.all<{ room_id: number; created_at: string | null }>()
