@@ -143,6 +143,27 @@ async function sha256Base64(bytes: ArrayBuffer): Promise<string> {
 	return btoa(binary)
 }
 
+/** The hourly subroom build cap the editor is told about (`get-rate-limit-config`). */
+export const MAX_BUILDS_PER_INTERVAL = 100
+
+/** The subroom's current save id, or null when it has none yet (never saved). */
+export function currentSaveId(sub: { CurrentSave?: unknown } | null | undefined): number | null {
+	const save = sub?.CurrentSave
+	const saveId =
+		save && typeof save === 'object'
+			? Number((save as { SubRoomDataSaveId?: unknown }).SubRoomDataSaveId)
+			: NaN
+	return Number.isInteger(saveId) && saveId > 0 ? saveId : null
+}
+
+/** A bundle already in the bucket at `studioBundleR2Key(filename)`. */
+export interface StoredBundleFile {
+	platform: BundlePlatform
+	kind: BundleKind
+	filename: string
+	hash: string
+}
+
 /**
  * Store a PC-built Windows + Android pair as a cloud build that is already finished.
  * The bytes go to R2 under `room/` and each bundle becomes a `unity_asset` row — target
@@ -164,18 +185,9 @@ export async function storeLocalCloudBuild(
 	files: LocalBundleFile[]
 ): Promise<StoredLocalBuild | null> {
 	const sub = await getSubRoom(db, roomId, subRoomId)
-	if (!sub) return null
-	const save = sub.CurrentSave
-	const saveId =
-		save && typeof save === 'object'
-			? Number((save as { SubRoomDataSaveId?: unknown }).SubRoomDataSaveId)
-			: NaN
-	if (!Number.isInteger(saveId) || saveId <= 0) return null
+	if (!sub || currentSaveId(sub) == null) return null
 
-	const now = new Date().toISOString()
-	const cloudBuildId = crypto.randomUUID()
 	const unityAssetId = crypto.randomUUID()
-
 	const stored = await Promise.all(
 		files.map(async (file) => {
 			// The client downloads `/room/<filename>` from the bucket, so the stored name is
@@ -183,12 +195,39 @@ export async function storeLocalCloudBuild(
 			const filename = publicStudioBundleFilename(roomId, unityAssetId, file.platform, file.kind)
 			const hash = await sha256Base64(file.bytes)
 			await bucket.put(studioBundleR2Key(filename), file.bytes)
-			return { ...file, filename, hash }
+			return { platform: file.platform, kind: file.kind, filename, hash }
 		})
 	)
+	return recordLocalCloudBuild(db, bucket, roomId, subRoomId, accountId, unityAssetId, stored)
+}
 
+/**
+ * Record bundles that are already in the bucket as a finished cloud build of
+ * `unityAssetId` on the subroom's current save: the `unity_asset` rows, the build row,
+ * the save link and the room's Studio mark. On any failure, and when the subroom has no
+ * current save (null), the bundle objects are deleted again, so a refused build never
+ * leaves public bytes behind.
+ */
+export async function recordLocalCloudBuild(
+	db: D1Database,
+	bucket: R2Bucket,
+	roomId: number,
+	subRoomId: number,
+	accountId: number,
+	unityAssetId: string,
+	stored: StoredBundleFile[]
+): Promise<StoredLocalBuild | null> {
 	const discardObjects = () =>
 		Promise.all(stored.map((file) => bucket.delete(studioBundleR2Key(file.filename))))
+	const sub = await getSubRoom(db, roomId, subRoomId)
+	const saveId = currentSaveId(sub)
+	if (saveId == null) {
+		await discardObjects()
+		return null
+	}
+
+	const now = new Date().toISOString()
+	const cloudBuildId = crypto.randomUUID()
 	try {
 		await db.batch([
 			...stored.map((file) =>

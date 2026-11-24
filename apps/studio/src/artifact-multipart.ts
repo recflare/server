@@ -25,8 +25,15 @@ type Upload = {
 	hash: string
 	state: string
 }
-type Signer = { accountId: string; bucket: string; accessKeyId: string; secretAccessKey: string }
-export async function signPart(config: Signer, upload: Upload, number: number) {
+export type Signer = {
+	accountId: string
+	bucket: string
+	accessKeyId: string
+	secretAccessKey: string
+}
+/** The fields of an open R2 multipart upload a part URL is signed for. */
+export type SignableUpload = Pick<Upload, 'object_key' | 'upload_id' | 'size'>
+export async function signPart(config: Signer, upload: SignableUpload, number: number) {
 	const length = Math.min(PART_SIZE, upload.size - (number - 1) * PART_SIZE)
 	const headers = { 'Content-Length': String(length), 'Content-Type': 'application/octet-stream' }
 	const url = await presignUrl({
@@ -42,7 +49,7 @@ export async function signPart(config: Signer, upload: Upload, number: number) {
 	})
 	return { url, headers, length }
 }
-async function signingConfig(env: Env): Promise<Signer | null> {
+export async function signingConfig(env: Env): Promise<Signer | null> {
 	try {
 		const accountId = env.R2_ACCOUNT_ID?.trim() ?? ''
 		const accessKeyId = (await env.R2_ACCESS_KEY_ID?.get())?.trim() ?? ''
@@ -67,6 +74,26 @@ async function active(env: Env, build: string, lease: string) {
 	)
 		.bind(build, lease, new Date().toISOString())
 		.first<{ payload: string }>()
+}
+/**
+ * SHA-256 (base64) and the first eight bytes of a stored bundle, read in PART_SIZE ranges
+ * so no single R2 response stream stays open for the whole object.
+ */
+export async function readBundleDigest(bucket: R2Bucket, key: string, expectedSize: number) {
+	const hash = createHash('sha256'),
+		prefix: number[] = []
+	let size = 0
+	while (size < expectedSize) {
+		const length = Math.min(PART_SIZE, expectedSize - size)
+		const part = await bucket.get(key, { range: { offset: size, length } })
+		if (!part) throw new Error('Artifact disappeared during verification.')
+		const chunk = new Uint8Array(await part.arrayBuffer())
+		if (chunk.byteLength !== length) throw new Error('Artifact range size mismatch.')
+		size += chunk.byteLength
+		hash.update(chunk)
+		for (const byte of chunk.subarray(0, Math.max(0, 8 - prefix.length))) prefix.push(byte)
+	}
+	return { size, hash: hash.digest('base64'), prefix: new Uint8Array(prefix) }
 }
 export async function cleanupUploads(env: Env) {
 	const rows = await env.DB.prepare(
@@ -226,27 +253,15 @@ export function multipartArtifacts(
 					)
 				const object = await c.env.CDN_ASSETS.head(row.object_key)
 				if (!object || object.size !== row.size) throw new Error('Artifact size mismatch.')
-				const hash = createHash('sha256'),
-					prefix: number[] = []
-				let size = 0
-				// Bound R2 reads as well as uploads; do not keep one large verification
-				// response stream open for the entire object.
-				while (size < row.size) {
-					const length = Math.min(PART_SIZE, row.size - size)
-					const part = await c.env.CDN_ASSETS.get(row.object_key, {
-						range: { offset: size, length },
-					})
-					if (!part) throw new Error('Artifact disappeared during verification.')
-					const chunk = new Uint8Array(await part.arrayBuffer())
-					if (chunk.byteLength !== length) throw new Error('Artifact range size mismatch.')
-					size += chunk.byteLength
-					hash.update(chunk)
-					for (const byte of chunk.subarray(0, Math.max(0, 8 - prefix.length))) prefix.push(byte)
-				}
+				const { size, hash, prefix } = await readBundleDigest(
+					c.env.CDN_ASSETS,
+					row.object_key,
+					row.size
+				)
 				if (
 					size !== row.size ||
-					new TextDecoder().decode(new Uint8Array(prefix)) !== 'UnityFS\0' ||
-					hash.digest('base64') !== row.hash
+					new TextDecoder().decode(prefix) !== 'UnityFS\0' ||
+					hash !== row.hash
 				)
 					throw new Error('Artifact content verification failed.')
 				if (!(await active(c.env, row.build_id, row.lease)))
