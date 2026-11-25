@@ -30,6 +30,9 @@ export const INVENTORY_INVENTION_SCHEMA_DDL: string[] = [
 	// Backs the per-invention count `grantInvention` re-derives (migrations/0026).
 	`CREATE INDEX IF NOT EXISTS idx_inventory_invention_invention
 		ON inventory_invention (invention_id)`,
+	// Backs the "top today" window (migrations/0033) — see getInventionAcquisitionCounts.
+	`CREATE INDEX IF NOT EXISTS idx_inventory_invention_acquired
+		ON inventory_invention (acquired_at, invention_id)`,
 ]
 
 /**
@@ -101,6 +104,12 @@ export async function ownsInvention(
  * table's primary key), so a popular invention can't be inflated by one buyer. Creators
  * are absent by design — they own theirs through `CreatorPlayerId` and never buy it —
  * which is what makes this a measure of what other people picked up.
+ *
+ * `INDEXED BY idx_inventory_invention_acquired` is load-bearing. That index answers the
+ * window as a range seek and carries `invention_id`, so the day's rows are read from it
+ * alone. Left to itself the planner walks `idx_inventory_invention_invention` instead, to
+ * skip sorting for the GROUP BY, which reads EVERY acquisition ever made to keep a day's
+ * worth: ~100k rows for ~1.7k on production, 30 ms to 0.65 ms in a local benchmark.
  */
 export async function getInventionAcquisitionCounts(
 	db: D1Database,
@@ -108,7 +117,8 @@ export async function getInventionAcquisitionCounts(
 ): Promise<Array<{ inventionId: number; count: number }>> {
 	const { results } = await db
 		.prepare(
-			`SELECT invention_id, COUNT(*) AS count FROM inventory_invention
+			`SELECT invention_id, COUNT(*) AS count
+			 FROM inventory_invention INDEXED BY idx_inventory_invention_acquired
 			 WHERE acquired_at >= ?1
 			 GROUP BY invention_id
 			 ORDER BY count DESC, invention_id DESC`
