@@ -571,12 +571,19 @@ export async function searchCustomAvatarItems(
 	return results.map(toDto)
 }
 
+/** The most rows `fromCreator` returns: the newest of a shelf longer than this. */
+export const FROM_CREATOR_MAX = 1000
+
 /**
  * What an account has authored (`GET /api/customAvatarItems/v2/fromCreator/:id`), newest
  * first, with the total for the client's paginated envelope. `includeUnpublished` is for
  * the creator looking at their own shelf: it adds the `Accessibility` 0 items everyone
  * else is not shown. Paging is not applied yet (the client sends none), so `TotalResults`
  * always equals the list length.
+ *
+ * Capped at {@link FROM_CREATOR_MAX}: `data` is the whole record and is what the route
+ * serves, so the only bound on the D1 result is the row count — and the Coach (account 1)
+ * authors every first-party import, each carrying its `CurrentSaves`.
  */
 export async function listCustomAvatarItemsByCreator(
 	db: D1Database,
@@ -587,9 +594,9 @@ export async function listCustomAvatarItemsByCreator(
 		.prepare(
 			`SELECT data FROM custom_avatar_item
 			 WHERE creator_account_id = ?1 AND (accessibility != 0 OR ?2)
-			 ORDER BY created_at DESC, custom_avatar_item_id`
+			 ORDER BY created_at DESC, custom_avatar_item_id LIMIT ?3`
 		)
-		.bind(creatorAccountId, includeUnpublished ? 1 : 0)
+		.bind(creatorAccountId, includeUnpublished ? 1 : 0, FROM_CREATOR_MAX)
 		.all<Row>()
 	const items = results.map(toDto)
 	return { Results: items, TotalResults: items.length }

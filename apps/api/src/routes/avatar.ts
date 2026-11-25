@@ -1128,7 +1128,7 @@ export const avatarRoutes = new Hono<App>({ strict: false })
 				'`econ` worker’s `customAvatarItems/v1/owned`. Published items only — unless the ' +
 				'bearer token is the creator’s, in which case their unpublished (`Accessibility` 0) ' +
 				'items are included too. Paging is not applied (the client sends none), so ' +
-				'`TotalResults` is the length of `Results`.',
+				'`TotalResults` is the length of `Results` — the newest 1000 at most.',
 			security: OPTIONAL_AUTHED,
 			parameters: [idParam('accountId', 'Creator account id')],
 			responses: { 200: json(CustomAvatarItemsPage, 'The creator’s items') },
