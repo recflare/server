@@ -30,6 +30,25 @@ import { bakedUnityAssets, listUnityAssetBuilds } from './unity-assets-db'
 
 import type { UnityAssetBuild } from './unity-assets-db'
 
+/**
+ * The ranking stub as a SQL expression — see {@link RANK_COLUMNS}. Also the key of
+ * `idx_room_rank`, which is only used if the query's expression matches the index's, so this
+ * is the ONE definition of both; `migrations/0039_room_rank_index.sql` spells it out and
+ * must stay identical.
+ */
+const RANK_STUB = `json_object(${[
+	'RoomId',
+	'IsDorm',
+	'Accessibility',
+	'ExcludeFromLists',
+	'CreatorAccountId',
+	'CreatedAt',
+	'IsRRO',
+	'Stats',
+]
+	.map((key) => `'${key}', data -> '$.${key}'`)
+	.join(', ')})`
+
 /** Schema DDL (mirror of the head migration schema, sans the seed INSERT). */
 export const ROOM_SCHEMA_DDL: string[] = [
 	`CREATE TABLE IF NOT EXISTS room (
@@ -76,6 +95,13 @@ export const ROOM_SCHEMA_DDL: string[] = [
 	// feeds all order by it eventually; the WHERE clause is the point, not the key.
 	`CREATE INDEX IF NOT EXISTS idx_room_public ON room (room_id)
 	 WHERE is_dorm IS NOT 1 AND accessibility = 1`,
+	// The listable rooms' ranking stubs (migrations/0039_room_rank_index.sql): {@link RANK_STUB}
+	// and the counters, PARTIAL over exactly {@link LISTABLE_WHERE}. An index on the
+	// expression stores its value, so the feeds' scan ({@link LISTABLE_STUB_SCAN}) reads the
+	// stub from here and never opens a blob — 20 ms to 0.65 ms on a 5k-room benchmark. No
+	// trigger or app-side sync: SQLite keeps it current on every write to `data`.
+	`CREATE INDEX IF NOT EXISTS idx_room_rank ON room (room_id, ${RANK_STUB}, visits, cheers, favorites)
+	 WHERE is_dorm IS NOT 1 AND accessibility = 1 AND exclude_from_lists IS NOT 1`,
 	// The searchable rooms by lowercased name (migrations/0032_room_search_name.sql) — what
 	// {@link searchRoomsByName} seeks. PARTIAL over exactly {@link SEARCHABLE_WHERE}, so the
 	// walk never steps over a dorm or a private room: the rows it reads are the rows it
@@ -2432,18 +2458,16 @@ const SEARCHABLE_WHERE = `${PUBLIC_WHERE} AND exclude_from_search IS NOT 1`
  * the same as absent. A feed that starts reading a new field off the room has to add it
  * here, or it reads null.
  */
-const RANK_COLUMNS = `json_object(${[
-	'RoomId',
-	'IsDorm',
-	'Accessibility',
-	'ExcludeFromLists',
-	'CreatorAccountId',
-	'CreatedAt',
-	'IsRRO',
-	'Stats',
-]
-	.map((key) => `'${key}', data -> '$.${key}'`)
-	.join(', ')}) AS data, visits, cheers, favorites`
+const RANK_COLUMNS = `${RANK_STUB} AS data, visits, cheers, favorites`
+
+/**
+ * The listable-room stub scan every scan-then-rank feed runs. `INDEXED BY idx_room_rank` is
+ * load-bearing: that index stores {@link RANK_STUB} and the counters, and SQLite reads an
+ * indexed expression's value out of the index instead of computing it — so the scan never
+ * touches the blobs (~20 KB each, on overflow pages), which were the whole cost of it. The
+ * planner can't see that saving and picks the narrower `idx_room_public` if left alone.
+ */
+const LISTABLE_STUB_SCAN = `SELECT ${RANK_COLUMNS} FROM room INDEXED BY idx_room_rank WHERE ${LISTABLE_WHERE}`
 
 /**
  * The full rooms behind a page of {@link RANK_COLUMNS} stubs, in the stubs' order, parsed
@@ -4125,12 +4149,14 @@ export async function getHotRooms(
 	// discovery category row runs: only the rooms carrying the tag have their blobs read.
 	// The two pseudo-tags below name no tag at all, so they still scan.
 	const isPseudo = t === '' || t === NEW_TAG || t === COMMUNITY_TAG
-	const { sql, binds } = roomsByTagsQuery(
-		isPseudo ? [] : [[t, ...(TAG_ALIASES[t] ?? [])]],
-		LISTABLE_WHERE,
-		RANK_COLUMNS,
-		DERIVED_ONLY_FEED_TAGS
-	)
+	const { sql, binds } = isPseudo
+		? { sql: LISTABLE_STUB_SCAN, binds: [] }
+		: roomsByTagsQuery(
+				[[t, ...(TAG_ALIASES[t] ?? [])]],
+				LISTABLE_WHERE,
+				RANK_COLUMNS,
+				DERIVED_ONLY_FEED_TAGS
+			)
 	const { results } = await db
 		.prepare(sql)
 		.bind(...binds)
@@ -4184,7 +4210,9 @@ export async function getHotRooms(
  * fallback.
  *
  * LISTABLE rooms only — the one caller ranks nothing else. Driven from `room` so the walk
- * starts on `idx_room_public` and reaches only those rooms' subrooms (`idx_subroom_room`).
+ * starts on `idx_room_rank` and reaches only those rooms' subrooms (`idx_subroom_room`). That
+ * index's WHERE is exactly {@link LISTABLE_WHERE}, so the filter is answered by the index and
+ * no room blob is read; `idx_room_public` left `exclude_from_lists` to be extracted per row.
  * Starting from `subroom` instead scans the whole table, and most of it is dorms: one per
  * account, each costing a read past its subroom blob plus a save lookup and JSON parse,
  * all for rows the caller then throws away.
@@ -4201,7 +4229,7 @@ async function lastPublishedAtByRoom(db: D1Database): Promise<Map<number, number
 	const { results } = await db
 		.prepare(
 			`SELECT s.room_id AS room_id, json_extract(sv.data, '$.CreatedAt') AS created_at
-			 FROM room r INDEXED BY idx_room_public
+			 FROM room r INDEXED BY idx_room_rank
 			 CROSS JOIN subroom s INDEXED BY idx_subroom_room ON s.room_id = r.room_id
 			 CROSS JOIN subroom_save sv ON sv.sub_room_data_save_id = s.current_save_id
 			 WHERE ${LISTABLE_WHERE}`
@@ -4240,7 +4268,7 @@ export async function getRecentlyUpdatedRooms(
 	take: number
 ): Promise<{ Results: Room[]; TotalResults: number }> {
 	const { results } = await db
-		.prepare(`SELECT ${RANK_COLUMNS} FROM room WHERE ${LISTABLE_WHERE}`)
+		.prepare(LISTABLE_STUB_SCAN)
 		.all<RoomRow>()
 	const rooms = parseAll(results).filter((r) => isListable(r) && isPlayerMade(r))
 
@@ -4272,7 +4300,7 @@ export async function getNewRooms(
 	take: number
 ): Promise<{ Results: Room[]; TotalResults: number }> {
 	const { results } = await db
-		.prepare(`SELECT ${RANK_COLUMNS} FROM room WHERE ${LISTABLE_WHERE}`)
+		.prepare(LISTABLE_STUB_SCAN)
 		.all<RoomRow>()
 	const rooms = parseAll(results)
 		.filter((r) => isListable(r) && isPlayerMade(r))
@@ -4298,7 +4326,7 @@ export async function getRecommendedRooms(
 	take: number
 ): Promise<Room[]> {
 	const { results } = await db
-		.prepare(`SELECT ${RANK_COLUMNS} FROM room WHERE ${LISTABLE_WHERE}`)
+		.prepare(LISTABLE_STUB_SCAN)
 		.all<RoomRow>()
 	const page = parseAll(results)
 		.filter(isListable)
@@ -4329,7 +4357,7 @@ export async function getTrendingRooms(
 	if (players.size === 0) return { Results: [], TotalResults: 0 }
 
 	const { results } = await db
-		.prepare(`SELECT ${RANK_COLUMNS} FROM room WHERE ${LISTABLE_WHERE}`)
+		.prepare(LISTABLE_STUB_SCAN)
 		.all<RoomRow>()
 	const playerCount = (r: Room): number => players.get(roomIdOf(r)) ?? 0
 	const rooms = parseAll(results)
@@ -4380,7 +4408,7 @@ export const FEATURED_ROOM_LIMIT = 10
  */
 export async function getFeaturedRooms(db: D1Database): Promise<FeaturedRoomGroup> {
 	const { results } = await db
-		.prepare(`SELECT ${RANK_COLUMNS} FROM room WHERE ${LISTABLE_WHERE}`)
+		.prepare(LISTABLE_STUB_SCAN)
 		.all<RoomRow>()
 	const candidates = parseAll(results).filter(isListable)
 	// Fisher–Yates shuffle so the feed varies between requests.
@@ -4446,15 +4474,16 @@ export async function getSimilarRooms(
 	// the table to work the same thing out in memory. The tags go in as one JSON array, so
 	// a heavily tagged room can't hit D1's bound-parameter cap.
 	//
-	// `INDEXED BY idx_room_public` is load-bearing. Left to itself the planner joins through
+	// `INDEXED BY idx_room_rank` is load-bearing. Left to itself the planner joins through
 	// `idx_rooms_room_id`, which fetches the row — and parses the blob — of EVERY room sharing
 	// a tag before the listable filter throws it out. The system tags (`limitsv2`, `beta`) sit
-	// on thousands of private rooms, so that was ~9,300 rows fetched to serve ~1,000. The
-	// partial index holds only public non-dorm rooms, so the rest are rejected in the index:
-	// ~90ms to ~22ms on production, same rows.
+	// on thousands of private rooms, so that was ~9,300 rows fetched to serve ~1,000. A
+	// partial index rejects the unlisted rooms in the index (`idx_room_public` took this
+	// ~90ms to ~22ms on production), and `idx_room_rank` also holds the stub itself, so the
+	// rooms that pass never have their blobs read either (see {@link LISTABLE_STUB_SCAN}).
 	const { results } = await db
 		.prepare(
-			`SELECT ${RANK_COLUMNS}, s.shared AS shared FROM room r INDEXED BY idx_room_public
+			`SELECT ${RANK_COLUMNS}, s.shared AS shared FROM room r INDEXED BY idx_room_rank
 			 JOIN (SELECT room_id, COUNT(*) AS shared FROM room_tag
 			       WHERE tag IN (SELECT value FROM json_each(?1)) AND type != ${RoomTagType.auto}
 			       GROUP BY room_id) s
