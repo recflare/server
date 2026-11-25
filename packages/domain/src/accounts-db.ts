@@ -17,7 +17,7 @@ import { bindPlaceholders, chunkForBinds } from './d1-binds'
 /**
  * Schema DDL — the head schema, i.e. what the table looks like after every migration
  * (0001_accounts + 0002_avatar + 0009_account_has_plus + 0012_account_is_influencer +
- * 0013_account_signup_ip_device_id, sans
+ * 0013_account_signup_ip_device_id + 0020_account_last_login_ip, sans
  * seed INSERTs; 0004 added a `platform_id` generated column and 0008 dropped it again, so it
  * appears here in neither form).
  *
@@ -26,6 +26,7 @@ import { bindPlaceholders, chunkForBinds } from './d1-binds'
  * JSON true, 0 for false and NULL when the key is absent; the index holds only the 1s.
  * `is_influencer` does the same for `isInfluencer`, for econ's influencer list.
  * `signup_ip` and `device_id` (full indexes) back the signup caps' counts.
+ * `last_login_ip` (full index) lets the ban resolution find accounts by address, with `signup_ip`.
  */
 export const SCHEMA_DDL: string[] = [
 	`CREATE TABLE IF NOT EXISTS account (
@@ -36,6 +37,7 @@ export const SCHEMA_DDL: string[] = [
 		has_plus INTEGER GENERATED ALWAYS AS (json_extract(data, '$.hasPlus')) VIRTUAL,
 		is_influencer INTEGER GENERATED ALWAYS AS (json_extract(data, '$.isInfluencer')) VIRTUAL,
 		signup_ip TEXT GENERATED ALWAYS AS (json_extract(data, '$.signupIp')) VIRTUAL,
+		last_login_ip TEXT GENERATED ALWAYS AS (json_extract(data, '$.lastLoginIp')) VIRTUAL,
 		device_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.deviceId')) VIRTUAL,
 		email_lower TEXT GENERATED ALWAYS AS (NULLIF(lower(json_extract(data, '$.email')), '')) VIRTUAL
 	)`,
@@ -46,6 +48,7 @@ export const SCHEMA_DDL: string[] = [
 	`CREATE INDEX IF NOT EXISTS idx_account_has_plus ON account (has_plus) WHERE has_plus = 1`,
 	`CREATE INDEX IF NOT EXISTS idx_account_is_influencer ON account (is_influencer) WHERE is_influencer = 1`,
 	`CREATE INDEX IF NOT EXISTS idx_account_signup_ip ON account (signup_ip)`,
+	`CREATE INDEX IF NOT EXISTS idx_account_last_login_ip ON account (last_login_ip)`,
 	`CREATE INDEX IF NOT EXISTS idx_account_device_id ON account (device_id)`,
 	// An email address belongs to ONE account: password recovery (`auth`
 	// `POST /account/recoverpassword`) is handed nothing but the address and has to find the

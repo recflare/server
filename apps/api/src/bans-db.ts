@@ -32,9 +32,11 @@
  *
  * The whole resolution is ONE statement. The alternative — fetch my ips, fetch my links,
  * then query bans — is three round trips on a path that runs on every matchmake and every
- * token grant. Driving from the (few) banned reports and looking each one's account up by
- * its indexed id keeps the work proportional to the number of BANS, not to the number of
- * accounts.
+ * token grant. It drives from the CALLER outward: the accounts that share one of their
+ * addresses or platform links, each found by index, then the bans on those. So the work is
+ * proportional to how many accounts the caller is linked to (a handful), not to the number
+ * of bans — it once drove from every banned report inward, reading each banned account's
+ * blob, and grew with every ban ever handed down.
  */
 
 import type { ReportRow } from './reports-db'
@@ -117,11 +119,19 @@ type BanMatchRow = ReportRow & {
  * this request itself carries (when there isn't one yet, or when it differs from what's
  * stored).
  *
- * The IP arm then tests those addresses against the banned account's own history AND its
- * blob fields. Both sides read both sources: the blob is still written on every login and
- * is what every account carries from before the history existed (the 0016 migration
- * backfills it, but the test seeds and any account written around the migration do not go
- * through that), so dropping it would quietly narrow the arm.
+ * `hit` is then every account one of those reaches, and by which arm: the caller's own, the
+ * accounts seen from one of the addresses — in the `account_ip` history OR in the blob's two
+ * fields (`signup_ip`/`last_login_ip`, indexed generated columns on `account`) — and the
+ * accounts holding one of the platform links. Both sides of the IP arm read both sources:
+ * the blob is still written on every login and is what every account carries from before
+ * the history existed (the 0016 migration backfills it, but the test seeds and any account
+ * written around the migration do not go through that), so dropping it would quietly narrow
+ * the arm. `who` folds an account reached by several arms into one row, and the bans on
+ * those accounts come off `idx_report_banned`.
+ *
+ * The joins are `CROSS JOIN` on purpose: SQLite never reorders one, and D1 holds no table
+ * statistics, so a plain join here is planned as a scan of every `account` probing the
+ * caller's addresses — the reverse of the point.
  *
  * A NULL `?1` means "no account yet" — the `me` CTE is then empty and the account arm
  * cannot match, leaving the two linked arms to answer for a signup.
@@ -142,35 +152,35 @@ ips AS (
 ids AS (
 	SELECT platform, platform_id FROM platform_account WHERE account_id = ?1
 	UNION SELECT ?4, ?5 WHERE ?5 IS NOT NULL
+),
+hit AS (
+	SELECT ?1 AS account_id, 1 AS via_account, 0 AS via_ip, 0 AS via_platform
+		WHERE ?1 IS NOT NULL
+	UNION ALL
+	SELECT x.account_id, 0, 1, 0 FROM ips CROSS JOIN account_ip x ON x.ip = ips.ip
+		WHERE ?6 = 1 AND x.account_id <> COALESCE(?1, -1)
+	UNION ALL
+	SELECT a.account_id, 0, 1, 0 FROM ips CROSS JOIN account a ON a.signup_ip = ips.ip
+		WHERE ?6 = 1 AND a.account_id <> COALESCE(?1, -1)
+	UNION ALL
+	SELECT a.account_id, 0, 1, 0 FROM ips CROSS JOIN account a ON a.last_login_ip = ips.ip
+		WHERE ?6 = 1 AND a.account_id <> COALESCE(?1, -1)
+	UNION ALL
+	SELECT p.account_id, 0, 0, 1 FROM ids
+		CROSS JOIN platform_account p ON p.platform = ids.platform AND p.platform_id = ids.platform_id
+		WHERE ?7 = 1 AND p.account_id <> COALESCE(?1, -1)
+),
+who AS (
+	SELECT account_id,
+		MAX(via_account) AS via_account,
+		MAX(via_ip) AS via_ip,
+		MAX(via_platform) AS via_platform
+	FROM hit GROUP BY account_id
 )
-SELECT * FROM (
-	SELECT r.*,
-		(r.reported_player_id = ?1) AS via_account,
-		(?6 = 1 AND r.reported_player_id <> COALESCE(?1, -1) AND (
-			EXISTS (
-				SELECT 1 FROM account a, ips
-				WHERE a.account_id = r.reported_player_id
-					AND ips.ip IN (
-						json_extract(a.data, '$.signupIp'),
-						json_extract(a.data, '$.lastLoginIp')
-					)
-			)
-			OR EXISTS (
-				SELECT 1 FROM account_ip x JOIN ips ON ips.ip = x.ip
-				WHERE x.account_id = r.reported_player_id
-			)
-		)) AS via_ip,
-		(?7 = 1 AND EXISTS (
-			SELECT 1 FROM platform_account p, ids
-			WHERE p.account_id = r.reported_player_id
-				AND p.account_id <> COALESCE(?1, -1)
-				AND p.platform = ids.platform
-				AND p.platform_id = ids.platform_id
-		)) AS via_platform
-	FROM report r
-	WHERE r.banned = 1 AND (r.ban_expires IS NULL OR r.ban_expires > ?2)
-)
-WHERE via_account = 1 OR via_ip = 1 OR via_platform = 1
+SELECT r.*, who.via_account, who.via_ip, who.via_platform
+FROM who
+CROSS JOIN report r ON r.reported_player_id = who.account_id AND r.banned = 1
+WHERE r.ban_expires IS NULL OR r.ban_expires > ?2
 ORDER BY via_account DESC, via_platform DESC, ban_expires IS NOT NULL, ban_expires DESC
 LIMIT 1`
 
@@ -246,12 +256,11 @@ export interface LinkedAccount {
  * Which OTHER accounts a ban on `accountId` would also block — the preview a moderator
  * sees before handing one down (`www`: `GET /api/staff/players/:id/linked`).
  *
- * This is `resolveBan` read backwards. That function asks "does any ban reach this
- * caller", driving from the few banned reports inward, because it runs on every matchmake
- * and every token grant. This one asks "who would this ban reach", driving from one
- * account's identities outward — a question with no hot path, asked once when a moderator
- * is about to act, and the only way to see the IP arm's blast radius BEFORE it lands
- * rather than from a support ticket afterwards.
+ * This is `resolveBan` without the bans. That function asks "does any ban reach this
+ * caller" on every matchmake and every token grant; this one asks "who would a ban on this
+ * account reach", from the same identities outward — a question with no hot path, asked
+ * once when a moderator is about to act, and the only way to see the IP arm's blast radius
+ * BEFORE it lands rather than from a support ticket afterwards.
  *
  * Honours the same `arms`, so a preview on a server running `BAN_EVASION_MATCH=platform`
  * doesn't list households that would not in fact be blocked. A disabled arm contributes

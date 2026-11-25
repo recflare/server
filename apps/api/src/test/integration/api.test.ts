@@ -160,7 +160,9 @@ beforeAll(async () => {
 		`CREATE TABLE IF NOT EXISTS account (
 			data TEXT NOT NULL,
 			account_id INTEGER GENERATED ALWAYS AS (json_extract(data, '$.accountId')) VIRTUAL,
-			username_lower TEXT GENERATED ALWAYS AS (lower(json_extract(data, '$.username'))) VIRTUAL
+			username_lower TEXT GENERATED ALWAYS AS (lower(json_extract(data, '$.username'))) VIRTUAL,
+			signup_ip TEXT GENERATED ALWAYS AS (json_extract(data, '$.signupIp')) VIRTUAL,
+			last_login_ip TEXT GENERATED ALWAYS AS (json_extract(data, '$.lastLoginIp')) VIRTUAL
 		)`
 	).run()
 	await env.DB.prepare('INSERT OR IGNORE INTO account (data) VALUES (?1)')
