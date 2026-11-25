@@ -79,6 +79,11 @@ export async function ownedCustomAvatarItemIds(
  * item simply drops out rather than leaving an id that resolves to nothing, and so an item
  * both made and (somehow) bought appears once. `PurchaseInfo` is null: the owned list is
  * not a store page.
+ *
+ * Two branches, each driven by an index (the inventory's primary key, then the item's
+ * creator index), rather than one LEFT JOIN with an OR across both tables: that form can
+ * use neither and read every item in the table — parsing each row's JSON for the generated
+ * columns — on a call the client makes at every sign-in.
  */
 export async function getOwnedCustomAvatarItems(
 	db: D1Database,
@@ -86,12 +91,19 @@ export async function getOwnedCustomAvatarItems(
 ): Promise<CustomAvatarItem[]> {
 	const { results } = await db
 		.prepare(
-			`SELECT i.data, coalesce(o.acquired_at, i.created_at) AS owned_at
+			`SELECT i.data, o.acquired_at AS owned_at, i.custom_avatar_item_id AS id
+			 FROM inventory_custom o
+			 JOIN custom_avatar_item i ON i.custom_avatar_item_id = o.custom_avatar_item_id
+			 WHERE o.account_id = ?1
+			 UNION ALL
+			 SELECT i.data, i.created_at, i.custom_avatar_item_id
 			 FROM custom_avatar_item i
-			 LEFT JOIN inventory_custom o
-			   ON o.custom_avatar_item_id = i.custom_avatar_item_id AND o.account_id = ?1
-			 WHERE o.account_id IS NOT NULL OR i.creator_account_id = ?1
-			 ORDER BY owned_at, i.custom_avatar_item_id`
+			 WHERE i.creator_account_id = ?1
+			   AND NOT EXISTS (
+			     SELECT 1 FROM inventory_custom o
+			     WHERE o.account_id = ?1 AND o.custom_avatar_item_id = i.custom_avatar_item_id
+			   )
+			 ORDER BY owned_at, id`
 		)
 		.bind(accountId)
 		.all<{ data: string }>()
