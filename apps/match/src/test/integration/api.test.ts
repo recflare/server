@@ -3870,6 +3870,51 @@ describe('auth-gated endpoints', () => {
 		await env.DB.prepare('DELETE FROM room_invite WHERE to_player_id = 9891').run()
 	})
 
+	test('an invited guest already in an unpublished room may move to its other subrooms', async () => {
+		// The invite is spent on the join it authorized (and expires in minutes anyway), so
+		// the next subroom door the guest walks through must be opened by their presence in
+		// the room — not refused RoomIsPrivate.
+		await seedRoomWithSubRooms(env.DB, {
+			RoomId: 97_300,
+			Name: 'PrivateMultiSubroom',
+			Accessibility: 0,
+			CreatorAccountId: 9895,
+			Roles: [{ AccountId: 9895, Role: 255 }],
+			SubRooms: [
+				{ SubRoomId: 97_300, UnitySceneId: RECCENTER_SCENE, MaxPlayers: 4 },
+				{ SubRoomId: 97_301, UnitySceneId: RECCENTER_SCENE, MaxPlayers: 4 },
+			],
+		} as unknown as Record<string, unknown>)
+		const v2 = async (path: string, sub: string) =>
+			(await (
+				await exports.default.fetch(`${ORIGIN}${path}`, {
+					method: 'POST',
+					headers: { ...(await bearer(sub)), 'Content-Type': 'application/json' },
+					body: JSON.stringify({ JoinMode: 0 }),
+				})
+			).json()) as { ErrorCode: number; RoomInstance: { RoomId: number; SubRoomId: number } | null }
+
+		await env.DB.prepare(
+			`INSERT INTO room_invite (from_player_id, to_player_id, room_id, created_at)
+			 VALUES (9895, 9896, 97300, ?1)`
+		)
+			.bind(Math.floor(Date.now() / 1000))
+			.run()
+		expect((await v2('/matchmake/v2/room/97300/97300', '9896')).RoomInstance?.RoomId).toBe(97_300)
+		// The invite is gone (spent or swept) — presence in the room is now the key.
+		await env.DB.prepare('DELETE FROM room_invite WHERE to_player_id = 9896').run()
+		expect((await v2('/matchmake/v2/room/97300/97301', '9896')).RoomInstance?.SubRoomId).toBe(
+			97_301
+		)
+
+		// Out of the room, the door closes again.
+		await env.DB.prepare('DELETE FROM presence WHERE account_id = 9896').run()
+		expect(await v2('/matchmake/v2/room/97300/97300', '9896')).toMatchObject({
+			ErrorCode: 25,
+			RoomInstance: null,
+		})
+	})
+
 	test('an unpublished room has ONE private instance, shared by everyone it admits', async () => {
 		// Start clean: an earlier case may have left room 6 sessions and presence behind,
 		// and which instance a matchmake lands in is the whole point here.

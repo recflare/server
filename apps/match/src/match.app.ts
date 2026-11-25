@@ -52,8 +52,8 @@ import {
 	recordRoomVisit,
 	recordStat,
 	refreshInstanceFullness,
-	Role,
 	retireRoomInstances,
+	Role,
 	rolloutGameBuilds,
 	RoomInstanceType,
 	roomRoles,
@@ -781,7 +781,8 @@ async function clearAndRematchmake(
 					wasPrivate,
 					playerId,
 					old?.subRoomId,
-					true
+					// Re-judged on their own account: the presence being cleared doesn't count.
+					'ignore-presence'
 				)
 				if (!resolved.instance) {
 					players.push({ playerId, errorCode: resolved.errorCode })
@@ -997,7 +998,14 @@ function isPublished(room: Room): boolean {
  * - its creator, and anyone holding a role on it (Host and up: everyone named in `Roles`
  *   is working on the room, whether or not it is published), or
  * - a player holding a live `room_invite` into it — an invite is how a private room's
- *   people bring someone in.
+ *   people bring someone in, or
+ * - a player whose live `presence` already puts them in the room. The invite is spent on
+ *   the join it authorized (and expires in minutes regardless), so without this an invited
+ *   guest who walked through a door to another subroom was refused `RoomIsPrivate` — they
+ *   were let into the room, not into one subroom of it. Expires with the presence row, so
+ *   leaving the room closes it again. `presenceAdmits` false drops this arm, for the
+ *   instance clear: there the presence IS what is being re-judged, so it can't vouch for
+ *   itself (a room unpublished under its players must turn them out).
  *
  * Without this, a private INSTANCE was the only thing "private" meant to the room routes:
  * `JoinMode` 2 spawned a fresh instance of any room whose id you had, published or not,
@@ -1010,11 +1018,20 @@ function isPublished(room: Room): boolean {
  * through the player-join routes). The v1 follow shares this gate, so following a friend
  * into their dorm likewise takes an invite.
  */
-async function canEnterRoom(db: D1Database, room: Room, accountId: number): Promise<boolean> {
+async function canEnterRoom(
+	db: D1Database,
+	room: Room,
+	accountId: number,
+	presenceAdmits = true
+): Promise<boolean> {
 	if (isPublished(room) && !isPlayerDorm(room)) return true
 	if (room.CreatorAccountId === accountId) return true
 	if (roomRoles(room).some((r) => r.AccountId === accountId && r.Role !== Role.None)) return true
-	return hasRoomInviteTo(db, accountId, Number(room.RoomId))
+	const roomId = Number(room.RoomId)
+	if (await hasRoomInviteTo(db, accountId, roomId)) return true
+	if (!presenceAdmits) return false
+	const presence = await getPresence<RoomInstance>(db, accountId)
+	return presence?.roomInstance?.roomId === roomId
 }
 
 /**
@@ -1355,9 +1372,7 @@ async function batchPlayers(c: Context<App>) {
 	const presences = await getPresences<RoomInstance>(c.env.DB, ids)
 	// Offline players have no stored build; show them on the viewer's own build.
 	const version = await callerVersion(c)
-	return c.json(
-		ids.map((playerId) => playerPayload(playerId, presences.get(playerId), version))
-	)
+	return c.json(ids.map((playerId) => playerPayload(playerId, presences.get(playerId), version)))
 }
 
 /**
@@ -1669,6 +1684,13 @@ async function substituteRoom(
 }
 
 /**
+ * Whether {@link resolveRoomInstance} applies the room's accessibility gate
+ * ({@link canEnterRoom}): `true` for the room routes, `'ignore-presence'` for the instance
+ * clear (gated, but a player's presence in the room doesn't admit them), `false` otherwise.
+ */
+type AccessibilityGate = boolean | 'ignore-presence'
+
+/**
  * Resolve a room by `:room` path segment (numeric id or name) from D1, then find a
  * joinable instance of it (public matchmakes reuse one via the `room_instance`
  * table) or create a new one. A null instance carries the error code to answer:
@@ -1692,7 +1714,7 @@ async function resolveRoomInstance(
 	isPrivate: boolean,
 	ownerId: number,
 	requestedSubRoomId?: number,
-	gateOnAccessibility = false,
+	gateOnAccessibility: AccessibilityGate = false,
 	eventId = 0
 ): Promise<ResolvedInstance> {
 	const id = Number.parseInt(roomKey, 10)
@@ -1719,7 +1741,10 @@ async function resolveRoomInstance(
 	// belongs (invited to the event, a member of the club) and its room may well be private
 	// — that's what holding an event in your own room looks like. Checked against the room
 	// actually entered, after any substitution, and before an instance exists.
-	if (gateOnAccessibility && !(await canEnterRoom(c.env.DB, room, ownerId))) {
+	if (
+		gateOnAccessibility &&
+		!(await canEnterRoom(c.env.DB, room, ownerId, gateOnAccessibility !== 'ignore-presence'))
+	) {
 		logger.info('matchmake refused: room is not published and player is not admitted', {
 			roomId: f.roomId,
 			ownerId,
