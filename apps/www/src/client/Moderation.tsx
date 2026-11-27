@@ -2011,15 +2011,22 @@ function FileReport({
 	)
 }
 
-/** The ban lengths offered, in the order the dialog lists them. `null` is permanent. */
-const BAN_LENGTHS: Array<{ label: string; days: number | null }> = [
-	{ label: '1 day', days: 1 },
-	{ label: '3 days', days: 3 },
-	{ label: '7 days', days: 7 },
-	{ label: '30 days', days: 30 },
-	{ label: '90 days', days: 90 },
-	{ label: 'Permanent', days: null },
-]
+/**
+ * The ban lengths offered, in the order the dialog lists them. `duration` is the piece of
+ * the request body that names the length (the server takes `days` and/or `hours`); `null`
+ * is permanent. The label doubles as the option's value, so it must be unique.
+ */
+const BAN_LENGTHS: Array<{ label: string; duration: { days: number } | { hours: number } | null }> =
+	[
+		{ label: '1 hour', duration: { hours: 1 } },
+		{ label: '1 day', duration: { days: 1 } },
+		{ label: '3 days', duration: { days: 3 } },
+		{ label: '5 days', duration: { days: 5 } },
+		{ label: '7 days', duration: { days: 7 } },
+		{ label: '30 days', duration: { days: 30 } },
+		{ label: '90 days', duration: { days: 90 } },
+		{ label: 'Permanent', duration: null },
+	]
 
 /**
  * Hand down a ban on one report.
@@ -2032,7 +2039,7 @@ const BAN_LENGTHS: Array<{ label: string; days: number | null }> = [
  * instance they are standing in, which is the part that is not obvious from "ban".
  */
 function BanDialog({ reportId, navigate }: { reportId: number; navigate: (to: string) => void }) {
-	const [choice, setChoice] = useState('7')
+	const [choice, setChoice] = useState('7 days')
 	const { pending, error, run } = useAction()
 	// The report is READ here rather than handed down as a prop, which is what makes the
 	// URL self-sufficient: a reload, or a pasted `/moderation/reports/12/ban`, opens the
@@ -2112,16 +2119,16 @@ function BanDialog({ reportId, navigate }: { reportId: number; navigate: (to: st
 				onSubmit={(e) => {
 					e.preventDefault()
 					void run(async () => {
-						const length = BAN_LENGTHS.find((l) => String(l.days) === choice)
+						const length = BAN_LENGTHS.find((l) => l.label === choice)
 						await call(`/api/staff/reports/${report.id}/ban`, {
 							authed: true,
 							// `permanent` rather than an absent duration: the server reads "no
 							// duration" as permanent too, but saying it explicitly means a bug in
 							// this form can't quietly hand out a life ban.
 							json:
-								length?.days === null || length === undefined
+								length?.duration === null || length === undefined
 									? { banned: true, permanent: true }
-									: { banned: true, days: length.days },
+									: { banned: true, ...length.duration },
 						})
 						// Onto the player's record rather than back where they came from: it is
 						// the confirmation that the ban landed and the place to lift it from if it
@@ -2135,7 +2142,7 @@ function BanDialog({ reportId, navigate }: { reportId: number; navigate: (to: st
 					Length
 					<select value={choice} onChange={(e) => setChoice(e.target.value)}>
 						{BAN_LENGTHS.map((length) => (
-							<option key={length.label} value={String(length.days)}>
+							<option key={length.label} value={length.label}>
 								{length.label}
 							</option>
 						))}
