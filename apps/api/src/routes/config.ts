@@ -49,6 +49,13 @@ const gameConfigs2026 = gameConfigsV1All2025
 		)
 	)
 
+// The door controller can retain values read before login. Supply only its
+// LiveOps settings at bootstrap, without enabling the rest of the newer catalog.
+const bootstrapGameConfigs = [
+	...gameConfigsV1All,
+	...gameConfigs2026.filter((entry) => entry.Key.startsWith('LiveOps.DormExit.')),
+]
+
 // ---- Config / version ------------------------------------------------------
 export const configRoutes = new Hono<App>({ strict: false })
 	.get(
@@ -176,9 +183,10 @@ export const configRoutes = new Hono<App>({ strict: false })
 	// strings, the same comparison `match` makes for cross-build joins — compared as BUILDS,
 	// so a same-day point release of the target (`20230414.01`) stays on the 2023 catalog.
 	//
-	// A request with no readable token version gets the 2023 catalog, the same body this
-	// route has always served unless a dedicated server opts into the 2026 bootstrap
-	// catalog. Like the version gate on `featuredrooms`, the claim is
+	// A request with no readable token version gets the 2023 catalog plus DormExit settings.
+	// The base catalog remains the same body this
+	// route has always served: unauthenticated is not evidence of a newer client, and this
+	// stack targets `GAME_VERSION`. Like the version gate on `featuredrooms`, the claim is
 	// unverified — a client that lies about its build only misconfigures itself.
 	.get(
 		'/api/gameconfigs/v1/all',
@@ -193,18 +201,13 @@ export const configRoutes = new Hono<App>({ strict: false })
 				'never had; that build and anything older get the 2023 catalog. Builds are ' +
 				'date-stamped, so they compare as strings. The build is read from the token’s ' +
 				'`rn.ver` claim — the request carries no version of its own — so auth is optional ' +
-				'here and only selects the catalog. Without a readable token version, the optional ' +
-				'RECFLARE_BOOTSTRAP_GAME_CONFIG_BUILD=20260323 setting selects the 2026 catalog; ' +
-				'otherwise the 2023 catalog is served.',
+				'here and only selects the catalog; a request without a readable token version gets ' +
+				'the 2023 catalog plus the DormExit bootstrap settings.',
 			responses: { 200: json(JsonObject, 'The game config catalog for the caller’s build') },
 		}),
 		async (c) => {
-			const authenticatedBuild = await validateAndGetBuild(c.req.raw, await c.env.JWT_SECRET.get())
-			// Dedicated 2026 servers can supply the same catalog during pre-login bootstrap.
-			// A valid token always takes precedence over the optional bootstrap setting.
-			const build =
-				authenticatedBuild ??
-				(c.env.RECFLARE_BOOTSTRAP_GAME_CONFIG_BUILD === '20260323' ? '20260323' : null)
+			const build = await validateAndGetBuild(c.req.raw, await c.env.JWT_SECRET.get())
+			if (build === null) return c.json(bootstrapGameConfigs)
 			if (build === '20260323') return c.json(gameConfigs2026)
 			const newerThanTarget = build !== null && build > GAME_VERSION
 			return c.json(newerThanTarget ? gameConfigsV1All2025 : gameConfigsV1All)

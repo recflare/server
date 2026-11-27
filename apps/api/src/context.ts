@@ -17,10 +17,6 @@ export type Env = SharedHonoEnv & {
 	DOMAIN: string
 	/** Maximum accepted size of each API-owned image upload, in bytes. */
 	RECFLARE_MAX_API_UPLOAD_BYTES?: string
-	/** Optional pre-login catalog for dedicated 2026 servers. Only `20260323` is supported.
-	 * Valid token builds take precedence; unset retains the legacy bootstrap catalog.
-	 */
-	RECFLARE_BOOTSTRAP_GAME_CONFIG_BUILD?: string
 	/**
 	 * The client builds `/api/versioncheck/v4` answers "current" for, as a comma-separated
 	 * list of builds (`20230414,20250718`), or `off` for none. Unset means the default
