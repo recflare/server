@@ -90,6 +90,7 @@ import {
 import { passwordSignupOpen, turnstileKeys, verifyTurnstile } from './turnstile'
 import {
 	accountsBase,
+	aiBase,
 	apiBase,
 	authBase,
 	cdnBase,
@@ -241,6 +242,9 @@ const app = new Hono<App>()
 				cdn: cdnBase(c.env),
 				storage: storageBase(c.env),
 				studio: studioBase(c.env),
+				// The Roomie API key card on the account page saves and removes the player's key
+				// on `ai` directly; nothing about the key passes through www.
+				ai: aiBase(c.env),
 			},
 		})
 	})

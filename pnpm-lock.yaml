@@ -108,6 +108,9 @@ importers:
 
   apps/ai:
     dependencies:
+      '@repo/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
       '@repo/hono-helpers':
         specifier: workspace:*
         version: link:../../packages/hono-helpers
@@ -865,9 +868,15 @@ importers:
 
   apps/moderation:
     dependencies:
+      '@repo/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
       '@repo/hono-helpers':
         specifier: workspace:*
         version: link:../../packages/hono-helpers
+      '@repo/jwt':
+        specifier: workspace:*
+        version: link:../../packages/jwt
       hono:
         specifier: 4.13.5
         version: 4.13.5

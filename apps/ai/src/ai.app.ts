@@ -1,8 +1,18 @@
 import { Hono } from 'hono'
 import { describeRoute, openAPIRouteHandler } from 'hono-openapi'
 import { useWorkersLogger } from 'workers-tagged-logger'
+import { z } from 'zod'
 
-import { withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
+import {
+	deleteRoomieKey,
+	getRoomieKeyRow,
+	hasRoomieKey,
+	putRoomieKeyRow,
+	resealRoomieKeyRow,
+	roomieKeyUpdatedAt,
+	takeRateLimit,
+} from '@repo/domain'
+import { withCleanSpec, withDefaultCors, withNotFound, withOnError } from '@repo/hono-helpers'
 import { validateAndGetAccountId, validateAndGetBuild } from '@repo/jwt'
 
 import {
@@ -17,15 +27,29 @@ import {
 	jsonBody,
 	MakerAiAccessResponse,
 	MakerAiBalances,
+	RealtimeLogsAccepted,
 	RealtimeSessionCreateBody,
 	RealtimeSessionDenied,
+	RealtimeSessionGranted,
 	RoomieAiAccess,
+	RoomieKeyError,
+	RoomieKeyPutBody,
+	RoomieKeyStatus,
 	RoomieUserFacts,
 	UNAUTHORIZED_RESPONSE,
 } from './openapi'
+import {
+	DEFAULT_REALTIME_MODEL,
+	isOpenAiKeyShape,
+	mintClientSecret,
+	openKey,
+	parseKeyring,
+	sealKey,
+} from './roomie-key'
 
 import type { Context } from 'hono'
 import type { App } from './context'
+import type { Keyring, MintResult } from './roomie-key'
 
 /**
  * AI Worker. Serves the access checks and budget reads the client makes before offering
@@ -36,7 +60,9 @@ import type { App } from './context'
  *   refused and the client hides the feature.
  * - Roomie's native 2026 companion gets zero energy and no generated output audio;
  *   older clients keep the full budget. The session that would actually reach a model
- *   (`/realtime-session/create`) is where it stops.
+ *   (`/realtime-session/create`) is where it stops — UNLESS the player has saved their own
+ *   OpenAI key, in which case Roomie gets its full budget and the session runs on that key
+ *   (see src/roomie-key.ts; the key itself never leaves this worker).
  * - Maker AI meters model usage in dollars. Nothing here bills, so every figure is zero.
  */
 
@@ -70,6 +96,107 @@ async function authedId(c: Context<App>): Promise<number | null> {
 /** Results.Unauthorized() equivalent — 401 with empty body. */
 function unauthorized(c: Context<App>) {
 	return c.body(null, 401)
+}
+
+// ---- Roomie conversation on the player's own OpenAI key -------------------------------
+//
+// A player who saves an OpenAI API key (website → `PUT /roomieai/key`) gets Roomie's full
+// voice conversation: the access check grants it, `realtime-session/create` mints an
+// ephemeral OpenAI client secret with the key, and the companion falls back to its no-AI
+// mode for everyone else exactly as before. The key itself never leaves this worker — see
+// src/roomie-key.ts for how it is sealed and why nothing returns it.
+
+/**
+ * The keyring, or null when `ROOMIE_KEY_ENCRYPTION_KEY` is unset or malformed — which turns
+ * keyed Roomie off (keys can't be saved, saved ones aren't used) instead of failing requests.
+ */
+async function keyring(c: Context<App>): Promise<Keyring | null> {
+	try {
+		return await parseKeyring(await c.env.ROOMIE_KEY_ENCRYPTION_KEY.get())
+	} catch {
+		return null
+	}
+}
+
+/** Whether the caller's Roomie runs on their own key: one is on file and can be opened. */
+async function hasUsableKey(c: Context<App>, accountId: number): Promise<boolean> {
+	return (await keyring(c)) !== null && (await hasRoomieKey(c.env.DB, accountId))
+}
+
+/**
+ * The caller's OpenAI key, opened, or null when none is on file or it can't be opened (the
+ * keyring lost its version, or the row was tampered with). A row sealed under an older
+ * keyring version is re-sealed under the current one on the way through, so a rotation
+ * completes itself as players use Roomie.
+ */
+async function openStoredKey(c: Context<App>, accountId: number): Promise<string | null> {
+	const ring = await keyring(c)
+	if (ring === null) return null
+	const row = await getRoomieKeyRow(c.env.DB, accountId)
+	if (row === null) return null
+	const apiKey = await openKey(ring, accountId, row)
+	if (apiKey !== null && row.keyVersion !== ring.current.version) {
+		await resealRoomieKeyRow(c.env.DB, accountId, await sealKey(ring, accountId, apiKey))
+	}
+	return apiKey
+}
+
+/** The realtime model session tokens are minted for. */
+const realtimeModel = (c: Context<App>) => c.env.ROOMIE_REALTIME_MODEL || DEFAULT_REALTIME_MODEL
+
+/** Sessions one account may open per {@link SESSION_WINDOW_SECONDS}: generous for play, a cap on a loop. */
+const SESSION_LIMIT = 60
+const SESSION_WINDOW_SECONDS = 60 * 60
+
+/** Key saves one account may attempt per {@link KEY_SAVE_WINDOW_SECONDS}; each one calls OpenAI. */
+const KEY_SAVE_LIMIT = 10
+const KEY_SAVE_WINDOW_SECONDS = 60 * 60
+
+/** The full Roomie energy budget, in the access envelope. */
+const ROOMIE_GRANTED = {
+	success: true,
+	error_id: null,
+	error: null,
+	value: {
+		MaxEnergyFromSubscriptions: INT32_MAX,
+		EnergyLeft: INT32_MAX,
+		NextSubscriptionEnergyRechargeAt: null,
+		OutputAudioEnabled: true,
+	},
+} as const
+
+/**
+ * The caller's Roomie access envelope. With their own key: the full budget, whatever the
+ * build. Without one, the 20260323 build (every point release of it) gets the recognized
+ * no-credit result and zero energy for its native companion mode, and older builds keep the
+ * full budget they have always been sent.
+ */
+async function roomieAccess(c: Context<App>, accountId: number) {
+	if (await hasUsableKey(c, accountId)) return ROOMIE_GRANTED
+	const build = await validateAndGetBuild(c.req.raw, await c.env.JWT_SECRET.get())
+	if (build === '20260323') {
+		return {
+			success: false,
+			error_id: 'AI.InsufficientRoomieAICreditNoSub',
+			error: 'AI conversation is disabled. Roomie companion mode is available.',
+			value: {
+				MaxEnergyFromSubscriptions: 0,
+				EnergyLeft: 0,
+				OutputAudioEnabled: false,
+			},
+		}
+	}
+	return ROOMIE_GRANTED
+}
+
+/** The realtime-session refusal: a 200 with `success: false`, an empty `error_id`, no value. */
+const sessionRefusal = (error: string) => ({ success: false, error, error_id: '', value: null })
+
+/** What the player is told when OpenAI turned a key down, by why. */
+const MINT_REFUSALS: Record<Exclude<MintResult, { ok: true }>['reason'], string> = {
+	rejected: 'OpenAI rejected your API key. Update it on your RecFlare account page.',
+	forbidden: 'Your OpenAI API key is not allowed to use the Realtime API. Check its permissions.',
+	unavailable: 'OpenAI could not be reached. Please try again later.',
 }
 
 const app = new Hono<App>()
@@ -164,26 +291,30 @@ const app = new Hono<App>()
 	)
 
 	// The 20260323 build (20260323.14) has native low-energy and no-energy companion support. Advertising
-	// full energy selects a conversation backend we do not provide. Grant access with
-	// zero energy and the client's recognized no-credit result instead. A successful
-	// access response still opens a realtime session even when its energy is zero.
-	// Preserve the older client's budget and recharge-field contract.
+	// full energy selects a conversation backend — so it is advertised only to a player who
+	// has saved their own OpenAI key, whose sessions run on it. Everyone else on that build
+	// gets zero energy and the client's recognized no-credit result, which keeps the
+	// companion working without AI. Preserve the older client's budget and recharge-field
+	// contract. This one answer is what every Roomie gate in the client reads (the access
+	// cache, the Roomie menu, the backpack entry, the tool's "no Roomie access in this room").
 	.get(
 		'/roomieai/user/access',
 		describeRoute({
 			tags: ['Roomie AI', '2025'],
 			summary: 'The caller’s Roomie AI energy budget',
 			description: [
-				'The 20260323 build receives the recognized no-credit result and zero energy for its native',
-				'companion mode. Its DTO has no recharge field. Older clients retain the full',
-				'int32-max budget and null recharge time. No model session is created.',
+				'With an OpenAI key saved on the caller’s account, the full int32-max budget with',
+				'output audio on, whatever the build: Roomie conversation runs on that key. Without',
+				'one, the 20260323 build receives the recognized no-credit result and zero energy for',
+				'its native companion mode, and older clients retain the full budget and null',
+				'recharge time.',
 				'',
 				'The envelope is `{ success, error_id, error, value }`, NOT the flat body the Game AI',
 				'check answers with. The two are different shapes on purpose — don’t unify them.',
 			].join(' '),
 			security: AUTHED,
 			responses: {
-				200: json(RoomieAiAccess, 'Build-specific conversation access and companion fallback'),
+				200: json(RoomieAiAccess, 'Conversation access, or the build-specific companion fallback'),
 				401: UNAUTHORIZED_RESPONSE,
 			},
 		}),
@@ -191,32 +322,34 @@ const app = new Hono<App>()
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
 
-			// The build, not the version: every point release of 20260323 has the companion mode.
-			const build = await validateAndGetBuild(c.req.raw, await c.env.JWT_SECRET.get())
-			if (build === '20260323') {
-				return c.json({
-					success: false,
-					error_id: 'AI.InsufficientRoomieAICreditNoSub',
-					error: 'AI conversation is disabled. Roomie companion mode is available.',
-					value: {
-						MaxEnergyFromSubscriptions: 0,
-						EnergyLeft: 0,
-						OutputAudioEnabled: false,
-					},
-				})
-			}
+			return c.json(await roomieAccess(c, id))
+		}
+	)
 
-			return c.json({
-				success: true,
-				error_id: null,
-				error: null,
-				value: {
-					MaxEnergyFromSubscriptions: INT32_MAX,
-					EnergyLeft: INT32_MAX,
-					NextSubscriptionEnergyRechargeAt: null,
-					OutputAudioEnabled: true,
-				},
-			})
+	// What a conversation has spent, posted while one runs; the client reads the energy
+	// budget back from the answer. Nothing here meters energy, so the answer is the access
+	// check's — and a 404 here would end the conversation as out of energy.
+	.post(
+		'/roomieai/session/spend',
+		describeRoute({
+			tags: ['Roomie AI', '2026'],
+			summary: 'Report a Roomie conversation’s spend',
+			description: [
+				'Posted during a Roomie conversation with what it has used; the client reads the',
+				'remaining budget from the reply. Nothing on this server meters energy, so the body',
+				'is ignored and the answer is the same envelope `GET /roomieai/user/access` serves.',
+			].join(' '),
+			security: AUTHED,
+			responses: {
+				200: json(RoomieAiAccess, 'The caller’s (unchanged) budget'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			return c.json(await roomieAccess(c, id))
 		}
 	)
 
@@ -342,33 +475,38 @@ const app = new Hono<App>()
 		}
 	)
 
-	// Opening a live voice session with an assistant — the one call here that would reach a
-	// real model, and so the one that cannot be answered statically. Refused.
+	// Opening a live voice session with an assistant — the one call here that reaches a real
+	// model. Served only on the caller's own OpenAI key, and even then the key is not what is
+	// handed out: an ephemeral client secret minted with it is.
 	.post(
 		'/realtime-session/create',
 		describeRoute({
 			tags: ['Roomie AI', '2025'],
 			summary: 'Open a realtime AI session',
 			description: [
-				'Posted when the player actually pulls out an assistant. Live, this mints a short-',
-				'lived credential the CLIENT then uses to talk to the model provider directly, and',
-				'answers with `{ SessionId, ClientSecret }` in `value`.',
+				'Posted when the player actually pulls out an assistant. The CLIENT talks to OpenAI',
+				'Realtime directly, with the `ClientSecret` this answers in `value` alongside a',
+				'`SessionId`.',
 				'',
-				'Refused here. This is the one endpoint on the worker whose answer is a working key',
-				'rather than a description of one, so there is nothing static to serve — which is why',
-				'the budget reads above grant everything and the refusal lands at this point instead:',
-				'the client offers the feature, and the session it opens is what fails.',
+				'Granted only when the caller has saved their own OpenAI API key (`PUT',
+				'/roomieai/key`): the secret is an EPHEMERAL one minted with that key, good for',
+				'opening a session for a few minutes — never the key itself, which nothing returns.',
+				'Sessions are capped per account per hour.',
 				'',
-				'The refusal is still a 200 with `success: false`, and `error_id` is an EMPTY STRING',
-				'rather than a code — the reference server sends no id for this one. `value` is null.',
+				'Otherwise refused, as a 200 with `success: false`, an `error_id` that is an EMPTY',
+				'STRING rather than a code (the reference server sends no id for this one), and a',
+				'null `value`. The same shape carries the reason when OpenAI turns the key down.',
 			].join(' '),
 			security: AUTHED,
 			requestBody: jsonBody(
 				RealtimeSessionCreateBody,
-				'Which assistant is being opened. Read for the log only — the answer is the same either way.'
+				'Which assistant is being opened. Not read — the answer is the same either way.'
 			),
 			responses: {
-				200: json(RealtimeSessionDenied, 'Always a refusal — no session is created'),
+				200: json(
+					z.union([RealtimeSessionGranted, RealtimeSessionDenied]),
+					'A session secret minted with the caller’s key, or a refusal'
+				),
 				401: UNAUTHORIZED_RESPONSE,
 			},
 		}),
@@ -376,12 +514,199 @@ const app = new Hono<App>()
 			const id = await authedId(c)
 			if (id === null) return unauthorized(c)
 
+			if (!(await hasUsableKey(c, id))) {
+				return c.json(sessionRefusal('Realtime AI sessions are not available on this server'))
+			}
+			const { allowed } = await takeRateLimit(
+				c.env.DB,
+				`roomie_session:${id}`,
+				SESSION_LIMIT,
+				SESSION_WINDOW_SECONDS
+			)
+			if (!allowed) {
+				return c.json(sessionRefusal('Roomie has been started too often. Please try again later.'))
+			}
+			const apiKey = await openStoredKey(c, id)
+			if (apiKey === null) {
+				return c.json(
+					sessionRefusal(
+						'Your saved OpenAI API key could not be read. Save it again on your account page.'
+					)
+				)
+			}
+			const minted = await mintClientSecret(c.env.OPENAI, apiKey, realtimeModel(c))
+			if (!minted.ok) return c.json(sessionRefusal(MINT_REFUSALS[minted.reason]))
+
 			return c.json({
-				success: false,
-				error: 'Realtime AI sessions are not available on this server',
-				error_id: '',
-				value: null,
+				success: true,
+				error_id: null,
+				error: null,
+				value: {
+					SessionId: minted.sessionId ?? crypto.randomUUID(),
+					ClientSecret: minted.clientSecret,
+				},
 			})
+		}
+	)
+
+	// The client's diagnostics for a session it opened, posted once it is running. Nothing
+	// here collects them; accepted so the client doesn't read a 404 as the session failing
+	// ("RoomieAI is currently unavailable").
+	.post(
+		'/realtime-session/logs',
+		describeRoute({
+			tags: ['Roomie AI', '2026'],
+			summary: 'Accept a realtime session’s client logs',
+			description: [
+				'Posted by the client about a realtime session it has opened. Nothing on this server',
+				'collects them, so the body is neither read nor stored; the success envelope is what',
+				'keeps the client from treating the session as failed.',
+			].join(' '),
+			security: AUTHED,
+			responses: {
+				200: json(RealtimeLogsAccepted, 'Accepted (and discarded)'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			return c.json({ success: true, error_id: null, error: null })
+		}
+	)
+
+	// The player's own OpenAI key, from the website (which calls this worker directly, as it
+	// does the others). WRITE-ONLY: these routes set, remove and say whether a key is on file —
+	// none returns the key, or any part of it.
+	.use('/roomieai/key', withDefaultCors())
+	.get(
+		'/roomieai/key',
+		describeRoute({
+			tags: ['Roomie AI', 'Website'],
+			summary: 'Whether the caller has an OpenAI key saved for Roomie',
+			description: [
+				'Whether a key is on file and when it was saved — never the key, or any part of it:',
+				'a saved key cannot be read back by anyone. `available` is false when this server',
+				'has keyed Roomie switched off (no ROOMIE_KEY_ENCRYPTION_KEY), in which case a key',
+				'can be neither saved nor used.',
+			].join(' '),
+			security: AUTHED,
+			responses: {
+				200: json(RoomieKeyStatus, 'The key’s status'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const updatedAt = await roomieKeyUpdatedAt(c.env.DB, id)
+			return c.json({
+				available: (await keyring(c)) !== null,
+				configured: updatedAt !== null,
+				updatedAt: updatedAt === null ? null : new Date(updatedAt * 1000).toISOString(),
+			})
+		}
+	)
+	.put(
+		'/roomieai/key',
+		describeRoute({
+			tags: ['Roomie AI', 'Website'],
+			summary: 'Save (or replace) the caller’s OpenAI key for Roomie',
+			description: [
+				'Body `{ apiKey }`: an OpenAI API key (`sk-…`). It is first CHECKED with OpenAI — one',
+				'free call that mints a Realtime session token, exactly the permission Roomie needs —',
+				'and refused if OpenAI turns it down, so a mistyped or revoked key fails here rather',
+				'than in game. Then it is sealed (AES-256-GCM, bound to the account) and stored. The',
+				'key is never echoed, logged or returned; the reply is the same status `GET` serves.',
+				'Attempts are capped per account per hour, each one calling OpenAI.',
+			].join(' '),
+			security: AUTHED,
+			requestBody: jsonBody(RoomieKeyPutBody, 'The key to save'),
+			responses: {
+				200: json(RoomieKeyStatus, 'Saved'),
+				400: json(RoomieKeyError, 'Not an OpenAI key, or OpenAI refused it'),
+				401: UNAUTHORIZED_RESPONSE,
+				429: json(RoomieKeyError, 'Too many attempts; try again later'),
+				502: json(RoomieKeyError, 'OpenAI could not be reached to check the key'),
+				503: json(RoomieKeyError, 'Keyed Roomie is switched off on this server'),
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const ring = await keyring(c)
+			if (ring === null) {
+				return c.json({ error: 'Roomie API keys are not enabled on this server.' }, 503)
+			}
+			const body = (await c.req.json().catch(() => null)) as { apiKey?: unknown } | null
+			const apiKey = typeof body?.apiKey === 'string' ? body.apiKey.trim() : null
+			if (!isOpenAiKeyShape(apiKey)) {
+				return c.json(
+					{ error: 'That doesn’t look like an OpenAI API key (they start with “sk-”).' },
+					400
+				)
+			}
+			const { allowed } = await takeRateLimit(
+				c.env.DB,
+				`roomie_key_save:${id}`,
+				KEY_SAVE_LIMIT,
+				KEY_SAVE_WINDOW_SECONDS
+			)
+			if (!allowed) return c.json({ error: 'Too many attempts. Please try again in an hour.' }, 429)
+
+			const check = await mintClientSecret(c.env.OPENAI, apiKey, realtimeModel(c))
+			if (!check.ok) {
+				if (check.reason === 'unavailable') {
+					return c.json(
+						{ error: 'OpenAI could not be reached to check the key. Please try again.' },
+						502
+					)
+				}
+				return c.json(
+					{
+						error:
+							check.reason === 'rejected'
+								? 'OpenAI rejected this key. Check that it was copied whole and is still active.'
+								: 'This key is not allowed to use the Realtime API. Give it that permission, or use another key.',
+					},
+					400
+				)
+			}
+
+			const now = Math.floor(Date.now() / 1000)
+			await putRoomieKeyRow(c.env.DB, id, await sealKey(ring, id, apiKey), now)
+			return c.json({
+				available: true,
+				configured: true,
+				updatedAt: new Date(now * 1000).toISOString(),
+			})
+		}
+	)
+	.delete(
+		'/roomieai/key',
+		describeRoute({
+			tags: ['Roomie AI', 'Website'],
+			summary: 'Remove the caller’s OpenAI key',
+			description: [
+				'Forgets the caller’s saved key; Roomie returns to its companion mode on their next',
+				'session. Idempotent: removing a key that isn’t there answers the same. To stop a key',
+				'that may have leaked from working anywhere, also revoke it on OpenAI’s dashboard.',
+			].join(' '),
+			security: AUTHED,
+			responses: {
+				200: json(RoomieKeyStatus, 'Removed'),
+				401: UNAUTHORIZED_RESPONSE,
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			await deleteRoomieKey(c.env.DB, id)
+			return c.json({ available: (await keyring(c)) !== null, configured: false, updatedAt: null })
 		}
 	)
 
@@ -407,6 +732,11 @@ app.get(
 						'only ask what the caller may SPEND, which nothing here meters, so those reads are',
 						'granted with a build-specific budget; conversation refuses on `POST /realtime-session/create`, the',
 						'one call whose real answer is a working credential rather than a description of one.',
+						'',
+						'The exception is a player who has saved their own OpenAI API key (`PUT /roomieai/key`,',
+						'from the website). Their Roomie gets its full budget, and the realtime session runs',
+						'on an ephemeral secret minted with that key. Keys are write-only: sealed at rest, and',
+						'returned by nothing.',
 						'',
 						'The refusals are 200s carrying `success: false`, which is the shape the client',
 						'branches on — the worker exists so the client gets a definite answer on the host its',

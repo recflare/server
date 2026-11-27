@@ -4,6 +4,17 @@
 	"main": "src/moderation.app.ts",
 	"compatibility_date": "2026-06-16",
 	"compatibility_flags": ["nodejs_compat"],
+	// Shared `recflare` D1 database, read for ONE question: whether a player has a Roomie
+	// API key on file (`roomie_api_key`, owned and migrated by the `ai` worker). This worker
+	// never sees key material — it has no binding to the key that seals it. The "local"
+	// placeholder is replaced with the real id from RECFLARE_D1 (see .env) at deploy time.
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "recflare",
+			"database_id": "local"
+		}
+	],
 	// Shared Secrets Store holding the HS256 JWT signing key. Every worker binds the
 	// same store as JWT_SECRET so tokens signed by `auth` verify here. The "local"
 	// store_id placeholder is replaced with RECFLARE_SECRETS_STORE at deploy time.

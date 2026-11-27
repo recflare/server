@@ -71,8 +71,9 @@ export const HealthResponse = z.object({
 
 /**
  * The Roomie AI access envelope — the `{ success, error_id, error, value }` shape, unlike
- * the flat Game AI refusal above. 2026 uses the no-credit fallback with zero energy;
- * older builds retain their full signed-32-bit budget and recharge field.
+ * the flat Game AI refusal above. A caller with their own OpenAI key saved gets the full
+ * signed-32-bit budget on any build; otherwise 2026 uses the no-credit fallback with zero
+ * energy and older builds retain their full budget and recharge field.
  */
 export const RoomieAiAccess = z.object({
 	success: z.boolean(),
@@ -81,8 +82,14 @@ export const RoomieAiAccess = z.object({
 	value: z.object({
 		MaxEnergyFromSubscriptions: z
 			.int()
-			.describe('Zero for the 2026 companion; int32 max for older builds'),
-		EnergyLeft: z.int().describe('Zero for the 2026 companion; int32 max for older builds'),
+			.describe(
+				'Int32 max with a saved key or on older builds; zero for the keyless 2026 companion'
+			),
+		EnergyLeft: z
+			.int()
+			.describe(
+				'Int32 max with a saved key or on older builds; zero for the keyless 2026 companion'
+			),
 		NextSubscriptionEnergyRechargeAt: z
 			.string()
 			.nullable()
@@ -163,6 +170,55 @@ export const RealtimeSessionDenied = z.object({
 	error: z.string().describe('The message shown to the player'),
 	error_id: z.string().describe('Empty — the reference server sends no code for this refusal'),
 	value: z.null().describe('The session credentials. Null: no session is created'),
+})
+
+/**
+ * A realtime session granted on the caller's own OpenAI key. `ClientSecret` is an EPHEMERAL
+ * OpenAI Realtime client secret minted with that key — never the key itself.
+ */
+export const RealtimeSessionGranted = z.object({
+	success: z.literal(true),
+	error_id: z.null(),
+	error: z.null(),
+	value: z.object({
+		SessionId: z.string().describe('OpenAI’s session id, or a fresh GUID when it names none'),
+		ClientSecret: z
+			.string()
+			.describe(
+				'An ephemeral OpenAI Realtime client secret, good for opening a session for minutes'
+			),
+	}),
+})
+
+/** `POST /realtime-session/logs` — the logs are accepted and discarded. */
+export const RealtimeLogsAccepted = z.object({
+	success: z.literal(true),
+	error_id: z.null(),
+	error: z.null(),
+})
+
+/** `PUT /roomieai/key` — the key to save. */
+export const RoomieKeyPutBody = z.object({
+	apiKey: z
+		.string()
+		.describe('An OpenAI API key (`sk-…`). Checked with OpenAI, then sealed; never returned'),
+})
+
+/**
+ * Whether the caller has an OpenAI key saved for Roomie. There is deliberately no field
+ * carrying the key, or any part of it: a saved key is write-only.
+ */
+export const RoomieKeyStatus = z.object({
+	available: z
+		.boolean()
+		.describe('False when this server has keyed Roomie switched off; no key can be saved or used'),
+	configured: z.boolean().describe('Whether a key is on file'),
+	updatedAt: z.string().nullable().describe('When the key on file was saved (ISO 8601), or null'),
+})
+
+/** A refused key operation, with a sentence for the website to show. */
+export const RoomieKeyError = z.object({
+	error: z.string().describe('Why, in words the website shows as-is'),
 })
 
 /**

@@ -8,6 +8,11 @@ export type Env = SharedHonoEnv & {
 	 * `auth` verify here.
 	 */
 	JWT_SECRET: SecretsStoreSecret
+	/**
+	 * The shared `recflare` D1, read only to ask whether a player has a Roomie API key on
+	 * file (`roomie_api_key`, owned by the `ai` worker). Never key material.
+	 */
+	DB: D1Database
 }
 
 /** Variables can be extended */
