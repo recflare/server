@@ -65,7 +65,7 @@ export const AUTHED = [{ bearerAuth: [] }]
  */
 export const RoomInstanceType = z
 	.int()
-	.describe('RoomInstanceType: 0 Public, 1 Dormroom, … (see @repo/domain)')
+	.describe('RoomInstanceType: 0 Public, 1 Dormroom, … 6 MultiInstanceEvent (see @repo/domain)')
 
 /**
  * A room instance — the session the client connects to (scene + Photon coordinates).
@@ -450,6 +450,31 @@ export const InviteResponse = z.object({
 export const InstanceIdResponse = z
 	.int()
 	.describe('The player’s room instance id, or 0 when they are not in one')
+
+/** `GET /tachyon/event?instance=…&account=…` — what Tachyon needs to run a broadcast. */
+export const TachyonEventResponse = z.object({
+	eventId: z.int().describe('The player event the instance belongs to, 0 for none'),
+	canBroadcast: z
+		.boolean()
+		.describe('Whether `account` may broadcast that event: its creator, multi-instance, not ended'),
+})
+
+/**
+ * `POST /tachyon/broadcast` JSON body, from Tachyon with the broadcaster's own token. `active`
+ * false with `joined` true is the reset Tachyon sends when an event's creator joins one of
+ * its instances: they are broadcasting from nowhere, whatever was last reported.
+ */
+export const TachyonBroadcastRequest = z.object({
+	instance: z.int().describe('The room instance the broadcast runs (or ran) from'),
+	active: z.boolean().describe('true: the broadcast started; false: it stopped'),
+	joined: z.boolean().optional().describe('With `active` false: clear it from every instance'),
+})
+
+/** `POST /tachyon/broadcast` answer. */
+export const TachyonBroadcastResponse = z.object({
+	eventId: z.int().describe('The instance’s player event, 0 for none'),
+	broadcasting: z.boolean().describe('Whether that event is now broadcasting from `instance`'),
+})
 
 /**
  * `GET /clubhousesearch/mostactivenow` — one row per clubhouse someone is standing in

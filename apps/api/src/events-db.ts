@@ -27,7 +27,8 @@ import {
 
 /**
  * Schema DDL (mirror of migrations/0006_event.sql + 0007_event_attendee.sql +
- * 0010_event_tag.sql + 0028_event_id_seq.sql, sans any seed rows).
+ * 0010_event_tag.sql + 0028_event_id_seq.sql + 0038_event_broadcast.sql, sans any seed
+ * rows).
  */
 export const SCHEMA_DDL: string[] = [
 	`CREATE TABLE IF NOT EXISTS event (
@@ -65,7 +66,37 @@ export const SCHEMA_DDL: string[] = [
 	`CREATE TABLE IF NOT EXISTS event_id_seq (
 		id INTEGER PRIMARY KEY AUTOINCREMENT
 	)`,
+	// The broadcast running for an event, if any: one row per event, written only by
+	// `match` (`POST /tachyon/broadcast`) when the room server starts or stops one. Its own
+	// table rather than a key on the blob, because every edit rewrites the blob whole and a
+	// broadcast starting mid-edit must be neither lost nor brought back by it. Reads join
+	// it in through EVENT_COLUMNS.
+	`CREATE TABLE IF NOT EXISTS event_broadcast (
+		event_id INTEGER PRIMARY KEY,
+		room_instance_id INTEGER NOT NULL,
+		broadcaster_id INTEGER NOT NULL,
+		started_at TEXT NOT NULL
+	)`,
 ]
+
+/**
+ * What every event read selects: the stored blob with `BroadcastingRoomInstanceId` set from
+ * `event_broadcast` (JSON null while nothing is broadcasting). Pair it with
+ * {@link withBroadcast} over the same table or alias. The key is never stored (see
+ * {@link writeEvent}), so the blob stays the record, and every projection, the raw reads
+ * included, carries the live value without a second query.
+ */
+function eventColumns(table = 'event'): string {
+	return `json_set(${table}.data, '$.BroadcastingRoomInstanceId', event_broadcast.room_instance_id) AS data`
+}
+
+/** The join behind {@link eventColumns}. */
+function withBroadcast(table = 'event'): string {
+	return `LEFT JOIN event_broadcast ON event_broadcast.event_id = ${table}.id`
+}
+
+/** `SELECT ${EVENT_COLUMNS} WHERE …` — {@link eventColumns} over the bare `event` table. */
+const EVENT_COLUMNS = `${eventColumns()} FROM event ${withBroadcast()}`
 
 /**
  * How a player answered an event invitation — the `Type` on
@@ -184,6 +215,14 @@ export interface PlayerEvent {
 	SupportMultiInstanceRoomChat: boolean
 	DefaultBroadcastPermissions: number
 	CanRequestBroadcastPermissions: number
+	/**
+	 * The room instance the event is being broadcast from, or null. The 2026 client reads
+	 * `PlayerEvent.IsBroadcasting` as this having a value. NOT stored on the blob: every read
+	 * fills it in from `event_broadcast` ({@link EVENT_COLUMNS}), which only the room
+	 * server's report writes, and {@link writeEvent} drops it again. Optional because a
+	 * record that was just built (a create) has not been read back yet.
+	 */
+	BroadcastingRoomInstanceId?: number | null
 }
 
 interface EventRow {
@@ -281,9 +320,8 @@ export const EVENT_DELETED_RESULT: PlayerEventDeletedResult = {
  * them:
  *
  * - it is camelCase, where the record and every read endpoint are PascalCase;
- * - it carries `tags` and `broadcastingRoomInstanceId`, which the record has no fields
- *   for (no event tags are stored, and nothing broadcasts an event yet, so both are
- *   empty/null), and drops `State`;
+ * - it carries `tags`, which live in their own table, and `broadcastingRoomInstanceId`
+ *   (null while nothing is broadcasting), and drops `State`;
  * - its timestamps are padded to .NET tick precision (`…T19:00:00.0000000Z`) while the
  *   record stores them bare. That asymmetry is the reference server's: its notification
  *   frames carry the padded form and its event reads don't.
@@ -319,8 +357,8 @@ export interface PlayerEventNotification {
  * PascalCase like the stored record, but not identical to it — don't unify them:
  *
  * - it drops `State`, which neither the feed nor the envelope carries;
- * - it carries `BroadcastingRoomInstanceId`, which the record has no field for (nothing
- *   broadcasts an event yet, so it is always null);
+ * - it always carries `BroadcastingRoomInstanceId` (null while nothing is broadcasting),
+ *   which a record that was just created does not hold yet;
  * - its `ImageName` is a string: an event with no image reads `""`, where the record holds
  *   null.
  *
@@ -335,7 +373,11 @@ export interface PlayerEventBase extends Omit<PlayerEvent, 'State' | 'ImageName'
 /** Project a stored event into the base shape the feed serves and the envelope wraps. */
 export function toEventBase(event: PlayerEvent): PlayerEventBase {
 	const { State: _State, ...rest } = event
-	return { ...rest, ImageName: event.ImageName ?? '', BroadcastingRoomInstanceId: null }
+	return {
+		...rest,
+		ImageName: event.ImageName ?? '',
+		BroadcastingRoomInstanceId: event.BroadcastingRoomInstanceId ?? null,
+	}
 }
 
 /** Pad a stored timestamp out to .NET tick precision (seven fractional digits). */
@@ -375,7 +417,7 @@ export function toEventNotification(
 		supportMultiInstanceRoomChat: event.SupportMultiInstanceRoomChat,
 		defaultBroadcastPermissions: event.DefaultBroadcastPermissions,
 		canRequestBroadcastPermissions: event.CanRequestBroadcastPermissions,
-		broadcastingRoomInstanceId: null,
+		broadcastingRoomInstanceId: event.BroadcastingRoomInstanceId ?? null,
 	}
 }
 
@@ -817,11 +859,16 @@ export async function getEventAttendees(
 	return results
 }
 
-/** Overwrite an event's stored blob in place. */
+/**
+ * Overwrite an event's stored blob in place. `BroadcastingRoomInstanceId` is a read-time
+ * value (see {@link EVENT_COLUMNS}) and is dropped here, so an edit never freezes a
+ * broadcast's state into the record.
+ */
 async function writeEvent(db: D1Database, event: PlayerEvent): Promise<void> {
+	const { BroadcastingRoomInstanceId: _live, ...stored } = event
 	await db
 		.prepare('UPDATE event SET data = ?1 WHERE id = ?2')
-		.bind(JSON.stringify(event), event.PlayerEventId)
+		.bind(JSON.stringify(stored), event.PlayerEventId)
 		.run()
 }
 
@@ -887,8 +934,8 @@ async function nextEventId(db: D1Database): Promise<number> {
 }
 
 /**
- * Delete an event and everything hanging off it — its RSVPs (`event_attendee`) and its tags
- * (`event_tag`) — in one batch, so a cancelled event can't leave rows behind that the
+ * Delete an event and everything hanging off it — its RSVPs (`event_attendee`), its tags
+ * (`event_tag`) and a running broadcast (`event_broadcast`) — in one batch, so a cancelled event can't leave rows behind that the
  * attendee counts and the `#tag` search would still find. Event ids are drawn from a
  * sequence that never reuses one (see {@link nextEventId}), so a deleted event's id is
  * retired with it — but orphan rows would still be counted against whatever id they name.
@@ -902,6 +949,7 @@ export async function deleteEvent(db: D1Database, eventId: number): Promise<Play
 	await db.batch([
 		db.prepare('DELETE FROM event_attendee WHERE event_id = ?1').bind(eventId),
 		db.prepare('DELETE FROM event_tag WHERE event_id = ?1').bind(eventId),
+		db.prepare('DELETE FROM event_broadcast WHERE event_id = ?1').bind(eventId),
 		db.prepare('DELETE FROM event WHERE id = ?1').bind(eventId),
 	])
 	return event
@@ -910,7 +958,7 @@ export async function deleteEvent(db: D1Database, eventId: number): Promise<Play
 /** One event by id, or null when there's no such row. */
 export async function getEventById(db: D1Database, eventId: number): Promise<PlayerEvent | null> {
 	const row = await db
-		.prepare('SELECT data FROM event WHERE id = ?1')
+		.prepare(`SELECT ${EVENT_COLUMNS} WHERE id = ?1`)
 		.bind(eventId)
 		.first<EventRow>()
 	return row ? (JSON.parse(row.data) as PlayerEvent) : null
@@ -927,7 +975,7 @@ export async function getEventById(db: D1Database, eventId: number): Promise<Pla
 export async function getEventsByIds(db: D1Database, ids: number[]): Promise<PlayerEvent[]> {
 	if (ids.length === 0) return []
 	const { results } = await db
-		.prepare(`SELECT data FROM event WHERE id IN (SELECT value FROM json_each(?1))`)
+		.prepare(`SELECT ${EVENT_COLUMNS} WHERE id IN (SELECT value FROM json_each(?1))`)
 		.bind(JSON.stringify(ids))
 		.all<EventRow>()
 	const byId = new Map<number, PlayerEvent>()
@@ -947,7 +995,7 @@ export async function getEventsByCreator(
 	creatorPlayerId: number
 ): Promise<PlayerEvent[]> {
 	const { results } = await db
-		.prepare('SELECT data FROM event WHERE creator_player_id = ?1')
+		.prepare(`SELECT ${EVENT_COLUMNS} WHERE creator_player_id = ?1`)
 		.bind(creatorPlayerId)
 		.all<EventRow>()
 	return results.map((r) => JSON.parse(r.data) as PlayerEvent).sort(bySoonest)
@@ -968,9 +1016,10 @@ export async function getEventResponsesByPlayer(
 ): Promise<Array<{ PlayerEvent: PlayerEvent; PlayerEventResponse: PlayerEventResponse }>> {
 	const { results } = await db
 		.prepare(
-			`SELECT e.data AS data, a.rowid AS id, a.event_id, a.player_id, a.status, a.responded_at
+			`SELECT ${eventColumns('e')}, a.rowid AS id, a.event_id, a.player_id, a.status, a.responded_at
 			 FROM event_attendee a
 			 JOIN event e ON e.id = a.event_id
+			 ${withBroadcast('e')}
 			 WHERE a.player_id = ?1`
 		)
 		.bind(playerId)
@@ -1014,16 +1063,17 @@ export async function getPublicEventsByPlayer(
 	const [created, responses] = await db.batch<EventRow & Partial<EventAttendeeRow>>([
 		db
 			.prepare(
-				`SELECT data FROM event
+				`SELECT ${EVENT_COLUMNS}
 				 WHERE creator_player_id = ?1 AND end_time >= ?2
-				   AND json_extract(data, '$.Accessibility') = ?3`
+				   AND json_extract(event.data, '$.Accessibility') = ?3`
 			)
 			.bind(playerId, at, Accessibility.Public),
 		db
 			.prepare(
-				`SELECT e.data AS data, a.rowid AS id, a.event_id, a.player_id, a.status, a.responded_at
+				`SELECT ${eventColumns('e')}, a.rowid AS id, a.event_id, a.player_id, a.status, a.responded_at
 				 FROM event_attendee a
 				 JOIN event e ON e.id = a.event_id
+				 ${withBroadcast('e')}
 				 WHERE a.player_id = ?1 AND a.status = ?2 AND e.end_time >= ?3
 				   AND json_extract(e.data, '$.Accessibility') = ?4`
 			)
@@ -1055,7 +1105,7 @@ export async function getPublicEventsByPlayer(
 export async function getEventsByClubs(db: D1Database, clubIds: number[]): Promise<PlayerEvent[]> {
 	if (clubIds.length === 0) return []
 	const { results } = await db
-		.prepare(`SELECT data FROM event WHERE club_id IN (SELECT value FROM json_each(?1))`)
+		.prepare(`SELECT ${EVENT_COLUMNS} WHERE club_id IN (SELECT value FROM json_each(?1))`)
 		.bind(JSON.stringify(clubIds))
 		.all<EventRow>()
 	return results.map((r) => JSON.parse(r.data) as PlayerEvent).sort(bySoonest)
@@ -1080,7 +1130,7 @@ export async function getEventsByRoom(
 	now = Date.now()
 ): Promise<PlayerEvent[]> {
 	const { results } = await db
-		.prepare('SELECT data FROM event WHERE room_id = ?1 AND end_time >= ?2')
+		.prepare(`SELECT ${EVENT_COLUMNS} WHERE room_id = ?1 AND end_time >= ?2`)
 		.bind(roomId, eventTime(now))
 		.all<EventRow>()
 	return results.map((r) => JSON.parse(r.data) as PlayerEvent).sort(bySoonest)
@@ -1096,8 +1146,8 @@ export async function getLiveEvents(db: D1Database, now = Date.now()): Promise<P
 	const at = eventTime(now)
 	const { results } = await db
 		.prepare(
-			`SELECT data FROM event WHERE start_time <= ?1 AND end_time >= ?1
-			   AND json_extract(data, '$.Accessibility') = ?2`
+			`SELECT ${EVENT_COLUMNS} WHERE start_time <= ?1 AND end_time >= ?1
+			   AND json_extract(event.data, '$.Accessibility') = ?2`
 		)
 		.bind(at, Accessibility.Public)
 		.all<EventRow>()
@@ -1202,8 +1252,8 @@ export async function searchEvents(
 	// lexicographically — that filter stays in SQL, and so does the tag one: an event
 	// has to carry EVERY tag asked for, which is the count of matching tag rows.
 	const wanted = tags.filter(Boolean)
-	const browse = `SELECT data FROM event WHERE end_time >= ?1
-		AND json_extract(data, '$.Accessibility') = ?2`
+	const browse = `SELECT ${EVENT_COLUMNS} WHERE end_time >= ?1
+		AND json_extract(event.data, '$.Accessibility') = ?2`
 	const sql =
 		wanted.length === 0
 			? browse
@@ -1225,4 +1275,76 @@ export async function searchEvents(
 	}
 
 	return events.sort(sort === 'Attendance' ? byAttendance : bySoonest).slice(skip, skip + take)
+}
+
+/**
+ * How long after its `EndTime` an event may still be broadcast. A broadcast is the
+ * creator's to start at any time before the event ends: matchmaking lets people in early,
+ * and the 2026 client offers Start Broadcasting whenever the creator stands in one of the
+ * event's instances, with no way to show a refusal. The grace covers an event that runs a
+ * little long.
+ */
+export const BROADCAST_GRACE_MS = 5 * 60 * 1000
+
+/**
+ * Whether `accountId` may broadcast `event` right now: its creator, on a multi-instance
+ * event that has not ended (see {@link BROADCAST_GRACE_MS}). There is no broadcast
+ * permission beyond that: whoever made the event runs it.
+ */
+export function canBroadcastEvent(event: PlayerEvent, accountId: number, now = Date.now()): boolean {
+	return (
+		event.CreatorPlayerId === accountId &&
+		event.IsMultiInstance &&
+		now <= Date.parse(event.EndTime) + BROADCAST_GRACE_MS
+	)
+}
+
+/**
+ * Record that `broadcasterId` is broadcasting `eventId` from `roomInstanceId`. One broadcast
+ * per event, so a new start (from another instance, or after a stop report was lost)
+ * replaces the old one.
+ */
+export async function startEventBroadcast(
+	db: D1Database,
+	eventId: number,
+	roomInstanceId: number,
+	broadcasterId: number,
+	now = Date.now()
+): Promise<void> {
+	await db
+		.prepare(
+			`INSERT INTO event_broadcast (event_id, room_instance_id, broadcaster_id, started_at)
+			 VALUES (?1, ?2, ?3, ?4)
+			 ON CONFLICT (event_id) DO UPDATE SET
+			   room_instance_id = excluded.room_instance_id,
+			   broadcaster_id = excluded.broadcaster_id,
+			   started_at = excluded.started_at`
+		)
+		.bind(eventId, roomInstanceId, broadcasterId, eventTime(now))
+		.run()
+}
+
+/**
+ * End the broadcast `broadcasterId` runs for `eventId`. With `roomInstanceId`, only the one
+ * from that instance: the stop report of a stale connection (the same player timing out of
+ * an older instance) must not end the broadcast a newer connection started. Without it,
+ * whichever instance it runs from: that is the room server saying the player just joined
+ * an instance and is not broadcasting anywhere, which clears a broadcast a lost report or
+ * a room-server restart left behind (a player is only ever in one instance). Answers
+ * whether a broadcast was ended.
+ */
+export async function stopEventBroadcast(
+	db: D1Database,
+	eventId: number,
+	broadcasterId: number,
+	roomInstanceId?: number
+): Promise<boolean> {
+	const { meta } = await db
+		.prepare(
+			`DELETE FROM event_broadcast
+			 WHERE event_id = ?1 AND broadcaster_id = ?2 AND (?3 IS NULL OR room_instance_id = ?3)`
+		)
+		.bind(eventId, broadcasterId, roomInstanceId ?? null)
+		.run()
+	return meta.changes > 0
 }

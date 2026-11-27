@@ -9439,15 +9439,15 @@ describe('player events', () => {
 		exports.default.fetch(`${ORIGIN}${path}`, sub ? { headers: await bearer(sub) } : undefined)
 
 	/**
-	 * The stored RECORD behind an envelope's event — what the v1 reads serve. The envelope
-	 * drops `State`, adds `Tags`/`BroadcastingRoomInstanceId`, and turns a null `ImageName`
-	 * into `""`, so going back the other way undoes exactly those.
+	 * The RECORD behind an envelope's event — what the v1 reads serve. The envelope drops
+	 * `State`, adds `Tags`, and turns a null `ImageName` into `""`, so going back the other
+	 * way undoes exactly those. Both carry the live `BroadcastingRoomInstanceId`.
 	 */
 	const asRecord = (
 		event: PlayerEventEnvelope,
 		imageName: string | null = event.ImageName
 	): PlayerEvent => {
-		const { Tags: _tags, BroadcastingRoomInstanceId: _broadcast, ...rest } = event
+		const { Tags: _tags, ...rest } = event
 		return { ...rest, ImageName: imageName, State: 0 }
 	}
 
@@ -9836,7 +9836,8 @@ describe('player events', () => {
 		const res = await get(`/api/playerevents/v1/${upcoming.PlayerEventId}`)
 		expect(res.status).toBe(200)
 		// No envelope here — unlike the writes — and the bare RECORD, which carries `State`
-		// and neither `Tags` nor `BroadcastingRoomInstanceId`.
+		// and not `Tags`. It does carry `BroadcastingRoomInstanceId` (null: nothing is
+		// broadcasting), read live like everywhere else.
 		const body = await res.json()
 		expect(body).toEqual(asRecord(upcoming))
 		expect(Object.hasOwn(body as object, 'Tags')).toBe(false)
@@ -10500,6 +10501,78 @@ describe('player events', () => {
 		const unknown = await get('/api/playerevents/v1/999999/responses')
 		expect(unknown.status).toBe(200)
 		expect(await unknown.json()).toEqual([])
+	})
+
+	test('POST /api/playerevents/v1/broadcast answers the room server’s broadcast state', async () => {
+		const event = await create({
+			RoomId: 3,
+			Name: 'Broadcast Night',
+			StartTime: at(-HOUR),
+			EndTime: at(HOUR),
+			IsMultiInstance: true,
+		})
+		const id = event.PlayerEventId
+		expect(event.BroadcastingRoomInstanceId).toBeNull()
+		const broadcast = (body: unknown, sub = '42') => post('/api/playerevents/v1/broadcast', body, sub)
+
+		// Tachyon's report (`match` POST /tachyon/broadcast) is what writes this row; with it
+		// in place a start answers at once, in the v2 write envelope, with the instance set.
+		await env.DB.prepare(
+			`INSERT INTO event_broadcast (event_id, room_instance_id, broadcaster_id, started_at)
+			 VALUES (?1, 1000777, 42, ?2)`
+		)
+			.bind(id, at(0))
+			.run()
+		let res = await broadcast({ PlayerEventId: id, BroadcastRoomInstanceId: 1000777 })
+		expect(res.status).toBe(200)
+		const started = (await res.json()) as PlayerEventResult
+		expect(started.Result).toBe(0)
+		expect(started.TagModifyResult).toEqual({ Result: 0, Tags: [] })
+		expect(started.PlayerEvent.PlayerEventId).toBe(id)
+		expect(started.PlayerEvent.BroadcastingRoomInstanceId).toBe(1000777)
+
+		// Every read carries it while it runs: the record, the feed, the bulk read, the envelope.
+		const record = (await (await get(`/api/playerevents/v1/${id}`)).json()) as PlayerEvent
+		expect(record.BroadcastingRoomInstanceId).toBe(1000777)
+		const feed = (await (await get('/api/playerevents/v1')).json()) as PlayerEvent[]
+		expect(feed.find((e) => e.PlayerEventId === id)?.BroadcastingRoomInstanceId).toBe(1000777)
+		const bulk = (await (await get(`/api/playerevents/v1/bulk?id=${id}`)).json()) as PlayerEvent[]
+		expect(bulk[0]?.BroadcastingRoomInstanceId).toBe(1000777)
+		const v2 = (await (await get(`/api/playerevents/v2/${id}`)).json()) as PlayerEventResult
+		expect(v2.PlayerEvent.BroadcastingRoomInstanceId).toBe(1000777)
+
+		// An edit rewrites the blob, but the broadcast is not on it: neither lost nor stored.
+		await post(`/api/playerevents/v2/${id}`, { Name: 'Broadcast Night (renamed)' })
+		const blob = await env.DB.prepare('SELECT data FROM event WHERE id = ?1')
+			.bind(id)
+			.first<{ data: string }>()
+		expect(Object.hasOwn(JSON.parse(blob!.data) as object, 'BroadcastingRoomInstanceId')).toBe(false)
+		expect(
+			((await (await get(`/api/playerevents/v1/${id}`)).json()) as PlayerEvent)
+				.BroadcastingRoomInstanceId
+		).toBe(1000777)
+
+		// Once the room server reports the stop, a stop answers with no instance.
+		await env.DB.prepare('DELETE FROM event_broadcast WHERE event_id = ?1').bind(id).run()
+		res = await broadcast({ PlayerEventId: id, BroadcastRoomInstanceId: null })
+		expect(((await res.json()) as PlayerEventResult).PlayerEvent.BroadcastingRoomInstanceId).toBeNull()
+		res = await broadcast({ PlayerEventId: id })
+		expect(((await res.json()) as PlayerEventResult).PlayerEvent.BroadcastingRoomInstanceId).toBeNull()
+
+		// Creator only; a bad body, an unknown event and no token are refused.
+		expect((await broadcast({ PlayerEventId: id }, '43')).status).toBe(403)
+		expect((await broadcast({ PlayerEventId: 999999 })).status).toBe(404)
+		expect((await broadcast({})).status).toBe(400)
+		expect((await broadcast({ PlayerEventId: id, BroadcastRoomInstanceId: 'x' })).status).toBe(400)
+		const anonymous = await exports.default.fetch(`${ORIGIN}/api/playerevents/v1/broadcast`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ PlayerEventId: id }),
+		})
+		expect(anonymous.status).toBe(401)
+
+		// A live public event would skew the feed and profile tests that count events.
+		expect((await post(`/api/playerevents/v2/delete/${id}`, undefined)).status).toBe(200)
 	})
 
 	test('POST /api/playerevents/v1/respond rejects a bad body, an unknown event and no token', async () => {
@@ -11323,6 +11396,7 @@ describe('openapi', () => {
 			'POST /api/messages/v3/delete',
 			'POST /api/playerReputation/v1/bulk',
 			'POST /api/playerReputation/v2/bulk',
+			'POST /api/playerevents/v1/broadcast',
 			'POST /api/playerevents/v1/bulk',
 			'POST /api/playerevents/v1/bulkInvite',
 			'POST /api/playerevents/v1/report',

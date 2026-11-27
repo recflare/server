@@ -251,9 +251,10 @@ async function fetchMyAnswer(eventId: number, accountId: number): Promise<number
  * One event's page, at `/event/<id>`: the event, its room and host, how many are going,
  * and — for a signed-in player — Going / Interested / Not going.
  *
- * PUBLIC events only. `api`'s by-id read answers for any event (the client fetches a
- * private one it was invited to by id), so the page checks `Accessibility` itself and
- * shows a private or unlisted event the same as a missing one.
+ * PUBLIC and UNLISTED events. `api`'s by-id read answers for any event (the client fetches
+ * a private one it was invited to by id), so the page checks `Accessibility` itself and
+ * shows a private event the same as a missing one. An unlisted event is kept out of the
+ * listings, not closed: its link is how people find it, and matchmaking lets anyone in.
  *
  * The answer goes through the same `POST /api/playerevents/v1/respond` the game sends, and
  * the count is redrawn from the event it answers with. The player's current answer is read
@@ -288,7 +289,12 @@ export function EventPage({
 		void fetchEvent(eventId)
 			.then((found) => {
 				if (cancelled) return
-				const shown = found !== null && found.Accessibility === Accessibility.Public ? found : null
+				const shown =
+					found !== null &&
+					(found.Accessibility === Accessibility.Public ||
+						found.Accessibility === Accessibility.Unlisted)
+						? found
+						: null
 				setEvent(shown)
 				if (shown === null) return
 				void fetchEventRooms([shown]).then((rooms) => {

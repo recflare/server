@@ -1183,6 +1183,13 @@ export const PlayerEventDto = z.object({
 	SupportMultiInstanceRoomChat: z.boolean(),
 	DefaultBroadcastPermissions: z.int(),
 	CanRequestBroadcastPermissions: z.int(),
+	BroadcastingRoomInstanceId: z
+		.int()
+		.nullable()
+		.describe(
+			'The room instance a broadcast runs from (as the room server reports it), else null. ' +
+				'Not stored on the record: every read joins it in'
+		),
 })
 
 /**
@@ -1200,8 +1207,8 @@ export const PlayerEventDetailsDto = PlayerEventDto.extend({
 
 /**
  * The client's BASE event, 17 keys — the stored record minus `State`, with `ImageName` as a
- * string (`""`, not null) and a `BroadcastingRoomInstanceId` (always null — nothing
- * broadcasts an event yet). It is also what the v2 envelope carries once `Tags` is added.
+ * string (`""`, not null) and a `BroadcastingRoomInstanceId` (the instance a broadcast
+ * runs from, null while there is none). It is also what the v2 envelope carries once `Tags` is added.
  *
  * THREE reads serve exactly this, through one generic helper on the client and one element
  * type: the browse feed (`GET /api/playerevents/v1`), the room shelf
@@ -1222,7 +1229,9 @@ export const PlayerEventBaseDto = PlayerEventDto.omit({ State: true, ImageName: 
 	BroadcastingRoomInstanceId: z
 		.int()
 		.nullable()
-		.describe('Always null — no event broadcasts to a room instance yet'),
+		.describe(
+			'The room instance a broadcast runs from (as the room server reports it), else null'
+		),
 })
 
 /**
@@ -1355,6 +1364,19 @@ export const PlayerEventResponseDto = z.object({
 export const PlayerEventRespondRequest = z.object({
 	PlayerEventId: z.int(),
 	Type: z.int().describe('0 Going, 1 Interested, 2 Can’t go'),
+})
+
+/**
+ * `POST /api/playerevents/v1/broadcast` JSON body — the client's
+ * `BroadcastRoomInstanceRequest`. The caller is the bearer token's player.
+ */
+export const PlayerEventBroadcastRequest = z.object({
+	PlayerEventId: z.int(),
+	BroadcastRoomInstanceId: z
+		.int()
+		.nullable()
+		.optional()
+		.describe('The instance the caller broadcasts from; null or absent when it stops'),
 })
 
 /**

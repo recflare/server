@@ -55,6 +55,7 @@ import {
 	pageParams,
 	PlayerEventAccessibilityRequest,
 	PlayerEventBaseDto,
+	PlayerEventBroadcastRequest,
 	PlayerEventBulkInviteRequest,
 	PlayerEventDeletedDto,
 	PlayerEventDescriptionRequest,
@@ -363,6 +364,13 @@ function editEventField(
 	}
 }
 
+/**
+ * How long `POST /api/playerevents/v1/broadcast` waits for the room server's report before
+ * it answers, and how often it looks. See that route.
+ */
+const BROADCAST_CONFIRM_WAIT_MS = 4000
+const BROADCAST_CONFIRM_POLL_MS = 250
+
 /** The form body of a single-field edit; an unparseable one reads as empty. */
 async function formBody(c: Context<App>): Promise<Record<string, unknown>> {
 	return (await c.req.parseBody().catch(() => ({}))) as Record<string, unknown>
@@ -415,7 +423,7 @@ export const eventRoutes = new Hono<App>({ strict: false })
 				'Each entry is the client’s BASE event — the v2 envelope’s event minus `Tags`, 17 ' +
 				'keys — not the stored record the by-id, bulk and search reads serve: it drops ' +
 				'`State`, serves `ImageName` as `""` rather than null, and carries ' +
-				'`BroadcastingRoomInstanceId` (always null — nothing broadcasts an event yet). ' +
+				'`BroadcastingRoomInstanceId` (the instance a broadcast runs from, else null). ' +
 				'That is the shape observed on this endpoint; keep the two projections apart.',
 			parameters: pageParams(50),
 			responses: { 200: json(PlayerEventBaseDto.array(), 'The events that have not ended') },
@@ -785,6 +793,87 @@ export const eventRoutes = new Hono<App>({ strict: false })
 			if (result === null) return c.body(null, 404)
 			await notifyResponseChanged(c, result.event, result.response)
 			return c.json(await eventResult(c, result.event, await getEventTags(c.env.DB, eventId)))
+		}
+	)
+
+	// The HTTP half of a 2026 broadcast. BroadcastingManager posts this beside the
+	// `RR_StartBroadcast` it sends the room server, naming the instance it broadcasts from,
+	// and the creator's client posts it with a null instance when one ends. It is NOT what
+	// starts or stops anything, and not trusted to say whether a broadcast runs: the
+	// organizer's client also posts it on every spawn, broadcasting or not. The room server
+	// is the authority (`match` POST /tachyon/broadcast, the `event_broadcast` row); this
+	// waits briefly for its report to land and answers the event as it then stands, which
+	// the client caches — so a start answers with the Stop button showing and a stop
+	// without it.
+	.post(
+		'/api/playerevents/v1/broadcast',
+		describeRoute({
+			tags: ['Events'],
+			summary: 'Start or stop broadcasting a multi-instance event',
+			description:
+				'The client’s `BroadcastRoomInstanceRequest`, JSON `{ PlayerEventId, ' +
+				'BroadcastRoomInstanceId }` (a form body with the same fields is accepted too): the ' +
+				'instance the caller is broadcasting from, or null/absent when the broadcast ends. ' +
+				'Creator only.\n\n' +
+				'Nothing is recorded from the body. Whether an event is broadcasting is the room ' +
+				'server’s to say: Tachyon reports the broadcasts it starts and stops to `match` ' +
+				'(`POST /tachyon/broadcast`), and every event read carries that as ' +
+				'`BroadcastingRoomInstanceId`. This waits up to ' +
+				`${BROADCAST_CONFIRM_WAIT_MS / 1000} s for that report to agree with the body, ` +
+				'then answers the event as it stands either way, in the v2 write envelope ' +
+				'(`{ PlayerEvent, Result, TagModifyResult }` — the client parses it as ' +
+				'`CreateModifyPlayerEventResponse`; a bare event NREs its callback).',
+			security: AUTHED,
+			requestBody: jsonBody(PlayerEventBroadcastRequest, 'The event and its broadcast instance'),
+			responses: {
+				200: json(PlayerEventResultDto, 'The event in the v2 write envelope'),
+				400: {
+					description: 'No usable `PlayerEventId`, or an unusable instance id (empty body)',
+				},
+				401: UNAUTHORIZED_RESPONSE,
+				403: { description: 'Not the event’s creator (empty body)' },
+				404: { description: 'No such event (empty body)' },
+			},
+		}),
+		async (c) => {
+			const id = await authedId(c)
+			if (id === null) return unauthorized(c)
+
+			const body = (
+				c.req.header('Content-Type')?.includes('json')
+					? await c.req.json<Record<string, unknown>>().catch(() => ({}))
+					: await formBody(c)
+			) as { PlayerEventId?: unknown; BroadcastRoomInstanceId?: unknown }
+			const eventId = Number(body.PlayerEventId)
+			if (!Number.isInteger(eventId) || eventId <= 0) return c.body(null, 400)
+			const raw = body.BroadcastRoomInstanceId
+			const instanceId = raw === undefined || raw === null || raw === '' ? null : Number(raw)
+			if (instanceId !== null && (!Number.isInteger(instanceId) || instanceId <= 0)) {
+				return c.body(null, 400)
+			}
+
+			let event = await getEventById(c.env.DB, eventId)
+			if (event === null) return c.body(null, 404)
+			if (event.CreatorPlayerId !== id) return c.body(null, 403)
+
+			// The client sends RR_StartBroadcast/RR_StopBroadcast and this in the same breath,
+			// and Tachyon's report reaches `match` a few hundred ms later. Answer before it and
+			// a start reads "not broadcasting" (no Stop button) and a stop reads "still
+			// broadcasting". The spawn-time post that is no broadcast at all just waits the
+			// window out.
+			const settled = (e: PlayerEvent) =>
+				instanceId === null
+					? e.BroadcastingRoomInstanceId == null
+					: e.BroadcastingRoomInstanceId === instanceId
+			for (
+				let waited = 0;
+				waited < BROADCAST_CONFIRM_WAIT_MS && !settled(event);
+				waited += BROADCAST_CONFIRM_POLL_MS
+			) {
+				await new Promise((resolve) => setTimeout(resolve, BROADCAST_CONFIRM_POLL_MS))
+				event = (await getEventById(c.env.DB, eventId)) ?? event
+			}
+			return c.json(await eventResult(c, event, await getEventTags(c.env.DB, eventId)))
 		}
 	)
 

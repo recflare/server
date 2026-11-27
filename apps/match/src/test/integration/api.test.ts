@@ -289,6 +289,8 @@ beforeAll(async () => {
 		insertEvent.bind(event(10, 2)), // unlisted — listings only, still joinable
 		// A private one in the two-subroom room, pinning the SECOND subroom.
 		insertEvent.bind(event(11, 0, { RoomId: 77, SubRoomId: 35 })),
+		// A multi-instance event that has not ended — the one the broadcast routes run.
+		insertEvent.bind(event(12, 1, { IsMultiInstance: true, EndTime: '2099-01-01T00:00:00Z' })),
 	])
 	const insertAttendee = env.DB.prepare(
 		`INSERT INTO event_attendee (event_id, player_id, status, responded_at)
@@ -1303,6 +1305,109 @@ describe('public endpoints', () => {
 			subRoomId: 35,
 			location: SECOND_SUBROOM_SCENE,
 		})
+	})
+
+	test('event sessions are MultiInstanceEvent (6) instances; Tachyon broadcast routes', async () => {
+		const matchmake = async (eventId: number, sub: string) =>
+			(await (
+				await exports.default.fetch(`${ORIGIN}/matchmake/event/${eventId}`, {
+					method: 'POST',
+					headers: { ...(await bearer(sub)), 'Content-Type': 'application/x-www-form-urlencoded' },
+					body: 'JoinMode=0',
+				})
+			).json()) as {
+				errorCode: number
+				roomInstance: { roomInstanceId: number; roomInstanceType: number; eventId: number }
+			}
+		const tachyonEvent = async (query: string) =>
+			(await (await exports.default.fetch(`${ORIGIN}/tachyon/event?${query}`)).json()) as {
+				eventId: number
+				canBroadcast: boolean
+			}
+		const report = async (sub: string | undefined, body: unknown) =>
+			exports.default.fetch(`${ORIGIN}/tachyon/broadcast`, {
+				method: 'POST',
+				headers: {
+					...(sub === undefined ? {} : await bearer(sub)),
+					'Content-Type': 'application/json',
+				},
+				body: JSON.stringify(body),
+			})
+		const broadcastRow = async () =>
+			env.DB.prepare(
+				'SELECT room_instance_id, broadcaster_id FROM event_broadcast WHERE event_id = ?1'
+			)
+				.bind(12)
+				.first<{ room_instance_id: number; broadcaster_id: number }>()
+
+		// An event's session is type 6 on the wire and in the stored row: the 2026 client only
+		// loads the event behind an instance (and only broadcasts) in one.
+		const live = await matchmake(12, '301')
+		expect(live.errorCode).toBe(0)
+		expect(live.roomInstance).toMatchObject({ eventId: 12, roomInstanceType: 6 })
+		const instance = live.roomInstance.roomInstanceId
+		const stored = await env.DB.prepare('SELECT room_instance_type FROM room_instance WHERE id = ?1')
+			.bind(instance)
+			.first<{ room_instance_type: number }>()
+		expect(stored!.room_instance_type).toBe(6)
+		const ended = await matchmake(9, '301')
+		expect(ended.roomInstance.roomInstanceType).toBe(6)
+
+		// The instance's event, and whether an account may broadcast it: the creator of a
+		// multi-instance event that has not ended, nobody else, and no other permission.
+		expect(await tachyonEvent(`instance=${instance}&account=300`)).toEqual({
+			eventId: 12,
+			canBroadcast: true,
+		})
+		expect(await tachyonEvent(`instance=${instance}&account=301`)).toEqual({
+			eventId: 12,
+			canBroadcast: false,
+		})
+		expect(await tachyonEvent(`instance=${instance}`)).toEqual({ eventId: 12, canBroadcast: false })
+		// Event 9 is single-instance and long over: its instance still names it.
+		expect(
+			await tachyonEvent(`instance=${ended.roomInstance.roomInstanceId}&account=300`)
+		).toEqual({ eventId: 9, canBroadcast: false })
+		expect(await tachyonEvent('instance=99999999&account=300')).toEqual({
+			eventId: 0,
+			canBroadcast: false,
+		})
+		expect(await tachyonEvent('instance=abc')).toEqual({ eventId: 0, canBroadcast: false })
+
+		// A start from anyone but the creator is refused and records nothing.
+		let res = await report('301', { instance, active: true })
+		expect(await res.json()).toEqual({ eventId: 12, broadcasting: false })
+		expect(await broadcastRow()).toBeNull()
+
+		// The creator's start is the event's broadcast.
+		res = await report('300', { instance, active: true })
+		expect(await res.json()).toEqual({ eventId: 12, broadcasting: true })
+		expect(await broadcastRow()).toEqual({ room_instance_id: instance, broadcaster_id: 300 })
+
+		// A stop names the broadcaster AND the instance: a stale connection's stop from
+		// another instance, or someone else's, leaves it running.
+		await report('300', { instance: instance + 1, active: false })
+		await report('301', { instance, active: false })
+		expect(await broadcastRow()).toEqual({ room_instance_id: instance, broadcaster_id: 300 })
+		res = await report('300', { instance, active: false })
+		expect(await res.json()).toEqual({ eventId: 12, broadcasting: false })
+		expect(await broadcastRow()).toBeNull()
+
+		// The join reset (`joined`, sent from the instance the creator just joined) clears
+		// their broadcast whichever instance it was left running from.
+		await env.DB.prepare(
+			`INSERT INTO event_broadcast (event_id, room_instance_id, broadcaster_id, started_at)
+			 VALUES (12, 777, 300, '2020-11-29T22:00:00Z')`
+		).run()
+		await report('300', { instance, active: false, joined: true })
+		expect(await broadcastRow()).toBeNull()
+
+		// An instance of no event, a bad body, no token.
+		res = await report('300', { instance: 99999999, active: true })
+		expect(await res.json()).toEqual({ eventId: 0, broadcasting: false })
+		expect((await report('300', { instance })).status).toBe(400)
+		expect((await report('300', { active: true })).status).toBe(400)
+		expect((await report(undefined, { instance, active: true })).status).toBe(401)
 	})
 
 	test('POST /matchmake/room/:roomId returns NoSuchRoom for an unknown room', async () => {
@@ -4602,6 +4707,7 @@ describe('auth-gated endpoints', () => {
 			'GET /rooms/requiring/developer',
 			'GET /rooms/requiring/rrplus',
 			'GET /tachyon',
+			'GET /tachyon/event',
 			'POST /invite',
 			'POST /matchmake/club/{clubId}',
 			'POST /matchmake/dorm',
@@ -4625,6 +4731,7 @@ describe('auth-gated endpoints', () => {
 			'POST /room/{roomId}/instances/clear',
 			'POST /roominstance/{id}/markprivate',
 			'POST /roominstance/{id}/reportjoinresult',
+			'POST /tachyon/broadcast',
 			'PUT /player/avoidjuniors',
 			'PUT /player/gameserverregionpings',
 			'PUT /player/photonregionpings',

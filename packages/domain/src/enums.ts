@@ -46,6 +46,13 @@ export enum RoomInstanceType {
 	Event = 3,
 	Meetup = 4,
 	Clubhouse = 5,
+	/**
+	 * An instance of a player event. Every event session is served as this, multi-instance
+	 * or not: the 2026 client loads the event behind the instance only for type 3 or 6, and
+	 * only in type 6 does it run broadcasting (its event page's Start Broadcasting, the
+	 * listener every player connects as, the `POST /api/playerevents/v1/broadcast` it sends).
+	 */
+	MultiInstanceEvent = 6,
 }
 
 /**
