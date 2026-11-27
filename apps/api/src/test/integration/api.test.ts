@@ -442,6 +442,45 @@ describe('public endpoints', () => {
 		}
 	})
 
+	test('GET /api/gameconfigs/v1/all configures RecCenter door labels only for 2026', async () => {
+		for (const version of [undefined, '20230414', '20250718.01', '20260323.14', '20260323.15']) {
+			const res = await exports.default.fetch(`${ORIGIN}/api/gameconfigs/v1/all`, {
+				headers: version ? await bearer('42', undefined, version) : {},
+			})
+			expect(res.status).toBe(200)
+			const entries = (await res.json()) as Array<{ Key: string; Value: string }>
+			for (const key of [
+				'Door.Dormroom.Query',
+				'Door.Dormroom.Title',
+				'LiveOps.DormExit.CustomDisplayName',
+				'LiveOps.DormExit.CustomInteractionLabel',
+			]) {
+				const matches = entries.filter((e) => e.Key === key)
+				if (version?.startsWith('20260323') || (!version && key.startsWith('LiveOps.DormExit.'))) {
+					expect(matches).toHaveLength(1)
+					expect(matches[0]?.Value).toBe('^RecCenter')
+				} else {
+					const expected =
+						key === 'Door.Dormroom.Query' ? '' : key === 'Door.Dormroom.Title' ? 'EXIT' : undefined
+					expect(matches[0]?.Value).toBe(expected)
+				}
+			}
+		}
+	})
+
+	test('GET /api/gameconfigs/v1/all bootstraps only DormExit settings before login', async () => {
+		const res = await exports.default.fetch(`${ORIGIN}/api/gameconfigs/v1/all`)
+		expect(res.status).toBe(200)
+		const entries = (await res.json()) as Array<{ Key: string; Value: string }>
+		const configs = Object.fromEntries(entries.map((e) => [e.Key, e.Value]))
+		expect(configs['LiveOps.DormExit.DefaultToWatch']).toBe('false')
+		expect(configs['LiveOps.DormExit.CustomTargetRoom']).toBe('RecCenter')
+		expect(configs['LiveOps.DormExit.SettingsOptionLabel']).toBe('^RecCenter')
+		expect(entries.filter((e) => e.Key.startsWith('LiveOps.DormExit.'))).toHaveLength(5)
+		expect(configs[KEY_2025_ONLY]).toBeUndefined()
+		expect(configs['RoomieAI.System.Enabled']).toBeUndefined()
+	})
+
 	test('GET /api/gameconfigs/v1/all enables only the 2026 Roomie companion', async () => {
 		for (const version of ['20260323.14', '20250718.01']) {
 			const res = await exports.default.fetch(`${ORIGIN}/api/gameconfigs/v1/all`, {
