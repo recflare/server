@@ -7,6 +7,7 @@ import {
 	getPlayerIdsInRoomSubRoom,
 	getRoomCoOwnerIds,
 	getSubRoom,
+	withDatabase,
 } from '@repo/domain'
 import { withDefaultCors, withNotFound, withOnError } from '@repo/hono-helpers'
 import {
@@ -24,7 +25,7 @@ import { getUserBuildCount, listCloudBuilds, storeLocalCloudBuild } from './loca
 import { parseMultipart } from './multipart'
 
 import type { Context } from 'hono'
-import type { App } from './context'
+import type { App, Env } from './context'
 import type { FormFields } from './multipart'
 
 /**
@@ -335,4 +336,4 @@ const app = new Hono<App>()
 		})
 	})
 
-export default app
+export default withDatabase<Env>(app)

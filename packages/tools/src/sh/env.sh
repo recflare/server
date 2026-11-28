@@ -12,8 +12,11 @@
 # and `just dev`, so a value is never configured twice.
 
 # Names the deploy scripts consume themselves — the domain and the ids of the operator's
-# Cloudflare resources. Everything else in .env is worker config; see recflare_vars.
-RECFLARE_RESERVED="DOMAIN SUBDOMAINS D1 KV SECRETS_STORE ENV_LOADED"
+# Cloudflare resources. The two LIBSQL_DB_* entries are reserved too: they choose the database (see .env.example) and the deploy script hands them
+# over itself — the URL as a var, the token as an encrypted worker SECRET — so neither may
+# ride along as a plain `--var`, nor reach a local dev server, which stays on the local D1.
+# Everything else in .env is worker config; see recflare_vars.
+RECFLARE_RESERVED="DOMAIN SUBDOMAINS D1 KV SECRETS_STORE LIBSQL_DB_URL LIBSQL_DB_AUTH_TOKEN ENV_LOADED"
 
 # Load the root .env, letting anything already in the environment win. The file is a local
 # convenience; CI exports the same names as secrets and must not be clobbered by a stray

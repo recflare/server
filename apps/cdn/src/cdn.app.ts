@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { describeRoute, openAPIRouteHandler, resolver } from 'hono-openapi'
 import { useWorkersLogger } from 'workers-tagged-logger'
 
+import { withDatabase } from '@repo/domain'
 import {
 	applyNoExecuteHeaders,
 	withCleanSpec,
@@ -564,7 +565,7 @@ app.get(
  */
 type StudioAssetEnv = Pick<Env, 'DB' | 'CDN_ASSETS'>
 
-export default {
+export default withDatabase<StudioAssetEnv>({
 	fetch(
 		request: Request,
 		env: StudioAssetEnv,
@@ -577,4 +578,4 @@ export default {
 		}
 		return app.fetch(request, env, executionCtx)
 	},
-}
+})

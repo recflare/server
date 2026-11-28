@@ -62,6 +62,7 @@ import {
 	setRoomInstanceMatchmakingPolicy,
 	setRoomInstancePrivate,
 	subRoomDataBlob,
+	withDatabase,
 	writeAuditLog,
 } from '@repo/domain'
 import {
@@ -4033,4 +4034,4 @@ export const scheduled: ExportedHandlerScheduledHandler<Env> = (_controller, env
 
 // Standalone entry: a Worker only runs `scheduled` when it's on the default export,
 // so match keeps the object form the runtime requires to fire its `*/5 * * * *` cron.
-export default { fetch: app.fetch, scheduled } satisfies ExportedHandler<Env>
+export default withDatabase<Env>({ fetch: app.fetch, scheduled })

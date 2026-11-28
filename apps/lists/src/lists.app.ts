@@ -13,6 +13,7 @@ import {
 	getVisitedRooms,
 	isCuratedRowSlug,
 	removePlayerListItem,
+	withDatabase,
 } from '@repo/domain'
 import { withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
 import { validateAndGetAccountId } from '@repo/jwt'
@@ -46,7 +47,7 @@ import {
 import type { Context } from 'hono'
 import type { CuratedList, Room } from '@repo/domain'
 import type { CatalogKindValue } from '../../econ/src/catalog-load'
-import type { App } from './context'
+import type { App, Env } from './context'
 
 // The item catalog's sellable-rarity rule, from the worker that owns the table. Imported
 // rather than restated so a row can never offer an id the storefront omits.
@@ -1082,4 +1083,4 @@ app.get(
 	)
 )
 
-export default app
+export default withDatabase<Env>(app)

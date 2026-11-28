@@ -2,7 +2,11 @@ import { Hono } from 'hono'
 import { describeRoute, openAPIRouteHandler } from 'hono-openapi'
 import { useWorkersLogger } from 'workers-tagged-logger'
 
-import { mergePlayerSettings as mergeStoredPlayerSettings, readPlayerSettings } from '@repo/domain'
+import {
+	mergePlayerSettings as mergeStoredPlayerSettings,
+	readPlayerSettings,
+	withDatabase,
+} from '@repo/domain'
 import { logger, withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
 import { validateAndGetAccountId, validateAndGetBuild } from '@repo/jwt'
 
@@ -1579,4 +1583,4 @@ app.get(
 	)
 )
 
-export default app
+export default withDatabase<Env>(app)

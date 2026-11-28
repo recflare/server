@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { describeRoute, openAPIRouteHandler } from 'hono-openapi'
 import { useWorkersLogger } from 'workers-tagged-logger'
 
+import { withDatabase } from '@repo/domain'
 import { logger, withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
 import { validateAndGetAccountId } from '@repo/jwt'
 
@@ -26,7 +27,7 @@ import {
 	PlayerRank,
 } from './openapi'
 
-import type { App } from './context'
+import type { App, Env } from './context'
 import type { Board } from './leaderboard-db'
 
 /**
@@ -405,4 +406,4 @@ app.get(
 	)
 )
 
-export default app
+export default withDatabase<Env>(app)
