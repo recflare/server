@@ -27,6 +27,7 @@ export const matchBase = (env: Env): string => endpoints(env).Matchmaking
 export const cdnBase = (env: Env): string => endpoints(env).CDN
 export const storageBase = (env: Env): string => endpoints(env).Storage
 export const studioBase = (env: Env): string => endpoints(env).Studio
+export const chatBase = (env: Env): string => endpoints(env).Chat
 
 /**
  * POST a form body to the `auth` worker, carrying the browser's real IP across.

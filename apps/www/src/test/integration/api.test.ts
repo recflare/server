@@ -208,6 +208,7 @@ it('advertises signup and where the other workers live', async () => {
 			cdn: 'https://cdn.rec.example.com',
 			storage: 'https://storage.rec.example.com',
 			studio: 'https://studio.rec.example.com',
+			chat: 'https://chat.rec.example.com',
 		},
 	})
 })

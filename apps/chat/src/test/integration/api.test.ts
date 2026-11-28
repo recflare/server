@@ -3,6 +3,7 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 import '../../chat.app'
 
+import { SCHEMA_DDL as REPORT_SCHEMA_DDL } from '../../../../api/src/reports-db'
 import { NotificationType } from '../../../../notify/src/notification-types'
 import {
 	ChatModerationState,
@@ -15,11 +16,11 @@ import {
 	addThreadMember,
 	ChatThreadType,
 	createThread,
-	joinedChatContents,
 	findThreadWithMembers,
 	getThreadForPlayer,
 	getThreadsForPlayer,
 	isThreadMember,
+	joinedChatContents,
 	leftChatContents,
 	markThreadRead,
 	postMessage,
@@ -71,6 +72,8 @@ beforeAll(async () => {
 	await adminSecretsStore(env.JWT_SECRET).create(TEST_SECRET)
 	for (const stmt of SCHEMA_DDL) await env.DB.prepare(stmt).run()
 	for (const stmt of THREAD_SCHEMA_DDL) await env.DB.prepare(stmt).run()
+	// The ban check reads the `api` worker's report table.
+	for (const stmt of REPORT_SCHEMA_DDL) await env.DB.prepare(stmt).run()
 })
 
 describe('chat endpoints', () => {
@@ -2268,5 +2271,61 @@ describe('openapi', () => {
 		for (const ops of Object.values(spec.paths)) {
 			for (const op of Object.values(ops)) expect(op.summary).toBeTruthy()
 		}
+	})
+})
+
+describe('website access', () => {
+	it('answers the browser preflight the website sends', async () => {
+		const res = await SELF.fetch(`${ORIGIN}/thread`, {
+			method: 'OPTIONS',
+			headers: {
+				Origin: 'https://www.example.com',
+				'Access-Control-Request-Method': 'GET',
+				'Access-Control-Request-Headers': 'authorization',
+			},
+		})
+		expect(res.status).toBe(204)
+		expect(res.headers.get('access-control-allow-origin')).toBe('*')
+	})
+
+	it('refuses a banned player’s messages and thread names', async () => {
+		const banned = 9001
+		const threadId = await createThread(env.DB, [banned, 9002], null, banned)
+		await env.DB.prepare(
+			'INSERT INTO report (reporter_player_id, reported_player_id, banned, created_at) VALUES (?1, ?2, 1, ?3)'
+		)
+			.bind(9002, banned, new Date().toISOString())
+			.run()
+		const before = await getThreadMessages(env.DB, threadId, { limit: 50 })
+		const headers = {
+			...(await bearer(banned)),
+			'content-type': 'application/x-www-form-urlencoded',
+		}
+		const body = new URLSearchParams({
+			messageContents: JSON.stringify({ Type: 0, Version: 1, Data: 'hi' }),
+		}).toString()
+
+		const sent = await SELF.fetch(`${ORIGIN}/thread/${threadId}`, { method: 'POST', headers, body })
+		expect(await sent.json()).toMatchObject({ ChatResult: 14, chatResult: 14, ChatMessage: null })
+
+		const opened = await SELF.fetch(`${ORIGIN}/thread`, {
+			method: 'POST',
+			headers,
+			body: `ids=9002&${body}`,
+		})
+		expect(await opened.json()).toMatchObject({ chatResult: 14 })
+
+		const renamed = await SELF.fetch(`${ORIGIN}/thread/${threadId}/rename`, {
+			method: 'PUT',
+			headers,
+			body: 'name=hello',
+		})
+		expect(await renamed.json()).toBe(14)
+
+		// Nothing new was stored on the existing thread.
+		const after = await getThreadMessages(env.DB, threadId, { limit: 50 })
+		expect(after.filter((m) => m.senderPlayerId === banned)).toEqual(
+			before.filter((m) => m.senderPlayerId === banned)
+		)
 	})
 })

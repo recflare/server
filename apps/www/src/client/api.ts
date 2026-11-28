@@ -32,6 +32,7 @@ export interface Hosts {
 	cdn: string
 	storage: string
 	studio: string
+	chat: string
 }
 
 /**
