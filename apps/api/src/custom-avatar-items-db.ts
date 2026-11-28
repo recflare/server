@@ -31,7 +31,8 @@ import { COACH_ACCOUNT_ID, TOKENS_CURRENCY_TYPE } from './custom-avatar-items-lo
 
 /**
  * Schema DDL (mirror of migrations/0022_custom_avatar_item_json.sql and
- * 0035_custom_avatar_item_badge_room.sql; 0036 is a data backfill with no DDL).
+ * 0035_custom_avatar_item_badge_room.sql and 0038_custom_avatar_item_store_index.sql; 0036 is a
+ * data backfill with no DDL).
  */
 export const SCHEMA_DDL: string[] = [
 	`CREATE TABLE IF NOT EXISTS custom_avatar_item (
@@ -51,6 +52,10 @@ export const SCHEMA_DDL: string[] = [
 	// The room-badge lookup (`attachBadges`, packages/domain/src/rooms-db.ts) runs on every room
 	// page; partial over the badge rows, keyed by the badge's room (migrations/0035).
 	`CREATE INDEX IF NOT EXISTS idx_custom_avatar_item_badge_room ON custom_avatar_item (json_extract(data, '$.CustomBadgeMetadata.RoomId')) WHERE outfit_type = 1000`,
+	// The store rows' random draw (`randomCustomAvatarItemIds`, apps/lists/src/lists.app.ts):
+	// partial over what the store can sell, the id last so the index alone answers it
+	// (migrations/0038).
+	`CREATE INDEX IF NOT EXISTS idx_custom_avatar_item_store ON custom_avatar_item (creator_account_id, outfit_type, custom_avatar_item_id) WHERE accessibility <> 0 AND price > 0`,
 ]
 
 /**

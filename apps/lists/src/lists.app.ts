@@ -458,6 +458,9 @@ async function randomCustomAvatarItemIds(c: Context<App>, key: string): Promise<
 	/** Bind a value and get its placeholder, so the numbering can't drift as clauses are added. */
 	const bind = (v: string | number): string => `?${binds.push(v)}`
 
+	// Answered from the partial `idx_custom_avatar_item_store` (api migrations/0038) without
+	// loading a record. `accessibility <> 0` and `price > 0` must stay LITERALS, as written:
+	// bound or rephrased, SQLite stops matching the index and walks every Coach item again.
 	const where = [
 		`creator_account_id = ${bind(COACH_ACCOUNT_ID)}`,
 		'accessibility <> 0',
