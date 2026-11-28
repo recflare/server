@@ -43,6 +43,7 @@ import {
 	ItemPage,
 	StaffDelete,
 } from './Item'
+import { MessagesPage } from './Messages'
 import { ModerationPage, PlayerBanStatus } from './Moderation'
 import { PumpleBossFight } from './PumpleBossFight'
 import { RoomsPage } from './Rooms'
@@ -3510,6 +3511,10 @@ export function App() {
 				// load falls through to the SPA shell. The page shows one account's own
 				// status to whoever is signed in; the whitelist editors are on /admin.
 				<StudioAccessPage account={account} navigate={navigate} />
+			) : path === '/messages' || path.startsWith('/messages/') ? (
+				// Signed-in only, and a client-side route like /events. `account` only exists once
+				// `/account/me` answered, so the hosts the page calls are known by then.
+				<MessagesPage account={account} path={path} navigate={navigate} />
 			) : path === '/events' || path === '/events/' ? (
 				// Public, and a client-side route like /stats: not in `run_worker_first`, so a
 				// cold load falls through to the SPA shell. Waits on the config because its
@@ -3648,6 +3653,13 @@ function NavBar({
 				</Link>
 				{account === undefined ? null : account ? (
 					<>
+						<Link
+							to="/messages"
+							navigate={navigate}
+							className={path === '/messages' || path.startsWith('/messages/') ? 'active' : ''}
+						>
+							Messages
+						</Link>
 						{/* Staff only, and cosmetic: the link is hidden for everyone else, but
 						    `/moderation` is a real URL anyone can type — the page and every
 						    endpoint behind it check the token's role themselves. */}

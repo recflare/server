@@ -93,6 +93,7 @@ import {
 	apiBase,
 	authBase,
 	cdnBase,
+	chatBase,
 	imgBase,
 	matchBase,
 	notifyBase,
@@ -241,6 +242,7 @@ const app = new Hono<App>()
 				cdn: cdnBase(c.env),
 				storage: storageBase(c.env),
 				studio: studioBase(c.env),
+				chat: chatBase(c.env),
 			},
 		})
 	})

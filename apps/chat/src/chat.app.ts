@@ -3,9 +3,16 @@ import { describeRoute, openAPIRouteHandler } from 'hono-openapi'
 import { useWorkersLogger } from 'workers-tagged-logger'
 
 import { mergePlayerSettings as mergeStoredPlayerSettings, readPlayerSettings } from '@repo/domain'
-import { logger, withCleanSpec, withNotFound, withOnError } from '@repo/hono-helpers'
+import {
+	logger,
+	withCleanSpec,
+	withDefaultCors,
+	withNotFound,
+	withOnError,
+} from '@repo/hono-helpers'
 import { validateAndGetAccountId, validateAndGetBuild } from '@repo/jwt'
 
+import { isPlayerBanned } from '../../api/src/reports-db'
 import { censorSwears } from '../../api/src/sanitize'
 import { NotificationType } from '../../notify/src/notification-types'
 import { getThreadMessages } from './message-db'
@@ -108,6 +115,7 @@ const CHAT_SUCCESS = 0
 const CHAT_INVALID_ARGUMENTS = 1
 const CHAT_MEMBERSHIP_NOT_FOUND = 3
 const CHAT_PLAYER_ALREADY_ON_THREAD = 4
+const CHAT_PLAYER_BANNED = 14
 
 /**
  * How long a party invite link stays usable, in minutes (`GET /settings/partyinvite`).
@@ -463,9 +471,12 @@ async function sendToThread(c: Context<App>) {
 	// and may hold fields we know nothing about (the client sends Version 2 with a `<=>`
 	// prefix in Data, and a `Blocks` array alongside it), so `censorContents` rewrites the
 	// player's `Data` and nothing else.
+	// A banned player still holds a token (see `auth`), and the website puts these routes in
+	// reach without the game, so the ban is checked here rather than left to `match`.
+	const banned = await isPlayerBanned(c.env.DB, id)
 	const contents = (await formField(c, 'messageContents'))?.trim()
 	const posted =
-		contents === undefined || contents === ''
+		banned || contents === undefined || contents === ''
 			? null
 			: await postMessage(c.env.DB, {
 					chatThreadId,
@@ -480,7 +491,11 @@ async function sendToThread(c: Context<App>) {
 	}
 
 	const thread = await threadWithMessages(c, chatThreadId, id, DEFAULT_THREAD_MESSAGE_COUNT)
-	const chatResult = posted === null ? CHAT_INVALID_ARGUMENTS : CHAT_SUCCESS
+	const chatResult = banned
+		? CHAT_PLAYER_BANNED
+		: posted === null
+			? CHAT_INVALID_ARGUMENTS
+			: CHAT_SUCCESS
 	// Both spellings, because the client reads this response in two places. Its SendMessage
 	// handler dereferences `ChatMessage` the moment `ChatResult` is 0, so a success answered
 	// without one throws inside the client — the lowercase pair alone left that null. The
@@ -658,6 +673,11 @@ const app = new Hono<App>()
 			})(c, next)
 	)
 
+	// The website (`www`) calls these from the browser, so the responses need CORS headers.
+	// `origin: '*'` is safe here because every route authenticates with a bearer token, never
+	// a cookie. Do not add cookie auth without narrowing it.
+	.use('*', withDefaultCors())
+
 	.onError(withOnError())
 	.notFound(withNotFound())
 
@@ -751,9 +771,10 @@ const app = new Hono<App>()
 			// called with an empty `messageContents`.
 			if (created) await pushThreadLatestMessage(c, chatThreadId)
 
+			const banned = await isPlayerBanned(c.env.DB, id)
 			const contents = (await formField(c, 'messageContents'))?.trim()
 			const posted =
-				contents === undefined || contents === ''
+				banned || contents === undefined || contents === ''
 					? null
 					: await postMessage(c.env.DB, {
 							chatThreadId,
@@ -770,7 +791,11 @@ const app = new Hono<App>()
 			// The reference answers a wrapper here, not a bare thread.
 			return c.json({
 				chatThread: thread,
-				chatResult: posted === null ? CHAT_INVALID_ARGUMENTS : CHAT_SUCCESS,
+				chatResult: banned
+					? CHAT_PLAYER_BANNED
+					: posted === null
+						? CHAT_INVALID_ARGUMENTS
+						: CHAT_SUCCESS,
 			})
 		}
 	)
@@ -1278,6 +1303,9 @@ const app = new Hono<App>()
 			if (!(await isThreadMember(c.env.DB, chatThreadId, id))) {
 				return c.json(CHAT_MEMBERSHIP_NOT_FOUND)
 			}
+
+			// A name is text every member reads, so a banned player can't set one either.
+			if (await isPlayerBanned(c.env.DB, id)) return c.json(CHAT_PLAYER_BANNED)
 
 			const name = ((await formField(c, 'name')) ?? '').trim().slice(0, MAX_THREAD_NAME_LENGTH)
 			await setThreadName(c.env.DB, chatThreadId, name)
