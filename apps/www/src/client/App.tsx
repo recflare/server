@@ -6481,6 +6481,7 @@ function Dashboard({
 		},
 		{ id: 'password', label: 'Password', render: () => <PasswordForm /> },
 		{ id: 'two-factor', label: 'Two-factor sign-in', render: () => <TwoFactorForm /> },
+		{ id: 'roomie', label: 'Roomie AI', render: () => <RoomieKeyForm /> },
 		// Shown to everyone: the panel itself tells an account without Studio access how to
 		// get it, and `studio` re-checks on upload.
 		{
@@ -7951,6 +7952,123 @@ function PasswordForm() {
 					{pending ? 'Updating…' : 'Change password'}
 				</button>
 			</form>
+		</section>
+	)
+}
+
+/** `ai`'s `GET/PUT/DELETE /roomieai/key` answer. Never the key: it is write-only. */
+interface RoomieKeyStatus {
+	available: boolean
+	configured: boolean
+	updatedAt: string | null
+}
+
+/** Where the Roomie key lives: on `ai`, called directly like every other worker. */
+const roomieKeyUrl = () => `${where().ai}/roomieai/key`
+
+/**
+ * Roomie AI: the player's own OpenAI API key, which their Roomie's voice conversation runs
+ * on (billed to their OpenAI account). WRITE-ONLY — the field is never filled from the
+ * server, because nothing on the server will hand a saved key back: this card can save a
+ * new one or remove it, and say whether one is on file. `ai` checks a key with OpenAI before
+ * saving it, so a mistyped or revoked one is refused here rather than failing in game.
+ */
+function RoomieKeyForm() {
+	const [status, setStatus] = useState<RoomieKeyStatus | null>(null)
+	const [apiKey, setApiKey] = useState('')
+	const load = useAction()
+	const act = useAction()
+
+	const { run: runLoad } = load
+	useEffect(() => {
+		void runLoad(async () => {
+			setStatus(await call<RoomieKeyStatus>(roomieKeyUrl(), { authed: true }))
+			return ''
+		})
+	}, [runLoad])
+
+	const feedback = (
+		<>
+			{act.error && <p className="error">{act.error}</p>}
+			{act.done && <p className="ok">{act.done}</p>}
+		</>
+	)
+
+	let body: React.ReactNode
+	if (status === null) {
+		body = load.error ? <p className="error">{load.error}</p> : <p className="muted">Loading…</p>
+	} else if (!status.available) {
+		body = <p className="muted">Roomie AI isn’t available on this server right now.</p>
+	} else {
+		body = (
+			<>
+				<p className="muted">
+					{status.configured && status.updatedAt
+						? `A key is saved (since ${new Date(status.updatedAt).toLocaleString()}). For your safety it can’t be shown again — save a new one to replace it.`
+						: 'No key saved. Roomie runs in companion mode, without AI conversation.'}
+				</p>
+				<form
+					onSubmit={(e) => {
+						e.preventDefault()
+						void act.run(async () => {
+							const next = await call<RoomieKeyStatus>(roomieKeyUrl(), {
+								method: 'PUT',
+								json: { apiKey: apiKey.trim() },
+								authed: true,
+							})
+							setApiKey('')
+							setStatus(next)
+							return 'Key saved. Pull Roomie out in game to talk.'
+						})
+					}}
+				>
+					<label>
+						{status.configured ? 'Replace with a new OpenAI API key' : 'OpenAI API key'}
+						<input
+							type="password"
+							value={apiKey}
+							placeholder="sk-…"
+							autoComplete="off"
+							spellCheck={false}
+							onChange={(e) => setApiKey(e.target.value)}
+							required
+						/>
+					</label>
+					{feedback}
+					<button type="submit" disabled={act.pending}>
+						{act.pending ? 'Checking with OpenAI…' : 'Save key'}
+					</button>
+				</form>
+				{status.configured && (
+					<button
+						className="danger"
+						disabled={act.pending}
+						onClick={() =>
+							void act.run(async () => {
+								setStatus(
+									await call<RoomieKeyStatus>(roomieKeyUrl(), { method: 'DELETE', authed: true })
+								)
+								return 'Key removed. Revoke it on OpenAI’s dashboard too if you think it leaked.'
+							})
+						}
+					>
+						Remove key
+					</button>
+				)}
+			</>
+		)
+	}
+
+	return (
+		<section className="card">
+			<h2>Roomie AI</h2>
+			<p className="hint">
+				Give Roomie a voice: save your own OpenAI API key and Roomie talks back in game. Usage is
+				billed to your OpenAI account. We recommend a dedicated project key limited to the Realtime
+				API, with a monthly spend limit on that project. A saved key is encrypted and can never be
+				read back — not by you, and not by staff.
+			</p>
+			{body}
 		</section>
 	)
 }

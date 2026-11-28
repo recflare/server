@@ -15,7 +15,9 @@
 		"test": "run-vitest"
 	},
 	"dependencies": {
+		"@repo/domain": "workspace:*",
 		"@repo/hono-helpers": "workspace:*",
+		"@repo/jwt": "workspace:*",
 		"hono": "4.13.5",
 		"workers-tagged-logger": "1.0.1"
 	},

@@ -151,6 +151,30 @@ string.
 wrangler secrets-store secret create <store-id> --name CLOUD_BUILD_KEY --scopes workers --remote
 ```
 
+The `ai` worker binds `ROOMIE_KEY_ENCRYPTION_KEY`, the key that seals each player's own
+OpenAI API key for Roomie (saved from the account page; Roomie's voice conversation then
+runs on it, billed to that player). Only `ai` binds it, so no other worker can open a stored
+key, and a copy of the database alone reveals nothing usable. Same rule — it must exist for
+`ai` to deploy. Give it 32 random bytes, base64-encoded:
+
+```bash
+openssl rand -base64 32   # the value to paste
+wrangler secrets-store secret create <store-id> --name ROOMIE_KEY_ENCRYPTION_KEY --scopes workers --remote
+```
+
+Any value that is not 32 base64 bytes (the literal `off`, say) switches the feature off:
+players can't save keys and Roomie stays in its companion mode, with nothing else affected.
+
+The value is a keyring, `<version>:<base64>` entries separated by commas, the first being
+the one new keys are sealed with; a bare base64 value is version 1. To rotate it (after a
+suspected leak, say), put a new entry FIRST and keep the old ones — `2:<new>,1:<old>` —
+then drop the old entry once every stored key has been re-sealed: each is re-sealed under
+the current version the next time its player starts Roomie. Losing an entry while rows
+still use it makes those keys unreadable; their players just save them again.
+
+`ROOMIE_REALTIME_MODEL` (an `ai` var, unset by default) names the OpenAI Realtime model the
+session tokens are minted for; unset, it is `gpt-realtime`.
+
 **Enable Email Sending** for the domain, so the workers can send the two emails they have:
 `auth`'s password-recovery code ("Forgot password" in the game sends a six-digit code to
 the address on the account, with a link to `www.<domain>/reset-password`) and `accounts`'
