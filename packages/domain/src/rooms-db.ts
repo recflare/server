@@ -131,6 +131,9 @@ export const ROOM_SCHEMA_DDL: string[] = [
 		PRIMARY KEY (room_id, tag)
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_room_tag_tag ON room_tag (tag)`,
+	// Covers the per-room tag read behind every hydrated room ({@link tagsByRoom}), so it
+	// never opens a table row (migrations/0040_room_tag_covering_index.sql).
+	`CREATE INDEX IF NOT EXISTS idx_room_tag_room ON room_tag (room_id, tag, type, is_primary_genre)`,
 	// A room's `Roles`, one row per entry (migrations/0029_room_role.sql, rebuilt with the
 	// whole entry by 0030_room_role_entry.sql). Unlike `room_tag` this is a DERIVED copy: the
 	// blob keeps `Roles` and stays authoritative, and every write that changes them batches
@@ -2759,7 +2762,7 @@ function toRoomTag(row: RoomTagRow): RoomTag {
 	return tag
 }
 
-/** Group tag rows by RoomId, preserving the order they arrived in (alphabetical by tag). */
+/** Group tag rows by RoomId, preserving the order they arrived in (alphabetical by tag within a room). */
 function groupTags(rows: RoomTagRow[]): Map<number, RoomTag[]> {
 	const byRoom = new Map<number, RoomTag[]>()
 	for (const row of rows) {
@@ -2782,7 +2785,9 @@ function groupTags(rows: RoomTagRow[]): Map<number, RoomTag[]> {
  * narrow in memory, so any caller with more than a hundred rooms pulled every tag on the
  * server to keep a handful — the query's row count tracked the table, not the request.
  *
- * Tags come back alphabetical, so a room's array is stable between reads.
+ * Tags come back alphabetical WITHIN each room, so a room's array is stable between reads.
+ * The order is `room_id, tag` — the index's own — rather than `tag` alone, which made SQLite
+ * sort every row in a temp b-tree to interleave rooms the grouping then pulls apart again.
  */
 async function tagsByRoom(db: D1Database, roomIds: number[]): Promise<Map<number, RoomTag[]>> {
 	const ids = [...new Set(roomIds)]
@@ -2791,7 +2796,7 @@ async function tagsByRoom(db: D1Database, roomIds: number[]): Promise<Map<number
 	const { results } = await db
 		.prepare(
 			`SELECT room_id, tag, type, is_primary_genre FROM room_tag
-			 WHERE room_id IN (SELECT value FROM json_each(?1)) ORDER BY tag`
+			 WHERE room_id IN (SELECT value FROM json_each(?1)) ORDER BY room_id, tag`
 		)
 		.bind(JSON.stringify(ids))
 		.all<RoomTagRow>()
