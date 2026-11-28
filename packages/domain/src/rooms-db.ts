@@ -2818,19 +2818,6 @@ async function attachTags(db: D1Database, rooms: Room[]): Promise<void> {
 }
 
 /**
- * Parse room rows AND attach their tags — the read every scan-then-rank feed starts from.
- *
- * Those feeds filter and sort BEFORE they hydrate (ranking a room doesn't need its
- * subrooms), but several of them rank ON tags, so the tags have to be present earlier than
- * {@link hydrateRooms} would put them. One extra query for the whole batch.
- */
-async function parseAllWithTags(db: D1Database, rows: RoomRow[]): Promise<Room[]> {
-	const rooms = parseAll(rows)
-	await attachTags(db, rooms)
-	return rooms
-}
-
-/**
  * Replace a room's tags with the given set, in one batch. A replace and not a merge: the
  * only writer ({@link toggleRoomTag}) computes the whole set it wants, so a removed tag is
  * a write with that tag left out.
@@ -3008,9 +2995,8 @@ async function hydrateRoom(db: D1Database, room: Room | null): Promise<Room | nu
  * Hydrate many rooms' `SubRooms` and `Tags` (one batched query each). `Stats` needs no
  * hydration: its counters came off the row with the blob ({@link parseRow}).
  *
- * `Tags` is re-attached even for the feeds that already did so before ranking
- * ({@link parseAllWithTags}) — it is one query for the page slice and it guarantees the key
- * is present on every room this module hands out, whichever path produced it.
+ * `Tags` is attached here whichever path produced the rooms — it is one query for the page
+ * slice and it guarantees the key is present on every room this module hands out.
  */
 async function hydrateRooms(db: D1Database, rooms: Room[]): Promise<Room[]> {
 	for (const room of rooms) {
@@ -3610,23 +3596,37 @@ async function visitedRooms(
 	take: number,
 	listableOnly: boolean
 ): Promise<Room[]> {
-	// The listable predicate is pushed down (see LISTABLE_WHERE) so the blobs of the
-	// rooms a friend may not see never leave D1; the in-memory filter remains the
-	// definition, as everywhere else it is used.
+	// The page is chosen BEFORE a blob is read. The inner select orders the player's visits
+	// and takes the page from `interaction` and a room INDEX alone — existence through
+	// `idx_rooms_room_id`, or listability through the partial `idx_room_rank`, whose
+	// predicate is {@link LISTABLE_WHERE} (hinted: left alone the planner looks the room up
+	// by id and opens its blob to test the flags). Only the page's rooms are then read
+	// whole. This used to select `data` and the boost subquery for EVERY room the player
+	// had ever visited, to serve the first few: a long-time player's history is hundreds
+	// of ~20 KB blobs, and the client asks for it on every profile and "recently visited" row.
+	//
+	// The in-memory filter stays as the definition of listable, as everywhere else — it now
+	// runs after the page is cut, so a blob that satisfies the SQL but not {@link isListable}
+	// (a surprising type in one of the flags) would shorten its page rather than be served.
 	const { results } = await db
 		.prepare(
 			`SELECT r.data AS data, ${COUNTER_COLUMNS}
-			 FROM interaction i
-			 JOIN room r ON r.room_id = i.room_id
-			 WHERE i.player_id = ?1 AND i.last_visited_at IS NOT NULL
-			 ${listableOnly ? `AND r.${LISTABLE_WHERE.replaceAll(' AND ', ' AND r.')}` : ''}
-			 ORDER BY i.last_visited_at DESC`
+			 FROM (
+			   SELECT i.room_id AS room_id, i.last_visited_at AS last_visited_at
+			   FROM interaction i
+			   JOIN room v ${listableOnly ? 'INDEXED BY idx_room_rank ' : ''}ON v.room_id = i.room_id
+			   WHERE i.player_id = ?1 AND i.last_visited_at IS NOT NULL
+			   ${listableOnly ? `AND v.${LISTABLE_WHERE.replaceAll(' AND ', ' AND v.')}` : ''}
+			   ORDER BY i.last_visited_at DESC
+			   LIMIT ?2 OFFSET ?3
+			 ) p
+			 JOIN room r ON r.room_id = p.room_id
+			 ORDER BY p.last_visited_at DESC`
 		)
-		.bind(playerId)
+		.bind(playerId, Math.max(0, take), Math.max(0, skip))
 		.all<RoomRow>()
 	const rooms = parseAll(results)
-	const visible = listableOnly ? rooms.filter(isListable) : rooms
-	return hydrateRooms(db, visible.slice(skip, skip + take))
+	return hydrateRooms(db, listableOnly ? rooms.filter(isListable) : rooms)
 }
 
 /**
@@ -3808,16 +3808,6 @@ const TAG_ALIASES: Record<string, string[]> = {
  */
 const DERIVED_ONLY_FEED_TAGS: ReadonlySet<string> = new Set(['rro'])
 
-/** A room's tag names, lowercased (empty when it has no Tags array). */
-function roomTags(room: Room): string[] {
-	const tags = room.Tags
-	if (!Array.isArray(tags)) return []
-	return tags
-		.map((t) => (t as Record<string, unknown> | null)?.Tag)
-		.filter((v): v is string => typeof v === 'string')
-		.map((v) => v.toLowerCase())
-}
-
 /**
  * Search public, non-dorm rooms not opted out of search. The query is split into terms
  * (space/`+`): `#tag` terms match the room's Tags; plain terms match the room name
@@ -3994,8 +3984,20 @@ export async function searchRoomsByName(
  *
  * Matching is case-insensitive and suggestions are de-duplicated case-insensitively, but
  * each is returned in its stored casing — search doesn't care, and the player reads these.
- * Narrowed in SQL to the same rooms {@link searchRooms} considers; the matching itself is
- * in memory, like search's.
+ *
+ * Both halves are answered from INDEXES, capped at `take` in SQL, and no room blob is read
+ * to decide anything. This runs once per keystroke, and used to select every searchable
+ * room whole — `data` plus the per-row boost subquery of {@link ROOM_COLUMNS} — to draw
+ * four strings from the names and tags; that one statement was a quarter of the database's
+ * runtime under load. Now the names walk `idx_room_search_name` entries alone and read a
+ * row only for the `take` they serve (for the name's stored casing), and the tags walk
+ * `idx_room_tag_tag`, opening a room only to confirm a matching tag is on a searchable one.
+ * The SQL orders bytewise where the final sort collates, so which of several equally-ranked
+ * names makes the cut can differ from the full sort at the margin.
+ *
+ * A NON-ASCII name term can't narrow in SQL (`name_lower` folds ASCII only — see
+ * {@link searchRooms}), so it scans the searchable names; still no `data`, no boosts.
+ * Tags are stored lowercased by this module, so a tag term always narrows.
  */
 export async function autocompleteRoomSearch(
 	db: D1Database,
@@ -4005,16 +4007,40 @@ export async function autocompleteRoomSearch(
 	const q = query.trim().toLowerCase()
 	if (q === '' || take <= 0) return []
 
-	const { results } = await db
-		.prepare(`SELECT ${ROOM_COLUMNS} FROM room WHERE ${SEARCHABLE_WHERE}`)
-		.all<RoomRow>()
-	// Tags attached up front: suggestions are drawn from them, and this reads every candidate
-	// room for its NAME regardless, so the tags cost one extra query rather than a second scan.
-	const rooms = (await parseAllWithTags(db, results)).filter(isSearchable)
-
 	const tagQuery = q.startsWith('#')
 	const term = tagQuery ? q.slice(1) : q
 	if (term === '') return []
+
+	// Each ranks as the final sort does — starts-with before contains, then by name — so
+	// the LIMIT keeps the rows that sort would have kept.
+	const tagStatement = db
+		.prepare(
+			`SELECT d.tag AS value
+			   FROM (SELECT DISTINCT tag FROM room_tag WHERE instr(tag, ?1) > 0) d
+			  WHERE EXISTS (
+			        SELECT 1 FROM room_tag t JOIN room ON room.room_id = t.room_id
+			         WHERE t.tag = d.tag AND ${SEARCHABLE_WHERE})
+			  ORDER BY instr(d.tag, ?1) > 1, d.tag LIMIT ?2`
+		)
+		.bind(term, take)
+	// One row per distinct lowercased name (the suggestions de-duplicate that way), picked
+	// inside the index; the outer read fetches just those rows' `name`.
+	const nameStatement = /^[\x20-\x7e]+$/.test(term)
+		? db
+				.prepare(
+					`SELECT name AS value FROM room WHERE room.rowid IN (
+					   SELECT MIN(s.rowid) FROM room s INDEXED BY idx_room_search_name
+					    WHERE ${SEARCHABLE_WHERE} AND instr(name_lower, ?1) > 0
+					    GROUP BY name_lower
+					    ORDER BY instr(name_lower, ?1) > 1, name_lower LIMIT ?2)`
+				)
+				.bind(term, take)
+		: db.prepare(`SELECT name AS value FROM room WHERE ${SEARCHABLE_WHERE}`)
+	const [tagRows, nameRows] = await db.batch<{ value: string | null }>(
+		tagQuery ? [tagStatement] : [tagStatement, nameStatement]
+	)
+	const values = (rows?: { results: Array<{ value: string | null }> }): string[] =>
+		(rows?.results ?? []).map((r) => r.value).filter((v): v is string => typeof v === 'string')
 
 	// Lowercased suggestion → [rank, the casing to serve it in]. Lower rank sorts first.
 	const found = new Map<string, [number, string]>()
@@ -4024,16 +4050,14 @@ export async function autocompleteRoomSearch(
 		if (existing === undefined || existing[0] > rank) found.set(key, [rank, value])
 	}
 
-	for (const room of rooms) {
-		if (!tagQuery && typeof room.Name === 'string') {
-			const name = room.Name.toLowerCase()
-			if (name.startsWith(term)) offer(room.Name, 0)
-			else if (name.includes(term)) offer(room.Name, 1)
-		}
-		for (const tag of roomTags(room)) {
-			if (tag.startsWith(term)) offer(`#${tag}`, tagQuery ? 0 : 2)
-			else if (tag.includes(term)) offer(`#${tag}`, tagQuery ? 1 : 3)
-		}
+	for (const name of values(nameRows)) {
+		const lower = name.toLowerCase()
+		if (lower.startsWith(term)) offer(name, 0)
+		else if (lower.includes(term)) offer(name, 1)
+	}
+	for (const tag of values(tagRows)) {
+		if (tag.startsWith(term)) offer(`#${tag}`, tagQuery ? 0 : 2)
+		else if (tag.includes(term)) offer(`#${tag}`, tagQuery ? 1 : 3)
 	}
 
 	return [...found.entries()]
